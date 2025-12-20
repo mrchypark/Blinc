@@ -82,6 +82,8 @@ pub struct PlatformsConfig {
     pub windows: Option<WindowsPlatformConfig>,
     #[serde(default)]
     pub linux: Option<LinuxPlatformConfig>,
+    #[serde(default)]
+    pub wasm: Option<WasmPlatformConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -166,6 +168,37 @@ pub struct LinuxPlatformConfig {
     pub categories: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WasmPlatformConfig {
+    /// Base URL for the app (used in PWA manifest)
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Canvas element ID
+    #[serde(default = "default_canvas_id")]
+    pub canvas_id: String,
+    /// Enable PWA features (service worker, manifest)
+    #[serde(default = "default_true")]
+    pub pwa: bool,
+    /// Preferred GPU backend (webgpu or webgl)
+    #[serde(default = "default_gpu_backend")]
+    pub gpu_backend: String,
+    /// Development server port
+    #[serde(default = "default_wasm_port")]
+    pub dev_port: u16,
+}
+
+fn default_canvas_id() -> String {
+    "blinc-canvas".to_string()
+}
+
+fn default_gpu_backend() -> String {
+    "webgpu".to_string()
+}
+
+fn default_wasm_port() -> u16 {
+    8080
+}
+
 impl BlincProject {
     /// Load project configuration from .blincproj
     pub fn load_from_dir(path: &Path) -> Result<Self> {
@@ -204,23 +237,23 @@ impl BlincProject {
     }
 
     /// Create with all platforms enabled
-    pub fn with_all_platforms(mut self, name: &str) -> Self {
+    pub fn with_all_platforms(mut self, name: &str, org: &str) -> Self {
         let package_name = name.replace('-', "_").replace(' ', "_").to_lowercase();
 
         self.platforms = PlatformsConfig {
             android: Some(AndroidPlatformConfig {
-                package: format!("com.example.{}", package_name),
+                package: format!("{}.{}", org, package_name),
                 min_sdk: default_min_sdk(),
                 target_sdk: default_target_sdk(),
                 version_code: default_version_code(),
             }),
             ios: Some(IosPlatformConfig {
-                bundle_id: format!("com.example.{}", package_name),
+                bundle_id: format!("{}.{}", org, package_name),
                 deployment_target: default_ios_target(),
                 team_id: None,
             }),
             macos: Some(MacosPlatformConfig {
-                bundle_id: format!("com.example.{}", package_name),
+                bundle_id: format!("{}.{}", org, package_name),
                 deployment_target: default_macos_target(),
                 category: None,
             }),
@@ -232,6 +265,13 @@ impl BlincProject {
             linux: Some(LinuxPlatformConfig {
                 desktop_name: Some(name.to_string()),
                 categories: vec!["Utility".to_string()],
+            }),
+            wasm: Some(WasmPlatformConfig {
+                base_url: None,
+                canvas_id: default_canvas_id(),
+                pwa: true,
+                gpu_backend: default_gpu_backend(),
+                dev_port: default_wasm_port(),
             }),
         };
 

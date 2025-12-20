@@ -1,0 +1,145 @@
+# WASM/Web Target Configuration
+
+[target]
+name = "wasm"
+display_name = "Web (WASM)"
+os = "web"
+
+[architectures]
+default = ["wasm32"]
+all = ["wasm32"]
+
+[architectures.wasm32]
+rust_target = "wasm32-unknown-unknown"
+
+[build]
+# GPU backend (WebGPU with WebGL2 fallback)
+gpu_backends = ["webgpu", "webgl"]
+
+# Optimization for WASM
+opt_level = "z"  # Optimize for size
+
+# Enable LTO for smaller WASM bundles
+lto = "fat"
+
+# Panic = abort reduces binary size
+panic = "abort"
+
+# wasm-opt post-processing
+wasm_opt = true
+wasm_opt_level = "-O3"
+
+# Enable wasm-bindgen
+wasm_bindgen = true
+
+# Generate TypeScript definitions
+typescript = true
+
+[dependencies]
+# Required npm packages for the web host
+npm = [
+    "@aspect-build/esbuild-plugin-wasm",
+]
+
+# Rust crates for WASM
+crates = [
+    "wasm-bindgen",
+    "web-sys",
+    "js-sys",
+    "console_error_panic_hook",
+    "wasm-bindgen-futures",
+]
+
+[web]
+# HTML template configuration
+template = "default"
+
+# Canvas settings
+canvas_id = "blinc-canvas"
+canvas_parent = "body"
+
+# Fullscreen by default
+fullscreen = true
+
+# Pointer lock support (for games)
+pointer_lock = false
+
+# Touch input support
+touch_enabled = true
+
+# Gamepad support
+gamepad_enabled = false
+
+# Browser features required
+required_features = [
+    "WebGL2",
+]
+
+# Preferred features (optional)
+preferred_features = [
+    "WebGPU",
+]
+
+[web.meta]
+# HTML meta tags
+viewport = "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+theme_color = "#000000"
+description = "A Blinc Application"
+
+[pwa]
+# Progressive Web App settings
+enabled = true
+name = "Blinc App"
+short_name = "Blinc"
+display = "standalone"
+orientation = "any"
+background_color = "#000000"
+theme_color = "#000000"
+
+# Service worker for offline support
+service_worker = true
+cache_strategy = "cache-first"
+
+# Icons (sizes in pixels)
+icon_sizes = [72, 96, 128, 144, 152, 192, 384, 512]
+
+[server]
+# Development server settings
+port = 8080
+host = "localhost"
+https = false
+
+# Live reload
+live_reload = true
+
+# CORS headers for development
+cors = true
+
+# COOP/COEP headers (required for SharedArrayBuffer)
+cross_origin_isolation = true
+
+[bundler]
+# Asset bundler settings
+minify_js = true
+minify_css = true
+minify_html = true
+
+# Source maps in development
+source_maps = "development"  # "none", "development", "production"
+
+# Chunk splitting
+code_splitting = true
+chunk_size_limit = 500  # KB
+
+# Asset hashing for cache busting
+asset_hashing = true
+
+[browser_support]
+# Minimum browser versions
+chrome = 89
+firefox = 89
+safari = 15
+edge = 89
+
+# Feature detection fallbacks
+webgpu_fallback = "webgl2"

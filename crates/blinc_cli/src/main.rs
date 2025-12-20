@@ -89,6 +89,10 @@ enum Commands {
         /// Template to use (default, minimal, counter)
         #[arg(short, long, default_value = "default")]
         template: String,
+
+        /// Organization/package prefix (e.g., "com.mycompany" results in "com.mycompany.appname")
+        #[arg(short, long, default_value = "com.example")]
+        org: String,
     },
 
     /// Initialize a Blinc project in the current directory
@@ -96,6 +100,10 @@ enum Commands {
         /// Template to use
         #[arg(short, long, default_value = "default")]
         template: String,
+
+        /// Organization/package prefix (e.g., "com.mycompany" results in "com.mycompany.appname")
+        #[arg(short, long, default_value = "com.example")]
+        org: String,
     },
 
     /// Check a Blinc project for errors
@@ -169,9 +177,13 @@ fn main() -> Result<()> {
             PluginCommands::New { name } => cmd_plugin_new(&name),
         },
 
-        Commands::New { name, template } => cmd_new(&name, &template),
+        Commands::New {
+            name,
+            template,
+            org,
+        } => cmd_new(&name, &template, &org),
 
-        Commands::Init { template } => cmd_init(&template),
+        Commands::Init { template, org } => cmd_init(&template, &org),
 
         Commands::Check { source } => cmd_check(&source),
 
@@ -193,7 +205,9 @@ fn cmd_build(source: &str, target: &str, release: bool, output: Option<&str>) ->
     );
 
     // Validate target
-    let valid_targets = ["desktop", "android", "ios", "macos", "windows", "linux"];
+    let valid_targets = [
+        "desktop", "android", "ios", "macos", "windows", "linux", "wasm",
+    ];
     if !valid_targets.contains(&target) {
         anyhow::bail!(
             "Invalid target '{}'. Valid targets: {:?}",
@@ -277,8 +291,9 @@ fn cmd_plugin_new(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_new(name: &str, template: &str) -> Result<()> {
+fn cmd_new(name: &str, template: &str, org: &str) -> Result<()> {
     info!("Creating new project: {} (template: {})", name, template);
+    info!("Organization prefix: {}", org);
 
     let path = PathBuf::from(name);
     if path.exists() {
@@ -286,7 +301,7 @@ fn cmd_new(name: &str, template: &str) -> Result<()> {
     }
 
     fs::create_dir_all(&path)?;
-    project::create_project(&path, name, template)?;
+    project::create_project(&path, name, template, org)?;
 
     info!("Project created at {}/", name);
     info!("To get started:");
@@ -296,7 +311,7 @@ fn cmd_new(name: &str, template: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_init(template: &str) -> Result<()> {
+fn cmd_init(template: &str, org: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let name = cwd
         .file_name()
@@ -307,6 +322,7 @@ fn cmd_init(template: &str) -> Result<()> {
         "Initializing Blinc project in current directory (template: {})",
         template
     );
+    info!("Organization prefix: {}", org);
 
     // Check if already initialized
     if cwd.join(".blincproj").exists() {
@@ -316,7 +332,7 @@ fn cmd_init(template: &str) -> Result<()> {
         anyhow::bail!("This directory already contains a blinc.toml (legacy format)");
     }
 
-    project::create_project(&cwd, name, template)?;
+    project::create_project(&cwd, name, template, org)?;
 
     info!("Project initialized!");
     info!("Run `blinc dev` to start development");
@@ -350,6 +366,7 @@ fn cmd_info() -> Result<()> {
     println!("  - linux");
     println!("  - android");
     println!("  - ios");
+    println!("  - wasm (WebGPU/WebGL2)");
     println!();
     println!("Build modes:");
     println!("  - JIT (development, hot-reload) - requires Zyntax Runtime2");

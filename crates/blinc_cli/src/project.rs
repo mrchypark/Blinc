@@ -9,7 +9,8 @@
 //!   ├── ios/
 //!   ├── macos/
 //!   ├── windows/
-//!   └── linux/
+//!   ├── linux/
+//!   └── wasm/
 //! - assets/          - Static assets
 
 use anyhow::Result;
@@ -19,7 +20,7 @@ use std::path::Path;
 use crate::config::BlincProject;
 
 /// Create a new Blinc project with full workspace structure
-pub fn create_project(path: &Path, name: &str, template: &str) -> Result<()> {
+pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Result<()> {
     // Create directory structure
     fs::create_dir_all(path.join("src"))?;
     fs::create_dir_all(path.join("assets"))?;
@@ -31,9 +32,10 @@ pub fn create_project(path: &Path, name: &str, template: &str) -> Result<()> {
     fs::create_dir_all(path.join("platforms/macos"))?;
     fs::create_dir_all(path.join("platforms/windows"))?;
     fs::create_dir_all(path.join("platforms/linux"))?;
+    fs::create_dir_all(path.join("platforms/wasm"))?;
 
     // Create .blincproj
-    let project = BlincProject::new(name).with_all_platforms(name);
+    let project = BlincProject::new(name).with_all_platforms(name, org);
     fs::write(path.join(".blincproj"), project.to_toml()?)?;
 
     // Create main file based on template
@@ -131,6 +133,9 @@ blinc build --release
 # Mobile
 blinc build --target android --release
 blinc build --target ios --release
+
+# Web (WASM)
+blinc build --target wasm --release
 ```
 
 ## Project Structure
@@ -147,7 +152,8 @@ blinc build --target ios --release
     ├── ios/             # iOS/Xcode project files
     ├── macos/           # macOS app bundle config
     ├── windows/         # Windows executable config
-    └── linux/           # Linux desktop config
+    ├── linux/           # Linux desktop config
+    └── wasm/            # Web/WASM build files
 ```
 
 ## Configuration
@@ -181,6 +187,9 @@ fn create_platform_files(path: &Path, name: &str) -> Result<()> {
 
     // Linux
     create_linux_files(path, name)?;
+
+    // WASM/Web
+    create_wasm_files(path, name)?;
 
     Ok(())
 }
@@ -846,6 +855,201 @@ cp {binary_name}.desktop ~/.local/share/applications/
 
 - `{binary_name}.desktop` - Desktop entry for app launchers
 - `{binary_name}.metainfo.xml` - AppStream metadata for software centers
+"#
+        ),
+    )?;
+
+    Ok(())
+}
+
+fn create_wasm_files(path: &Path, name: &str) -> Result<()> {
+    let wasm_path = path.join("platforms/wasm");
+    let binary_name = name.to_lowercase().replace(' ', "_").replace('-', "_");
+
+    // index.html - Main HTML entry point
+    fs::write(
+        wasm_path.join("index.html"),
+        format!(
+            r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#000000">
+    <meta name="description" content="{name} - A Blinc Application">
+    <title>{name}</title>
+    <link rel="manifest" href="manifest.json">
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        html, body {{
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+        }}
+        #blinc-canvas {{
+            width: 100%;
+            height: 100%;
+            display: block;
+        }}
+        .loading {{
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-family: system-ui, sans-serif;
+            font-size: 18px;
+        }}
+    </style>
+</head>
+<body>
+    <div id="loading" class="loading">Loading...</div>
+    <canvas id="blinc-canvas"></canvas>
+
+    <script type="module">
+        // Import WASM module
+        import init, {{ run }} from './{binary_name}.js';
+
+        async function main() {{
+            try {{
+                // Initialize WASM module
+                await init();
+
+                // Hide loading indicator
+                document.getElementById('loading').style.display = 'none';
+
+                // Run the application
+                run();
+            }} catch (error) {{
+                console.error('Failed to start application:', error);
+                document.getElementById('loading').textContent =
+                    'Failed to load. Please ensure your browser supports WebGPU or WebGL2.';
+            }}
+        }}
+
+        main();
+    </script>
+</body>
+</html>
+"##
+        ),
+    )?;
+
+    // manifest.json - PWA manifest
+    fs::write(
+        wasm_path.join("manifest.json"),
+        format!(
+            r##"{{
+    "name": "{name}",
+    "short_name": "{name}",
+    "description": "A Blinc Application",
+    "start_url": "/",
+    "display": "standalone",
+    "orientation": "any",
+    "background_color": "#000000",
+    "theme_color": "#000000",
+    "icons": [
+        {{
+            "src": "icons/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        }},
+        {{
+            "src": "icons/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }}
+    ]
+}}
+"##
+        ),
+    )?;
+
+    // service-worker.js - Basic service worker for offline support
+    fs::write(
+        wasm_path.join("service-worker.js"),
+        format!(
+            r#"// {name} Service Worker
+const CACHE_NAME = '{binary_name}-v1';
+const ASSETS = [
+    '/',
+    '/index.html',
+    '/{binary_name}.js',
+    '/{binary_name}_bg.wasm',
+];
+
+self.addEventListener('install', (event) => {{
+    event.waitUntil(
+        caches.open(CACHE_NAME)
+            .then((cache) => cache.addAll(ASSETS))
+    );
+}});
+
+self.addEventListener('fetch', (event) => {{
+    event.respondWith(
+        caches.match(event.request)
+            .then((response) => response || fetch(event.request))
+    );
+}});
+"#
+        ),
+    )?;
+
+    // Create icons directory
+    fs::create_dir_all(wasm_path.join("icons"))?;
+
+    // README
+    fs::write(
+        wasm_path.join("README.md"),
+        format!(
+            r#"# {name} - Web (WASM)
+
+Web/WASM platform files for {name}.
+
+## Building
+
+```bash
+# From project root
+blinc build --target wasm --release
+```
+
+## Development Server
+
+```bash
+# Start development server with hot reload
+blinc dev --target wasm
+```
+
+## Files
+
+- `index.html` - HTML entry point
+- `manifest.json` - PWA manifest
+- `service-worker.js` - Service worker for offline support
+- `icons/` - PWA icons (add your icons here)
+
+## Browser Requirements
+
+- WebGPU support (preferred) or WebGL2 fallback
+- Minimum browser versions:
+  - Chrome 89+
+  - Firefox 89+
+  - Safari 15+
+  - Edge 89+
+
+## GPU Backend
+
+The application uses WebGPU when available, with automatic fallback to WebGL2.
+Configure the preferred backend in `.blincproj`:
+
+```toml
+[platforms.wasm]
+gpu_backend = "webgpu"  # or "webgl"
+```
 "#
         ),
     )?;

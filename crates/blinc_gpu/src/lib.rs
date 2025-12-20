@@ -10,11 +10,14 @@
 //! - **Glass/Vibrancy**: Backdrop blur effects for frosted glass UI (Apple-style)
 //! - **Text**: SDF-based text rendering with glyph atlases
 //! - **Compositing**: Layer blending with various blend modes
+//! - **Backbuffer**: Double/triple buffering for WASM and glass effects
 
+pub mod backbuffer;
 pub mod primitives;
 pub mod renderer;
 pub mod shaders;
 
+pub use backbuffer::{Backbuffer, BackbufferConfig, FrameContext};
 pub use primitives::{
     CompositeUniforms, FillType, GlassType, GlassUniforms, GpuGlassPrimitive, GpuGlyph,
     GpuPrimitive, PrimitiveBatch, PrimitiveType, Uniforms,

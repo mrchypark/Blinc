@@ -52,7 +52,7 @@ available = [
     "macos",
     "windows",
     "linux",
-    "web",  # Future: wasm target
+    "wasm",
 ]
 
 [targets.android]
@@ -76,6 +76,27 @@ architectures = ["x86_64", "aarch64"]
 
 [targets.linux]
 architectures = ["x86_64", "aarch64"]
+
+[targets.wasm]
+architectures = ["wasm32"]
+rust_target = "wasm32-unknown-unknown"
+gpu_backends = ["webgpu", "webgl"]  # WebGPU preferred, WebGL fallback
+opt_level = "z"                      # Optimize for size
+lto = "fat"                          # Full LTO for smaller bundles
+wasm_bindgen = true                  # Enable wasm-bindgen
+typescript = true                    # Generate TypeScript definitions
+
+[targets.wasm.dev_server]
+port = 8080
+host = "localhost"
+https = false
+live_reload = true
+
+[targets.wasm.browser_support]
+chrome = 89
+firefox = 89
+safari = 15
+edge = 89
 
 [dev]
 # Development server settings
