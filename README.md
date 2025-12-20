@@ -197,4 +197,4 @@ Blinc includes a full Paint/Canvas API for custom drawing:
 
 ## License
 
-MIT License - see [LICENSE](LICENSE)
+Apache License 2.0 - see [LICENSE](LICENSE)
