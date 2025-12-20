@@ -7,6 +7,17 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
+// ANSI color codes
+mod colors {
+    pub const RESET: &str = "\x1b[0m";
+    pub const GREEN: &str = "\x1b[32m";
+    pub const YELLOW: &str = "\x1b[33m";
+    pub const RED: &str = "\x1b[31m";
+    pub const GRAY: &str = "\x1b[90m";
+    pub const BOLD: &str = "\x1b[1m";
+    pub const CYAN: &str = "\x1b[36m";
+}
+
 /// Result of a single check
 #[derive(Debug, Clone)]
 pub struct CheckResult {
@@ -61,12 +72,12 @@ impl CheckResult {
         }
     }
 
-    pub fn icon(&self) -> &'static str {
+    pub fn colored_icon(&self) -> String {
         match self.status {
-            CheckStatus::Ok => "✓",
-            CheckStatus::Warning => "!",
-            CheckStatus::Error => "✗",
-            CheckStatus::NotApplicable => "-",
+            CheckStatus::Ok => format!("{}✓{}", colors::GREEN, colors::RESET),
+            CheckStatus::Warning => format!("{}!{}", colors::YELLOW, colors::RESET),
+            CheckStatus::Error => format!("{}✗{}", colors::RED, colors::RESET),
+            CheckStatus::NotApplicable => format!("{}-{}", colors::GRAY, colors::RESET),
         }
     }
 }
@@ -105,12 +116,12 @@ impl CheckCategory {
         }
     }
 
-    pub fn icon(&self) -> &'static str {
+    pub fn colored_icon(&self) -> String {
         match self.status() {
-            CheckStatus::Ok => "✓",
-            CheckStatus::Warning => "!",
-            CheckStatus::Error => "✗",
-            CheckStatus::NotApplicable => "-",
+            CheckStatus::Ok => format!("{}✓{}", colors::GREEN, colors::RESET),
+            CheckStatus::Warning => format!("{}!{}", colors::YELLOW, colors::RESET),
+            CheckStatus::Error => format!("{}✗{}", colors::RED, colors::RESET),
+            CheckStatus::NotApplicable => format!("{}-{}", colors::GRAY, colors::RESET),
         }
     }
 }
@@ -706,7 +717,12 @@ fn check_pkg_config_lib(lib: &str) -> bool {
 
 /// Print doctor results to stdout
 pub fn print_doctor_results(categories: &[CheckCategory]) {
-    println!("Blinc Doctor");
+    println!(
+        "{}{}Blinc Doctor{}",
+        colors::BOLD,
+        colors::CYAN,
+        colors::RESET
+    );
     println!("============");
     println!();
 
@@ -714,15 +730,26 @@ pub fn print_doctor_results(categories: &[CheckCategory]) {
     let mut total_warnings = 0;
 
     for category in categories {
-        let icon = category.icon();
-        println!("[{}] {}", icon, category.name);
+        let icon = category.colored_icon();
+        println!(
+            "[{}] {}{}{}",
+            icon,
+            colors::BOLD,
+            category.name,
+            colors::RESET
+        );
 
         for check in &category.checks {
-            let icon = check.icon();
+            let icon = check.colored_icon();
             println!("    [{}] {}: {}", icon, check.name, check.message);
 
             if let Some(hint) = &check.hint {
-                println!("        → {}", hint);
+                println!(
+                    "        {}→ {}{}",
+                    colors::CYAN,
+                    hint,
+                    colors::RESET
+                );
             }
 
             match check.status {
@@ -738,13 +765,30 @@ pub fn print_doctor_results(categories: &[CheckCategory]) {
     // Summary
     println!("────────────────────────────────────────");
     if total_errors == 0 && total_warnings == 0 {
-        println!("✓ All checks passed! Your environment is ready.");
+        println!(
+            "{}{}✓ All checks passed!{} Your environment is ready.",
+            colors::BOLD,
+            colors::GREEN,
+            colors::RESET
+        );
     } else {
         if total_errors > 0 {
-            println!("✗ {} issue(s) found that need attention", total_errors);
+            println!(
+                "{}{}✗ {} issue(s) found that need attention{}",
+                colors::BOLD,
+                colors::RED,
+                total_errors,
+                colors::RESET
+            );
         }
         if total_warnings > 0 {
-            println!("! {} warning(s) - optional improvements available", total_warnings);
+            println!(
+                "{}{}! {} warning(s){} - optional improvements available",
+                colors::BOLD,
+                colors::YELLOW,
+                total_warnings,
+                colors::RESET
+            );
         }
     }
 }
