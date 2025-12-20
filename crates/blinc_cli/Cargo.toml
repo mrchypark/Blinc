@@ -1,0 +1,36 @@
+[package]
+name = "blinc_cli"
+description = "Blinc UI Framework CLI - build, run, and hot-reload Blinc applications"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "blinc"
+path = "src/main.rs"
+
+[dependencies]
+blinc_core = { path = "../blinc_core" }
+blinc_animation = { path = "../blinc_animation" }
+
+# CLI
+clap.workspace = true
+
+# File watching for hot reload
+notify.workspace = true
+
+# Async
+tokio.workspace = true
+
+# Config
+toml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Errors
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true

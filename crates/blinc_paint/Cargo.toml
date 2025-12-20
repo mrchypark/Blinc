@@ -1,0 +1,23 @@
+[package]
+name = "blinc_paint"
+description = "Blinc Paint/Canvas API - 2D drawing primitives and path rendering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = []
+
+[dependencies]
+# Note: blinc_paint is a leaf crate - no blinc_core dependency to avoid cycles
+# GPU types (shared with blinc_gpu)
+bytemuck.workspace = true
+
+# Data structures
+smallvec.workspace = true
+
+# Logging
+tracing.workspace = true

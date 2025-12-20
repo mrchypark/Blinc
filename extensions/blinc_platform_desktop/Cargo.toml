@@ -1,0 +1,33 @@
+[package]
+name = "blinc_platform_desktop"
+description = "Blinc desktop platform - macOS, Windows, Linux windowing and input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = []
+
+[dependencies]
+blinc_core = { path = "../../crates/blinc_core" }
+blinc_gpu = { path = "../../crates/blinc_gpu" }
+
+# Windowing
+winit.workspace = true
+raw-window-handle.workspace = true
+
+# Async
+tokio.workspace = true
+
+# Logging
+tracing.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }

@@ -1,0 +1,110 @@
+# Blinc Toolchain Configuration
+# This file configures the Blinc build system and development environment
+
+[toolchain]
+# Zyntax version requirement
+zyntax_version = ">=0.1.0"
+
+# Default compilation mode
+default_mode = "jit"  # "jit" for development, "aot" for production
+
+# Grammar file location
+grammar = "grammars/blinc.zyn"
+
+[compilation]
+# JIT settings (development)
+[compilation.jit]
+tier = "baseline"  # baseline, standard, optimized
+hot_reload = true
+source_maps = true
+debug_symbols = true
+
+# AOT settings (production)
+[compilation.aot]
+backend = "llvm"  # cranelift, llvm
+optimization = 3  # 0-3
+lto = "thin"      # none, thin, fat
+strip = true
+
+[plugins]
+# Plugin compilation modes
+dynamic_extension = ".zrtl"  # Dynamic library extension
+static_link = true           # Enable static linking for AOT
+
+# Core plugins (always loaded)
+core = [
+    "blinc_core",
+    "blinc_animation",
+    "blinc_layout",
+    "blinc_gpu",
+    "blinc_paint",
+    "blinc_widgets",
+]
+
+[targets]
+# Default target for current platform
+default = "native"
+
+# Available targets
+available = [
+    "android",
+    "ios",
+    "macos",
+    "windows",
+    "linux",
+    "web",  # Future: wasm target
+]
+
+[targets.android]
+min_sdk = 24
+target_sdk = 34
+ndk_version = "26.1.10909125"
+architectures = ["arm64-v8a", "armeabi-v7a", "x86_64"]
+
+[targets.ios]
+min_version = "15.0"
+architectures = ["arm64", "arm64-simulator", "x86_64-simulator"]
+
+[targets.macos]
+min_version = "12.0"
+architectures = ["arm64", "x86_64"]
+universal = true  # Build universal binary
+
+[targets.windows]
+min_version = "10"
+architectures = ["x86_64", "aarch64"]
+
+[targets.linux]
+architectures = ["x86_64", "aarch64"]
+
+[dev]
+# Development server settings
+port = 3000
+host = "127.0.0.1"
+
+# Hot reload configuration
+[dev.hot_reload]
+enabled = true
+debounce_ms = 100
+watch_patterns = ["**/*.blinc", "**/*.bl"]
+ignore_patterns = ["target/", ".git/", "*.tmp"]
+
+# Device configuration for mobile development
+[dev.devices]
+android_emulator = "Pixel_7_API_34"
+ios_simulator = "iPhone 15 Pro"
+
+[rendering]
+# GPU backend preferences (in order of preference)
+backends = ["metal", "vulkan", "dx12", "gl"]
+
+# Default frame rate target
+target_fps = 120
+
+# Animation scheduler tick rate
+animation_tick_hz = 120
+
+[logging]
+# Log levels: trace, debug, info, warn, error
+default_level = "info"
+modules = { blinc_core = "debug", blinc_gpu = "info" }

@@ -1,0 +1,82 @@
+# Android Target Configuration
+
+[target]
+name = "android"
+display_name = "Android"
+os = "android"
+
+[sdk]
+min_sdk = 24
+target_sdk = 34
+compile_sdk = 34
+
+[ndk]
+version = "26.1.10909125"
+# Path can be overridden via ANDROID_NDK_HOME env var
+path = ""
+
+[architectures]
+# Architectures to build for
+default = ["arm64-v8a"]
+all = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"]
+
+[architectures.arm64-v8a]
+rust_target = "aarch64-linux-android"
+abi = "arm64-v8a"
+is_64_bit = true
+
+[architectures.armeabi-v7a]
+rust_target = "armv7-linux-androideabi"
+abi = "armeabi-v7a"
+is_64_bit = false
+
+[architectures.x86_64]
+rust_target = "x86_64-linux-android"
+abi = "x86_64"
+is_64_bit = true
+
+[architectures.x86]
+rust_target = "i686-linux-android"
+abi = "x86"
+is_64_bit = false
+
+[build]
+# Use Vulkan on devices that support it, fallback to GLES
+gpu_backends = ["vulkan", "gles"]
+
+# Strip debug symbols in release builds
+strip_release = true
+
+# Enable LTO for smaller binaries
+lto = "thin"
+
+[gradle]
+# Gradle wrapper version
+gradle_version = "8.5"
+
+# Android Gradle Plugin version
+agp_version = "8.2.0"
+
+# Kotlin version (for Gradle scripts)
+kotlin_version = "1.9.22"
+
+[signing]
+# Debug keystore (auto-generated if not exists)
+debug_keystore = "debug.keystore"
+debug_key_alias = "androiddebugkey"
+debug_store_password = "android"
+debug_key_password = "android"
+
+# Release signing configured via environment variables:
+# BLINC_ANDROID_KEYSTORE_PATH
+# BLINC_ANDROID_KEY_ALIAS
+# BLINC_ANDROID_STORE_PASSWORD
+# BLINC_ANDROID_KEY_PASSWORD
+
+[emulator]
+# Default emulator for development
+default_avd = "Pixel_7_API_34"
+
+# Preferred emulator settings
+ram_size = 2048
+heap_size = 512

@@ -1,0 +1,77 @@
+# iOS Target Configuration
+
+[target]
+name = "ios"
+display_name = "iOS"
+os = "ios"
+
+[sdk]
+min_version = "15.0"
+# Xcode SDK path (auto-detected if not specified)
+sdk_path = ""
+
+[architectures]
+# Device and simulator architectures
+device = ["arm64"]
+simulator = ["arm64", "x86_64"]
+
+[architectures.arm64]
+rust_target = "aarch64-apple-ios"
+is_simulator = false
+
+[architectures.arm64-sim]
+rust_target = "aarch64-apple-ios-sim"
+is_simulator = true
+
+[architectures.x86_64-sim]
+rust_target = "x86_64-apple-ios"
+is_simulator = true
+
+[build]
+# Use Metal for GPU rendering
+gpu_backends = ["metal"]
+
+# Bitcode (deprecated but kept for compatibility)
+enable_bitcode = false
+
+# Strip debug symbols in release
+strip_release = true
+
+# LTO for smaller binaries
+lto = "thin"
+
+[xcode]
+# Xcode project generation settings
+project_name = "BlincApp"
+organization_name = ""
+organization_identifier = "com.example"
+
+# Deployment target
+deployment_target = "15.0"
+
+# Xcode build settings
+swift_version = "5.9"
+
+[signing]
+# Development team ID (from Apple Developer account)
+# Can be set via BLINC_IOS_TEAM_ID env var
+team_id = ""
+
+# Code signing identity
+development_identity = "Apple Development"
+distribution_identity = "Apple Distribution"
+
+# Provisioning profile
+# Can be set via BLINC_IOS_PROVISIONING_PROFILE env var
+provisioning_profile = ""
+
+[simulator]
+# Default simulator for development
+default_device = "iPhone 15 Pro"
+default_os = "17.2"
+
+[capabilities]
+# App capabilities (add as needed)
+# push_notifications = false
+# app_groups = []
+# background_modes = []

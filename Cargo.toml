@@ -1,0 +1,93 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/blinc_cli",
+    "crates/blinc_core",
+    "crates/blinc_animation",
+    "crates/blinc_layout",
+    "crates/blinc_gpu",
+    "crates/blinc_paint",
+    "crates/blinc_widgets",
+    "crates/blinc_embed",
+    "extensions/blinc_platform_desktop",
+    "extensions/blinc_platform_android",
+    "extensions/blinc_platform_ios",
+]
+
+# Platform-specific crates are included but have target-gated dependencies
+# Build for Android: source scripts/android-env.sh && cargo build --target aarch64-linux-android -p blinc_platform_android
+# Build for iOS: cargo build --target aarch64-apple-ios -p blinc_platform_ios
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/darmie/blinc"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Zyntax integration (disabled until Grammar2/Runtime2 is ready)
+# zyntax_embed = { git = "https://github.com/darmie/zyntax" }
+# zyntax_zrtl = { git = "https://github.com/darmie/zyntax" }
+
+# GPU rendering
+wgpu = "23.0"
+naga = "23.0"
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# Layout engine
+taffy = "0.6"
+
+# Windowing
+winit = "0.30"
+raw-window-handle = "0.6"
+
+# Platform: Android
+ndk = "0.9"
+android-activity = { version = "0.6", features = ["native-activity"] }
+jni = "0.21"
+
+# Platform: iOS
+objc2 = "0.5"
+objc2-foundation = "0.2"
+objc2-ui-kit = "0.2"
+objc2-metal = "0.2"
+
+# Async runtime
+tokio = { version = "1.35", features = ["rt-multi-thread", "sync", "time"] }
+
+# Utilities
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Data structures
+slotmap = "1.0"
+smallvec = "1.11"
+rustc-hash = "2.0"
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Hot reload / file watching
+notify = "7.0"
+
+# Testing
+criterion = "0.5"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.release-debug]
+inherits = "release"
+debug = true
+strip = false

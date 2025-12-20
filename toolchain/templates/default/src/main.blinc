@@ -1,0 +1,22 @@
+// {{project_name}}
+// Created with Blinc UI Framework
+
+@widget App {
+    @state greeting: String = "Hello, Blinc!"
+
+    @render {
+        Container(
+            width: 100.percent,
+            height: 100.percent,
+            background: Color::gray(0.1),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+        ) {
+            Text(
+                content: greeting,
+                font_size: 32.px,
+                color: Color::white(),
+            )
+        }
+    }
+}

@@ -1,0 +1,31 @@
+[package]
+name = "blinc_animation"
+description = "Blinc animation system - spring physics, keyframes, and timeline orchestration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = []
+zrtl-plugin = []  # Enable ZRTL plugin exports (for when Zyntax Grammar2 is ready)
+
+[dependencies]
+blinc_core = { path = "../blinc_core" }
+
+# Data structures
+slotmap.workspace = true
+smallvec.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Benchmarks will be added when spring physics implementation is complete
+# [dev-dependencies]
+# criterion.workspace = true
+
+# [[bench]]
+# name = "spring"
+# harness = false

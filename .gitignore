@@ -1,0 +1,57 @@
+# Build artifacts
+/target/
+/build/
+/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Rust
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Android
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+local.properties
+
+# iOS
+*.xcworkspace
+*.xcuserdata
+Pods/
+DerivedData/
+*.ipa
+
+# Compiled Blinc
+*.zbc
+*.zrtl
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Testing
+coverage/
+.nyc_output/
+
+# Temporary
+*.tmp
+*.temp
+.cache/

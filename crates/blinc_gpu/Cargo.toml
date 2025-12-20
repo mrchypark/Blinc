@@ -1,0 +1,37 @@
+[package]
+name = "blinc_gpu"
+description = "Blinc GPU renderer - SDF-based rendering via wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = ["vulkan", "metal", "dx12"]
+vulkan = ["wgpu/vulkan-portability"]
+metal = ["wgpu/metal"]
+dx12 = ["wgpu/dx12"]
+webgl = ["wgpu/webgl"]  # For WebGL/OpenGL ES support
+
+[dependencies]
+blinc_core = { path = "../blinc_core" }
+blinc_layout = { path = "../blinc_layout" }
+blinc_paint = { path = "../blinc_paint" }
+
+# GPU
+wgpu.workspace = true
+naga.workspace = true
+bytemuck.workspace = true
+
+# Windowing
+winit.workspace = true
+raw-window-handle.workspace = true
+
+# Data structures
+slotmap.workspace = true
+smallvec.workspace = true
+
+# Logging
+tracing.workspace = true

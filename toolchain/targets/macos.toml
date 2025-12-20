@@ -1,0 +1,81 @@
+# macOS Target Configuration
+
+[target]
+name = "macos"
+display_name = "macOS"
+os = "macos"
+
+[sdk]
+min_version = "12.0"
+# Xcode SDK path (auto-detected if not specified)
+sdk_path = ""
+
+[architectures]
+# Build universal binary by default
+default = ["arm64", "x86_64"]
+universal = true
+
+[architectures.arm64]
+rust_target = "aarch64-apple-darwin"
+
+[architectures.x86_64]
+rust_target = "x86_64-apple-darwin"
+
+[build]
+# GPU backend preferences (in order)
+gpu_backends = ["metal", "vulkan"]
+
+# Create universal binary
+universal_binary = true
+
+# Strip debug symbols in release
+strip_release = true
+
+# LTO for smaller binaries
+lto = "thin"
+
+[bundle]
+# macOS app bundle settings
+bundle_identifier = "com.example.blincapp"
+bundle_name = "BlincApp"
+bundle_version = "1.0.0"
+bundle_short_version = "1.0"
+
+# App category
+category = "public.app-category.developer-tools"
+
+# Copyright
+copyright = ""
+
+# App icon (path to .icns file)
+icon = ""
+
+[signing]
+# Code signing identity
+identity = "-"  # Ad-hoc signing by default
+
+# Hardened runtime (required for notarization)
+hardened_runtime = true
+
+# Entitlements file
+entitlements = ""
+
+[notarization]
+# Apple ID for notarization
+# Can be set via BLINC_APPLE_ID env var
+apple_id = ""
+
+# App-specific password
+# Can be set via BLINC_APPLE_PASSWORD env var
+password = ""
+
+# Team ID
+# Can be set via BLINC_APPLE_TEAM_ID env var
+team_id = ""
+
+[sandbox]
+# App sandbox settings (for Mac App Store)
+enabled = false
+network_client = true
+network_server = false
+files_user_selected_read_write = true

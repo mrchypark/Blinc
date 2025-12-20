@@ -1,0 +1,35 @@
+[package]
+name = "blinc_platform_android"
+description = "Blinc Android platform - native activity, JNI bridge, and input handling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[features]
+default = []
+zrtl-plugin = []
+
+[dependencies]
+# Core dependencies (always available)
+blinc_core = { path = "../../crates/blinc_core" }
+blinc_animation = { path = "../../crates/blinc_animation" }
+
+# Logging (platform-independent)
+tracing.workspace = true
+tracing-subscriber.workspace = true
+log = "0.4"
+
+# Android-specific dependencies (only when targeting Android)
+[target.'cfg(target_os = "android")'.dependencies]
+blinc_gpu = { path = "../../crates/blinc_gpu", default-features = false, features = ["vulkan"] }
+
+# Android NDK
+ndk.workspace = true
+android-activity.workspace = true
+jni.workspace = true
+
+# Android logging
+android_logger = "0.14"

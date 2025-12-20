@@ -1,0 +1,76 @@
+# Windows Target Configuration
+
+[target]
+name = "windows"
+display_name = "Windows"
+os = "windows"
+
+[sdk]
+min_version = "10"
+# Windows SDK version (auto-detected if not specified)
+sdk_version = ""
+
+[architectures]
+default = ["x86_64"]
+all = ["x86_64", "aarch64"]
+
+[architectures.x86_64]
+rust_target = "x86_64-pc-windows-msvc"
+
+[architectures.aarch64]
+rust_target = "aarch64-pc-windows-msvc"
+
+[build]
+# GPU backend preferences (in order)
+gpu_backends = ["dx12", "vulkan", "dx11"]
+
+# Use MSVC toolchain
+toolchain = "msvc"
+
+# Strip debug symbols in release
+strip_release = true
+
+# LTO for smaller binaries
+lto = "thin"
+
+# Static CRT linking (for single-file deployment)
+static_crt = true
+
+[executable]
+# Windows executable settings
+subsystem = "windows"  # "windows" for GUI, "console" for CLI
+
+# Application manifest
+manifest = true
+dpi_aware = true
+long_path_aware = true
+
+# Version info
+file_version = "1.0.0.0"
+product_version = "1.0.0.0"
+company_name = ""
+file_description = "Blinc Application"
+product_name = "BlincApp"
+original_filename = "blincapp.exe"
+
+[icon]
+# Path to .ico file
+path = ""
+
+[installer]
+# MSI/MSIX installer settings
+type = "msix"  # "msi", "msix", or "none"
+publisher = ""
+publisher_display_name = ""
+
+[signing]
+# Code signing certificate
+# Path to .pfx file or thumbprint for certificate store
+certificate = ""
+
+# Certificate password
+# Can be set via BLINC_WINDOWS_CERT_PASSWORD env var
+password = ""
+
+# Timestamp server for signature
+timestamp_url = "http://timestamp.digicert.com"

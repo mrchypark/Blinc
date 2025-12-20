@@ -1,0 +1,31 @@
+[package]
+name = "blinc_platform_ios"
+description = "Blinc iOS platform - UIKit integration, Metal rendering, and touch input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["lib", "staticlib"]  # iOS requires static linking
+
+[features]
+default = []
+zrtl-plugin = []
+
+[dependencies]
+# Core dependencies (always available)
+blinc_core = { path = "../../crates/blinc_core" }
+blinc_animation = { path = "../../crates/blinc_animation" }
+
+# Logging
+tracing.workspace = true
+
+# iOS-specific dependencies (only when targeting iOS)
+[target.'cfg(target_os = "ios")'.dependencies]
+blinc_gpu = { path = "../../crates/blinc_gpu", default-features = false, features = ["metal"] }
+
+# iOS/macOS Objective-C bindings
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-ui-kit.workspace = true
+objc2-metal.workspace = true

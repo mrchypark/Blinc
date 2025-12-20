@@ -1,0 +1,89 @@
+# Linux Target Configuration
+
+[target]
+name = "linux"
+display_name = "Linux"
+os = "linux"
+
+[architectures]
+default = ["x86_64"]
+all = ["x86_64", "aarch64"]
+
+[architectures.x86_64]
+rust_target = "x86_64-unknown-linux-gnu"
+
+[architectures.aarch64]
+rust_target = "aarch64-unknown-linux-gnu"
+
+[build]
+# GPU backend preferences (in order)
+gpu_backends = ["vulkan", "gl"]
+
+# Link mode
+link_mode = "dynamic"  # "dynamic" or "static"
+
+# Strip debug symbols in release
+strip_release = true
+
+# LTO for smaller binaries
+lto = "thin"
+
+[dependencies]
+# System dependencies (for package managers)
+apt = [
+    "libwayland-dev",
+    "libxkbcommon-dev",
+    "libvulkan-dev",
+    "libx11-dev",
+    "libxcursor-dev",
+    "libxrandr-dev",
+    "libxi-dev",
+]
+
+dnf = [
+    "wayland-devel",
+    "libxkbcommon-devel",
+    "vulkan-loader-devel",
+    "libX11-devel",
+    "libXcursor-devel",
+    "libXrandr-devel",
+    "libXi-devel",
+]
+
+pacman = [
+    "wayland",
+    "libxkbcommon",
+    "vulkan-icd-loader",
+    "libx11",
+    "libxcursor",
+    "libxrandr",
+    "libxi",
+]
+
+[desktop]
+# Desktop entry settings
+name = "Blinc App"
+comment = "A Blinc Application"
+categories = ["Development"]
+keywords = []
+icon = ""
+
+# Desktop file actions
+actions = []
+
+[appimage]
+# AppImage settings
+enabled = true
+update_info = ""
+
+[flatpak]
+# Flatpak settings
+app_id = "com.example.BlincApp"
+runtime = "org.freedesktop.Platform"
+runtime_version = "23.08"
+sdk = "org.freedesktop.Sdk"
+
+[snap]
+# Snap settings
+grade = "stable"  # "stable" or "devel"
+confinement = "strict"  # "strict", "devmode", or "classic"

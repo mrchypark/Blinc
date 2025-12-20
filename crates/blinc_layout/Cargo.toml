@@ -1,0 +1,24 @@
+[package]
+name = "blinc_layout"
+description = "Blinc layout engine - Flexbox layout powered by Taffy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = []
+
+[dependencies]
+blinc_core = { path = "../blinc_core" }
+
+# Layout
+taffy.workspace = true
+
+# Data structures
+slotmap.workspace = true
+
+# Logging
+tracing.workspace = true
