@@ -353,6 +353,28 @@ impl Affine2D {
         let [a, b, c, d, tx, ty] = self.elements;
         Point::new(a * point.x + c * point.y + tx, b * point.x + d * point.y + ty)
     }
+
+    /// Concatenate this transform with another (self * other)
+    /// The resulting transform first applies `other`, then `self`.
+    pub fn then(&self, other: &Affine2D) -> Affine2D {
+        let [a1, b1, c1, d1, tx1, ty1] = self.elements;
+        let [a2, b2, c2, d2, tx2, ty2] = other.elements;
+
+        // Matrix multiplication for 2D affine transforms:
+        // [a1 c1 tx1]   [a2 c2 tx2]
+        // [b1 d1 ty1] * [b2 d2 ty2]
+        // [0  0  1  ]   [0  0  1  ]
+        Affine2D {
+            elements: [
+                a1 * a2 + c1 * b2,       // a
+                b1 * a2 + d1 * b2,       // b
+                a1 * c2 + c1 * d2,       // c
+                b1 * c2 + d1 * d2,       // d
+                a1 * tx2 + c1 * ty2 + tx1, // tx
+                b1 * tx2 + d1 * ty2 + ty1, // ty
+            ],
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
