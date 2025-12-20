@@ -91,3 +91,11 @@ strip = true
 inherits = "release"
 debug = true
 strip = false
+
+# Optimized for small binary size (mobile platforms)
+[profile.release-small]
+inherits = "release"
+lto = "fat"
+opt-level = "z"
+panic = "abort"
+strip = "symbols"
