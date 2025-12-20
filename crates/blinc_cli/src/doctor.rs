@@ -209,15 +209,64 @@ fn check_desktop_platform() -> CheckCategory {
     // Platform-specific checks
     match os {
         "macos" => {
-            // Check Xcode command line tools
-            match get_command_version("xcode-select", &["-p"]) {
-                Some(path) => {
-                    cat.add(CheckResult::ok("Xcode CLI Tools", &format!("installed at {}", path.trim())));
+            // Check xcode-select path
+            let xcode_select_result = Command::new("xcode-select")
+                .arg("-p")
+                .output();
+
+            match xcode_select_result {
+                Ok(output) if output.status.success() => {
+                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+                    // Check if the path actually exists
+                    if PathBuf::from(&path).exists() {
+                        cat.add(CheckResult::ok("xcode-select", &format!("set to {}", path)));
+                    } else {
+                        cat.add(CheckResult::error(
+                            "xcode-select",
+                            &format!("path does not exist: {}", path),
+                            "Run: sudo xcode-select --reset",
+                        ));
+                    }
                 }
-                None => {
-                    cat.add(CheckResult::warning(
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if stderr.contains("no developer tools were found") {
+                        cat.add(CheckResult::error(
+                            "xcode-select",
+                            "no developer tools installed",
+                            "Run: xcode-select --install",
+                        ));
+                    } else {
+                        cat.add(CheckResult::error(
+                            "xcode-select",
+                            "not configured",
+                            "Run: xcode-select --install",
+                        ));
+                    }
+                }
+                Err(_) => {
+                    cat.add(CheckResult::error(
+                        "xcode-select",
+                        "command not found",
+                        "Xcode Command Line Tools are not installed",
+                    ));
+                }
+            }
+
+            // Check if CLI tools are actually installed by verifying clang exists
+            let clang_check = Command::new("xcrun")
+                .args(["--find", "clang"])
+                .output();
+
+            match clang_check {
+                Ok(output) if output.status.success() => {
+                    cat.add(CheckResult::ok("Xcode CLI Tools", "clang available via xcrun"));
+                }
+                _ => {
+                    cat.add(CheckResult::error(
                         "Xcode CLI Tools",
-                        "not installed",
+                        "not properly installed",
                         "Run: xcode-select --install",
                     ));
                 }
