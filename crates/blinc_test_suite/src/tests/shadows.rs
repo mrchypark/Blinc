@@ -295,7 +295,7 @@ pub fn suite() -> TestSuite {
         }
     });
 
-    // Shadow on circle
+    // Shadow on circle - using proper radial circle shadow
     suite.add("shadow_circle", |ctx| {
         let c = ctx.ctx();
 
@@ -306,14 +306,13 @@ pub fn suite() -> TestSuite {
             Color::rgba(0.92, 0.92, 0.94, 1.0).into(),
         );
 
-        // Approximate circle shadow with rounded rect
         let center = Point::new(200.0, 150.0);
         let radius = 60.0;
-        let shadow_rect = Rect::new(center.x - radius, center.y - radius, radius * 2.0, radius * 2.0);
 
-        c.draw_shadow(
-            shadow_rect,
-            radius.into(),
+        // Use proper circle shadow for radially symmetric blur
+        c.draw_circle_shadow(
+            center,
+            radius,
             Shadow::new(6.0, 6.0, 20.0, Color::BLACK.with_alpha(0.4)),
         );
 

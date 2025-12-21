@@ -451,6 +451,16 @@ impl GpuPaintContext {
                 corner_radius,
                 shadow,
             } => self.draw_inner_shadow(*rect, *corner_radius, *shadow),
+            DrawCommand::DrawCircleShadow {
+                center,
+                radius,
+                shadow,
+            } => self.draw_circle_shadow(*center, *radius, *shadow),
+            DrawCommand::DrawCircleInnerShadow {
+                center,
+                radius,
+                shadow,
+            } => self.draw_circle_inner_shadow(*center, *radius, *shadow),
             DrawCommand::SetCamera(camera) => self.set_camera(camera),
             DrawCommand::DrawMesh {
                 mesh,
@@ -765,6 +775,73 @@ impl DrawContext for GpuPaintContext {
             clip_bounds,
             clip_radius,
             type_info: [PrimitiveType::InnerShadow as u32, FillType::Solid as u32, clip_type as u32, 0],
+        };
+
+        self.batch.push(primitive);
+    }
+
+    fn draw_circle_shadow(&mut self, center: Point, radius: f32, shadow: Shadow) {
+        let transformed_center = self.transform_point(center);
+        let opacity = self.combined_opacity();
+        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+
+        // Store circle as bounds where the circle fits
+        let size = radius * 2.0;
+        let primitive = GpuPrimitive {
+            bounds: [
+                transformed_center.x - radius,
+                transformed_center.y - radius,
+                size,
+                size,
+            ],
+            corner_radius: [radius, radius, radius, radius], // Used as circle radius indicator
+            color: [0.0, 0.0, 0.0, 0.0],
+            color2: [0.0, 0.0, 0.0, 0.0],
+            border: [0.0; 4],
+            border_color: [0.0; 4],
+            shadow: [shadow.offset_x, shadow.offset_y, shadow.blur, shadow.spread],
+            shadow_color: [
+                shadow.color.r,
+                shadow.color.g,
+                shadow.color.b,
+                shadow.color.a * opacity,
+            ],
+            clip_bounds,
+            clip_radius,
+            type_info: [PrimitiveType::CircleShadow as u32, FillType::Solid as u32, clip_type as u32, 0],
+        };
+
+        self.batch.push(primitive);
+    }
+
+    fn draw_circle_inner_shadow(&mut self, center: Point, radius: f32, shadow: Shadow) {
+        let transformed_center = self.transform_point(center);
+        let opacity = self.combined_opacity();
+        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+
+        let size = radius * 2.0;
+        let primitive = GpuPrimitive {
+            bounds: [
+                transformed_center.x - radius,
+                transformed_center.y - radius,
+                size,
+                size,
+            ],
+            corner_radius: [radius, radius, radius, radius],
+            color: [0.0, 0.0, 0.0, 0.0],
+            color2: [0.0, 0.0, 0.0, 0.0],
+            border: [0.0; 4],
+            border_color: [0.0; 4],
+            shadow: [shadow.offset_x, shadow.offset_y, shadow.blur, shadow.spread],
+            shadow_color: [
+                shadow.color.r,
+                shadow.color.g,
+                shadow.color.b,
+                shadow.color.a * opacity,
+            ],
+            clip_bounds,
+            clip_radius,
+            type_info: [PrimitiveType::CircleInnerShadow as u32, FillType::Solid as u32, clip_type as u32, 0],
         };
 
         self.batch.push(primitive);

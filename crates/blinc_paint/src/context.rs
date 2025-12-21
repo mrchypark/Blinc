@@ -244,6 +244,14 @@ impl DrawContext for PaintContext {
         self.recording.draw_inner_shadow(rect, corner_radius, shadow);
     }
 
+    fn draw_circle_shadow(&mut self, center: Point, radius: f32, shadow: Shadow) {
+        self.recording.draw_circle_shadow(center, radius, shadow);
+    }
+
+    fn draw_circle_inner_shadow(&mut self, center: Point, radius: f32, shadow: Shadow) {
+        self.recording.draw_circle_inner_shadow(center, radius, shadow);
+    }
+
     fn sdf_build(&mut self, f: &mut dyn FnMut(&mut dyn SdfBuilder)) {
         self.recording.sdf_build(f);
     }

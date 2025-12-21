@@ -813,6 +813,12 @@ pub trait DrawContext {
     /// Draw an inner shadow (renders inside the shape, like CSS inset box-shadow)
     fn draw_inner_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow);
 
+    /// Draw a circle drop shadow with radially symmetric blur
+    fn draw_circle_shadow(&mut self, center: Point, radius: f32, shadow: Shadow);
+
+    /// Draw a circle inner shadow (renders inside the circle)
+    fn draw_circle_inner_shadow(&mut self, center: Point, radius: f32, shadow: Shadow);
+
     /// Build SDF shapes using the optimized SDF pipeline
     ///
     /// This is the most efficient way to render UI primitives:
@@ -1017,6 +1023,16 @@ pub enum DrawCommand {
     DrawInnerShadow {
         rect: Rect,
         corner_radius: CornerRadius,
+        shadow: Shadow,
+    },
+    DrawCircleShadow {
+        center: Point,
+        radius: f32,
+        shadow: Shadow,
+    },
+    DrawCircleInnerShadow {
+        center: Point,
+        radius: f32,
         shadow: Shadow,
     },
 
@@ -1230,6 +1246,22 @@ impl DrawContext for RecordingContext {
         });
     }
 
+    fn draw_circle_shadow(&mut self, center: Point, radius: f32, shadow: Shadow) {
+        self.commands.push(DrawCommand::DrawCircleShadow {
+            center,
+            radius,
+            shadow,
+        });
+    }
+
+    fn draw_circle_inner_shadow(&mut self, center: Point, radius: f32, shadow: Shadow) {
+        self.commands.push(DrawCommand::DrawCircleInnerShadow {
+            center,
+            radius,
+            shadow,
+        });
+    }
+
     fn sdf_build(&mut self, f: &mut dyn FnMut(&mut dyn SdfBuilder)) {
         let mut builder = RecordingSdfBuilder::new();
         f(&mut builder);
@@ -1242,9 +1274,8 @@ impl DrawContext for RecordingContext {
                         self.draw_shadow(*rect, *corner_radius, shadow.clone());
                     }
                     SdfShape::Circle { center, radius } => {
-                        // Convert circle shadow to rect shadow (approximation)
-                        let rect = Rect::from_center(*center, Size::new(*radius * 2.0, *radius * 2.0));
-                        self.draw_shadow(rect, (*radius).into(), shadow.clone());
+                        // Use proper circle shadow for radially symmetric blur
+                        self.draw_circle_shadow(*center, *radius, shadow.clone());
                     }
                     SdfShape::Ellipse { center, radii } => {
                         let rect = Rect::from_center(*center, Size::new(radii.x * 2.0, radii.y * 2.0));

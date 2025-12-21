@@ -514,7 +514,7 @@ impl Default for TestHarnessConfig {
     fn default() -> Self {
         Self {
             output_dir: PathBuf::from("test_output"),
-            reference_dir: PathBuf::from("test_references"),
+            reference_dir: PathBuf::from("test_output/references"),
             default_size: Size::new(400.0, 300.0),
             threshold: 0.001, // 0.1% difference allowed
             max_primitives: 10_000,

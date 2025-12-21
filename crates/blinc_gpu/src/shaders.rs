@@ -36,6 +36,8 @@ const PRIM_CIRCLE: u32 = 1u;
 const PRIM_ELLIPSE: u32 = 2u;
 const PRIM_SHADOW: u32 = 3u;
 const PRIM_INNER_SHADOW: u32 = 4u;
+const PRIM_CIRCLE_SHADOW: u32 = 5u;
+const PRIM_CIRCLE_INNER_SHADOW: u32 = 6u;
 
 // Fill types
 const FILL_SOLID: u32 = 0u;
@@ -210,6 +212,21 @@ fn shadow_rect(p: vec2<f32>, origin: vec2<f32>, size: vec2<f32>, sigma: f32) -> 
     return x * y;
 }
 
+// Gaussian shadow for circle - radially symmetric blur
+fn shadow_circle(p: vec2<f32>, center: vec2<f32>, radius: f32, sigma: f32) -> f32 {
+    let dist = length(p - center);
+
+    if sigma < 0.001 {
+        // No blur - hard edge
+        return select(0.0, 1.0, dist < radius);
+    }
+
+    // Gaussian falloff from circle edge
+    // erf gives cumulative distribution, we want shadow inside and fading outside
+    let d = 0.5 * sqrt(2.0) * sigma;
+    return 0.5 * (1.0 + erf((radius - dist) / d));
+}
+
 // Calculate clip alpha (1.0 = inside clip, 0.0 = outside)
 fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_type: u32) -> f32 {
     // If no clip, return 1.0 (fully visible)
@@ -339,6 +356,57 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // Offset shifts which "edge" the shadow appears from
             let offset_effect = dot(normalize(offset + vec2<f32>(0.001)), p - center);
             let offset_bias = clamp(offset_effect / (length(size) * 0.5), -1.0, 1.0) * length(offset);
+            let biased_alpha = shadow_alpha * (1.0 + offset_bias * 0.5);
+
+            var inner_result = prim.shadow_color;
+            inner_result.a *= clamp(biased_alpha, 0.0, 1.0) * clip_alpha;
+            return inner_result;
+        }
+        case PRIM_CIRCLE_SHADOW: {
+            // Circle shadow - radially symmetric Gaussian blur
+            let radius = min(size.x, size.y) * 0.5;
+            let blur = prim.shadow.z;
+            let spread = prim.shadow.w;
+            let shadow_offset = prim.shadow.xy;
+
+            let shadow_center = center + shadow_offset;
+            let shadow_radius = radius + spread;
+
+            let shadow_alpha = shadow_circle(p, shadow_center, shadow_radius, blur);
+
+            // Mask out the circle area so shadow doesn't render under it
+            let circle_d = sd_circle(p, center, radius);
+            let aa_width = fwidth(circle_d) * 0.5;
+            let shape_mask = smoothstep(-aa_width, aa_width, circle_d); // 0 inside, 1 outside
+
+            var circle_result = prim.shadow_color * shadow_alpha;
+            circle_result.a *= shape_mask * clip_alpha;
+            return circle_result;
+        }
+        case PRIM_CIRCLE_INNER_SHADOW: {
+            // Circle inner shadow - renders INSIDE the circle only
+            let radius = min(size.x, size.y) * 0.5;
+            let circle_d = sd_circle(p, center, radius);
+
+            // Hard clip at circle boundary
+            if circle_d > 0.0 {
+                discard;
+            }
+
+            let blur = max(prim.shadow.z, 0.1);
+            let spread = prim.shadow.w;
+            let offset = prim.shadow.xy;
+
+            // Inner shadow effect: shadow darkens from outer edge inward
+            let edge_dist = -circle_d;  // How far inside the circle
+
+            // Create shadow falloff from edge toward center
+            let shadow_range = blur + spread;
+            let shadow_alpha = 1.0 - smoothstep(0.0, shadow_range, edge_dist - spread);
+
+            // Apply offset
+            let offset_effect = dot(normalize(offset + vec2<f32>(0.001)), p - center);
+            let offset_bias = clamp(offset_effect / radius, -1.0, 1.0) * length(offset);
             let biased_alpha = shadow_alpha * (1.0 + offset_bias * 0.5);
 
             var inner_result = prim.shadow_color;

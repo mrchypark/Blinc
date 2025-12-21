@@ -14,6 +14,8 @@ pub enum PrimitiveType {
     Ellipse = 2,
     Shadow = 3,
     InnerShadow = 4,
+    CircleShadow = 5,
+    CircleInnerShadow = 6,
 }
 
 /// Fill types (must match shader constants)
