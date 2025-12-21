@@ -1,0 +1,28 @@
+[package]
+name = "blinc_text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "High-quality text rendering for Blinc UI framework"
+
+[dependencies]
+blinc_core = { path = "../blinc_core" }
+
+# Font parsing
+ttf-parser = { workspace = true }
+
+# Text shaping (HarfBuzz)
+rustybuzz = { workspace = true }
+
+# Unicode handling
+unicode-bidi = { workspace = true }
+unicode-linebreak = { workspace = true }
+
+# Utilities
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rustc-hash = { workspace = true }
+
+[dev-dependencies]

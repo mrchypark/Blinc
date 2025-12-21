@@ -491,6 +491,184 @@ pub fn suite() -> TestSuite {
         ctx.add_glass(dock);
     });
 
+    // iOS 26 Liquid Glass Music Player (based on reference image)
+    // This test recreates the Apple Control Center music player widget
+    suite.add_glass("music_player", |ctx| {
+        // Layout constants
+        let player_x = 40.0;
+        let player_y = 60.0;
+        let player_w = 320.0;
+        let player_h = 180.0;
+        let bar_x = player_x + 50.0;
+        let bar_y = player_y + 55.0;
+        let bar_w = player_w - 100.0;
+        let bar_h = 4.0;
+        let progress = 0.05;
+        let knob_x = bar_x + bar_w * progress - 6.0;
+        let controls_y = player_y + 100.0;
+        let controls_center_x = player_x + player_w / 2.0;
+        let rewind_x = controls_center_x - 80.0;
+        let pause_x = controls_center_x - 20.0;
+        let ff_x = controls_center_x + 50.0;
+        let vol_x = player_x + player_w - 45.0;
+        let vol_y = player_y + 20.0;
+        let airplay_x = player_x + player_w - 45.0;
+        let airplay_y = controls_y + 8.0;
+        let toolbar_y = 280.0;
+
+        // First, draw all background primitives
+        {
+            let c = ctx.ctx();
+
+            // Background - nature/leaf gradient simulation
+            // Top half: olive green
+            c.fill_rect(
+                Rect::new(0.0, 0.0, 400.0, 200.0),
+                0.0.into(),
+                Color::rgba(0.35, 0.40, 0.30, 1.0).into(),
+            );
+            // Bottom half: lighter sage
+            c.fill_rect(
+                Rect::new(0.0, 200.0, 400.0, 200.0),
+                0.0.into(),
+                Color::rgba(0.55, 0.60, 0.50, 1.0).into(),
+            );
+            // Diagonal leaf shape (simplified as overlapping rect)
+            c.fill_rect(
+                Rect::new(50.0, 100.0, 200.0, 250.0),
+                0.0.into(),
+                Color::rgba(0.30, 0.35, 0.25, 1.0).into(),
+            );
+
+            // Progress bar track
+            c.fill_rect(
+                Rect::new(bar_x, bar_y, bar_w, bar_h),
+                2.0.into(),
+                Color::rgba(0.3, 0.3, 0.35, 0.6).into(),
+            );
+
+            // Progress fill
+            c.fill_rect(
+                Rect::new(bar_x, bar_y, bar_w * progress, bar_h),
+                2.0.into(),
+                Color::rgba(1.0, 1.0, 1.0, 0.9).into(),
+            );
+
+            // Scrubber knob
+            c.fill_rect(
+                Rect::new(knob_x, bar_y - 4.0, 12.0, 12.0),
+                6.0.into(),
+                Color::WHITE.into(),
+            );
+
+            // Rewind button
+            c.fill_rect(
+                Rect::new(rewind_x - 12.0, controls_y, 16.0, 32.0),
+                2.0.into(),
+                Color::WHITE.into(),
+            );
+            c.fill_rect(
+                Rect::new(rewind_x + 4.0, controls_y, 16.0, 32.0),
+                2.0.into(),
+                Color::WHITE.into(),
+            );
+
+            // Pause button
+            c.fill_rect(
+                Rect::new(pause_x, controls_y, 12.0, 36.0),
+                3.0.into(),
+                Color::WHITE.into(),
+            );
+            c.fill_rect(
+                Rect::new(pause_x + 20.0, controls_y, 12.0, 36.0),
+                3.0.into(),
+                Color::WHITE.into(),
+            );
+
+            // Fast-forward button
+            c.fill_rect(
+                Rect::new(ff_x, controls_y, 16.0, 32.0),
+                2.0.into(),
+                Color::WHITE.into(),
+            );
+            c.fill_rect(
+                Rect::new(ff_x + 16.0, controls_y, 16.0, 32.0),
+                2.0.into(),
+                Color::WHITE.into(),
+            );
+
+            // Volume indicator (5 bars)
+            for i in 0..5 {
+                let bar_height = 8.0 + i as f32 * 4.0;
+                c.fill_rect(
+                    Rect::new(vol_x + i as f32 * 6.0, vol_y + 20.0 - bar_height, 4.0, bar_height),
+                    1.0.into(),
+                    Color::WHITE.into(),
+                );
+            }
+
+            // AirPlay button
+            c.fill_rect(
+                Rect::new(airplay_x, airplay_y, 24.0, 24.0),
+                12.0.into(),
+                Color::rgba(1.0, 1.0, 1.0, 0.3).into(),
+            );
+            c.fill_rect(
+                Rect::new(airplay_x + 8.0, airplay_y + 8.0, 8.0, 8.0),
+                4.0.into(),
+                Color::WHITE.into(),
+            );
+
+            // Flashlight icon
+            c.fill_rect(
+                Rect::new(122.0, toolbar_y + 15.0, 16.0, 30.0),
+                2.0.into(),
+                Color::WHITE.into(),
+            );
+
+            // Camera icon
+            c.fill_rect(
+                Rect::new(252.0, toolbar_y + 18.0, 36.0, 24.0),
+                4.0.into(),
+                Color::WHITE.into(),
+            );
+            c.fill_rect(
+                Rect::new(262.0, toolbar_y + 22.0, 16.0, 16.0),
+                8.0.into(),
+                Color::rgba(0.3, 0.3, 0.35, 1.0).into(),
+            );
+        }
+
+        // Then add all glass primitives
+        // Main player card
+        let player_glass = GpuGlassPrimitive::new(player_x, player_y, player_w, player_h)
+            .with_corner_radius(24.0)
+            .with_blur(25.0)
+            .with_tint(0.15, 0.15, 0.18, 0.6)
+            .with_saturation(0.9)
+            .with_border_thickness(1.0)
+            .with_light_angle_degrees(-45.0);
+        ctx.add_glass(player_glass);
+
+        // Flashlight button
+        let flash_glass = GpuGlassPrimitive::new(100.0, toolbar_y, 60.0, 60.0)
+            .with_corner_radius(30.0)
+            .with_blur(20.0)
+            .with_tint(0.2, 0.2, 0.25, 0.5)
+            .with_border_thickness(0.8)
+            .with_light_angle_degrees(-45.0);
+        ctx.add_glass(flash_glass);
+
+        // Camera button
+        let camera_glass = GpuGlassPrimitive::new(240.0, toolbar_y, 60.0, 60.0)
+            .with_corner_radius(30.0)
+            .with_blur(20.0)
+            .with_tint(0.2, 0.2, 0.25, 0.5)
+            .with_border_thickness(0.8)
+            .with_light_angle_degrees(-45.0);
+        ctx.add_glass(camera_glass);
+    });
+
     suite
 }
 
