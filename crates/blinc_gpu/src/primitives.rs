@@ -436,11 +436,57 @@ pub struct CompositeUniforms {
     pub _padding: [f32; 2],
 }
 
+/// Uniform buffer for path rendering
+/// Layout matches shader struct exactly:
+/// - viewport_size: vec2<f32> (8 bytes)
+/// - opacity: f32 (4 bytes)
+/// - _pad0: f32 (4 bytes)
+/// - transform_row0: vec4<f32> (16 bytes)
+/// - transform_row1: vec4<f32> (16 bytes)
+/// - transform_row2: vec4<f32> (16 bytes)
+/// Total: 64 bytes
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct PathUniforms {
+    pub viewport_size: [f32; 2],
+    pub opacity: f32,
+    pub _pad0: f32,
+    /// 3x3 transform matrix stored as 3 vec4s (xyz used, w is padding)
+    pub transform: [[f32; 4]; 3],
+}
+
+impl Default for PathUniforms {
+    fn default() -> Self {
+        Self {
+            viewport_size: [800.0, 600.0],
+            opacity: 1.0,
+            _pad0: 0.0,
+            // Identity matrix (row-major: row0 = [1,0,0], row1 = [0,1,0], row2 = [0,0,1])
+            transform: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ],
+        }
+    }
+}
+
+/// A batch of tessellated path geometry
+#[derive(Clone, Default)]
+pub struct PathBatch {
+    /// Vertices for all paths in this batch
+    pub vertices: Vec<crate::path::PathVertex>,
+    /// Indices for all paths in this batch
+    pub indices: Vec<u32>,
+}
+
 /// Batch of GPU primitives for efficient rendering
 pub struct PrimitiveBatch {
     pub primitives: Vec<GpuPrimitive>,
     pub glass_primitives: Vec<GpuGlassPrimitive>,
     pub glyphs: Vec<GpuGlyph>,
+    /// Tessellated path geometry
+    pub paths: PathBatch,
 }
 
 impl PrimitiveBatch {
@@ -449,6 +495,7 @@ impl PrimitiveBatch {
             primitives: Vec::new(),
             glass_primitives: Vec::new(),
             glyphs: Vec::new(),
+            paths: PathBatch::default(),
         }
     }
 
@@ -456,6 +503,8 @@ impl PrimitiveBatch {
         self.primitives.clear();
         self.glass_primitives.clear();
         self.glyphs.clear();
+        self.paths.vertices.clear();
+        self.paths.indices.clear();
     }
 
     pub fn push(&mut self, primitive: GpuPrimitive) {
@@ -470,8 +519,30 @@ impl PrimitiveBatch {
         self.glyphs.push(glyph);
     }
 
+    /// Add tessellated path geometry to the batch
+    pub fn push_path(&mut self, tessellated: crate::path::TessellatedPath) {
+        if tessellated.is_empty() {
+            return;
+        }
+        // Offset indices by current vertex count
+        let base_vertex = self.paths.vertices.len() as u32;
+        self.paths.vertices.extend(tessellated.vertices);
+        self.paths.indices.extend(tessellated.indices.iter().map(|i| i + base_vertex));
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.primitives.is_empty() && self.glass_primitives.is_empty() && self.glyphs.is_empty()
+        self.primitives.is_empty()
+            && self.glass_primitives.is_empty()
+            && self.glyphs.is_empty()
+            && self.paths.vertices.is_empty()
+    }
+
+    pub fn path_vertex_count(&self) -> usize {
+        self.paths.vertices.len()
+    }
+
+    pub fn path_index_count(&self) -> usize {
+        self.paths.indices.len()
     }
 
     pub fn primitive_count(&self) -> usize {

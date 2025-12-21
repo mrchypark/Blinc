@@ -5,10 +5,12 @@
 
 use std::sync::Arc;
 
+use crate::path::PathVertex;
 use crate::primitives::{
-    GlassUniforms, GpuGlassPrimitive, GpuGlyph, GpuPrimitive, PrimitiveBatch, Uniforms,
+    GlassUniforms, GpuGlassPrimitive, GpuGlyph, GpuPrimitive, PathUniforms, PrimitiveBatch,
+    Uniforms,
 };
-use crate::shaders::{COMPOSITE_SHADER, GLASS_SHADER, SDF_SHADER, TEXT_SHADER};
+use crate::shaders::{COMPOSITE_SHADER, GLASS_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER};
 
 /// Error type for renderer operations
 #[derive(Debug)]
@@ -75,6 +77,8 @@ struct Pipelines {
     /// Pipeline for final compositing
     #[allow(dead_code)]
     composite: wgpu::RenderPipeline,
+    /// Pipeline for tessellated path rendering
+    path: wgpu::RenderPipeline,
 }
 
 /// GPU buffers for rendering
@@ -90,6 +94,12 @@ struct Buffers {
     /// Storage buffer for text glyphs
     #[allow(dead_code)]
     glyphs: wgpu::Buffer,
+    /// Uniform buffer for path rendering
+    path_uniforms: wgpu::Buffer,
+    /// Vertex buffer for path geometry (dynamic, recreated as needed)
+    path_vertices: Option<wgpu::Buffer>,
+    /// Index buffer for path geometry (dynamic, recreated as needed)
+    path_indices: Option<wgpu::Buffer>,
 }
 
 /// Bind groups for shader resources
@@ -98,6 +108,8 @@ struct BindGroups {
     sdf: wgpu::BindGroup,
     /// Bind group for glass pipeline (needs backdrop texture)
     glass: Option<wgpu::BindGroup>,
+    /// Bind group for path pipeline
+    path: wgpu::BindGroup,
 }
 
 /// The GPU renderer using wgpu
@@ -141,6 +153,7 @@ struct BindGroupLayouts {
     text: wgpu::BindGroupLayout,
     #[allow(dead_code)]
     composite: wgpu::BindGroupLayout,
+    path: wgpu::BindGroupLayout,
 }
 
 impl GpuRenderer {
@@ -294,6 +307,11 @@ impl GpuRenderer {
             source: wgpu::ShaderSource::Wgsl(COMPOSITE_SHADER.into()),
         });
 
+        let path_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Path Shader"),
+            source: wgpu::ShaderSource::Wgsl(PATH_SHADER.into()),
+        });
+
         // Create pipelines
         let pipelines = Self::create_pipelines(
             &device,
@@ -302,6 +320,7 @@ impl GpuRenderer {
             &glass_shader,
             &text_shader,
             &composite_shader,
+            &path_shader,
             texture_format,
             config.sample_count,
         );
@@ -487,11 +506,30 @@ impl GpuRenderer {
             ],
         });
 
+        // Path bind group layout (just uniforms - vertices come from vertex buffer)
+        let path = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Path Bind Group Layout"),
+            entries: &[
+                // Uniforms (viewport_size, transform, opacity)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
         BindGroupLayouts {
             sdf,
             glass,
             text,
             composite,
+            path,
         }
     }
 
@@ -502,6 +540,7 @@ impl GpuRenderer {
         glass_shader: &wgpu::ShaderModule,
         text_shader: &wgpu::ShaderModule,
         composite_shader: &wgpu::ShaderModule,
+        path_shader: &wgpu::ShaderModule,
         texture_format: wgpu::TextureFormat,
         sample_count: u32,
     ) -> Pipelines {
@@ -656,11 +695,61 @@ impl GpuRenderer {
             cache: None,
         });
 
+        // Path pipeline - uses vertex buffers for tessellated geometry
+        let path_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Path Pipeline Layout"),
+            bind_group_layouts: &[&layouts.path],
+            push_constant_ranges: &[],
+        });
+
+        // Vertex buffer layout for PathVertex
+        let path_vertex_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<PathVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                // position: vec2<f32>
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                // color: vec4<f32>
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 8,
+                    shader_location: 1,
+                },
+            ],
+        };
+
+        let path = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Path Pipeline"),
+            layout: Some(&path_layout),
+            vertex: wgpu::VertexState {
+                module: path_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[path_vertex_layout],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: path_shader,
+                entry_point: Some("fs_main"),
+                targets: color_targets,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: primitive_state,
+            depth_stencil: None,
+            multisample: multisample_state,
+            multiview: None,
+            cache: None,
+        });
+
         Pipelines {
             sdf,
             glass,
             text,
             composite,
+            path,
         }
     }
 
@@ -700,12 +789,22 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
+        let path_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Path Uniforms Buffer"),
+            size: std::mem::size_of::<PathUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Buffers {
             uniforms,
             primitives,
             glass_primitives,
             glass_uniforms,
             glyphs,
+            path_uniforms,
+            path_vertices: None,
+            path_indices: None,
         }
     }
 
@@ -729,8 +828,22 @@ impl GpuRenderer {
             ],
         });
 
+        // Path bind group
+        let path = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Path Bind Group"),
+            layout: &layouts.path,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffers.path_uniforms.as_entire_binding(),
+            }],
+        });
+
         // Glass bind group will be created when we have a backdrop texture
-        BindGroups { sdf, glass: None }
+        BindGroups {
+            sdf,
+            glass: None,
+            path,
+        }
     }
 
     /// Resize the viewport
@@ -798,6 +911,12 @@ impl GpuRenderer {
             );
         }
 
+        // Update path buffers if we have path geometry
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        if has_paths {
+            self.update_path_buffers(batch);
+        }
+
         // Create command encoder
         let mut encoder = self
             .device
@@ -834,10 +953,79 @@ impl GpuRenderer {
                 // 6 vertices per quad (2 triangles), one instance per primitive
                 render_pass.draw(0..6, 0..batch.primitives.len() as u32);
             }
+
+            // Render paths
+            if has_paths {
+                if let (Some(vb), Some(ib)) =
+                    (&self.buffers.path_vertices, &self.buffers.path_indices)
+                {
+                    render_pass.set_pipeline(&self.pipelines.path);
+                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                    render_pass.set_vertex_buffer(0, vb.slice(..));
+                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+                }
+            }
         }
 
         // Submit commands
         self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Update path vertex and index buffers
+    fn update_path_buffers(&mut self, batch: &PrimitiveBatch) {
+        // Update path uniforms
+        let path_uniforms = PathUniforms {
+            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
+            ..PathUniforms::default()
+        };
+        self.queue.write_buffer(
+            &self.buffers.path_uniforms,
+            0,
+            bytemuck::bytes_of(&path_uniforms),
+        );
+
+        // Create or recreate vertex buffer if needed
+        let vertex_size = (std::mem::size_of::<PathVertex>() * batch.paths.vertices.len()) as u64;
+        let need_new_vertex_buffer = match &self.buffers.path_vertices {
+            Some(buf) => buf.size() < vertex_size,
+            None => true,
+        };
+
+        if need_new_vertex_buffer && vertex_size > 0 {
+            self.buffers.path_vertices = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Path Vertex Buffer"),
+                size: vertex_size,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+
+        if let Some(vb) = &self.buffers.path_vertices {
+            self.queue
+                .write_buffer(vb, 0, bytemuck::cast_slice(&batch.paths.vertices));
+        }
+
+        // Create or recreate index buffer if needed
+        let index_size = (std::mem::size_of::<u32>() * batch.paths.indices.len()) as u64;
+        let need_new_index_buffer = match &self.buffers.path_indices {
+            Some(buf) => buf.size() < index_size,
+            None => true,
+        };
+
+        if need_new_index_buffer && index_size > 0 {
+            self.buffers.path_indices = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Path Index Buffer"),
+                size: index_size,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+
+        if let Some(ib) = &self.buffers.path_indices {
+            self.queue
+                .write_buffer(ib, 0, bytemuck::cast_slice(&batch.paths.indices));
+        }
     }
 
     /// Render primitives with MSAA (multi-sample anti-aliasing)
@@ -869,6 +1057,12 @@ impl GpuRenderer {
                 0,
                 bytemuck::cast_slice(&batch.primitives),
             );
+        }
+
+        // Update path buffers if we have path geometry
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        if has_paths {
+            self.update_path_buffers(batch);
         }
 
         // Create command encoder
@@ -905,6 +1099,19 @@ impl GpuRenderer {
                 render_pass.set_pipeline(&self.pipelines.sdf);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
                 render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+            }
+
+            // Render paths
+            if has_paths {
+                if let (Some(vb), Some(ib)) =
+                    (&self.buffers.path_vertices, &self.buffers.path_indices)
+                {
+                    render_pass.set_pipeline(&self.pipelines.path);
+                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                    render_pass.set_vertex_buffer(0, vb.slice(..));
+                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+                }
             }
         }
 

@@ -12,18 +12,21 @@
 //! - **Compositing**: Layer blending with various blend modes
 //! - **Backbuffer**: Double/triple buffering for WASM and glass effects
 //! - **Paint Context**: GPU-backed DrawContext implementation
+//! - **Path Rendering**: Vector path tessellation via lyon
 
 pub mod backbuffer;
 pub mod paint;
+pub mod path;
 pub mod primitives;
 pub mod renderer;
 pub mod shaders;
 
 pub use backbuffer::{Backbuffer, BackbufferConfig, FrameContext};
 pub use paint::GpuPaintContext;
+pub use path::{tessellate_fill, tessellate_stroke, PathVertex, TessellatedPath};
 pub use primitives::{
     ClipType, CompositeUniforms, FillType, GlassType, GlassUniforms, GpuGlassPrimitive, GpuGlyph,
-    GpuPrimitive, PrimitiveBatch, PrimitiveType, Uniforms,
+    GpuPrimitive, PathBatch, PathUniforms, PrimitiveBatch, PrimitiveType, Uniforms,
 };
 pub use renderer::{GpuRenderer, RendererConfig};
-pub use shaders::{COMPOSITE_SHADER, GLASS_SHADER, SDF_SHADER, TEXT_SHADER};
+pub use shaders::{COMPOSITE_SHADER, GLASS_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER};

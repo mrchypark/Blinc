@@ -38,3 +38,6 @@ tracing.workspace = true
 
 # Async
 pollster.workspace = true
+
+# Path tessellation
+lyon.workspace = true

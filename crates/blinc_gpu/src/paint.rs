@@ -48,6 +48,7 @@ use blinc_core::{
     Size, Stroke, TextStyle, Transform,
 };
 
+use crate::path::{tessellate_fill, tessellate_stroke};
 use crate::primitives::{ClipType, FillType, GpuPrimitive, PrimitiveBatch, PrimitiveType};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -539,16 +540,20 @@ impl DrawContext for GpuPaintContext {
         }
     }
 
-    fn fill_path(&mut self, _path: &Path, _brush: Brush) {
-        // Path rendering would require tessellation or more complex SDF generation
-        // For now, this is a placeholder - real implementation would:
-        // 1. Tessellate the path into triangles, or
-        // 2. Generate SDF from the path, or
-        // 3. Use a vector graphics renderer like lyon
+    fn fill_path(&mut self, path: &Path, brush: Brush) {
+        // Tessellate the path using lyon
+        let tessellated = tessellate_fill(path, &brush);
+        if !tessellated.is_empty() {
+            self.batch.push_path(tessellated);
+        }
     }
 
-    fn stroke_path(&mut self, _path: &Path, _stroke: &Stroke, _brush: Brush) {
-        // Same as fill_path - requires tessellation
+    fn stroke_path(&mut self, path: &Path, stroke: &Stroke, brush: Brush) {
+        // Tessellate the stroke using lyon
+        let tessellated = tessellate_stroke(path, stroke, &brush);
+        if !tessellated.is_empty() {
+            self.batch.push_path(tessellated);
+        }
     }
 
     fn fill_rect(&mut self, rect: Rect, corner_radius: CornerRadius, brush: Brush) {

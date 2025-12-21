@@ -902,3 +902,68 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return result;
 }
 "#;
+
+/// Shader for tessellated path rendering (triangles with per-vertex colors)
+pub const PATH_SHADER: &str = r#"
+// ============================================================================
+// Path Rendering Shader
+// ============================================================================
+//
+// Renders tessellated vector paths as colored triangles.
+// Uses per-vertex colors for fills and strokes.
+
+struct Uniforms {
+    // viewport_size (vec2) + padding (vec2) = 16 bytes, offset 0
+    viewport_size: vec2<f32>,
+    opacity: f32,
+    _pad0: f32,
+    // 3x3 transform stored as 3 vec4s (xyz used, w is padding) = 48 bytes, offset 16
+    transform_row0: vec4<f32>,
+    transform_row1: vec4<f32>,
+    transform_row2: vec4<f32>,
+}
+// Total: 64 bytes
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+    @location(1) color: vec4<f32>,
+}
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+}
+
+@vertex
+fn vs_main(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+
+    // Reconstruct transform matrix and apply
+    let p = vec3<f32>(in.position, 1.0);
+    let transformed = vec3<f32>(
+        dot(uniforms.transform_row0.xyz, p),
+        dot(uniforms.transform_row1.xyz, p),
+        dot(uniforms.transform_row2.xyz, p)
+    );
+
+    // Convert to clip space (-1 to 1)
+    let clip_pos = vec2<f32>(
+        (transformed.x / uniforms.viewport_size.x) * 2.0 - 1.0,
+        1.0 - (transformed.y / uniforms.viewport_size.y) * 2.0
+    );
+
+    out.position = vec4<f32>(clip_pos, 0.0, 1.0);
+    out.color = in.color;
+
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    var color = in.color;
+    color.a *= uniforms.opacity;
+    return color;
+}
+"#;
