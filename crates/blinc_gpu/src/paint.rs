@@ -446,6 +446,11 @@ impl GpuPaintContext {
                 corner_radius,
                 shadow,
             } => self.draw_shadow(*rect, *corner_radius, *shadow),
+            DrawCommand::DrawInnerShadow {
+                rect,
+                corner_radius,
+                shadow,
+            } => self.draw_inner_shadow(*rect, *corner_radius, *shadow),
             DrawCommand::SetCamera(camera) => self.set_camera(camera),
             DrawCommand::DrawMesh {
                 mesh,
@@ -723,6 +728,43 @@ impl DrawContext for GpuPaintContext {
             clip_bounds,
             clip_radius,
             type_info: [PrimitiveType::Shadow as u32, FillType::Solid as u32, clip_type as u32, 0],
+        };
+
+        self.batch.push(primitive);
+    }
+
+    fn draw_inner_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow) {
+        let transformed = self.transform_rect(rect);
+        let opacity = self.combined_opacity();
+        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+
+        let primitive = GpuPrimitive {
+            bounds: [
+                transformed.x(),
+                transformed.y(),
+                transformed.width(),
+                transformed.height(),
+            ],
+            corner_radius: [
+                corner_radius.top_left,
+                corner_radius.top_right,
+                corner_radius.bottom_right,
+                corner_radius.bottom_left,
+            ],
+            color: [0.0, 0.0, 0.0, 0.0], // Inner shadow is not filled
+            color2: [0.0, 0.0, 0.0, 0.0],
+            border: [0.0; 4],
+            border_color: [0.0; 4],
+            shadow: [shadow.offset_x, shadow.offset_y, shadow.blur, shadow.spread],
+            shadow_color: [
+                shadow.color.r,
+                shadow.color.g,
+                shadow.color.b,
+                shadow.color.a * opacity,
+            ],
+            clip_bounds,
+            clip_radius,
+            type_info: [PrimitiveType::InnerShadow as u32, FillType::Solid as u32, clip_type as u32, 0],
         };
 
         self.batch.push(primitive);

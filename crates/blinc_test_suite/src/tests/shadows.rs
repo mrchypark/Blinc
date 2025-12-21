@@ -125,7 +125,7 @@ pub fn suite() -> TestSuite {
         );
     });
 
-    // Inner shadow effect (negative spread)
+    // Inner shadow effect using draw_inner_shadow API
     suite.add("shadow_inner_effect", |ctx| {
         let c = ctx.ctx();
 
@@ -136,23 +136,90 @@ pub fn suite() -> TestSuite {
             Color::rgba(0.92, 0.92, 0.94, 1.0).into(),
         );
 
-        // Draw the shape first for inner shadow effect
+        // Draw the shape first
         c.fill_rect(
             Rect::new(100.0, 100.0, 150.0, 100.0),
             12.0.into(),
             Color::WHITE.into(),
         );
 
-        // Inner shadow simulation with negative offset
-        c.draw_shadow(
+        // Draw inner shadow on top (renders only inside the shape)
+        c.draw_inner_shadow(
             Rect::new(100.0, 100.0, 150.0, 100.0),
             12.0.into(),
             Shadow {
                 offset_x: 3.0,
                 offset_y: 3.0,
                 blur: 8.0,
-                spread: -2.0,
+                spread: 4.0,
                 color: Color::BLACK.with_alpha(0.25),
+            },
+        );
+    });
+
+    // Inner shadow inset button style
+    suite.add("shadow_inner_button", |ctx| {
+        let c = ctx.ctx();
+
+        // Light background
+        c.fill_rect(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            0.0.into(),
+            Color::rgba(0.92, 0.92, 0.94, 1.0).into(),
+        );
+
+        // Button with inner shadow (pressed state)
+        let button_rect = Rect::new(100.0, 100.0, 200.0, 50.0);
+
+        c.fill_rect(button_rect, 8.0.into(), Color::rgba(0.85, 0.85, 0.88, 1.0).into());
+
+        // Subtle inner shadow for pressed effect
+        c.draw_inner_shadow(
+            button_rect,
+            8.0.into(),
+            Shadow {
+                offset_x: 0.0,
+                offset_y: 2.0,
+                blur: 6.0,
+                spread: 2.0,
+                color: Color::BLACK.with_alpha(0.2),
+            },
+        );
+    });
+
+    // Inner shadow with both drop shadow and inner shadow
+    suite.add("shadow_combined", |ctx| {
+        let c = ctx.ctx();
+
+        // Light background
+        c.fill_rect(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            0.0.into(),
+            Color::rgba(0.92, 0.92, 0.94, 1.0).into(),
+        );
+
+        let card_rect = Rect::new(100.0, 80.0, 200.0, 140.0);
+
+        // Drop shadow first
+        c.draw_shadow(
+            card_rect,
+            12.0.into(),
+            Shadow::new(0.0, 6.0, 16.0, Color::BLACK.with_alpha(0.2)),
+        );
+
+        // Fill the card
+        c.fill_rect(card_rect, 12.0.into(), Color::WHITE.into());
+
+        // Inner shadow for depth
+        c.draw_inner_shadow(
+            card_rect,
+            12.0.into(),
+            Shadow {
+                offset_x: 0.0,
+                offset_y: 2.0,
+                blur: 4.0,
+                spread: 1.0,
+                color: Color::BLACK.with_alpha(0.08),
             },
         );
     });

@@ -35,6 +35,7 @@ const PRIM_RECT: u32 = 0u;
 const PRIM_CIRCLE: u32 = 1u;
 const PRIM_ELLIPSE: u32 = 2u;
 const PRIM_SHADOW: u32 = 3u;
+const PRIM_INNER_SHADOW: u32 = 4u;
 
 // Fill types
 const FILL_SOLID: u32 = 0u;
@@ -272,8 +273,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var result = vec4<f32>(0.0);
 
-    // Calculate shadow first (rendered behind)
-    if prim.shadow.z > 0.0 || prim.shadow.w != 0.0 {
+    // Calculate shadow first (rendered behind) - but NOT for inner shadow primitives
+    // InnerShadow primitives handle their own shadow rendering differently
+    if (prim.shadow.z > 0.0 || prim.shadow.w != 0.0) && prim_type != PRIM_INNER_SHADOW {
         let shadow_offset = prim.shadow.xy;
         let blur = prim.shadow.z;
         let spread = prim.shadow.w;
@@ -309,6 +311,39 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             result.a *= shape_mask;
             result.a *= clip_alpha;
             return result;
+        }
+        case PRIM_INNER_SHADOW: {
+            // Inner shadow - renders INSIDE the shape only
+            let shape_d = sd_rounded_rect(p, origin, size, prim.corner_radius);
+
+            // Hard clip at shape boundary - only render where d < 0 (inside)
+            if shape_d > 0.0 {
+                discard;
+            }
+
+            let blur = max(prim.shadow.z, 0.1);
+            let spread = prim.shadow.w;
+            let offset = prim.shadow.xy;
+
+            // Inner shadow effect: shadow darkens from outer edge inward
+            // Use distance from edge (negative shape_d = distance inside)
+            let edge_dist = -shape_d;  // Positive value = how far inside the shape
+
+            // Create shadow falloff from edge toward center
+            // At edge (edge_dist ≈ 0): full shadow
+            // Further inside (edge_dist > blur + spread): no shadow
+            let shadow_range = blur + spread;
+            let shadow_alpha = 1.0 - smoothstep(0.0, shadow_range, edge_dist - spread);
+
+            // Apply offset by shifting the shadow calculation
+            // Offset shifts which "edge" the shadow appears from
+            let offset_effect = dot(normalize(offset + vec2<f32>(0.001)), p - center);
+            let offset_bias = clamp(offset_effect / (length(size) * 0.5), -1.0, 1.0) * length(offset);
+            let biased_alpha = shadow_alpha * (1.0 + offset_bias * 0.5);
+
+            var inner_result = prim.shadow_color;
+            inner_result.a *= clamp(biased_alpha, 0.0, 1.0) * clip_alpha;
+            return inner_result;
         }
         default: {
             d = sd_rounded_rect(p, origin, size, prim.corner_radius);

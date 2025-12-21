@@ -807,8 +807,11 @@ pub trait DrawContext {
     /// Draw an image
     fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions);
 
-    /// Draw a shadow
+    /// Draw a drop shadow (renders outside the shape)
     fn draw_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow);
+
+    /// Draw an inner shadow (renders inside the shape, like CSS inset box-shadow)
+    fn draw_inner_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow);
 
     /// Build SDF shapes using the optimized SDF pipeline
     ///
@@ -1011,6 +1014,11 @@ pub enum DrawCommand {
         corner_radius: CornerRadius,
         shadow: Shadow,
     },
+    DrawInnerShadow {
+        rect: Rect,
+        corner_radius: CornerRadius,
+        shadow: Shadow,
+    },
 
     // 3D
     SetCamera(Camera),
@@ -1208,6 +1216,14 @@ impl DrawContext for RecordingContext {
 
     fn draw_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow) {
         self.commands.push(DrawCommand::DrawShadow {
+            rect,
+            corner_radius,
+            shadow,
+        });
+    }
+
+    fn draw_inner_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow) {
+        self.commands.push(DrawCommand::DrawInnerShadow {
             rect,
             corner_radius,
             shadow,
