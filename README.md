@@ -1,5 +1,11 @@
 # Blinc
 
+[![Build Status](https://github.com/project-blinc/blinc/actions/workflows/ci.yml/badge.svg)](https://github.com/project-blinc/blinc/actions/workflows/ci.yml)
+[![Tests](https://github.com/project-blinc/blinc/actions/workflows/ci.yml/badge.svg?event=push)](https://github.com/project-blinc/blinc/actions/workflows/ci.yml)
+[![Rust Version](https://img.shields.io/badge/rust-1.75%2B-blue.svg)](https://www.rust-lang.org)
+[![Crate Version](https://img.shields.io/badge/crates.io-v0.1.0-orange.svg)](https://crates.io/crates/blinc)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
+
 **Native UI Framework powered by Zyntax** - A declarative, reactive UI system with first-class state machines, spring physics animations, and GPU-accelerated rendering.
 
 ## Installation
