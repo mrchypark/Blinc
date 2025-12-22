@@ -71,6 +71,8 @@ struct Primitive {
     clip_bounds: vec4<f32>,
     // Clip corner radii (for rounded rect) or (radius_x, radius_y, 0, 0) for ellipse
     clip_radius: vec4<f32>,
+    // Gradient parameters: linear (x1, y1, x2, y2), radial (cx, cy, r, 0) in user space
+    gradient_params: vec4<f32>,
     // Type info (primitive_type, fill_type, clip_type, 0)
     type_info: vec4<u32>,
 }
@@ -433,15 +435,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             fill_color = prim.color;
         }
         case FILL_LINEAR_GRADIENT: {
-            // Linear gradient along x-axis of bounds
-            let t = clamp((p.x - origin.x) / size.x, 0.0, 1.0);
+            // Linear gradient using gradient_params (x1, y1, x2, y2) in user space
+            let g_start = prim.gradient_params.xy;
+            let g_end = prim.gradient_params.zw;
+            let g_dir = g_end - g_start;
+            let g_len_sq = dot(g_dir, g_dir);
+
+            var t: f32;
+            if (g_len_sq > 0.0001) {
+                // Project current position onto gradient line
+                let proj = p - g_start;
+                t = clamp(dot(proj, g_dir) / g_len_sq, 0.0, 1.0);
+            } else {
+                t = 0.0;
+            }
             fill_color = mix(prim.color, prim.color2, t);
         }
         case FILL_RADIAL_GRADIENT: {
-            // Radial gradient from center
-            let dist = length(p - center);
-            let max_dist = length(size * 0.5);
-            let t = clamp(dist / max_dist, 0.0, 1.0);
+            // Radial gradient using gradient_params (cx, cy, radius, 0) in user space
+            let g_center = prim.gradient_params.xy;
+            let g_radius = prim.gradient_params.z;
+
+            let dist = length(p - g_center);
+            let t = clamp(dist / max(g_radius, 0.001), 0.0, 1.0);
             fill_color = mix(prim.color, prim.color2, t);
         }
         default: {

@@ -309,20 +309,30 @@ impl GpuPaintContext {
         }
     }
 
-    /// Convert a Brush to GPU color components
-    fn brush_to_colors(&self, brush: &Brush) -> ([f32; 4], [f32; 4], FillType) {
+    /// Convert a Brush to GPU color components and gradient parameters
+    /// Returns (color1, color2, gradient_params, fill_type)
+    fn brush_to_colors(&self, brush: &Brush) -> ([f32; 4], [f32; 4], [f32; 4], FillType) {
         let opacity = self.combined_opacity();
         match brush {
             Brush::Solid(color) => {
                 let c = [color.r, color.g, color.b, color.a * opacity];
-                (c, c, FillType::Solid)
+                // Default gradient params (not used for solid)
+                (c, c, [0.0, 0.0, 1.0, 0.0], FillType::Solid)
             }
             Brush::Gradient(gradient) => {
-                let (stops, fill_type) = match gradient {
-                    blinc_core::Gradient::Linear { stops, .. } => (stops, FillType::LinearGradient),
-                    blinc_core::Gradient::Radial { stops, .. } => (stops, FillType::RadialGradient),
-                    // Conic gradients treated as radial for now (GPU shader would need enhancement)
-                    blinc_core::Gradient::Conic { stops, .. } => (stops, FillType::RadialGradient),
+                let (stops, fill_type, gradient_params) = match gradient {
+                    blinc_core::Gradient::Linear { start, end, stops, .. } => {
+                        // Linear gradient: (x1, y1, x2, y2) in user space
+                        (stops, FillType::LinearGradient, [start.x, start.y, end.x, end.y])
+                    }
+                    blinc_core::Gradient::Radial { center, radius, stops, .. } => {
+                        // Radial gradient: (cx, cy, radius, 0) in user space
+                        (stops, FillType::RadialGradient, [center.x, center.y, *radius, 0.0])
+                    }
+                    // Conic gradients treated as radial for now
+                    blinc_core::Gradient::Conic { center, stops, .. } => {
+                        (stops, FillType::RadialGradient, [center.x, center.y, 100.0, 0.0])
+                    }
                 };
 
                 let (c1, c2) = if stops.len() >= 2 {
@@ -340,7 +350,7 @@ impl GpuPaintContext {
                     ([1.0, 1.0, 1.0, opacity], [1.0, 1.0, 1.0, opacity])
                 };
 
-                (c1, c2, fill_type)
+                (c1, c2, gradient_params, fill_type)
             }
         }
     }
@@ -604,7 +614,7 @@ impl DrawContext for GpuPaintContext {
 
     fn fill_rect(&mut self, rect: Rect, corner_radius: CornerRadius, brush: Brush) {
         let transformed = self.transform_rect(rect);
-        let (color, _color2, fill_type) = self.brush_to_colors(&brush);
+        let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
         let primitive = GpuPrimitive {
@@ -621,13 +631,14 @@ impl DrawContext for GpuPaintContext {
                 corner_radius.bottom_left,
             ],
             color,
-            color2: [0.0; 4], // Gradient endpoint color (unused for solid fills)
+            color2,
             border: [0.0; 4],
             border_color: [0.0; 4],
             shadow: [0.0; 4],
             shadow_color: [0.0; 4],
             clip_bounds,
             clip_radius,
+            gradient_params,
             type_info: [
                 PrimitiveType::Rect as u32,
                 fill_type as u32,
@@ -647,7 +658,7 @@ impl DrawContext for GpuPaintContext {
         brush: Brush,
     ) {
         let transformed = self.transform_rect(rect);
-        let (color, _color2, fill_type) = self.brush_to_colors(&brush);
+        let (color, _color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
         let primitive = GpuPrimitive {
@@ -671,6 +682,7 @@ impl DrawContext for GpuPaintContext {
             shadow_color: [0.0; 4],
             clip_bounds,
             clip_radius,
+            gradient_params,
             type_info: [
                 PrimitiveType::Rect as u32,
                 fill_type as u32,
@@ -692,7 +704,7 @@ impl DrawContext for GpuPaintContext {
         let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0;
         let transformed_radius = radius * scale;
 
-        let (color, color2, fill_type) = self.brush_to_colors(&brush);
+        let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
         let primitive = GpuPrimitive {
@@ -711,6 +723,7 @@ impl DrawContext for GpuPaintContext {
             shadow_color: [0.0; 4],
             clip_bounds,
             clip_radius,
+            gradient_params,
             type_info: [
                 PrimitiveType::Circle as u32,
                 fill_type as u32,
@@ -732,7 +745,7 @@ impl DrawContext for GpuPaintContext {
         let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0;
         let transformed_radius = radius * scale;
 
-        let (color, _, fill_type) = self.brush_to_colors(&brush);
+        let (color, _, gradient_params, fill_type) = self.brush_to_colors(&brush);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
         let primitive = GpuPrimitive {
@@ -751,6 +764,7 @@ impl DrawContext for GpuPaintContext {
             shadow_color: [0.0; 4],
             clip_bounds,
             clip_radius,
+            gradient_params,
             type_info: [
                 PrimitiveType::Circle as u32,
                 fill_type as u32,
@@ -808,6 +822,7 @@ impl DrawContext for GpuPaintContext {
             ],
             clip_bounds,
             clip_radius,
+            gradient_params: [0.0, 0.0, 1.0, 0.0],
             type_info: [
                 PrimitiveType::Shadow as u32,
                 FillType::Solid as u32,
@@ -850,6 +865,7 @@ impl DrawContext for GpuPaintContext {
             ],
             clip_bounds,
             clip_radius,
+            gradient_params: [0.0, 0.0, 1.0, 0.0],
             type_info: [
                 PrimitiveType::InnerShadow as u32,
                 FillType::Solid as u32,
@@ -889,6 +905,7 @@ impl DrawContext for GpuPaintContext {
             ],
             clip_bounds,
             clip_radius,
+            gradient_params: [0.0, 0.0, 1.0, 0.0],
             type_info: [
                 PrimitiveType::CircleShadow as u32,
                 FillType::Solid as u32,
@@ -927,6 +944,7 @@ impl DrawContext for GpuPaintContext {
             ],
             clip_bounds,
             clip_radius,
+            gradient_params: [0.0, 0.0, 1.0, 0.0],
             type_info: [
                 PrimitiveType::CircleInnerShadow as u32,
                 FillType::Solid as u32,

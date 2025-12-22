@@ -58,18 +58,19 @@ pub enum ClipType {
 /// A GPU primitive ready for rendering (matches shader `Primitive` struct)
 ///
 /// Memory layout:
-/// - bounds: `vec4<f32>`        (16 bytes)
-/// - corner_radius: `vec4<f32>` (16 bytes)
-/// - color: `vec4<f32>`         (16 bytes)
-/// - color2: `vec4<f32>`        (16 bytes)
-/// - border: `vec4<f32>`        (16 bytes)
-/// - border_color: `vec4<f32>`  (16 bytes)
-/// - shadow: `vec4<f32>`        (16 bytes)
-/// - shadow_color: `vec4<f32>`  (16 bytes)
-/// - clip_bounds: `vec4<f32>`   (16 bytes) - clip region (x, y, width, height)
-/// - clip_radius: `vec4<f32>`   (16 bytes) - clip corner radii or circle/ellipse radii
-/// - type_info: `vec4<u32>`     (16 bytes) - (primitive_type, fill_type, clip_type, 0)
-/// Total: 176 bytes
+/// - bounds: `vec4<f32>`          (16 bytes)
+/// - corner_radius: `vec4<f32>`   (16 bytes)
+/// - color: `vec4<f32>`           (16 bytes)
+/// - color2: `vec4<f32>`          (16 bytes)
+/// - border: `vec4<f32>`          (16 bytes)
+/// - border_color: `vec4<f32>`    (16 bytes)
+/// - shadow: `vec4<f32>`          (16 bytes)
+/// - shadow_color: `vec4<f32>`    (16 bytes)
+/// - clip_bounds: `vec4<f32>`     (16 bytes) - clip region (x, y, width, height)
+/// - clip_radius: `vec4<f32>`     (16 bytes) - clip corner radii or circle/ellipse radii
+/// - gradient_params: `vec4<f32>` (16 bytes) - gradient direction (x1, y1, x2, y2) or (cx, cy, r, 0)
+/// - type_info: `vec4<u32>`       (16 bytes) - (primitive_type, fill_type, clip_type, 0)
+/// Total: 192 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuPrimitive {
@@ -93,6 +94,8 @@ pub struct GpuPrimitive {
     pub clip_bounds: [f32; 4],
     /// Clip corner radii (for rounded rect) or (radius_x, radius_y, 0, 0) for ellipse
     pub clip_radius: [f32; 4],
+    /// Gradient parameters: linear (x1, y1, x2, y2), radial (cx, cy, r, 0)
+    pub gradient_params: [f32; 4],
     /// Type info (primitive_type, fill_type, clip_type, 0)
     pub type_info: [u32; 4],
 }
@@ -111,6 +114,8 @@ impl Default for GpuPrimitive {
             // Default: no clip (large bounds that won't clip anything)
             clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
             clip_radius: [0.0; 4],
+            // Default gradient: horizontal (0,0) to (1,0)
+            gradient_params: [0.0, 0.0, 1.0, 0.0],
             type_info: [0; 4], // clip_type defaults to None (0)
         }
     }
