@@ -856,15 +856,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // ========================================================================
     // Shadow is a simple soft rectangle behind the glass - no bevel, no refraction
     let has_shadow = shadow_opacity > 0.001 && shadow_blur > 0.001;
+    var shadow_color_premult = vec4<f32>(0.0);
 
     if has_shadow {
         let shadow_origin = origin + vec2<f32>(shadow_offset_x, shadow_offset_y);
         let shadow_alpha = shadow_rounded_rect(p, shadow_origin, size, prim.corner_radius, shadow_blur);
+        shadow_color_premult = vec4<f32>(0.0, 0.0, 0.0, shadow_alpha * shadow_opacity);
 
         // If we're completely outside the glass panel, just render the shadow
         if mask < 0.001 {
             if shadow_alpha > 0.001 {
-                return vec4<f32>(0.0, 0.0, 0.0, shadow_alpha * shadow_opacity);
+                return shadow_color_premult;
             }
             discard;
         }
@@ -971,7 +973,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let light_factor = 0.2 + 0.8 * max(0.0, facing_light);
 
     // Combine edge line with light reflection
-    let highlight_strength = edge_line * 0.6 * light_factor; // Base strength 0.6, modulated by light
+    // Multiply by mask to prevent highlight bleeding outside glass boundary
+    let highlight_strength = edge_line * 0.6 * light_factor * mask; // Base strength 0.6, modulated by light
     result = result + vec3<f32>(highlight_strength);
 
     // ========================================================================
@@ -981,7 +984,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let shadow_end = edge_line_width * 8.0;
     let inner_shadow = smoothstep(shadow_start, shadow_end, inner_dist) *
                        (1.0 - smoothstep(shadow_end, shadow_end * 3.0, inner_dist));
-    result = result - vec3<f32>(inner_shadow * 0.04); // More subtle
+    result = result - vec3<f32>(inner_shadow * 0.04 * mask); // More subtle, masked
 
     // ========================================================================
     // VERY SUBTLE TINT - Almost invisible
@@ -1022,6 +1025,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     result = clamp(result, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    // Blend shadow underneath the glass
+    // Glass is rendered on top of shadow using standard alpha compositing
+    // Final = glass_color * glass_alpha + shadow_color * shadow_alpha * (1 - glass_alpha)
+    if has_shadow && shadow_color_premult.a > 0.001 {
+        let glass_color = vec4<f32>(result, mask);
+        let shadow_contrib = shadow_color_premult.a * (1.0 - mask);
+        let final_alpha = mask + shadow_contrib;
+        if final_alpha > 0.001 {
+            let final_rgb = (result * mask + shadow_color_premult.rgb * shadow_contrib) / final_alpha;
+            return vec4<f32>(final_rgb, final_alpha);
+        }
+    }
 
     return vec4<f32>(result, mask);
 }
