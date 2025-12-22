@@ -319,5 +319,447 @@ pub fn suite() -> TestSuite {
         ctx.ctx().pop_transform();
     });
 
+    // Glass card with layout - demonstrates glass over layout background
+    // Uses the layout API with .effect() for glass and automatic foreground children
+    suite.add_glass("glass_card", |ctx| {
+        let c = ctx.ctx();
+
+        // Colorful background shapes (will be blurred behind glass)
+        c.fill_rect(
+            blinc_core::Rect::new(0.0, 0.0, 400.0, 350.0),
+            0.0.into(),
+            Color::rgba(0.15, 0.2, 0.35, 1.0).into(),
+        );
+
+        // Colorful blobs for interesting blur effect
+        c.fill_circle(
+            blinc_core::Point::new(80.0, 80.0),
+            70.0,
+            Color::rgba(0.95, 0.35, 0.5, 1.0).into(),
+        );
+        c.fill_circle(
+            blinc_core::Point::new(320.0, 120.0),
+            80.0,
+            Color::rgba(0.3, 0.85, 0.7, 1.0).into(),
+        );
+        c.fill_circle(
+            blinc_core::Point::new(200.0, 280.0),
+            60.0,
+            Color::rgba(0.95, 0.75, 0.3, 1.0).into(),
+        );
+        c.fill_rect(
+            blinc_core::Rect::new(30.0, 200.0, 100.0, 100.0),
+            16.0.into(),
+            Color::rgba(0.4, 0.5, 0.95, 1.0).into(),
+        );
+
+        // Build card with glass effect and foreground children (all via layout)
+        // Wrap in container to position card at approximately (50, 75)
+        let card_ui = div()
+            .w(400.0)
+            .h(350.0)
+            .p_px(50.0)
+            .child(
+                div()
+                    .w(300.0)
+                    .h(200.0)
+                    .mt(6.0) // Add ~25px top margin (6 * 4 = 24px)
+                    .rounded(20.0)
+                    .p_px(20.0)
+                    .flex_col()
+                    .gap_px(8.0)
+                    .effect(
+                        GlassMaterial::new()
+                            .blur(25.0)
+                            .tint_rgba(0.95, 0.95, 0.98, 0.6)
+                            .saturation(1.1)
+                            .border(1.0),
+                    )
+                    // Header bar - auto foreground
+                    .child(
+                        div()
+                            .w(200.0)
+                            .h(24.0)
+                            .rounded(6.0)
+                            .bg(Color::rgba(1.0, 1.0, 1.0, 0.9)),
+                    )
+                    // Subtitle - auto foreground
+                    .child(
+                        div()
+                            .w(140.0)
+                            .h(14.0)
+                            .rounded(4.0)
+                            .bg(Color::rgba(1.0, 1.0, 1.0, 0.6)),
+                    )
+                    // Content area - auto foreground
+                    .child(
+                        div()
+                            .w(260.0)
+                            .h(70.0)
+                            .rounded(12.0)
+                            .bg(Color::rgba(1.0, 1.0, 1.0, 0.15)),
+                    )
+                    // Button row - auto foreground
+                    .child(
+                        div()
+                            .w_full()
+                            .h(28.0)
+                            .flex_row()
+                            .justify_end()
+                            .gap_px(10.0)
+                            .child(
+                                div()
+                                    .w(60.0)
+                                    .h(28.0)
+                                    .rounded(8.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.2)),
+                            )
+                            .child(
+                                div()
+                                    .w(80.0)
+                                    .h(28.0)
+                                    .rounded(8.0)
+                                    .bg(Color::rgba(0.3, 0.6, 0.95, 1.0)),
+                            ),
+                    ),
+            );
+
+        let mut tree = RenderTree::from_element(&card_ui);
+        tree.compute_layout(400.0, 350.0);
+
+        // Render with layer separation
+        tree.render_to_layer(c, RenderLayer::Background);
+        tree.render_to_layer(c, RenderLayer::Glass);
+
+        let fg = ctx.foreground();
+        tree.render_to_layer(fg, RenderLayer::Foreground);
+    });
+
+    // Layout-driven glass panel arrangement
+    // Uses the layout API with .effect() for glass and automatic foreground children
+    suite.add_glass("glass_layout_panels", |ctx| {
+        let c = ctx.ctx();
+
+        // Vibrant gradient-like background
+        c.fill_rect(
+            blinc_core::Rect::new(0.0, 0.0, 400.0, 350.0),
+            0.0.into(),
+            Color::rgba(0.2, 0.15, 0.35, 1.0).into(),
+        );
+
+        // Colorful shapes for blur effect
+        c.fill_circle(
+            blinc_core::Point::new(100.0, 100.0),
+            90.0,
+            Color::rgba(0.9, 0.3, 0.5, 1.0).into(),
+        );
+        c.fill_circle(
+            blinc_core::Point::new(300.0, 250.0),
+            100.0,
+            Color::rgba(0.3, 0.8, 0.6, 1.0).into(),
+        );
+        c.fill_circle(
+            blinc_core::Point::new(200.0, 50.0),
+            70.0,
+            Color::rgba(0.95, 0.7, 0.2, 1.0).into(),
+        );
+
+        // Build layout with glass panels and their children (all via layout)
+        let layout = div()
+            .w(360.0)
+            .h(310.0)
+            .flex_col()
+            .gap_px(15.0)
+            .p_px(20.0)
+            // Top row: two panels side by side
+            .child(
+                div()
+                    .w_full()
+                    .h(120.0)
+                    .flex_row()
+                    .gap_px(15.0)
+                    // Left panel with glass and content
+                    .child(
+                        div()
+                            .w(140.0)
+                            .h_full()
+                            .rounded(16.0)
+                            .p_px(15.0)
+                            .flex_col()
+                            .gap_px(10.0)
+                            .effect(GlassMaterial::new().blur(20.0).tint_rgba(0.95, 0.95, 1.0, 0.5).border(0.8))
+                            // Icon - auto foreground
+                            .child(
+                                div()
+                                    .w(40.0)
+                                    .h(40.0)
+                                    .rounded(10.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.8)),
+                            )
+                            // Title - auto foreground
+                            .child(
+                                div()
+                                    .w(110.0)
+                                    .h(12.0)
+                                    .rounded(4.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.6)),
+                            )
+                            // Subtitle - auto foreground
+                            .child(
+                                div()
+                                    .w(80.0)
+                                    .h(10.0)
+                                    .rounded(3.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.4)),
+                            ),
+                    )
+                    // Right panel with glass and content
+                    .child(
+                        div()
+                            .flex_grow()
+                            .h_full()
+                            .rounded(16.0)
+                            .p_px(15.0)
+                            .flex_col()
+                            .gap_px(10.0)
+                            .effect(GlassMaterial::new().blur(20.0).tint_rgba(1.0, 0.95, 0.95, 0.5).border(0.8))
+                            // Content area - auto foreground
+                            .child(
+                                div()
+                                    .w_full()
+                                    .h(60.0)
+                                    .rounded(10.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.15)),
+                            )
+                            // Label - auto foreground
+                            .child(
+                                div()
+                                    .w(100.0)
+                                    .h(12.0)
+                                    .rounded(4.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.5)),
+                            ),
+                    ),
+            )
+            // Bottom: full width panel with progress bar and controls
+            .child(
+                div()
+                    .w_full()
+                    .flex_grow()
+                    .rounded(16.0)
+                    .p_px(20.0)
+                    .flex_col()
+                    .gap_px(15.0)
+                    .items_center()
+                    .effect(GlassMaterial::new().blur(20.0).tint_rgba(0.95, 1.0, 0.95, 0.5).border(0.8))
+                    // Progress bar container - auto foreground
+                    .child(
+                        div()
+                            .w_full()
+                            .h(8.0)
+                            .rounded(4.0)
+                            .bg(Color::rgba(1.0, 1.0, 1.0, 0.2)),
+                    )
+                    // Control buttons row - auto foreground
+                    .child(
+                        div()
+                            .flex_row()
+                            .gap_px(36.0)
+                            .items_center()
+                            // Previous button
+                            .child(
+                                div()
+                                    .w(28.0)
+                                    .h(28.0)
+                                    .rounded(14.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.7)),
+                            )
+                            // Play button (larger)
+                            .child(
+                                div()
+                                    .w(36.0)
+                                    .h(36.0)
+                                    .rounded(18.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.9)),
+                            )
+                            // Next button
+                            .child(
+                                div()
+                                    .w(28.0)
+                                    .h(28.0)
+                                    .rounded(14.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.7)),
+                            ),
+                    ),
+            );
+
+        let mut tree = RenderTree::from_element(&layout);
+        tree.compute_layout(400.0, 350.0);
+
+        // Render with layer separation
+        tree.render_to_layer(c, RenderLayer::Background);
+        tree.render_to_layer(c, RenderLayer::Glass);
+
+        let fg = ctx.foreground();
+        tree.render_to_layer(fg, RenderLayer::Foreground);
+    });
+
+    // Material-based glass API test
+    // This test demonstrates the new .glass() and .effect() methods on divs
+    // Glass panels are automatically collected from the layout tree
+    suite.add_glass("glass_material_api", |ctx| {
+        let c = ctx.ctx();
+
+        // Colorful background
+        c.fill_rect(
+            blinc_core::Rect::new(0.0, 0.0, 400.0, 350.0),
+            0.0.into(),
+            Color::rgba(0.12, 0.15, 0.25, 1.0).into(),
+        );
+
+        // Background shapes
+        c.fill_circle(
+            blinc_core::Point::new(100.0, 100.0),
+            80.0,
+            Color::rgba(0.9, 0.3, 0.4, 1.0).into(),
+        );
+        c.fill_circle(
+            blinc_core::Point::new(300.0, 200.0),
+            90.0,
+            Color::rgba(0.3, 0.8, 0.5, 1.0).into(),
+        );
+        c.fill_circle(
+            blinc_core::Point::new(150.0, 280.0),
+            70.0,
+            Color::rgba(0.3, 0.5, 0.95, 1.0).into(),
+        );
+        c.fill_circle(
+            blinc_core::Point::new(280.0, 80.0),
+            60.0,
+            Color::rgba(0.95, 0.7, 0.2, 1.0).into(),
+        );
+
+        // Build layout with glass materials and children
+        // This demonstrates:
+        // - Glass materials via .effect()
+        // - Children of glass elements are AUTOMATICALLY rendered in foreground
+        // - No manual coordinate calculations or .foreground() calls needed!
+        let ui = div()
+            .w(360.0)
+            .h(300.0)
+            .p_px(20.0)
+            .flex_col()
+            .gap_px(15.0)
+            // Top panel with glass material and children (auto foreground)
+            .child(
+                div()
+                    .w_full()
+                    .h(100.0)
+                    .rounded(16.0)
+                    .p_px(20.0)
+                    .flex_col()
+                    .gap_px(10.0)
+                    .effect(
+                        GlassMaterial::new()
+                            .blur(25.0)
+                            .tint_rgba(0.95, 0.95, 1.0, 0.5)
+                            .border(1.0),
+                    )
+                    // Title bar - auto foreground as child of glass
+                    .child(
+                        div()
+                            .w(180.0)
+                            .h(16.0)
+                            .rounded(4.0)
+                            .bg(Color::rgba(1.0, 1.0, 1.0, 0.8)),
+                    )
+                    // Subtitle - auto foreground as child of glass
+                    .child(
+                        div()
+                            .w(120.0)
+                            .h(12.0)
+                            .rounded(3.0)
+                            .bg(Color::rgba(1.0, 1.0, 1.0, 0.5)),
+                    ),
+            )
+            // Bottom row with two glass panels
+            .child(
+                div()
+                    .w_full()
+                    .flex_grow()
+                    .flex_row()
+                    .gap_px(15.0)
+                    // Left panel with content
+                    .child(
+                        div()
+                            .w(140.0)
+                            .h_full()
+                            .rounded(16.0)
+                            .p_px(15.0)
+                            .flex_col()
+                            .gap_px(15.0)
+                            .effect(GlassMaterial::thick().tint_rgba(1.0, 0.9, 0.9, 0.4))
+                            // Icon placeholder - auto foreground
+                            .child(
+                                div()
+                                    .w(50.0)
+                                    .h(50.0)
+                                    .rounded(12.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.7)),
+                            )
+                            // Label - auto foreground
+                            .child(
+                                div()
+                                    .w(110.0)
+                                    .h(10.0)
+                                    .rounded(3.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.5)),
+                            ),
+                    )
+                    // Right panel with content
+                    .child(
+                        div()
+                            .flex_grow()
+                            .h_full()
+                            .rounded(16.0)
+                            .p_px(15.0)
+                            .flex_col()
+                            .gap_px(15.0)
+                            .items_center()
+                            .effect(GlassMaterial::frosted().tint_rgba(0.9, 1.0, 0.9, 0.4))
+                            // Content area - auto foreground
+                            .child(
+                                div()
+                                    .w(140.0)
+                                    .h(50.0)
+                                    .rounded(10.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.15)),
+                            )
+                            // Button - auto foreground
+                            .child(
+                                div()
+                                    .w(40.0)
+                                    .h(40.0)
+                                    .rounded(20.0)
+                                    .bg(Color::rgba(1.0, 1.0, 1.0, 0.8)),
+                            ),
+                    ),
+            );
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(400.0, 350.0);
+
+        // Render the layout tree with layer separation:
+        // - Background goes to background context
+        // - Glass goes to background context (GPU renderer separates glass primitives)
+        // - Foreground children of glass go to foreground context
+        tree.render_to_layer(c, RenderLayer::Background);
+        tree.render_to_layer(c, RenderLayer::Glass);
+
+        // Render foreground to separate context (for proper glass compositing)
+        let fg = ctx.foreground();
+        tree.render_to_layer(fg, RenderLayer::Foreground);
+    });
+
     suite
 }

@@ -5,13 +5,37 @@
 
 use indexmap::IndexMap;
 
-use blinc_core::{DrawContext, Rect, Transform};
+use blinc_core::{Brush, CornerRadius, DrawContext, GlassStyle, Rect, Transform};
 use taffy::prelude::*;
 
 use crate::div::ElementBuilder;
-use crate::element::{ElementBounds, RenderLayer, RenderProps};
+use crate::element::{ElementBounds, GlassMaterial, Material, RenderLayer, RenderProps};
 use crate::text::Text;
 use crate::tree::{LayoutNodeId, LayoutTree};
+
+/// A computed glass panel ready for GPU rendering
+///
+/// This contains all the information needed to render a glass effect,
+/// with bounds computed from the layout system.
+///
+/// # Deprecated
+/// Use `Brush::Glass` instead. Glass is now rendered as part of the
+/// normal render pipeline - just use `fill_rect` with a glass brush.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use Brush::Glass instead. Glass is now integrated into the normal render pipeline."
+)]
+#[derive(Clone, Debug)]
+pub struct GlassPanel {
+    /// Absolute bounds (x, y, width, height)
+    pub bounds: ElementBounds,
+    /// Corner radii
+    pub corner_radius: CornerRadius,
+    /// Glass material properties
+    pub material: GlassMaterial,
+    /// The layout node this panel belongs to
+    pub node_id: LayoutNodeId,
+}
 
 /// Stores an element's type for rendering
 #[derive(Clone)]
@@ -202,13 +226,23 @@ impl RenderTree {
         // Push transform for this node's position
         ctx.push_transform(Transform::translate(bounds.x, bounds.y));
 
-        // Draw background if present
-        if let Some(ref bg) = render_node.props.background {
-            ctx.fill_rect(
-                Rect::new(0.0, 0.0, bounds.width, bounds.height),
-                render_node.props.border_radius,
-                bg.clone(),
-            );
+        let rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+        let radius = render_node.props.border_radius;
+
+        // Check if this node has a glass material - if so, render as glass
+        if let Some(Material::Glass(glass)) = &render_node.props.material {
+            let glass_brush = Brush::Glass(GlassStyle {
+                blur: glass.blur,
+                tint: glass.tint,
+                saturation: glass.saturation,
+                brightness: glass.brightness,
+                noise: glass.noise,
+                border_thickness: glass.border_thickness,
+            });
+            ctx.fill_rect(rect, radius, glass_brush);
+        } else if let Some(ref bg) = render_node.props.background {
+            // Draw regular background
+            ctx.fill_rect(rect, radius, bg.clone());
         }
 
         // Render children (relative to this node's transform)
@@ -224,35 +258,80 @@ impl RenderTree {
     ///
     /// This method renders elements in three passes:
     /// 1. Background elements (will be blurred behind glass)
-    /// 2. Glass elements (blur effect applied)
+    /// 2. Glass elements (blur effect via Brush::Glass)
     /// 3. Foreground elements (on top, not blurred)
-    pub fn render_layered<F>(
+    ///
+    /// **Important:** Children of glass elements are automatically rendered
+    /// in the foreground pass - no need to mark them with `.foreground()`.
+    ///
+    /// All three layers are rendered to the same context. Glass elements
+    /// are rendered as `Brush::Glass` which the GPU renderer handles
+    /// by pushing to the glass primitive batch for multi-pass rendering.
+    pub fn render_layered_simple(&self, ctx: &mut dyn DrawContext) {
+        if let Some(root) = self.root {
+            // Pass 1: Background (excludes children of glass elements)
+            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Background, false);
+
+            // Pass 2: Glass - these render as Brush::Glass which becomes glass primitives
+            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Glass, false);
+
+            // Pass 3: Foreground (includes children of glass elements)
+            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Foreground, false);
+        }
+    }
+
+    /// Render with layer separation and explicit context control
+    ///
+    /// For cases where you need separate DrawContext instances for
+    /// background and foreground (e.g., different render targets).
+    ///
+    /// **Important:** Children of glass elements are automatically rendered
+    /// in the foreground pass - no need to mark them with `.foreground()`.
+    ///
+    /// Note: Glass elements are rendered to `glass_ctx` using `Brush::Glass`
+    /// which the GPU renderer collects as glass primitives.
+    pub fn render_layered(
         &self,
         background_ctx: &mut dyn DrawContext,
-        mut glass_callback: F,
+        glass_ctx: &mut dyn DrawContext,
         foreground_ctx: &mut dyn DrawContext,
-    ) where
-        F: FnMut(LayoutNodeId, ElementBounds, &RenderProps),
-    {
+    ) {
         if let Some(root) = self.root {
-            // Pass 1: Background
-            self.render_layer(background_ctx, root, (0.0, 0.0), RenderLayer::Background);
+            // Pass 1: Background (excludes children of glass elements)
+            self.render_layer(background_ctx, root, (0.0, 0.0), RenderLayer::Background, false);
 
-            // Pass 2: Glass (via callback)
-            self.collect_glass_nodes(root, (0.0, 0.0), &mut glass_callback);
+            // Pass 2: Glass - render as Brush::Glass
+            self.render_layer(glass_ctx, root, (0.0, 0.0), RenderLayer::Glass, false);
 
-            // Pass 3: Foreground
-            self.render_layer(foreground_ctx, root, (0.0, 0.0), RenderLayer::Foreground);
+            // Pass 3: Foreground (includes children of glass elements)
+            self.render_layer(foreground_ctx, root, (0.0, 0.0), RenderLayer::Foreground, false);
+        }
+    }
+
+    /// Render only elements in a specific layer to a DrawContext
+    ///
+    /// This is useful when you need to render background+glass to one context
+    /// and foreground to another context (e.g., for proper glass compositing).
+    ///
+    /// **Important:** Children of glass elements are automatically considered
+    /// as foreground - no need to mark them with `.foreground()`.
+    pub fn render_to_layer(&self, ctx: &mut dyn DrawContext, target_layer: RenderLayer) {
+        if let Some(root) = self.root {
+            self.render_layer(ctx, root, (0.0, 0.0), target_layer, false);
         }
     }
 
     /// Render only nodes in a specific layer
+    ///
+    /// The `inside_glass` flag tracks whether we're descending through a glass element.
+    /// Children of glass elements are automatically rendered in the foreground pass.
     fn render_layer(
         &self,
         ctx: &mut dyn DrawContext,
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         target_layer: RenderLayer,
+        inside_glass: bool,
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -262,53 +341,60 @@ impl RenderTree {
             return;
         };
 
-        // Only render if this node is in the target layer
-        if render_node.props.layer == target_layer {
-            ctx.push_transform(Transform::translate(bounds.x, bounds.y));
+        // Always push transform for proper child positioning
+        ctx.push_transform(Transform::translate(bounds.x, bounds.y));
 
-            if let Some(ref bg) = render_node.props.background {
-                ctx.fill_rect(
-                    Rect::new(0.0, 0.0, bounds.width, bounds.height),
-                    render_node.props.border_radius,
-                    bg.clone(),
-                );
-            }
+        // Determine if this node is a glass element
+        let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
 
-            ctx.pop_transform();
-        }
-
-        // Always traverse children
-        let new_offset = (parent_offset.0 + bounds.x, parent_offset.1 + bounds.y);
-        for child_id in self.layout_tree.children(node) {
-            self.render_layer(ctx, child_id, new_offset, target_layer);
-        }
-    }
-
-    /// Collect glass nodes for the callback
-    fn collect_glass_nodes<F>(
-        &self,
-        node: LayoutNodeId,
-        parent_offset: (f32, f32),
-        callback: &mut F,
-    ) where
-        F: FnMut(LayoutNodeId, ElementBounds, &RenderProps),
-    {
-        let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
-            return;
+        // Determine the effective layer for this node:
+        // - If we're inside a glass element, children render as foreground
+        // - Otherwise, use the node's explicit layer setting
+        let effective_layer = if inside_glass && !is_glass {
+            // Children of glass elements render in foreground
+            RenderLayer::Foreground
+        } else if is_glass {
+            // Glass elements render in glass layer
+            RenderLayer::Glass
+        } else {
+            // Use the node's explicit layer
+            render_node.props.layer
         };
 
-        if let Some(render_node) = self.render_nodes.get(&node) {
-            if render_node.props.layer == RenderLayer::Glass {
-                callback(node, bounds, &render_node.props);
+        // Only render if this node matches the target layer
+        if effective_layer == target_layer {
+            let rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+            let radius = render_node.props.border_radius;
+
+            // Check if this node has a glass material - if so, render as glass
+            if let Some(Material::Glass(glass)) = &render_node.props.material {
+                let glass_brush = Brush::Glass(GlassStyle {
+                    blur: glass.blur,
+                    tint: glass.tint,
+                    saturation: glass.saturation,
+                    brightness: glass.brightness,
+                    noise: glass.noise,
+                    border_thickness: glass.border_thickness,
+                });
+                ctx.fill_rect(rect, radius, glass_brush);
+            } else if let Some(ref bg) = render_node.props.background {
+                // Draw regular background
+                ctx.fill_rect(rect, radius, bg.clone());
             }
         }
 
-        // Traverse children
-        let new_offset = (parent_offset.0 + bounds.x, parent_offset.1 + bounds.y);
+        // Track if children should be considered inside glass
+        // Once inside glass, stay inside glass for all descendants
+        let children_inside_glass = inside_glass || is_glass;
+
+        // Traverse children (they inherit our transform)
         for child_id in self.layout_tree.children(node) {
-            self.collect_glass_nodes(child_id, new_offset, callback);
+            self.render_layer(ctx, child_id, (0.0, 0.0), target_layer, children_inside_glass);
         }
+
+        ctx.pop_transform();
     }
+
 
     /// Get bounds for a specific node
     pub fn get_bounds(&self, node: LayoutNodeId) -> Option<ElementBounds> {
@@ -323,6 +409,55 @@ impl RenderTree {
     /// Iterate over all nodes with their bounds and render props
     pub fn iter_nodes(&self) -> impl Iterator<Item = (LayoutNodeId, &RenderNode)> {
         self.render_nodes.iter().map(|(&id, node)| (id, node))
+    }
+
+    /// Collect all glass panels from the layout tree
+    ///
+    /// # Deprecated
+    /// Use `render()` or `render_layered_simple()` instead. Glass elements
+    /// are now rendered as `Brush::Glass` in the normal render pipeline.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use render() or render_layered_simple() instead. Glass is now integrated into the normal render pipeline."
+    )]
+    #[allow(deprecated)]
+    pub fn collect_glass_panels(&self) -> Vec<GlassPanel> {
+        let mut panels = Vec::new();
+        if let Some(root) = self.root {
+            self.collect_glass_panels_recursive(root, (0.0, 0.0), &mut panels);
+        }
+        panels
+    }
+
+    /// Recursively collect glass panels (deprecated)
+    #[allow(deprecated)]
+    fn collect_glass_panels_recursive(
+        &self,
+        node: LayoutNodeId,
+        parent_offset: (f32, f32),
+        panels: &mut Vec<GlassPanel>,
+    ) {
+        let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
+            return;
+        };
+
+        if let Some(render_node) = self.render_nodes.get(&node) {
+            // Check if this node has a glass material
+            if let Some(Material::Glass(glass)) = &render_node.props.material {
+                panels.push(GlassPanel {
+                    bounds,
+                    corner_radius: render_node.props.border_radius,
+                    material: glass.clone(),
+                    node_id: node,
+                });
+            }
+        }
+
+        // Traverse children
+        let new_offset = (parent_offset.0 + bounds.x, parent_offset.1 + bounds.y);
+        for child_id in self.layout_tree.children(node) {
+            self.collect_glass_panels_recursive(child_id, new_offset, panels);
+        }
     }
 }
 

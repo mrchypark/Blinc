@@ -16,7 +16,7 @@
 use blinc_core::{Brush, Color, CornerRadius};
 use taffy::prelude::*;
 
-use crate::element::{RenderLayer, RenderProps};
+use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, RenderProps, WoodMaterial};
 use crate::tree::{LayoutNodeId, LayoutTree};
 
 /// A div element builder with GPUI/Tailwind-style methods
@@ -26,6 +26,7 @@ pub struct Div {
     background: Option<Brush>,
     border_radius: CornerRadius,
     render_layer: RenderLayer,
+    material: Option<Material>,
 }
 
 impl Default for Div {
@@ -43,6 +44,7 @@ impl Div {
             background: None,
             border_radius: CornerRadius::default(),
             render_layer: RenderLayer::default(),
+            material: None,
         }
     }
 
@@ -442,6 +444,30 @@ impl Div {
         self
     }
 
+    /// Set left margin (in 4px units)
+    pub fn ml(mut self, units: f32) -> Self {
+        self.style.margin.left = LengthPercentageAuto::Length(units * 4.0);
+        self
+    }
+
+    /// Set right margin (in 4px units)
+    pub fn mr(mut self, units: f32) -> Self {
+        self.style.margin.right = LengthPercentageAuto::Length(units * 4.0);
+        self
+    }
+
+    /// Set top margin (in 4px units)
+    pub fn mt(mut self, units: f32) -> Self {
+        self.style.margin.top = LengthPercentageAuto::Length(units * 4.0);
+        self
+    }
+
+    /// Set bottom margin (in 4px units)
+    pub fn mb(mut self, units: f32) -> Self {
+        self.style.margin.bottom = LengthPercentageAuto::Length(units * 4.0);
+        self
+    }
+
     // =========================================================================
     // Position
     // =========================================================================
@@ -530,7 +556,7 @@ impl Div {
     }
 
     // =========================================================================
-    // Layer (for glass effects)
+    // Layer (for rendering order)
     // =========================================================================
 
     /// Set the render layer
@@ -539,14 +565,67 @@ impl Div {
         self
     }
 
-    /// Render as glass element (blur effect)
-    pub fn glass(self) -> Self {
-        self.layer(RenderLayer::Glass)
-    }
-
     /// Render in foreground (on top of glass)
     pub fn foreground(self) -> Self {
         self.layer(RenderLayer::Foreground)
+    }
+
+    // =========================================================================
+    // Material System
+    // =========================================================================
+
+    /// Apply a material to this element
+    pub fn material(mut self, material: Material) -> Self {
+        // Glass materials also set the render layer to Glass
+        if matches!(material, Material::Glass(_)) {
+            self.render_layer = RenderLayer::Glass;
+        }
+        self.material = Some(material);
+        self
+    }
+
+    /// Apply a visual effect to this element
+    ///
+    /// Effects include glass (blur), metallic (reflection), wood (texture), etc.
+    /// This is the general-purpose method for applying any material effect.
+    ///
+    /// Example:
+    /// ```ignore
+    /// // Glass effect
+    /// div().effect(GlassMaterial::thick().tint_rgba(1.0, 0.9, 0.9, 0.5))
+    ///
+    /// // Metallic effect
+    /// div().effect(MetallicMaterial::chrome())
+    /// ```
+    pub fn effect(self, effect: impl Into<Material>) -> Self {
+        self.material(effect.into())
+    }
+
+    /// Apply glass material with default settings (shorthand for common case)
+    ///
+    /// Creates a frosted glass effect that blurs content behind the element.
+    pub fn glass(self) -> Self {
+        self.material(Material::Glass(GlassMaterial::new()))
+    }
+
+    /// Apply metallic material with default settings
+    pub fn metallic(self) -> Self {
+        self.material(Material::Metallic(MetallicMaterial::new()))
+    }
+
+    /// Apply chrome metallic preset
+    pub fn chrome(self) -> Self {
+        self.material(Material::Metallic(MetallicMaterial::chrome()))
+    }
+
+    /// Apply gold metallic preset
+    pub fn gold(self) -> Self {
+        self.material(Material::Metallic(MetallicMaterial::gold()))
+    }
+
+    /// Apply wood material with default settings
+    pub fn wood(self) -> Self {
+        self.material(Material::Wood(WoodMaterial::new()))
     }
 
     // =========================================================================
@@ -607,6 +686,7 @@ impl ElementBuilder for Div {
             background: self.background.clone(),
             border_radius: self.border_radius,
             layer: self.render_layer,
+            material: self.material.clone(),
             node_id: None,
         }
     }

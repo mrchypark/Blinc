@@ -323,9 +323,31 @@ impl GpuGlassPrimitive {
         }
     }
 
+    /// Create a glass circle (uses rounded rect with max radius)
+    pub fn circle(center_x: f32, center_y: f32, radius: f32) -> Self {
+        let diameter = radius * 2.0;
+        Self {
+            bounds: [center_x - radius, center_y - radius, diameter, diameter],
+            corner_radius: [radius; 4],
+            ..Default::default()
+        }
+    }
+
     /// Set uniform corner radius
     pub fn with_corner_radius(mut self, radius: f32) -> Self {
         self.corner_radius = [radius; 4];
+        self
+    }
+
+    /// Set per-corner radius (top-left, top-right, bottom-right, bottom-left)
+    pub fn with_corner_radius_per_corner(
+        mut self,
+        tl: f32,
+        tr: f32,
+        br: f32,
+        bl: f32,
+    ) -> Self {
+        self.corner_radius = [tl, tr, br, bl];
         self
     }
 
@@ -462,6 +484,43 @@ impl GpuGlassPrimitive {
         // Store -0.0 which has sign bit set but value 0
         self.type_info[3] = (-0.0_f32).to_bits();
         self
+    }
+}
+
+/// Convert a layout GlassPanel to GPU primitive
+///
+/// This bridges the layout system's material definitions to the GPU rendering system.
+impl From<&blinc_layout::GlassPanel> for GpuGlassPrimitive {
+    fn from(panel: &blinc_layout::GlassPanel) -> Self {
+        let mat = &panel.material;
+        let bounds = &panel.bounds;
+        let cr = &panel.corner_radius;
+
+        let mut glass = GpuGlassPrimitive::new(bounds.x, bounds.y, bounds.width, bounds.height)
+            .with_corner_radius_per_corner(
+                cr.top_left,
+                cr.top_right,
+                cr.bottom_right,
+                cr.bottom_left,
+            )
+            .with_blur(mat.blur)
+            .with_tint(mat.tint.r, mat.tint.g, mat.tint.b, mat.tint.a)
+            .with_saturation(mat.saturation)
+            .with_brightness(mat.brightness)
+            .with_noise(mat.noise)
+            .with_border_thickness(mat.border_thickness);
+
+        // Apply shadow if present
+        if let Some(ref shadow) = mat.shadow {
+            glass = glass.with_shadow_offset(
+                shadow.blur,
+                shadow.opacity,
+                shadow.offset.0,
+                shadow.offset.1,
+            );
+        }
+
+        glass
     }
 }
 

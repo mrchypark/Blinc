@@ -43,13 +43,15 @@
 
 use blinc_core::{
     Affine2D, BillboardFacing, BlendMode, Brush, Camera, ClipShape, CornerRadius, DrawCommand,
-    DrawContext, Environment, ImageId, ImageOptions, LayerConfig, LayerId, Light, Mat4, MaterialId,
-    MeshId, MeshInstance, Path, Point, Rect, SdfBuilder, Shadow, ShapeId, Size, Stroke, TextStyle,
-    Transform,
+    DrawContext, Environment, GlassStyle, ImageId, ImageOptions, LayerConfig, LayerId, Light, Mat4,
+    MaterialId, MeshId, MeshInstance, Path, Point, Rect, SdfBuilder, Shadow, ShapeId, Size, Stroke,
+    TextStyle, Transform,
 };
 
 use crate::path::{tessellate_fill, tessellate_stroke};
-use crate::primitives::{ClipType, FillType, GpuPrimitive, PrimitiveBatch, PrimitiveType};
+use crate::primitives::{
+    ClipType, FillType, GpuGlassPrimitive, GpuPrimitive, PrimitiveBatch, PrimitiveType,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transform Stack
@@ -311,6 +313,7 @@ impl GpuPaintContext {
 
     /// Convert a Brush to GPU color components and gradient parameters
     /// Returns (color1, color2, gradient_params, fill_type)
+    /// Note: Glass brushes are handled separately in fill methods - this returns transparent
     fn brush_to_colors(&self, brush: &Brush) -> ([f32; 4], [f32; 4], [f32; 4], FillType) {
         let opacity = self.combined_opacity();
         match brush {
@@ -318,6 +321,11 @@ impl GpuPaintContext {
                 let c = [color.r, color.g, color.b, color.a * opacity];
                 // Default gradient params (not used for solid)
                 (c, c, [0.0, 0.0, 1.0, 0.0], FillType::Solid)
+            }
+            Brush::Glass(_) => {
+                // Glass is handled via glass primitives, not regular primitives
+                // Return transparent as a fallback (should never be used)
+                ([0.0; 4], [0.0; 4], [0.0, 0.0, 1.0, 0.0], FillType::Solid)
             }
             Brush::Gradient(gradient) => {
                 let (stops, fill_type, gradient_params) = match gradient {
@@ -631,6 +639,31 @@ impl DrawContext for GpuPaintContext {
 
     fn fill_rect(&mut self, rect: Rect, corner_radius: CornerRadius, brush: Brush) {
         let transformed = self.transform_rect(rect);
+
+        // Handle glass brush specially - push to glass primitives
+        if let Brush::Glass(style) = &brush {
+            let glass = GpuGlassPrimitive::new(
+                transformed.x(),
+                transformed.y(),
+                transformed.width(),
+                transformed.height(),
+            )
+            .with_corner_radius_per_corner(
+                corner_radius.top_left,
+                corner_radius.top_right,
+                corner_radius.bottom_right,
+                corner_radius.bottom_left,
+            )
+            .with_blur(style.blur)
+            .with_tint(style.tint.r, style.tint.g, style.tint.b, style.tint.a)
+            .with_saturation(style.saturation)
+            .with_brightness(style.brightness)
+            .with_noise(style.noise)
+            .with_border_thickness(style.border_thickness);
+            self.batch.push_glass(glass);
+            return;
+        }
+
         let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
@@ -720,6 +753,23 @@ impl DrawContext for GpuPaintContext {
         let d = affine.elements[3];
         let scale = ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0;
         let transformed_radius = radius * scale;
+
+        // Handle glass brush specially - push to glass primitives
+        if let Brush::Glass(style) = &brush {
+            let glass = GpuGlassPrimitive::circle(
+                transformed_center.x,
+                transformed_center.y,
+                transformed_radius,
+            )
+            .with_blur(style.blur)
+            .with_tint(style.tint.r, style.tint.g, style.tint.b, style.tint.a)
+            .with_saturation(style.saturation)
+            .with_brightness(style.brightness)
+            .with_noise(style.noise)
+            .with_border_thickness(style.border_thickness);
+            self.batch.push_glass(glass);
+            return;
+        }
 
         let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();

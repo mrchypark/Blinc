@@ -150,6 +150,7 @@ impl ElementBuilder for Text {
             background: None,
             border_radius: Default::default(),
             layer: self.render_layer,
+            material: None,
             node_id: None,
         }
     }

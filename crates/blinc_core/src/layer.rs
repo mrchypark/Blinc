@@ -652,12 +652,20 @@ impl Gradient {
 pub enum Brush {
     Solid(Color),
     Gradient(Gradient),
+    /// Glass/frosted blur effect - blurs content behind the shape
+    Glass(GlassStyle),
     // Future: Image, Pattern
 }
 
 impl From<Color> for Brush {
     fn from(color: Color) -> Self {
         Brush::Solid(color)
+    }
+}
+
+impl From<GlassStyle> for Brush {
+    fn from(style: GlassStyle) -> Self {
+        Brush::Glass(style)
     }
 }
 
@@ -751,6 +759,113 @@ impl Shadow {
             spread: 0.0,
             color,
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Glass Style
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Glass/frosted glass effect configuration
+///
+/// Creates a backdrop blur effect similar to macOS vibrancy or iOS blur.
+/// Used with `DrawContext::fill_glass()` to render glass panels.
+#[derive(Clone, Copy, Debug)]
+pub struct GlassStyle {
+    /// Blur intensity (0-50, default 20)
+    pub blur: f32,
+    /// Tint color applied over the blur
+    pub tint: Color,
+    /// Color saturation (1.0 = normal, 0.0 = grayscale)
+    pub saturation: f32,
+    /// Brightness multiplier (1.0 = normal)
+    pub brightness: f32,
+    /// Noise/grain amount for frosted texture (0.0-0.1)
+    pub noise: f32,
+    /// Border highlight thickness
+    pub border_thickness: f32,
+}
+
+impl Default for GlassStyle {
+    fn default() -> Self {
+        Self {
+            blur: 20.0,
+            tint: Color::rgba(1.0, 1.0, 1.0, 0.1),
+            saturation: 1.0,
+            brightness: 1.0,
+            noise: 0.0,
+            border_thickness: 0.8,
+        }
+    }
+}
+
+impl GlassStyle {
+    /// Create a new glass style with default settings
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set blur intensity
+    pub fn blur(mut self, blur: f32) -> Self {
+        self.blur = blur;
+        self
+    }
+
+    /// Set tint color
+    pub fn tint(mut self, color: Color) -> Self {
+        self.tint = color;
+        self
+    }
+
+    /// Set saturation
+    pub fn saturation(mut self, saturation: f32) -> Self {
+        self.saturation = saturation;
+        self
+    }
+
+    /// Set brightness
+    pub fn brightness(mut self, brightness: f32) -> Self {
+        self.brightness = brightness;
+        self
+    }
+
+    /// Set noise amount
+    pub fn noise(mut self, noise: f32) -> Self {
+        self.noise = noise;
+        self
+    }
+
+    /// Set border thickness
+    pub fn border(mut self, thickness: f32) -> Self {
+        self.border_thickness = thickness;
+        self
+    }
+
+    // Presets
+
+    /// Ultra-thin glass (subtle blur)
+    pub fn ultra_thin() -> Self {
+        Self::new().blur(10.0)
+    }
+
+    /// Thin glass
+    pub fn thin() -> Self {
+        Self::new().blur(15.0)
+    }
+
+    /// Regular glass (default)
+    pub fn regular() -> Self {
+        Self::new()
+    }
+
+    /// Thick glass (heavy blur)
+    pub fn thick() -> Self {
+        Self::new().blur(30.0)
+    }
+
+    /// Frosted glass with grain texture
+    pub fn frosted() -> Self {
+        Self::new().noise(0.03)
     }
 }
 

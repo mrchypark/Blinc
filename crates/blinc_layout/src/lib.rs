@@ -40,18 +40,27 @@ pub use element::{ElementBounds, RenderLayer, RenderProps};
 pub use style::LayoutStyle;
 pub use tree::{LayoutNodeId, LayoutTree};
 
+// Material system
+pub use element::{
+    GlassMaterial, Material, MaterialShadow, MetallicMaterial, SolidMaterial, WoodMaterial,
+};
+
 // Builder API
 pub use div::{div, Div, ElementBuilder};
 pub use text::{text, Text};
 
 // Renderer
-pub use renderer::RenderTree;
+pub use renderer::{GlassPanel, RenderTree};
 
 /// Prelude module - import everything commonly needed
 pub mod prelude {
     pub use crate::div::{div, Div, ElementBuilder};
     pub use crate::element::{ElementBounds, RenderLayer, RenderProps};
-    pub use crate::renderer::RenderTree;
+    // Material system
+    pub use crate::element::{
+        GlassMaterial, Material, MaterialShadow, MetallicMaterial, SolidMaterial, WoodMaterial,
+    };
+    pub use crate::renderer::{GlassPanel, RenderTree};
     pub use crate::text::{text, Text};
     pub use crate::tree::{LayoutNodeId, LayoutTree};
 }
