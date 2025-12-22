@@ -257,12 +257,9 @@ impl TestHarness {
     pub fn render_text(&self, target: &wgpu::TextureView, glyphs: &[GpuGlyph]) {
         let text_ctx = self.text_ctx.borrow();
         if let Some(atlas_view) = text_ctx.atlas_view() {
-            self.renderer.borrow_mut().render_text(
-                target,
-                glyphs,
-                atlas_view,
-                text_ctx.sampler(),
-            );
+            self.renderer
+                .borrow_mut()
+                .render_text(target, glyphs, atlas_view, text_ctx.sampler());
         }
     }
 
@@ -742,7 +739,13 @@ impl TestHarness {
         if all_glyphs.is_empty() {
             self.render_to_png(&batch, width as u32, height as u32, &output_path)?;
         } else {
-            self.render_with_text_to_png(&batch, &all_glyphs, width as u32, height as u32, &output_path)?;
+            self.render_with_text_to_png(
+                &batch,
+                &all_glyphs,
+                width as u32,
+                height as u32,
+                &output_path,
+            )?;
         }
         tracing::info!("Rendered test '{}' to {:?}", name, output_path);
 

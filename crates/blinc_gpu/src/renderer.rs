@@ -1450,11 +1450,8 @@ impl GpuRenderer {
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         // Update glyphs buffer
-        self.queue.write_buffer(
-            &self.buffers.glyphs,
-            0,
-            bytemuck::cast_slice(glyphs),
-        );
+        self.queue
+            .write_buffer(&self.buffers.glyphs, 0, bytemuck::cast_slice(glyphs));
 
         // Create text bind group with the provided atlas
         let text_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {

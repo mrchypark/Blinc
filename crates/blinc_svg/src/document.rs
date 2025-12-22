@@ -43,8 +43,7 @@ impl SvgDocument {
     /// Load an SVG document from raw bytes
     pub fn from_data(data: &[u8]) -> Result<Self, SvgError> {
         let options = Options::default();
-        let tree =
-            Tree::from_data(data, &options).map_err(|e| SvgError::Parse(e.to_string()))?;
+        let tree = Tree::from_data(data, &options).map_err(|e| SvgError::Parse(e.to_string()))?;
 
         let size = tree.size();
 
@@ -178,9 +177,8 @@ fn apply_transform(path: &Path, transform: &usvg::Transform) -> Path {
         transform.ty as f32,
     );
 
-    let transform_point = |p: Point| -> Point {
-        Point::new(sx * p.x + kx * p.y + tx, ky * p.x + sy * p.y + ty)
-    };
+    let transform_point =
+        |p: Point| -> Point { Point::new(sx * p.x + kx * p.y + tx, ky * p.x + sy * p.y + ty) };
 
     let new_commands: Vec<PathCommand> = path
         .commands()
@@ -227,9 +225,7 @@ fn scale_and_translate_path(path: &Path, x: f32, y: f32, scale: f32) -> Path {
         return path.clone();
     }
 
-    let transform_point = |p: Point| -> Point {
-        Point::new(p.x * scale + x, p.y * scale + y)
-    };
+    let transform_point = |p: Point| -> Point { Point::new(p.x * scale + x, p.y * scale + y) };
 
     let new_commands: Vec<PathCommand> = path
         .commands()

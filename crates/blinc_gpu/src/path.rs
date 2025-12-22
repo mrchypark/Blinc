@@ -14,13 +14,13 @@ use lyon::path::PathEvent;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PathVertex {
-    pub position: [f32; 2],       // 8 bytes, offset 0
-    pub color: [f32; 4],          // 16 bytes, offset 8 (start color for gradients)
-    pub end_color: [f32; 4],      // 16 bytes, offset 24 (end color for gradients)
-    pub uv: [f32; 2],             // 8 bytes, offset 40, UV coordinates for gradient sampling (0-1 range)
-    pub gradient_params: [f32; 4],// 16 bytes, offset 48, gradient parameters (linear: x1,y1,x2,y2; radial: cx,cy,r,0)
-    pub gradient_type: u32,       // 4 bytes, offset 64, 0 = solid, 1 = linear, 2 = radial
-    pub _padding: [u32; 3],       // 12 bytes, offset 68, Padding for 16-byte alignment
+    pub position: [f32; 2],        // 8 bytes, offset 0
+    pub color: [f32; 4],           // 16 bytes, offset 8 (start color for gradients)
+    pub end_color: [f32; 4],       // 16 bytes, offset 24 (end color for gradients)
+    pub uv: [f32; 2], // 8 bytes, offset 40, UV coordinates for gradient sampling (0-1 range)
+    pub gradient_params: [f32; 4], // 16 bytes, offset 48, gradient parameters (linear: x1,y1,x2,y2; radial: cx,cy,r,0)
+    pub gradient_type: u32,        // 4 bytes, offset 64, 0 = solid, 1 = linear, 2 = radial
+    pub _padding: [u32; 3],        // 12 bytes, offset 68, Padding for 16-byte alignment
 }
 // Total: 80 bytes
 
@@ -267,7 +267,8 @@ fn path_to_lyon_events(path: &Path) -> Vec<PathEvent> {
                     first_point = Some(Point::new(0.0, 0.0));
                 }
                 // Convert SVG arc to cubic bezier curves
-                let cubics = arc_to_cubics(current_point, *radii, *rotation, *large_arc, *sweep, *end);
+                let cubics =
+                    arc_to_cubics(current_point, *radii, *rotation, *large_arc, *sweep, *end);
 
                 if cubics.is_empty() {
                     // Degenerate arc - treat as line
@@ -327,7 +328,11 @@ fn compute_path_bounds(path: &Path) -> (f32, f32, f32, f32) {
             PathCommand::MoveTo(p) => vec![*p],
             PathCommand::LineTo(p) => vec![*p],
             PathCommand::QuadTo { control, end } => vec![*control, *end],
-            PathCommand::CubicTo { control1, control2, end } => vec![*control1, *control2, *end],
+            PathCommand::CubicTo {
+                control1,
+                control2,
+                end,
+            } => vec![*control1, *control2, *end],
             PathCommand::ArcTo { end, .. } => vec![*end],
             PathCommand::Close => vec![],
         };
@@ -359,20 +364,43 @@ fn extract_gradient_info(brush: &Brush) -> (u32, Color, Color, [f32; 4]) {
                 Gradient::Linear { start, end, .. } => {
                     tracing::debug!(
                         "Linear gradient: start=({}, {}), end=({}, {}), colors=({:?} -> {:?})",
-                        start.x, start.y, end.x, end.y, start_color, end_color
+                        start.x,
+                        start.y,
+                        end.x,
+                        end.y,
+                        start_color,
+                        end_color
                     );
                     (1, start_color, end_color, [start.x, start.y, end.x, end.y])
                 }
                 Gradient::Radial { center, radius, .. } => {
                     tracing::debug!(
                         "Radial gradient: center=({}, {}), radius={}, colors=({:?} -> {:?})",
-                        center.x, center.y, radius, start_color, end_color
+                        center.x,
+                        center.y,
+                        radius,
+                        start_color,
+                        end_color
                     );
-                    (2, start_color, end_color, [center.x, center.y, *radius, 0.0])
+                    (
+                        2,
+                        start_color,
+                        end_color,
+                        [center.x, center.y, *radius, 0.0],
+                    )
                 }
-                Gradient::Conic { center, start_angle, .. } => {
+                Gradient::Conic {
+                    center,
+                    start_angle,
+                    ..
+                } => {
                     // Treat conic as radial for now
-                    (2, start_color, end_color, [center.x, center.y, 100.0, *start_angle])
+                    (
+                        2,
+                        start_color,
+                        end_color,
+                        [center.x, center.y, 100.0, *start_angle],
+                    )
                 }
             }
         }

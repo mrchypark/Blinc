@@ -77,7 +77,9 @@ impl TextRenderingContext {
         color: [f32; 4],
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
         let options = LayoutOptions::default();
-        let prepared = self.renderer.prepare_text(text, font_size, color, &options)?;
+        let prepared = self
+            .renderer
+            .prepare_text(text, font_size, color, &options)?;
 
         // Convert to GPU glyphs with position offset
         let glyphs = prepared

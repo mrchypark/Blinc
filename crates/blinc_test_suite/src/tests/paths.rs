@@ -224,16 +224,14 @@ pub fn suite() -> TestSuite {
         let c = ctx.ctx();
 
         // Draw a simple arc from left to right using SVG arc command
-        let path = Path::new()
-            .move_to(100.0, 150.0)
-            .arc_to(
-                blinc_core::Vec2::new(50.0, 50.0), // radii
-                0.0,                                // rotation
-                false,                              // large_arc
-                true,                               // sweep (clockwise)
-                200.0,
-                150.0, // end point
-            );
+        let path = Path::new().move_to(100.0, 150.0).arc_to(
+            blinc_core::Vec2::new(50.0, 50.0), // radii
+            0.0,                               // rotation
+            false,                             // large_arc
+            true,                              // sweep (clockwise)
+            200.0,
+            150.0, // end point
+        );
 
         c.stroke_path(&path, &Stroke::new(4.0), Color::BLUE.into());
 
@@ -248,29 +246,25 @@ pub fn suite() -> TestSuite {
 
         // Two arcs with different large_arc flags
         // Small arc (large_arc = false)
-        let small_arc = Path::new()
-            .move_to(100.0, 150.0)
-            .arc_to(
-                blinc_core::Vec2::new(60.0, 60.0),
-                0.0,
-                false, // small arc
-                true,
-                200.0,
-                150.0,
-            );
+        let small_arc = Path::new().move_to(100.0, 150.0).arc_to(
+            blinc_core::Vec2::new(60.0, 60.0),
+            0.0,
+            false, // small arc
+            true,
+            200.0,
+            150.0,
+        );
         c.stroke_path(&small_arc, &Stroke::new(3.0), Color::BLUE.into());
 
         // Large arc (large_arc = true)
-        let large_arc = Path::new()
-            .move_to(100.0, 150.0)
-            .arc_to(
-                blinc_core::Vec2::new(60.0, 60.0),
-                0.0,
-                true, // large arc
-                true,
-                200.0,
-                150.0,
-            );
+        let large_arc = Path::new().move_to(100.0, 150.0).arc_to(
+            blinc_core::Vec2::new(60.0, 60.0),
+            0.0,
+            true, // large arc
+            true,
+            200.0,
+            150.0,
+        );
         c.stroke_path(&large_arc, &Stroke::new(3.0), Color::RED.into());
 
         // Markers
@@ -283,29 +277,25 @@ pub fn suite() -> TestSuite {
         let c = ctx.ctx();
 
         // Sweep = true (clockwise)
-        let cw_arc = Path::new()
-            .move_to(100.0, 150.0)
-            .arc_to(
-                blinc_core::Vec2::new(50.0, 50.0),
-                0.0,
-                false,
-                true, // clockwise
-                200.0,
-                150.0,
-            );
+        let cw_arc = Path::new().move_to(100.0, 150.0).arc_to(
+            blinc_core::Vec2::new(50.0, 50.0),
+            0.0,
+            false,
+            true, // clockwise
+            200.0,
+            150.0,
+        );
         c.stroke_path(&cw_arc, &Stroke::new(3.0), Color::BLUE.into());
 
         // Sweep = false (counter-clockwise)
-        let ccw_arc = Path::new()
-            .move_to(250.0, 150.0)
-            .arc_to(
-                blinc_core::Vec2::new(50.0, 50.0),
-                0.0,
-                false,
-                false, // counter-clockwise
-                350.0,
-                150.0,
-            );
+        let ccw_arc = Path::new().move_to(250.0, 150.0).arc_to(
+            blinc_core::Vec2::new(50.0, 50.0),
+            0.0,
+            false,
+            false, // counter-clockwise
+            350.0,
+            150.0,
+        );
         c.stroke_path(&ccw_arc, &Stroke::new(3.0), Color::RED.into());
     });
 
@@ -314,29 +304,25 @@ pub fn suite() -> TestSuite {
         let c = ctx.ctx();
 
         // Elliptical arc with different x/y radii
-        let ellipse_arc = Path::new()
-            .move_to(100.0, 150.0)
-            .arc_to(
-                blinc_core::Vec2::new(80.0, 40.0), // different radii
-                0.0,
-                false,
-                true,
-                300.0,
-                150.0,
-            );
+        let ellipse_arc = Path::new().move_to(100.0, 150.0).arc_to(
+            blinc_core::Vec2::new(80.0, 40.0), // different radii
+            0.0,
+            false,
+            true,
+            300.0,
+            150.0,
+        );
         c.stroke_path(&ellipse_arc, &Stroke::new(3.0), Color::PURPLE.into());
 
         // Rotated elliptical arc
-        let rotated_arc = Path::new()
-            .move_to(100.0, 220.0)
-            .arc_to(
-                blinc_core::Vec2::new(80.0, 40.0),
-                std::f32::consts::FRAC_PI_4, // 45 degree rotation
-                false,
-                true,
-                300.0,
-                220.0,
-            );
+        let rotated_arc = Path::new().move_to(100.0, 220.0).arc_to(
+            blinc_core::Vec2::new(80.0, 40.0),
+            std::f32::consts::FRAC_PI_4, // 45 degree rotation
+            false,
+            true,
+            300.0,
+            220.0,
+        );
         c.stroke_path(&rotated_arc, &Stroke::new(3.0), Color::CYAN.into());
     });
 

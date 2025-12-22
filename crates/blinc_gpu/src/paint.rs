@@ -321,18 +321,35 @@ impl GpuPaintContext {
             }
             Brush::Gradient(gradient) => {
                 let (stops, fill_type, gradient_params) = match gradient {
-                    blinc_core::Gradient::Linear { start, end, stops, .. } => {
+                    blinc_core::Gradient::Linear {
+                        start, end, stops, ..
+                    } => {
                         // Linear gradient: (x1, y1, x2, y2) in user space
-                        (stops, FillType::LinearGradient, [start.x, start.y, end.x, end.y])
+                        (
+                            stops,
+                            FillType::LinearGradient,
+                            [start.x, start.y, end.x, end.y],
+                        )
                     }
-                    blinc_core::Gradient::Radial { center, radius, stops, .. } => {
+                    blinc_core::Gradient::Radial {
+                        center,
+                        radius,
+                        stops,
+                        ..
+                    } => {
                         // Radial gradient: (cx, cy, radius, 0) in user space
-                        (stops, FillType::RadialGradient, [center.x, center.y, *radius, 0.0])
+                        (
+                            stops,
+                            FillType::RadialGradient,
+                            [center.x, center.y, *radius, 0.0],
+                        )
                     }
                     // Conic gradients treated as radial for now
-                    blinc_core::Gradient::Conic { center, stops, .. } => {
-                        (stops, FillType::RadialGradient, [center.x, center.y, 100.0, 0.0])
-                    }
+                    blinc_core::Gradient::Conic { center, stops, .. } => (
+                        stops,
+                        FillType::RadialGradient,
+                        [center.x, center.y, 100.0, 0.0],
+                    ),
                 };
 
                 let (c1, c2) = if stops.len() >= 2 {

@@ -223,9 +223,8 @@ impl FontFace {
 
     /// Get horizontal advance width for a glyph in font units
     pub fn glyph_advance(&self, glyph_id: u16) -> Option<u16> {
-        self.as_ttf_face().and_then(|face| {
-            face.glyph_hor_advance(ttf_parser::GlyphId(glyph_id))
-        })
+        self.as_ttf_face()
+            .and_then(|face| face.glyph_hor_advance(ttf_parser::GlyphId(glyph_id)))
     }
 }
 
@@ -266,7 +265,11 @@ impl Font {
     /// Get the best matching face for the given weight and style
     pub fn get_face(&self, weight: FontWeight, style: FontStyle) -> Option<&FontFace> {
         // First try exact match
-        if let Some(face) = self.faces.iter().find(|f| f.weight == weight && f.style == style) {
+        if let Some(face) = self
+            .faces
+            .iter()
+            .find(|f| f.weight == weight && f.style == style)
+        {
             return Some(face);
         }
 

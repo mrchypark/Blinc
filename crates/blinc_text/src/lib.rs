@@ -7,19 +7,19 @@
 //! - Glyph atlas management
 //! - Text layout engine (line breaking, alignment)
 
-pub mod font;
-pub mod shaper;
-pub mod rasterizer;
 pub mod atlas;
+pub mod font;
 pub mod layout;
+pub mod rasterizer;
 pub mod renderer;
+pub mod shaper;
 
-pub use font::{Font, FontFace, FontWeight, FontStyle, FontMetrics};
-pub use shaper::{ShapedGlyph, ShapedText, TextShaper};
+pub use atlas::{AtlasRegion, GlyphAtlas, GlyphInfo};
+pub use font::{Font, FontFace, FontMetrics, FontStyle, FontWeight};
+pub use layout::{LayoutOptions, LineBreakMode, PositionedGlyph, TextAlignment, TextLayout};
 pub use rasterizer::{GlyphRasterizer, RasterizedGlyph};
-pub use atlas::{GlyphAtlas, GlyphInfo, AtlasRegion};
-pub use layout::{TextLayout, LayoutOptions, TextAlignment, LineBreakMode, PositionedGlyph};
-pub use renderer::{TextRenderer, GlyphInstance, PreparedText};
+pub use renderer::{GlyphInstance, PreparedText, TextRenderer};
+pub use shaper::{ShapedGlyph, ShapedText, TextShaper};
 
 use thiserror::Error;
 

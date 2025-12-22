@@ -196,7 +196,11 @@ impl TestRunner {
                         match self.harness.run_glass_test(&full_name, case.test_fn) {
                             Ok(result) => result,
                             Err(e) => {
-                                tracing::error!("Glass test {} failed with error: {}", full_name, e);
+                                tracing::error!(
+                                    "Glass test {} failed with error: {}",
+                                    full_name,
+                                    e
+                                );
                                 TestResult::Failed {
                                     difference: 1.0,
                                     diff_path: self.harness.diff_path(&full_name),
@@ -217,18 +221,16 @@ impl TestRunner {
                             }
                         }
                     }
-                    TestType::Standard => {
-                        match self.harness.run_test(&full_name, case.test_fn) {
-                            Ok(result) => result,
-                            Err(e) => {
-                                tracing::error!("Test {} failed with error: {}", full_name, e);
-                                TestResult::Failed {
-                                    difference: 1.0,
-                                    diff_path: self.harness.diff_path(&full_name),
-                                }
+                    TestType::Standard => match self.harness.run_test(&full_name, case.test_fn) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            tracing::error!("Test {} failed with error: {}", full_name, e);
+                            TestResult::Failed {
+                                difference: 1.0,
+                                diff_path: self.harness.diff_path(&full_name),
                             }
                         }
-                    }
+                    },
                 };
 
                 let duration = test_start.elapsed();

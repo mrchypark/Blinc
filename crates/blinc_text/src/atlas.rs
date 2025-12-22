@@ -164,11 +164,7 @@ impl GlyphAtlas {
         }
 
         // Create new shelf
-        let new_y = self
-            .shelves
-            .last()
-            .map(|s| s.y + s.height)
-            .unwrap_or(0);
+        let new_y = self.shelves.last().map(|s| s.y + s.height).unwrap_or(0);
 
         if new_y + padded_height > self.height {
             return Err(TextError::AtlasFull);
@@ -253,11 +249,7 @@ impl GlyphAtlas {
 
     /// Calculate atlas utilization (0.0 to 1.0)
     pub fn utilization(&self) -> f32 {
-        let used_height = self
-            .shelves
-            .last()
-            .map(|s| s.y + s.height)
-            .unwrap_or(0);
+        let used_height = self.shelves.last().map(|s| s.y + s.height).unwrap_or(0);
         used_height as f32 / self.height as f32
     }
 }
@@ -274,7 +266,10 @@ impl std::fmt::Debug for GlyphAtlas {
         f.debug_struct("GlyphAtlas")
             .field("dimensions", &(self.width, self.height))
             .field("glyph_count", &self.glyphs.len())
-            .field("utilization", &format!("{:.1}%", self.utilization() * 100.0))
+            .field(
+                "utilization",
+                &format!("{:.1}%", self.utilization() * 100.0),
+            )
             .field("dirty", &self.dirty)
             .finish()
     }

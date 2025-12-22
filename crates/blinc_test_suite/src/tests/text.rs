@@ -16,7 +16,13 @@ pub fn suite() -> TestSuite {
 
     // Basic text
     suite.add("text_basic", |ctx| {
-        ctx.draw_text("Hello, Blinc!", 50.0, 100.0, 24.0, color_to_array(Color::BLACK));
+        ctx.draw_text(
+            "Hello, Blinc!",
+            50.0,
+            100.0,
+            24.0,
+            color_to_array(Color::BLACK),
+        );
     });
 
     // Different font sizes

@@ -735,7 +735,12 @@ pub fn suite() -> TestSuite {
             for i in 0..5 {
                 let bar_height = 8.0 + i as f32 * 4.0;
                 fg.fill_rect(
-                    Rect::new(vol_x + i as f32 * 6.0, vol_y + 20.0 - bar_height, 4.0, bar_height),
+                    Rect::new(
+                        vol_x + i as f32 * 6.0,
+                        vol_y + 20.0 - bar_height,
+                        4.0,
+                        bar_height,
+                    ),
                     1.0.into(),
                     Color::WHITE.into(),
                 );
