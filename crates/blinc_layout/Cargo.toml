@@ -19,6 +19,7 @@ taffy.workspace = true
 
 # Data structures
 slotmap.workspace = true
+indexmap.workspace = true
 
 # Logging
 tracing.workspace = true

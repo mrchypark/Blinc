@@ -3,7 +3,7 @@
 //! This module provides the bridge between Taffy layout computation
 //! and the DrawContext rendering API.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use blinc_core::{DrawContext, Rect, Transform};
 use taffy::prelude::*;
@@ -43,8 +43,8 @@ pub struct RenderNode {
 pub struct RenderTree {
     /// The underlying layout tree
     pub layout_tree: LayoutTree,
-    /// Render data for each node
-    render_nodes: HashMap<LayoutNodeId, RenderNode>,
+    /// Render data for each node (ordered by insertion/tree order)
+    render_nodes: IndexMap<LayoutNodeId, RenderNode>,
     /// Root node ID
     root: Option<LayoutNodeId>,
 }
@@ -60,7 +60,7 @@ impl RenderTree {
     pub fn new() -> Self {
         Self {
             layout_tree: LayoutTree::new(),
-            render_nodes: HashMap::new(),
+            render_nodes: IndexMap::new(),
             root: None,
         }
     }
@@ -73,8 +73,21 @@ impl RenderTree {
     }
 
     /// Recursively build elements into the tree
+    ///
+    /// This builds the layout tree first (via element.build()), then walks the
+    /// element tree again to collect render properties for each node.
     fn build_element<E: ElementBuilder>(&mut self, element: &E) -> LayoutNodeId {
-        let node_id = element.build(&mut self.layout_tree);
+        // First, build the entire layout tree (this creates all nodes and parent-child relationships)
+        let root_id = element.build(&mut self.layout_tree);
+
+        // Now walk the element tree to collect render props for each node
+        self.collect_render_props(element, root_id);
+
+        root_id
+    }
+
+    /// Collect render properties from an element and its children
+    fn collect_render_props<E: ElementBuilder>(&mut self, element: &E, node_id: LayoutNodeId) {
         let mut props = element.render_props();
         props.node_id = Some(node_id);
 
@@ -102,17 +115,18 @@ impl RenderTree {
             },
         );
 
-        // Build children
-        for child in element.children_builders() {
-            self.build_element_boxed(child.as_ref());
-        }
+        // Get child node IDs from the layout tree
+        let child_node_ids = self.layout_tree.children(node_id);
+        let child_builders = element.children_builders();
 
-        node_id
+        // Match children by index (they were built in order)
+        for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
+            self.collect_render_props_boxed(child_builder.as_ref(), child_node_id);
+        }
     }
 
-    /// Build from a boxed element builder
-    fn build_element_boxed(&mut self, element: &dyn ElementBuilder) -> LayoutNodeId {
-        let node_id = element.build(&mut self.layout_tree);
+    /// Collect render props from a boxed element builder
+    fn collect_render_props_boxed(&mut self, element: &dyn ElementBuilder, node_id: LayoutNodeId) {
         let mut props = element.render_props();
         props.node_id = Some(node_id);
 
@@ -128,7 +142,14 @@ impl RenderTree {
             },
         );
 
-        node_id
+        // Get child node IDs from the layout tree
+        let child_node_ids = self.layout_tree.children(node_id);
+        let child_builders = element.children_builders();
+
+        // Match children by index (they were built in order)
+        for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
+            self.collect_render_props_boxed(child_builder.as_ref(), child_node_id);
+        }
     }
 
     /// Try to cast element as Text (type detection helper)
