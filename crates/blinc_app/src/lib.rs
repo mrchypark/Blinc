@@ -28,7 +28,10 @@ mod app;
 mod context;
 mod error;
 
-pub use app::BlincApp;
+#[cfg(test)]
+mod tests;
+
+pub use app::{BlincApp, BlincConfig};
 pub use context::RenderContext;
 pub use error::{BlincError, Result};
 
@@ -38,7 +41,7 @@ pub use blinc_layout::RenderTree;
 
 /// Prelude module - import everything commonly needed
 pub mod prelude {
-    pub use crate::app::BlincApp;
+    pub use crate::app::{BlincApp, BlincConfig};
     pub use crate::context::RenderContext;
     pub use crate::error::{BlincError, Result};
 
