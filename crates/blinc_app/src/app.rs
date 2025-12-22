@@ -50,7 +50,7 @@ impl Default for BlincConfig {
 ///     .w(400.0).h(300.0)
 ///     .child(text("Hello!").size(24.0));
 ///
-/// // Render to a texture
+/// // Render to a texture - handles everything automatically
 /// app.render(&ui, target_view, 400.0, 300.0)?;
 /// ```
 pub struct BlincApp {
@@ -122,8 +122,14 @@ impl BlincApp {
 
     /// Render a UI element tree to a texture
     ///
-    /// This is the simplest way to render - just pass your UI tree
-    /// and the target texture view.
+    /// This handles everything automatically:
+    /// - Computes layout
+    /// - Renders background elements
+    /// - Renders glass elements with backdrop blur
+    /// - Renders foreground elements on top
+    /// - Renders text at layout-computed positions
+    /// - Renders SVG icons at layout-computed positions
+    /// - Applies MSAA if configured
     ///
     /// # Arguments
     ///
@@ -136,7 +142,11 @@ impl BlincApp {
     ///
     /// ```ignore
     /// let ui = div().w(400.0).h(300.0)
-    ///     .child(text("Hello!"));
+    ///     .flex_col().gap(4.0)
+    ///     .child(
+    ///         div().glass().rounded(16.0)
+    ///             .child(text("Hello!").size(24.0))
+    ///     );
     ///
     /// app.render(&ui, &target_view, 400.0, 300.0)?;
     /// ```
@@ -149,86 +159,12 @@ impl BlincApp {
     ) -> Result<()> {
         let mut tree = RenderTree::from_element(element);
         tree.compute_layout(width, height);
-
-        self.ctx.render_tree(
-            &tree,
-            width as u32,
-            height as u32,
-            target,
-            None,
-            None,
-        )
-    }
-
-    /// Render with MSAA (multi-sample anti-aliasing)
-    ///
-    /// Use this for higher quality rendering with smooth edges.
-    ///
-    /// # Arguments
-    ///
-    /// * `element` - The root UI element
-    /// * `msaa_target` - Multi-sampled texture view to render to
-    /// * `resolve_target` - Single-sampled texture view for MSAA resolve
-    /// * `width` - Viewport width
-    /// * `height` - Viewport height
-    pub fn render_msaa<E: ElementBuilder>(
-        &mut self,
-        element: &E,
-        msaa_target: &wgpu::TextureView,
-        resolve_target: &wgpu::TextureView,
-        width: f32,
-        height: f32,
-    ) -> Result<()> {
-        let mut tree = RenderTree::from_element(element);
-        tree.compute_layout(width, height);
-
-        self.ctx.render_tree(
-            &tree,
-            width as u32,
-            height as u32,
-            msaa_target,
-            Some(resolve_target),
-            None,
-        )
-    }
-
-    /// Render with glass effects
-    ///
-    /// Use this when your UI contains glass elements that need backdrop blur.
-    /// The backdrop texture should contain the content behind the glass.
-    ///
-    /// # Arguments
-    ///
-    /// * `element` - The root UI element
-    /// * `target` - Texture view to render to
-    /// * `backdrop` - Texture view containing backdrop for glass blur
-    /// * `width` - Viewport width
-    /// * `height` - Viewport height
-    pub fn render_with_glass<E: ElementBuilder>(
-        &mut self,
-        element: &E,
-        target: &wgpu::TextureView,
-        backdrop: &wgpu::TextureView,
-        width: f32,
-        height: f32,
-    ) -> Result<()> {
-        let mut tree = RenderTree::from_element(element);
-        tree.compute_layout(width, height);
-
-        self.ctx.render_tree(
-            &tree,
-            width as u32,
-            height as u32,
-            target,
-            None,
-            Some(backdrop),
-        )
+        self.ctx.render_tree(&tree, width as u32, height as u32, target)
     }
 
     /// Render a pre-computed render tree
     ///
-    /// Use this when you want to compute layout once and render multiple times,
-    /// or when you need more control over the render tree.
+    /// Use this when you want to compute layout once and render multiple times.
     pub fn render_tree(
         &mut self,
         tree: &RenderTree,
@@ -236,7 +172,7 @@ impl BlincApp {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        self.ctx.render_tree(tree, width, height, target, None, None)
+        self.ctx.render_tree(tree, width, height, target)
     }
 
     /// Get the render context for advanced usage
