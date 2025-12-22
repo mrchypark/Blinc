@@ -1,7 +1,10 @@
 //! Layout tree management
 
 use slotmap::{new_key_type, SlotMap};
+use std::collections::HashMap;
 use taffy::prelude::*;
+
+use crate::element::ElementBounds;
 
 new_key_type! {
     pub struct LayoutNodeId;
@@ -11,6 +14,8 @@ new_key_type! {
 pub struct LayoutTree {
     taffy: TaffyTree,
     node_map: SlotMap<LayoutNodeId, NodeId>,
+    /// Reverse mapping from Taffy NodeId to our LayoutNodeId
+    reverse_map: HashMap<NodeId, LayoutNodeId>,
 }
 
 impl LayoutTree {
@@ -18,13 +23,16 @@ impl LayoutTree {
         Self {
             taffy: TaffyTree::new(),
             node_map: SlotMap::with_key(),
+            reverse_map: HashMap::new(),
         }
     }
 
     /// Create a new layout node with the given style
     pub fn create_node(&mut self, style: Style) -> LayoutNodeId {
         let taffy_node = self.taffy.new_leaf(style).unwrap();
-        self.node_map.insert(taffy_node)
+        let id = self.node_map.insert(taffy_node);
+        self.reverse_map.insert(taffy_node, id);
+        id
     }
 
     /// Set the style for a node
@@ -60,8 +68,41 @@ impl LayoutTree {
     /// Remove a node
     pub fn remove_node(&mut self, id: LayoutNodeId) {
         if let Some(taffy_node) = self.node_map.remove(id) {
+            self.reverse_map.remove(&taffy_node);
             let _ = self.taffy.remove(taffy_node);
         }
+    }
+
+    /// Get children of a layout node
+    pub fn children(&self, parent: LayoutNodeId) -> Vec<LayoutNodeId> {
+        let Some(&taffy_node) = self.node_map.get(parent) else {
+            return Vec::new();
+        };
+
+        let Ok(children) = self.taffy.children(taffy_node) else {
+            return Vec::new();
+        };
+
+        children
+            .iter()
+            .filter_map(|&child_taffy| self.reverse_map.get(&child_taffy).copied())
+            .collect()
+    }
+
+    /// Get computed layout as ElementBounds with parent offset
+    pub fn get_bounds(&self, id: LayoutNodeId, parent_offset: (f32, f32)) -> Option<ElementBounds> {
+        self.get_layout(id)
+            .map(|layout| ElementBounds::from_layout(layout, parent_offset))
+    }
+
+    /// Get the number of nodes in the tree
+    pub fn len(&self) -> usize {
+        self.node_map.len()
+    }
+
+    /// Check if the tree is empty
+    pub fn is_empty(&self) -> bool {
+        self.node_map.is_empty()
     }
 }
 
