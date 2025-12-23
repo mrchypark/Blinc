@@ -20,6 +20,7 @@ blinc_paint = { path = "../blinc_paint" }
 # Data structures
 slotmap.workspace = true
 smallvec.workspace = true
+rustc-hash.workspace = true
 
 # Logging
 tracing.workspace = true

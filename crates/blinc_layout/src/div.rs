@@ -13,6 +13,8 @@
 //!     .child(text("Hello"));
 //! ```
 
+use std::sync::{Arc, Mutex};
+
 use blinc_core::{Brush, Color, CornerRadius, Shadow, Transform};
 use taffy::prelude::*;
 
@@ -20,6 +22,219 @@ use crate::element::{
     GlassMaterial, Material, MetallicMaterial, RenderLayer, RenderProps, WoodMaterial,
 };
 use crate::tree::{LayoutNodeId, LayoutTree};
+
+// ============================================================================
+// ElementRef - Generic reference binding for external access
+// ============================================================================
+
+/// Shared storage for element references
+type RefStorage<T> = Arc<Mutex<Option<T>>>;
+
+/// A generic reference binding to an element that can be accessed externally
+///
+/// Similar to React's `useRef`, this allows capturing a reference to an element
+/// for external manipulation while maintaining the fluent API flow.
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_layout::prelude::*;
+///
+/// // Create a reference
+/// let button_ref = ElementRef::<StatefulButton>::new();
+///
+/// // Build UI - .bind() works seamlessly in the fluent chain
+/// let ui = div()
+///     .flex_col()
+///     .child(
+///         stateful_button()
+///             .bind(&button_ref)  // Binds AND continues the chain
+///             .on_state(|state, div| { ... })
+///     );
+///
+/// // Later, access the bound element's full API
+/// button_ref.with_mut(|btn| {
+///     btn.dispatch_state(ButtonState::Pressed);
+/// });
+/// ```
+pub struct ElementRef<T> {
+    inner: RefStorage<T>,
+}
+
+impl<T> Clone for ElementRef<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T> Default for ElementRef<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> ElementRef<T> {
+    /// Create a new empty ElementRef
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Check if an element is bound to this reference
+    pub fn is_bound(&self) -> bool {
+        self.inner.lock().unwrap().is_some()
+    }
+
+    /// Get the internal storage handle for shared access
+    ///
+    /// This is used by `.bind()` implementations to share storage
+    /// between the bound element wrapper and this ref.
+    pub fn storage(&self) -> RefStorage<T> {
+        Arc::clone(&self.inner)
+    }
+
+    /// Set the element in storage (used by bind implementations)
+    pub fn set(&self, elem: T) {
+        *self.inner.lock().unwrap() = Some(elem);
+    }
+
+    /// Access the bound element immutably with a callback
+    ///
+    /// Returns `Some(result)` if an element is bound, `None` otherwise.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let state = button_ref.with(|btn| *btn.state());
+    /// ```
+    pub fn with<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&T) -> R,
+    {
+        self.inner.lock().unwrap().as_ref().map(f)
+    }
+
+    /// Access the bound element mutably with a callback
+    ///
+    /// Returns `Some(result)` if an element is bound, `None` otherwise.
+    /// This is the primary way to call methods on the bound element.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Dispatch state changes
+    /// button_ref.with_mut(|btn| {
+    ///     btn.dispatch_state(ButtonState::Pressed);
+    /// });
+    ///
+    /// // Modify element styling
+    /// div_ref.with_mut(|div| {
+    ///     *div = div.swap().bg(Color::RED).rounded(8.0);
+    /// });
+    /// ```
+    pub fn with_mut<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        self.inner.lock().unwrap().as_mut().map(f)
+    }
+
+    /// Get a clone of the bound element, if any
+    pub fn get(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        self.inner.lock().unwrap().clone()
+    }
+
+    /// Replace the bound element with a new one, returning the old value
+    pub fn replace(&self, new_elem: T) -> Option<T> {
+        self.inner.lock().unwrap().replace(new_elem)
+    }
+
+    /// Take the bound element out of the reference, leaving None
+    pub fn take(&self) -> Option<T> {
+        self.inner.lock().unwrap().take()
+    }
+
+    /// Borrow the bound element immutably
+    ///
+    /// Returns a guard that dereferences to &T. Panics if not bound.
+    /// For fallible access, use `with()` instead.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let state = button_ref.borrow().state();
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if no element is bound to this reference.
+    pub fn borrow(&self) -> ElementRefGuard<'_, T> {
+        ElementRefGuard {
+            guard: self.inner.lock().unwrap(),
+        }
+    }
+
+    /// Borrow the bound element mutably
+    ///
+    /// Returns a guard that dereferences to &mut T. Panics if not bound.
+    /// For fallible access, use `with_mut()` instead.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// button_ref.borrow_mut().dispatch_state(ButtonState::Hovered);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if no element is bound to this reference.
+    pub fn borrow_mut(&self) -> ElementRefGuardMut<'_, T> {
+        ElementRefGuardMut {
+            guard: self.inner.lock().unwrap(),
+        }
+    }
+}
+
+/// Guard for immutable access to a bound element
+pub struct ElementRefGuard<'a, T> {
+    guard: std::sync::MutexGuard<'a, Option<T>>,
+}
+
+impl<T> std::ops::Deref for ElementRefGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.guard.as_ref().expect("ElementRef not bound")
+    }
+}
+
+/// Guard for mutable access to a bound element
+pub struct ElementRefGuardMut<'a, T> {
+    guard: std::sync::MutexGuard<'a, Option<T>>,
+}
+
+impl<T> std::ops::Deref for ElementRefGuardMut<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.guard.as_ref().expect("ElementRef not bound")
+    }
+}
+
+impl<T> std::ops::DerefMut for ElementRefGuardMut<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.guard.as_mut().expect("ElementRef not bound")
+    }
+}
+
+/// Type alias for Div references
+pub type DivRef = ElementRef<Div>;
 
 /// A div element builder with GPUI/Tailwind-style methods
 pub struct Div {
@@ -53,6 +268,29 @@ impl Div {
             transform: None,
         }
     }
+
+    /// Swap this Div with a default, returning the original
+    ///
+    /// This is a convenience method for use in state callbacks where you need
+    /// to consume `self` to chain builder methods, then assign back.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// .on_state(|state, div| match state {
+    ///     ButtonState::Idle => {
+    ///         *div = div.swap().bg(Color::BLUE).rounded(4.0);
+    ///     }
+    ///     ButtonState::Hovered => {
+    ///         *div = div.swap().bg(Color::CYAN).rounded(8.0);
+    ///     }
+    /// })
+    /// ```
+    #[inline]
+    pub fn swap(&mut self) -> Self {
+        std::mem::take(self)
+    }
+
 
     // =========================================================================
     // Display & Flex Direction
@@ -1208,5 +1446,52 @@ mod tests {
             .unwrap();
         assert_eq!(bottom.y, 50.0);
         assert_eq!(bottom.height, 150.0);
+    }
+
+    #[test]
+    fn test_element_ref_basic() {
+        // Create a ref
+        let div_ref: ElementRef<Div> = ElementRef::new();
+
+        assert!(!div_ref.is_bound());
+
+        // Set a div
+        div_ref.set(div().w(100.0).h(50.0).bg(Color::BLUE));
+
+        assert!(div_ref.is_bound());
+
+        // Read from the ref
+        let width = div_ref.with(|d| d.style.size.width.clone());
+        assert!(matches!(width, Some(Dimension::Length(100.0))));
+    }
+
+    #[test]
+    fn test_element_ref_with_mut() {
+        let div_ref: ElementRef<Div> = ElementRef::new();
+
+        div_ref.set(div().w(100.0));
+
+        // Modify through the ref
+        div_ref.with_mut(|d| {
+            *d = d.swap().h(200.0).bg(Color::RED);
+        });
+
+        // Verify modification
+        let height = div_ref.with(|d| d.style.size.height.clone());
+        assert!(matches!(height, Some(Dimension::Length(200.0))));
+    }
+
+    #[test]
+    fn test_element_ref_clone() {
+        let div_ref: ElementRef<Div> = ElementRef::new();
+        let div_ref_clone = div_ref.clone();
+
+        // Set on original
+        div_ref.set(div().w(100.0));
+
+        // Should be visible on clone (shared storage)
+        assert!(div_ref_clone.is_bound());
+        let width = div_ref_clone.with(|d| d.style.size.width.clone());
+        assert!(matches!(width, Some(Dimension::Length(100.0))));
     }
 }

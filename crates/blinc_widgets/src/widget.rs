@@ -10,10 +10,19 @@ new_key_type! {
 pub trait Widget {
     /// Get the widget's unique ID
     fn id(&self) -> WidgetId;
+}
 
-    /// Render the widget (called when reactive state changes)
-    fn render(&self);
+/// Trait for widgets that can build their UI representation
+///
+/// Widgets that implement this trait can convert themselves into
+/// a layout element (typically a Div) for rendering.
+pub trait WidgetBuilder {
+    /// The element type this widget builds into
+    type Element;
 
-    /// Handle an event
-    fn handle_event(&mut self, event: &blinc_core::events::Event);
+    /// Build the widget's UI representation
+    ///
+    /// This is called during rendering to convert the widget's
+    /// current state into layout elements.
+    fn build(&self, ctx: &crate::context::WidgetContext) -> Self::Element;
 }

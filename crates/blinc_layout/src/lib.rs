@@ -30,8 +30,11 @@
 
 pub mod div;
 pub mod element;
+pub mod element_style;
 pub mod image;
+pub mod interactive;
 pub mod renderer;
+pub mod stateful;
 pub mod style;
 pub mod svg;
 pub mod text;
@@ -39,6 +42,7 @@ pub mod tree;
 
 // Core types
 pub use element::{ElementBounds, RenderLayer, RenderProps};
+pub use interactive::{DirtyTracker, InteractiveContext, NodeState};
 pub use style::LayoutStyle;
 pub use tree::{LayoutNodeId, LayoutTree};
 
@@ -49,6 +53,8 @@ pub use element::{
 
 // Builder API
 pub use div::{div, Div, ElementBuilder, ElementTypeId, FontWeight, ImageRenderInfo, TextAlign};
+// Reference binding
+pub use div::{DivRef, ElementRef};
 pub use image::{image, img, Image, ImageFilter, ObjectFit, ObjectPosition};
 pub use svg::{svg, Svg};
 pub use text::{text, Text};
@@ -61,13 +67,31 @@ pub mod prelude {
     pub use crate::div::{
         div, Div, ElementBuilder, ElementTypeId, FontWeight, ImageRenderInfo, TextAlign,
     };
+    // Reference binding for external element access
+    pub use crate::div::{DivRef, ElementRef};
     pub use crate::element::{ElementBounds, RenderLayer, RenderProps};
     // Image element
     pub use crate::image::{image, img, Image, ImageFilter, ObjectFit, ObjectPosition};
+    // Interactive state management
+    pub use crate::interactive::{DirtyTracker, InteractiveContext, NodeState};
+    // Unified element styling
+    pub use crate::element_style::{style, ElementStyle};
+    // Stateful elements with user-defined state types
+    pub use crate::stateful::{
+        // Core generic type
+        BoundStateful, Stateful, StateTransitions,
+        // Built-in state types
+        ButtonState, CheckboxState, TextFieldState, ToggleState,
+        // Type aliases
+        StatefulButton, StatefulCheckbox, StatefulTextField, StatefulToggle,
+        // Constructor functions
+        stateful, stateful_button, stateful_checkbox, stateful_text_field, stateful_toggle,
+    };
     // Material system
     pub use crate::element::{
         GlassMaterial, Material, MaterialShadow, MetallicMaterial, SolidMaterial, WoodMaterial,
     };
+    #[allow(deprecated)]
     pub use crate::renderer::{
         GlassPanel, ImageData, LayoutRenderer, RenderTree, SvgData, TextData,
     };
