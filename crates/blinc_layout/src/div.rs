@@ -246,6 +246,7 @@ pub struct Div {
     material: Option<Material>,
     shadow: Option<Shadow>,
     transform: Option<Transform>,
+    event_handlers: crate::event_handler::EventHandlers,
 }
 
 impl Default for Div {
@@ -266,6 +267,7 @@ impl Div {
             material: None,
             shadow: None,
             transform: None,
+            event_handlers: crate::event_handler::EventHandlers::new(),
         }
     }
 
@@ -1009,6 +1011,177 @@ impl Div {
     pub fn style_mut(&mut self) -> &mut Style {
         &mut self.style
     }
+
+    // =========================================================================
+    // Event Handlers
+    // =========================================================================
+
+    /// Get a reference to the event handlers
+    pub fn event_handlers(&self) -> &crate::event_handler::EventHandlers {
+        &self.event_handlers
+    }
+
+    /// Get a mutable reference to the event handlers
+    pub fn event_handlers_mut(&mut self) -> &mut crate::event_handler::EventHandlers {
+        &mut self.event_handlers
+    }
+
+    /// Register a click handler (fired on POINTER_UP)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// div()
+    ///     .w(100.0).h(50.0)
+    ///     .bg(Color::BLUE)
+    ///     .on_click(|ctx| {
+    ///         println!("Clicked at ({}, {})", ctx.local_x, ctx.local_y);
+    ///     })
+    /// ```
+    pub fn on_click<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_click(handler);
+        self
+    }
+
+    /// Register a mouse down handler
+    pub fn on_mouse_down<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_mouse_down(handler);
+        self
+    }
+
+    /// Register a mouse up handler
+    pub fn on_mouse_up<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_mouse_up(handler);
+        self
+    }
+
+    /// Register a hover enter handler
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// div()
+    ///     .on_hover_enter(|_| println!("Mouse entered!"))
+    ///     .on_hover_leave(|_| println!("Mouse left!"))
+    /// ```
+    pub fn on_hover_enter<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_hover_enter(handler);
+        self
+    }
+
+    /// Register a hover leave handler
+    pub fn on_hover_leave<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_hover_leave(handler);
+        self
+    }
+
+    /// Register a focus handler
+    pub fn on_focus<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_focus(handler);
+        self
+    }
+
+    /// Register a blur handler
+    pub fn on_blur<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_blur(handler);
+        self
+    }
+
+    /// Register a mount handler (element added to tree)
+    pub fn on_mount<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_mount(handler);
+        self
+    }
+
+    /// Register an unmount handler (element removed from tree)
+    pub fn on_unmount<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_unmount(handler);
+        self
+    }
+
+    /// Register a key down handler (requires focus)
+    pub fn on_key_down<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_key_down(handler);
+        self
+    }
+
+    /// Register a key up handler (requires focus)
+    pub fn on_key_up<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_key_up(handler);
+        self
+    }
+
+    /// Register a scroll handler
+    pub fn on_scroll<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_scroll(handler);
+        self
+    }
+
+    /// Register a resize handler
+    pub fn on_resize<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_resize(handler);
+        self
+    }
+
+    /// Register a handler for a specific event type
+    ///
+    /// This is the low-level method for registering handlers for any event type.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use blinc_core::events::event_types;
+    ///
+    /// div().on_event(event_types::POINTER_MOVE, |ctx| {
+    ///     println!("Mouse moved to ({}, {})", ctx.mouse_x, ctx.mouse_y);
+    /// })
+    /// ```
+    pub fn on_event<F>(mut self, event_type: blinc_core::events::EventType, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on(event_type, handler);
+        self
+    }
 }
 
 /// Element type identifier for downcasting
@@ -1153,6 +1326,14 @@ pub trait ElementBuilder: Send {
     fn image_render_info(&self) -> Option<ImageRenderInfo> {
         None
     }
+
+    /// Get event handlers for this element
+    ///
+    /// Returns a reference to the element's event handlers for registration
+    /// with the handler registry during tree building.
+    fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
+        None
+    }
 }
 
 impl ElementBuilder for Div {
@@ -1182,6 +1363,14 @@ impl ElementBuilder for Div {
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
         &self.children
+    }
+
+    fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
+        if self.event_handlers.is_empty() {
+            None
+        } else {
+            Some(&self.event_handlers)
+        }
     }
 }
 

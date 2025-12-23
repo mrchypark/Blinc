@@ -585,6 +585,136 @@ impl<S: StateTransitions> Stateful<S> {
         self
     }
 
+    // =========================================================================
+    // Event Handlers (builder pattern)
+    // =========================================================================
+
+    /// Register a click handler (builder pattern)
+    pub fn on_click<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_click(handler);
+        self
+    }
+
+    /// Register a mouse down handler (builder pattern)
+    pub fn on_mouse_down<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_mouse_down(handler);
+        self
+    }
+
+    /// Register a mouse up handler (builder pattern)
+    pub fn on_mouse_up<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_mouse_up(handler);
+        self
+    }
+
+    /// Register a hover enter handler (builder pattern)
+    pub fn on_hover_enter<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_hover_enter(handler);
+        self
+    }
+
+    /// Register a hover leave handler (builder pattern)
+    pub fn on_hover_leave<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_hover_leave(handler);
+        self
+    }
+
+    /// Register a focus handler (builder pattern)
+    pub fn on_focus<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_focus(handler);
+        self
+    }
+
+    /// Register a blur handler (builder pattern)
+    pub fn on_blur<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_blur(handler);
+        self
+    }
+
+    /// Register a mount handler (builder pattern)
+    pub fn on_mount<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_mount(handler);
+        self
+    }
+
+    /// Register an unmount handler (builder pattern)
+    pub fn on_unmount<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_unmount(handler);
+        self
+    }
+
+    /// Register a key down handler (builder pattern)
+    pub fn on_key_down<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_key_down(handler);
+        self
+    }
+
+    /// Register a key up handler (builder pattern)
+    pub fn on_key_up<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_key_up(handler);
+        self
+    }
+
+    /// Register a scroll handler (builder pattern)
+    pub fn on_scroll<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_scroll(handler);
+        self
+    }
+
+    /// Register a resize handler (builder pattern)
+    pub fn on_resize<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_resize(handler);
+        self
+    }
+
+    /// Register a handler for a specific event type (builder pattern)
+    pub fn on_event<F>(mut self, event_type: blinc_core::events::EventType, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = std::mem::take(&mut self.inner).on_event(event_type, handler);
+        self
+    }
+
     /// Bind this element to an ElementRef for external access
     ///
     /// Returns a `BoundStateful` that continues the fluent API chain while
@@ -761,6 +891,122 @@ impl<S: StateTransitions> BoundStateful<S> {
     pub fn child(self, child: impl ElementBuilder + 'static) -> Self {
         self.transform_inner(|s| s.child(child))
     }
+
+    // =========================================================================
+    // Event Handlers (delegated builder pattern)
+    // =========================================================================
+
+    /// Register a click handler (builder pattern)
+    pub fn on_click<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_click(handler))
+    }
+
+    /// Register a mouse down handler (builder pattern)
+    pub fn on_mouse_down<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_mouse_down(handler))
+    }
+
+    /// Register a mouse up handler (builder pattern)
+    pub fn on_mouse_up<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_mouse_up(handler))
+    }
+
+    /// Register a hover enter handler (builder pattern)
+    pub fn on_hover_enter<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_hover_enter(handler))
+    }
+
+    /// Register a hover leave handler (builder pattern)
+    pub fn on_hover_leave<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_hover_leave(handler))
+    }
+
+    /// Register a focus handler (builder pattern)
+    pub fn on_focus<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_focus(handler))
+    }
+
+    /// Register a blur handler (builder pattern)
+    pub fn on_blur<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_blur(handler))
+    }
+
+    /// Register a mount handler (builder pattern)
+    pub fn on_mount<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_mount(handler))
+    }
+
+    /// Register an unmount handler (builder pattern)
+    pub fn on_unmount<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_unmount(handler))
+    }
+
+    /// Register a key down handler (builder pattern)
+    pub fn on_key_down<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_key_down(handler))
+    }
+
+    /// Register a key up handler (builder pattern)
+    pub fn on_key_up<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_key_up(handler))
+    }
+
+    /// Register a scroll handler (builder pattern)
+    pub fn on_scroll<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_scroll(handler))
+    }
+
+    /// Register a resize handler (builder pattern)
+    pub fn on_resize<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_resize(handler))
+    }
+
+    /// Register a handler for a specific event type (builder pattern)
+    pub fn on_event<F>(self, event_type: blinc_core::events::EventType, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_event(event_type, handler))
+    }
 }
 
 impl<S: StateTransitions + Default> ElementBuilder for BoundStateful<S> {
@@ -809,6 +1055,11 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
 
     fn element_type_id(&self) -> ElementTypeId {
         ElementTypeId::Div
+    }
+
+    fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
+        // Use ElementBuilder trait method explicitly (not the inherent method on Div)
+        ElementBuilder::event_handlers(&self.inner)
     }
 }
 

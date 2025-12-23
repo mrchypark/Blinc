@@ -170,6 +170,8 @@ pub struct RenderTree {
     render_nodes: IndexMap<LayoutNodeId, RenderNode>,
     /// Root node ID
     root: Option<LayoutNodeId>,
+    /// Event handlers registry for dispatching events
+    handler_registry: crate::event_handler::HandlerRegistry,
 }
 
 impl Default for RenderTree {
@@ -185,6 +187,7 @@ impl RenderTree {
             layout_tree: LayoutTree::new(),
             render_nodes: IndexMap::new(),
             root: None,
+            handler_registry: crate::event_handler::HandlerRegistry::new(),
         }
     }
 
@@ -224,6 +227,11 @@ impl RenderTree {
                 element_type,
             },
         );
+
+        // Register event handlers if present
+        if let Some(handlers) = element.event_handlers() {
+            self.handler_registry.register(node_id, handlers.clone());
+        }
 
         // Get child node IDs from the layout tree
         let child_node_ids = self.layout_tree.children(node_id);
@@ -290,6 +298,11 @@ impl RenderTree {
                 element_type,
             },
         );
+
+        // Register event handlers if present
+        if let Some(handlers) = element.event_handlers() {
+            self.handler_registry.register(node_id, handlers.clone());
+        }
 
         // Get child node IDs from the layout tree
         let child_node_ids = self.layout_tree.children(node_id);
@@ -367,6 +380,48 @@ impl RenderTree {
     /// Get the layout tree for inspection
     pub fn layout(&self) -> &LayoutTree {
         &self.layout_tree
+    }
+
+    /// Get the event handler registry
+    pub fn handler_registry(&self) -> &crate::event_handler::HandlerRegistry {
+        &self.handler_registry
+    }
+
+    /// Get the event handler registry mutably
+    pub fn handler_registry_mut(&mut self) -> &mut crate::event_handler::HandlerRegistry {
+        &mut self.handler_registry
+    }
+
+    /// Dispatch an event to a node's handlers
+    ///
+    /// This is a convenience method that creates an EventContext and dispatches
+    /// to the appropriate handlers.
+    pub fn dispatch_event(
+        &self,
+        node_id: LayoutNodeId,
+        event_type: blinc_core::events::EventType,
+        mouse_x: f32,
+        mouse_y: f32,
+    ) {
+        let ctx = crate::event_handler::EventContext::new(event_type, node_id)
+            .with_mouse_pos(mouse_x, mouse_y);
+        self.handler_registry.dispatch(&ctx);
+    }
+
+    /// Dispatch an event with local coordinates
+    pub fn dispatch_event_with_local(
+        &self,
+        node_id: LayoutNodeId,
+        event_type: blinc_core::events::EventType,
+        mouse_x: f32,
+        mouse_y: f32,
+        local_x: f32,
+        local_y: f32,
+    ) {
+        let ctx = crate::event_handler::EventContext::new(event_type, node_id)
+            .with_mouse_pos(mouse_x, mouse_y)
+            .with_local_pos(local_x, local_y);
+        self.handler_registry.dispatch(&ctx);
     }
 
     /// Render the entire tree to a DrawContext
