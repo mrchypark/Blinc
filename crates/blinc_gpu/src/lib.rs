@@ -24,6 +24,7 @@ pub mod shaders;
 pub mod text;
 
 pub use backbuffer::{Backbuffer, BackbufferConfig, FrameContext};
+pub use image::{GpuImage, GpuImageInstance, ImageRenderingContext};
 pub use paint::GpuPaintContext;
 pub use path::{tessellate_fill, tessellate_stroke, PathVertex, TessellatedPath};
 pub use primitives::{
@@ -31,9 +32,10 @@ pub use primitives::{
     GpuPrimitive, PathBatch, PathUniforms, PrimitiveBatch, PrimitiveType, Uniforms,
 };
 pub use renderer::{GpuRenderer, RendererConfig};
-pub use shaders::{COMPOSITE_SHADER, GLASS_SHADER, IMAGE_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER};
+pub use shaders::{
+    COMPOSITE_SHADER, GLASS_SHADER, IMAGE_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER,
+};
 pub use text::TextRenderingContext;
-pub use image::{GpuImage, GpuImageInstance, ImageRenderingContext};
 
 // Re-export text types for convenience
 pub use blinc_text::{TextAlignment, TextAnchor};

@@ -166,9 +166,9 @@ impl Image {
     /// Create a new image element from a source
     ///
     /// Source can be:
-    /// - File path: "path/to/image.png"
-    /// - URL: "https://example.com/image.jpg"
-    /// - Base64: "data:image/png;base64,iVBORw0KGgo..."
+    /// - File path: `path/to/image.png`
+    /// - URL: `https://example.com/image.jpg`
+    /// - Base64: `data:image/png;base64,iVBORw0KGgo...`
     pub fn new(source: impl Into<String>) -> Self {
         Self {
             source: source.into(),
@@ -601,9 +601,9 @@ impl ElementBuilder for Image {
 /// Convenience function to create a new image element
 ///
 /// Source can be:
-/// - File path: "path/to/image.png"
-/// - URL: "https://example.com/image.jpg"
-/// - Base64 data URI: "data:image/png;base64,iVBORw0KGgo..."
+/// - File path: `path/to/image.png`
+/// - URL: `https://example.com/image.jpg`
+/// - Base64 data URI: `data:image/png;base64,iVBORw0KGgo...`
 pub fn img(source: impl Into<String>) -> Image {
     Image::new(source)
 }
@@ -632,10 +632,7 @@ mod tests {
 
     #[test]
     fn test_image_filters() {
-        let i = img("test.png")
-            .grayscale(0.5)
-            .brightness(1.2)
-            .contrast(1.1);
+        let i = img("test.png").grayscale(0.5).brightness(1.2).contrast(1.1);
 
         let info = i.image_render_info().unwrap();
         assert_eq!(info.filter[0], 0.5); // grayscale

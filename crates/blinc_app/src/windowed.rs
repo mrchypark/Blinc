@@ -206,8 +206,9 @@ impl WindowedApp {
                                 }
                             };
 
-                            let view =
-                                frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                            let view = frame
+                                .texture
+                                .create_view(&wgpu::TextureViewDescriptor::default());
 
                             // Build UI - context provides physical size to match surface
                             let ctx = WindowedContext::from_window(window);

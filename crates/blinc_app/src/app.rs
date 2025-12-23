@@ -243,8 +243,9 @@ impl BlincApp {
             texture_format: None,
         };
 
-        let (renderer, surface) = pollster::block_on(GpuRenderer::with_surface(window, renderer_config))
-            .map_err(|e| BlincError::GpuInit(e.to_string()))?;
+        let (renderer, surface) =
+            pollster::block_on(GpuRenderer::with_surface(window, renderer_config))
+                .map_err(|e| BlincError::GpuInit(e.to_string()))?;
 
         let device = renderer.device_arc();
         let queue = renderer.queue_arc();

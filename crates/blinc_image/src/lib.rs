@@ -309,7 +309,9 @@ pub fn calculate_fit_rects(
 
         ObjectFit::ScaleDown => {
             // Like contain, but only scale down, never up
-            let scale = (container_width / img_w).min(container_height / img_h).min(1.0);
+            let scale = (container_width / img_w)
+                .min(container_height / img_h)
+                .min(1.0);
             let dst_w = img_w * scale;
             let dst_h = img_h * scale;
 
@@ -334,8 +336,8 @@ pub fn src_rect_to_uv(src_rect: [f32; 4], image_width: u32, image_height: u32) -
     let img_w = image_width as f32;
     let img_h = image_height as f32;
     [
-        src_rect[0] / img_w,         // u_min
-        src_rect[1] / img_h,         // v_min
+        src_rect[0] / img_w,                 // u_min
+        src_rect[1] / img_h,                 // v_min
         (src_rect[0] + src_rect[2]) / img_w, // u_max
         (src_rect[1] + src_rect[3]) / img_h, // v_max
     ]
@@ -348,8 +350,14 @@ mod tests {
     #[test]
     fn test_object_fit_contain() {
         // 100x50 image in 200x200 container
-        let (src, dst) =
-            calculate_fit_rects(100, 50, 200.0, 200.0, ObjectFit::Contain, ObjectPosition::CENTER);
+        let (src, dst) = calculate_fit_rects(
+            100,
+            50,
+            200.0,
+            200.0,
+            ObjectFit::Contain,
+            ObjectPosition::CENTER,
+        );
 
         assert_eq!(src, [0.0, 0.0, 100.0, 50.0]);
         // Scale is 2.0 (limited by height ratio 200/50=4, width ratio 200/100=2)
@@ -361,8 +369,14 @@ mod tests {
     #[test]
     fn test_object_fit_cover() {
         // 100x50 image in 200x200 container
-        let (src, dst) =
-            calculate_fit_rects(100, 50, 200.0, 200.0, ObjectFit::Cover, ObjectPosition::CENTER);
+        let (src, dst) = calculate_fit_rects(
+            100,
+            50,
+            200.0,
+            200.0,
+            ObjectFit::Cover,
+            ObjectPosition::CENTER,
+        );
 
         // Scale is 4.0 (200/50 to fill height)
         // src_w = 200/4 = 50, src_h = 200/4 = 50
@@ -373,8 +387,14 @@ mod tests {
 
     #[test]
     fn test_object_fit_fill() {
-        let (src, dst) =
-            calculate_fit_rects(100, 50, 200.0, 200.0, ObjectFit::Fill, ObjectPosition::CENTER);
+        let (src, dst) = calculate_fit_rects(
+            100,
+            50,
+            200.0,
+            200.0,
+            ObjectFit::Fill,
+            ObjectPosition::CENTER,
+        );
 
         assert_eq!(src, [0.0, 0.0, 100.0, 50.0]);
         assert_eq!(dst, [0.0, 0.0, 200.0, 200.0]);
@@ -386,17 +406,14 @@ mod tests {
         let uv = src_rect_to_uv(src_rect, 100, 50);
 
         assert_eq!(uv[0], 0.25); // u_min
-        assert_eq!(uv[1], 0.0);  // v_min
+        assert_eq!(uv[1], 0.0); // v_min
         assert_eq!(uv[2], 0.75); // u_max
-        assert_eq!(uv[3], 1.0);  // v_max
+        assert_eq!(uv[3], 1.0); // v_max
     }
 
     #[test]
     fn test_image_filter_chain() {
-        let filter = ImageFilter::none()
-            .grayscale(0.5)
-            .brightness(1.2)
-            .blur(5.0);
+        let filter = ImageFilter::none().grayscale(0.5).brightness(1.2).blur(5.0);
 
         assert_eq!(filter.grayscale, 0.5);
         assert_eq!(filter.brightness, 1.2);

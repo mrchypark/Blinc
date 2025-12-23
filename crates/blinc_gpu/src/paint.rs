@@ -43,9 +43,9 @@
 
 use blinc_core::{
     Affine2D, BillboardFacing, BlendMode, Brush, Camera, ClipShape, CornerRadius, DrawCommand,
-    DrawContext, Environment, ImageId, ImageOptions, LayerConfig, LayerId, Light, Mat4,
-    MaterialId, MeshId, MeshInstance, Path, Point, Rect, SdfBuilder, Shadow, ShapeId, Size, Stroke,
-    TextStyle, Transform,
+    DrawContext, Environment, ImageId, ImageOptions, LayerConfig, LayerId, Light, Mat4, MaterialId,
+    MeshId, MeshInstance, Path, Point, Rect, SdfBuilder, Shadow, ShapeId, Size, Stroke, TextStyle,
+    Transform,
 };
 
 use crate::path::{tessellate_fill, tessellate_stroke};

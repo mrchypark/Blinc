@@ -681,13 +681,7 @@ impl Div {
     }
 
     /// Apply a drop shadow with the given parameters
-    pub fn shadow_params(
-        self,
-        offset_x: f32,
-        offset_y: f32,
-        blur: f32,
-        color: Color,
-    ) -> Self {
+    pub fn shadow_params(self, offset_x: f32, offset_y: f32, blur: f32, color: Color) -> Self {
         self.shadow(Shadow::new(offset_x, offset_y, blur, color))
     }
 
@@ -708,7 +702,12 @@ impl Div {
 
     /// Apply an extra large drop shadow (12px offset, 24px blur)
     pub fn shadow_xl(self) -> Self {
-        self.shadow(Shadow::new(0.0, 12.0, 24.0, Color::rgba(0.0, 0.0, 0.0, 0.25)))
+        self.shadow(Shadow::new(
+            0.0,
+            12.0,
+            24.0,
+            Color::rgba(0.0, 0.0, 0.0, 0.25),
+        ))
     }
 
     // =========================================================================
@@ -876,7 +875,7 @@ impl Default for ImageRenderInfo {
     fn default() -> Self {
         Self {
             source: String::new(),
-            object_fit: 0, // Cover
+            object_fit: 0,               // Cover
             object_position: [0.5, 0.5], // Center
             opacity: 1.0,
             border_radius: 0.0,

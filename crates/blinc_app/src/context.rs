@@ -10,8 +10,8 @@ use blinc_gpu::{
 use blinc_layout::div::{FontWeight, TextAlign};
 use blinc_layout::prelude::*;
 use blinc_layout::renderer::ElementType;
-use std::collections::HashMap;
 use blinc_svg::SvgDocument;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::Result;
@@ -377,7 +377,9 @@ impl RenderContext {
             return;
         };
         // Create a new view to avoid borrow conflicts
-        let target = pre_glass.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let target = pre_glass
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         self.render_images_ref(&target, images);
     }
 
@@ -389,9 +391,9 @@ impl RenderContext {
             }
 
             // Try to load the image
-            let image_data = match blinc_image::ImageData::load(
-                blinc_image::ImageSource::File(image.source.clone().into()),
-            ) {
+            let image_data = match blinc_image::ImageData::load(blinc_image::ImageSource::File(
+                image.source.clone().into(),
+            )) {
                 Ok(data) => data,
                 Err(_) => continue, // Skip images that fail to load
             };
@@ -429,10 +431,8 @@ impl RenderContext {
             };
 
             // Create ObjectPosition from array
-            let object_position = ObjectPosition::new(
-                image.object_position[0],
-                image.object_position[1],
-            );
+            let object_position =
+                ObjectPosition::new(image.object_position[0], image.object_position[1]);
 
             // Calculate fit rectangles
             let (src_rect, dst_rect) = calculate_fit_rects(
@@ -474,11 +474,8 @@ impl RenderContext {
             }
 
             // Render the image
-            self.renderer.render_images(
-                target,
-                gpu_image.view(),
-                &[instance],
-            );
+            self.renderer
+                .render_images(target, gpu_image.view(), &[instance]);
         }
     }
 
@@ -503,10 +500,8 @@ impl RenderContext {
             };
 
             // Create ObjectPosition from array
-            let object_position = ObjectPosition::new(
-                image.object_position[0],
-                image.object_position[1],
-            );
+            let object_position =
+                ObjectPosition::new(image.object_position[0], image.object_position[1]);
 
             // Calculate fit rectangles
             let (src_rect, dst_rect) = calculate_fit_rects(
@@ -548,11 +543,8 @@ impl RenderContext {
             }
 
             // Render the image
-            self.renderer.render_images(
-                target,
-                gpu_image.view(),
-                &[instance],
-            );
+            self.renderer
+                .render_images(target, gpu_image.view(), &[instance]);
         }
     }
 
@@ -560,13 +552,25 @@ impl RenderContext {
     fn collect_render_elements(
         &self,
         tree: &RenderTree,
-    ) -> (Vec<TextElement>, Vec<(String, f32, f32, f32, f32)>, Vec<ImageElement>) {
+    ) -> (
+        Vec<TextElement>,
+        Vec<(String, f32, f32, f32, f32)>,
+        Vec<ImageElement>,
+    ) {
         let mut texts = Vec::new();
         let mut svgs = Vec::new();
         let mut images = Vec::new();
 
         if let Some(root) = tree.root() {
-            self.collect_elements_recursive(tree, root, (0.0, 0.0), false, &mut texts, &mut svgs, &mut images);
+            self.collect_elements_recursive(
+                tree,
+                root,
+                (0.0, 0.0),
+                false,
+                &mut texts,
+                &mut svgs,
+                &mut images,
+            );
         }
 
         (texts, svgs, images)
@@ -657,7 +661,15 @@ impl RenderContext {
 
         let new_offset = (abs_x, abs_y);
         for child_id in tree.layout().children(node) {
-            self.collect_elements_recursive(tree, child_id, new_offset, children_inside_glass, texts, svgs, images);
+            self.collect_elements_recursive(
+                tree,
+                child_id,
+                new_offset,
+                children_inside_glass,
+                texts,
+                svgs,
+                images,
+            );
         }
     }
 

@@ -137,7 +137,7 @@ fn blob(size: f32, color: Color) -> Div {
 
 /// Build the main content layer
 fn build_content(ctx: &WindowedContext) -> impl ElementBuilder {
-     let scale_x = ctx.width / 800.0;
+    let scale_x = ctx.width / 800.0;
     let scale_y = ctx.height / 600.0;
     let scale = (scale_x + scale_y) / 2.0; // Average scale
     div()
@@ -225,6 +225,7 @@ fn build_content(ctx: &WindowedContext) -> impl ElementBuilder {
                         .gap(4.0)
                         .child(text("Image Support").bold().size(40.0).color(Color::WHITE))
                         .child(text("CSS-style object-fit").size(30.0).color(Color::rgba(1.0, 1.0, 1.0, 0.7)))
+                        .child(text("Art By JASIM: https://dribbble.com/jasimillustration").size(24.0).color(Color::rgba(1.0, 1.0, 1.0, 0.7)))
                 ),
         )
 }
@@ -235,16 +236,8 @@ fn info_item(label: &str, value: &str) -> impl ElementBuilder {
         .flex_col()
         .items_center()
         .gap(4.0)
-        .child(
-            text(label).bold()
-                .size(24.0)
-                .color(Color::WHITE),
-        )
-        .child(
-            text(value)
-                .size(30.0)
-                .color(Color::WHITE),
-        )
+        .child(text(label).bold().size(24.0).color(Color::WHITE))
+        .child(text(value).size(30.0).color(Color::WHITE))
 }
 
 /// Create a feature card with a colored accent
@@ -259,5 +252,10 @@ fn feature_card(label: &str, accent: Color) -> impl ElementBuilder {
         .flex_col()
         .items_center()
         .justify_center()
-        .child(text(label).align(TextAlign::Center).size(24.0).color(Color::WHITE))
+        .child(
+            text(label)
+                .align(TextAlign::Center)
+                .size(24.0)
+                .color(Color::WHITE),
+        )
 }

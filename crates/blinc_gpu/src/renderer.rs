@@ -7,13 +7,15 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
+use crate::image::GpuImageInstance;
 use crate::path::PathVertex;
 use crate::primitives::{
     GlassUniforms, GpuGlassPrimitive, GpuGlyph, GpuPrimitive, PathUniforms, PrimitiveBatch,
     Uniforms,
 };
-use crate::image::GpuImageInstance;
-use crate::shaders::{COMPOSITE_SHADER, GLASS_SHADER, IMAGE_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER};
+use crate::shaders::{
+    COMPOSITE_SHADER, GLASS_SHADER, IMAGE_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER,
+};
 
 /// Error type for renderer operations
 #[derive(Debug)]
@@ -288,7 +290,10 @@ impl GpuRenderer {
 
         let surface_caps = surface.get_capabilities(&adapter);
         tracing::debug!("Surface capabilities - formats: {:?}", surface_caps.formats);
-        tracing::debug!("Surface capabilities - alpha modes: {:?}", surface_caps.alpha_modes);
+        tracing::debug!(
+            "Surface capabilities - alpha modes: {:?}",
+            surface_caps.alpha_modes
+        );
 
         // Select texture format based on platform
         let texture_format = config.texture_format.unwrap_or_else(|| {
@@ -1992,10 +1997,12 @@ impl GpuRenderer {
             return;
         }
 
-        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Image Shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(IMAGE_SHADER)),
-        });
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Image Shader"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(IMAGE_SHADER)),
+            });
 
         // Bind group layout: uniforms, texture, sampler
         let bind_group_layout =
@@ -2035,13 +2042,13 @@ impl GpuRenderer {
                     ],
                 });
 
-        let pipeline_layout =
-            self.device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("Image Pipeline Layout"),
-                    bind_group_layouts: &[&bind_group_layout],
-                    push_constant_ranges: &[],
-                });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Image Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         // Blending for premultiplied alpha
         let blend_state = wgpu::BlendState {

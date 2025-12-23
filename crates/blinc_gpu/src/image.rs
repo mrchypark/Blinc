@@ -86,12 +86,12 @@ impl GpuImage {
 /// GPU image instance data for batched rendering
 ///
 /// Memory layout (matches shader ImageInstance):
-/// - dst_rect: vec4<f32> (16 bytes) - destination rectangle
-/// - src_uv: vec4<f32> (16 bytes) - source UV coordinates
-/// - tint: vec4<f32> (16 bytes) - tint color
-/// - params: vec4<f32> (16 bytes) - border_radius, opacity, padding, padding
-/// - clip_bounds: vec4<f32> (16 bytes) - clip region
-/// - clip_radius: vec4<f32> (16 bytes) - clip corner radii
+/// - `dst_rect`: `vec4<f32>` (16 bytes) - destination rectangle
+/// - `src_uv`: `vec4<f32>` (16 bytes) - source UV coordinates
+/// - `tint`: `vec4<f32>` (16 bytes) - tint color
+/// - `params`: `vec4<f32>` (16 bytes) - border_radius, opacity, padding, padding
+/// - `clip_bounds`: `vec4<f32>` (16 bytes) - clip region
+/// - `clip_radius`: `vec4<f32>` (16 bytes) - clip corner radii
 /// Total: 96 bytes
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -271,7 +271,14 @@ impl ImageRenderingContext {
         height: u32,
         label: &str,
     ) -> GpuImage {
-        GpuImage::from_rgba(&self.device, &self.queue, pixels, width, height, Some(label))
+        GpuImage::from_rgba(
+            &self.device,
+            &self.queue,
+            pixels,
+            width,
+            height,
+            Some(label),
+        )
     }
 
     /// Get the linear sampler

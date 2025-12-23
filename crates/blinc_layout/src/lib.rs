@@ -49,7 +49,7 @@ pub use element::{
 
 // Builder API
 pub use div::{div, Div, ElementBuilder, ElementTypeId, FontWeight, ImageRenderInfo, TextAlign};
-pub use image::{img, image, Image, ImageFilter, ObjectFit, ObjectPosition};
+pub use image::{image, img, Image, ImageFilter, ObjectFit, ObjectPosition};
 pub use svg::{svg, Svg};
 pub use text::{text, Text};
 
@@ -58,15 +58,19 @@ pub use renderer::{GlassPanel, ImageData, LayoutRenderer, RenderTree, SvgData, T
 
 /// Prelude module - import everything commonly needed
 pub mod prelude {
-    pub use crate::div::{div, Div, ElementBuilder, ElementTypeId, FontWeight, ImageRenderInfo, TextAlign};
+    pub use crate::div::{
+        div, Div, ElementBuilder, ElementTypeId, FontWeight, ImageRenderInfo, TextAlign,
+    };
     pub use crate::element::{ElementBounds, RenderLayer, RenderProps};
     // Image element
-    pub use crate::image::{img, image, Image, ImageFilter, ObjectFit, ObjectPosition};
+    pub use crate::image::{image, img, Image, ImageFilter, ObjectFit, ObjectPosition};
     // Material system
     pub use crate::element::{
         GlassMaterial, Material, MaterialShadow, MetallicMaterial, SolidMaterial, WoodMaterial,
     };
-    pub use crate::renderer::{GlassPanel, ImageData, LayoutRenderer, RenderTree, SvgData, TextData};
+    pub use crate::renderer::{
+        GlassPanel, ImageData, LayoutRenderer, RenderTree, SvgData, TextData,
+    };
     pub use crate::svg::{svg, Svg};
     pub use crate::text::{text, Text};
     pub use crate::tree::{LayoutNodeId, LayoutTree};

@@ -20,8 +20,8 @@ pub struct DesktopEventLoop {
 impl DesktopEventLoop {
     /// Create a new desktop event loop
     pub fn new(config: WindowConfig) -> Result<Self, PlatformError> {
-        let event_loop = WinitEventLoop::new()
-            .map_err(|e| PlatformError::EventLoop(e.to_string()))?;
+        let event_loop =
+            WinitEventLoop::new().map_err(|e| PlatformError::EventLoop(e.to_string()))?;
 
         Ok(Self {
             event_loop,
@@ -137,10 +137,7 @@ where
             }
 
             WinitWindowEvent::Moved(pos) => {
-                self.handle_event(Event::Window(WindowEvent::Moved {
-                    x: pos.x,
-                    y: pos.y,
-                }));
+                self.handle_event(Event::Window(WindowEvent::Moved { x: pos.x, y: pos.y }));
             }
 
             WinitWindowEvent::Focused(focused) => {

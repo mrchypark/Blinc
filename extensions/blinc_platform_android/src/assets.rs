@@ -47,9 +47,9 @@ impl AndroidAssetLoader {
 
         // Read all bytes
         let mut buffer = Vec::new();
-        asset
-            .read_to_end(&mut buffer)
-            .map_err(|e| PlatformError::AssetLoad(format!("Failed to read asset '{}': {}", path, e)))?;
+        asset.read_to_end(&mut buffer).map_err(|e| {
+            PlatformError::AssetLoad(format!("Failed to read asset '{}': {}", path, e))
+        })?;
 
         Ok(buffer)
     }

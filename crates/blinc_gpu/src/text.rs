@@ -96,7 +96,16 @@ impl TextRenderingContext {
         color: [f32; 4],
         anchor: TextAnchor,
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
-        self.prepare_text_with_options(text, x, y, font_size, color, anchor, TextAlignment::Left, None)
+        self.prepare_text_with_options(
+            text,
+            x,
+            y,
+            font_size,
+            color,
+            anchor,
+            TextAlignment::Left,
+            None,
+        )
     }
 
     /// Prepare text for GPU rendering with full options

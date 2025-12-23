@@ -280,7 +280,25 @@ ctx.push_transform(matrix);
 - [ ] Implement SDF-based glyph rendering
 - [ ] Implement glyph atlas LRU eviction
 
-### 3.4 SVG Rendering (`blinc_svg`)
+### 3.4 Image Rendering (`blinc_image`)
+
+**Goal**: Cross-platform image loading and GPU texture rendering.
+
+#### Tasks
+
+- [x] Implement image decoding (PNG, JPEG, GIF, WebP, BMP)
+- [x] Implement ImageData with RGBA pixel access
+- [x] Implement ImageSource enum (File, Bytes, Base64, URL)
+- [x] Implement cross-platform asset loading via platform loader
+- [x] Implement GPU texture creation and caching
+- [x] Implement image element builder for layout system
+- [x] Implement image rendering in glass layer pipeline
+- [x] Implement layer-aware image rendering (images ON glass stay crisp)
+- [x] Implement Brush::Image variant for background images
+- [x] Implement ImageFit modes (Cover, Contain, Fill, Tile)
+- [ ] Implement async network image loading
+
+### 3.6 SVG Rendering (`blinc_svg`)
 
 **Goal**: Load and render SVG graphics.
 
@@ -296,6 +314,23 @@ ctx.push_transform(matrix);
 ---
 
 ## Phase 4: Platform Integration
+
+### 4.0 Platform Abstraction (`blinc_platform`)
+
+**Goal**: Cross-platform traits and APIs for windowing, input, and assets.
+
+#### Tasks
+
+- [x] Implement Platform, Window, EventLoop traits
+- [x] Implement WindowConfig with title, size, resizable options
+- [x] Implement Event types (Window, Input, Lifecycle, Frame)
+- [x] Implement InputEvent (Mouse, Keyboard, Touch, Scroll)
+- [x] Implement cross-platform AssetLoader trait
+- [x] Implement FilesystemAssetLoader for desktop
+- [x] Implement global asset loader pattern (OnceLock)
+- [x] Implement AssetPath enum (Relative, Absolute, Embedded)
+- [ ] Implement clipboard access trait
+- [ ] Implement system theme detection trait
 
 ### 4.1 Desktop Platform (`blinc_platform_desktop`)
 
@@ -320,6 +355,7 @@ ctx.push_transform(matrix);
 - [x] Implement JNI bridge for system APIs
 - [x] Implement touch input handling
 - [x] Implement Vulkan/GLES surface creation
+- [x] Implement AndroidAssetLoader (NDK AssetManager)
 - [ ] Implement lifecycle management (pause/resume)
 - [ ] Implement soft keyboard handling
 - [x] Create Gradle project template
@@ -504,14 +540,16 @@ File Change → Grammar Recompile → JIT Update → State Preserved
 
 | Crate | Lines | Tests | Status |
 |-------|-------|-------|--------|
-| **blinc_core** | ~3,000 | ✓ | Reactive signals, FSM runtime, draw context |
+| **blinc_core** | ~3,000 | ✓ | Reactive signals, FSM runtime, draw context, Brush types |
 | **blinc_animation** | ~1,500 | ✓ | Springs (RK4), keyframes, timelines, easing |
-| **blinc_layout** | ~2,500 | ✓ | Taffy + GPUI-style builder API |
-| **blinc_gpu** | ~4,000 | ✓ | SDF rendering, glass, MSAA, compositing |
+| **blinc_layout** | ~2,500 | ✓ | Taffy + GPUI-style builder API, image element |
+| **blinc_gpu** | ~4,000 | ✓ | SDF rendering, glass, MSAA, compositing, image textures |
 | **blinc_paint** | ~1,500 | ✓ | Canvas API, paths, shapes, transforms |
 | **blinc_text** | ~2,000 | ✓ | Font loading, shaping, atlas, layout |
+| **blinc_image** | ~500 | ✓ | Image loading, decoding, cross-platform assets |
 | **blinc_svg** | ~800 | ✓ | SVG parsing and rendering |
-| **blinc_app** | ~600 | ✓ | High-level app framework |
+| **blinc_platform** | ~1,000 | ✓ | Cross-platform traits, asset loading |
+| **blinc_app** | ~800 | ✓ | High-level app framework, windowed runner |
 | **blinc_widgets** | ~400 | - | Button, container, text (basic) |
 | **blinc_runtime** | ~200 | - | Embedding SDK |
 | **blinc_cli** | ~2,000 | - | CLI tool |
@@ -521,24 +559,27 @@ File Change → Grammar Recompile → JIT Update → State Preserved
 
 | Extension | Status |
 |-----------|--------|
-| **blinc_platform_desktop** | Window creation, input handling via winit |
-| **blinc_platform_android** | NativeActivity, JNI, Vulkan (~530KB binary) |
+| **blinc_platform_desktop** | Window creation, input handling, filesystem assets via winit |
+| **blinc_platform_android** | NativeActivity, JNI, Vulkan, NDK AssetManager (~530KB binary) |
 | **blinc_platform_ios** | UIKit, Metal, touch input |
 
 ### Completed ✓
 
 | Component | Features |
 |-----------|----------|
-| **blinc_core** | Reactive signals, FSM runtime, draw context, layer model |
+| **blinc_core** | Reactive signals, FSM runtime, draw context, layer model, Brush::Image |
 | **blinc_animation** | Springs (RK4), keyframes, timelines, easing, presets |
-| **blinc_layout** | Taffy integration, GPUI-style builder, RenderTree, materials |
-| **blinc_gpu** | SDF shaders, gradients, glass/blur, MSAA, path tessellation |
+| **blinc_layout** | Taffy integration, GPUI-style builder, RenderTree, materials, image element |
+| **blinc_gpu** | SDF shaders, gradients, glass/blur, MSAA, path tessellation, image textures |
 | **blinc_paint** | Paint context, paths, shapes, transforms, shadows |
 | **blinc_text** | Font loading, text shaping, glyph atlas, layout |
+| **blinc_image** | Image decoding (PNG/JPEG/GIF/WebP/BMP), cross-platform asset loading |
 | **blinc_svg** | SVG parsing, rendering, element builder |
-| **blinc_app** | BlincApp, RenderContext, visual tests |
+| **blinc_platform** | Platform traits, event system, cross-platform AssetLoader |
+| **blinc_app** | BlincApp, RenderContext, WindowedApp runner, visual tests |
 | **blinc_cli** | Full CLI with new/init/build/dev/doctor/info |
-| **blinc_platform_android** | NDK integration, JNI bridge, Vulkan |
+| **blinc_platform_desktop** | winit integration, filesystem assets |
+| **blinc_platform_android** | NDK integration, JNI bridge, Vulkan, NDK AssetManager |
 | **blinc_platform_ios** | UIKit, Metal, touch input |
 | **CI/CD** | GitHub Actions for CI, Android, releases |
 | **Test Suite** | 107 tests across 14 categories |

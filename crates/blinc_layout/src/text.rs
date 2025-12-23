@@ -243,13 +243,7 @@ impl Text {
     }
 
     /// Apply a drop shadow with the given parameters
-    pub fn shadow_params(
-        self,
-        offset_x: f32,
-        offset_y: f32,
-        blur: f32,
-        color: Color,
-    ) -> Self {
+    pub fn shadow_params(self, offset_x: f32, offset_y: f32, blur: f32, color: Color) -> Self {
         self.shadow(Shadow::new(offset_x, offset_y, blur, color))
     }
 

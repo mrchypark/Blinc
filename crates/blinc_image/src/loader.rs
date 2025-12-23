@@ -63,9 +63,8 @@ impl ImageData {
                 }
 
                 // Fallback to direct filesystem access (desktop only)
-                let data = std::fs::read(&path).map_err(|e| {
-                    ImageError::FileLoad(format!("{}: {}", path.display(), e))
-                })?;
+                let data = std::fs::read(&path)
+                    .map_err(|e| ImageError::FileLoad(format!("{}: {}", path.display(), e)))?;
                 Self::from_bytes(&data)
             }
 

@@ -42,110 +42,106 @@ impl EventLoop for AndroidEventLoop {
         while !should_exit {
             // Poll for events with 16ms timeout (~60fps)
             self.app
-                .poll_events(Some(Duration::from_millis(16)), |event| {
-                    match event {
-                        PollEvent::Main(main_event) => {
-                            match main_event {
-                                MainEvent::InitWindow { .. } => {
-                                    info!("Android: Native window initialized");
-                                    if let Some(native) = self.app.native_window() {
-                                        let w = native.width();
-                                        let h = native.height();
-                                        info!("Android: Window size {}x{}", w, h);
-                                        window = Some(AndroidWindow::new(native));
-                                    }
-                                }
-
-                                MainEvent::TerminateWindow { .. } => {
-                                    info!("Android: Native window terminated");
-                                    window = None;
-                                }
-
-                                MainEvent::WindowResized { .. } => {
-                                    if let Some(ref win) = window {
-                                        let (width, height) = win.size();
-                                        info!("Android: Window resized to {}x{}", width, height);
-                                        let flow =
-                                            handler(Event::Window(WindowEvent::Resized { width, height }), win);
-                                        if flow == ControlFlow::Exit {
-                                            should_exit = true;
-                                        }
-                                    }
-                                }
-
-                                MainEvent::GainedFocus => {
-                                    debug!("Android: Gained focus");
-                                    if let Some(ref win) = window {
-                                        win.set_focused(true);
-                                        let flow = handler(Event::Window(WindowEvent::Focused(true)), win);
-                                        if flow == ControlFlow::Exit {
-                                            should_exit = true;
-                                        }
-                                    }
-                                }
-
-                                MainEvent::LostFocus => {
-                                    debug!("Android: Lost focus");
-                                    if let Some(ref win) = window {
-                                        win.set_focused(false);
-                                        let flow = handler(Event::Window(WindowEvent::Focused(false)), win);
-                                        if flow == ControlFlow::Exit {
-                                            should_exit = true;
-                                        }
-                                    }
-                                }
-
-                                MainEvent::Resume { .. } => {
-                                    info!("Android: Resumed");
-                                    if let Some(ref win) = window {
-                                        let flow =
-                                            handler(Event::Lifecycle(LifecycleEvent::Resumed), win);
-                                        if flow == ControlFlow::Exit {
-                                            should_exit = true;
-                                        }
-                                    }
-                                }
-
-                                MainEvent::Pause => {
-                                    info!("Android: Paused");
-                                    if let Some(ref win) = window {
-                                        let flow =
-                                            handler(Event::Lifecycle(LifecycleEvent::Suspended), win);
-                                        if flow == ControlFlow::Exit {
-                                            should_exit = true;
-                                        }
-                                    }
-                                }
-
-                                MainEvent::Destroy => {
-                                    info!("Android: Destroyed");
-                                    if let Some(ref win) = window {
-                                        win.set_running(false);
-                                        let flow =
-                                            handler(Event::Window(WindowEvent::CloseRequested), win);
-                                        if flow == ControlFlow::Exit {
-                                            should_exit = true;
-                                        }
-                                    }
-                                    should_exit = true;
-                                }
-
-                                MainEvent::LowMemory => {
-                                    warn!("Android: Low memory");
-                                    if let Some(ref win) = window {
-                                        let flow =
-                                            handler(Event::Lifecycle(LifecycleEvent::LowMemory), win);
-                                        if flow == ControlFlow::Exit {
-                                            should_exit = true;
-                                        }
-                                    }
-                                }
-
-                                _ => {}
+                .poll_events(Some(Duration::from_millis(16)), |event| match event {
+                    PollEvent::Main(main_event) => match main_event {
+                        MainEvent::InitWindow { .. } => {
+                            info!("Android: Native window initialized");
+                            if let Some(native) = self.app.native_window() {
+                                let w = native.width();
+                                let h = native.height();
+                                info!("Android: Window size {}x{}", w, h);
+                                window = Some(AndroidWindow::new(native));
                             }
                         }
+
+                        MainEvent::TerminateWindow { .. } => {
+                            info!("Android: Native window terminated");
+                            window = None;
+                        }
+
+                        MainEvent::WindowResized { .. } => {
+                            if let Some(ref win) = window {
+                                let (width, height) = win.size();
+                                info!("Android: Window resized to {}x{}", width, height);
+                                let flow = handler(
+                                    Event::Window(WindowEvent::Resized { width, height }),
+                                    win,
+                                );
+                                if flow == ControlFlow::Exit {
+                                    should_exit = true;
+                                }
+                            }
+                        }
+
+                        MainEvent::GainedFocus => {
+                            debug!("Android: Gained focus");
+                            if let Some(ref win) = window {
+                                win.set_focused(true);
+                                let flow = handler(Event::Window(WindowEvent::Focused(true)), win);
+                                if flow == ControlFlow::Exit {
+                                    should_exit = true;
+                                }
+                            }
+                        }
+
+                        MainEvent::LostFocus => {
+                            debug!("Android: Lost focus");
+                            if let Some(ref win) = window {
+                                win.set_focused(false);
+                                let flow = handler(Event::Window(WindowEvent::Focused(false)), win);
+                                if flow == ControlFlow::Exit {
+                                    should_exit = true;
+                                }
+                            }
+                        }
+
+                        MainEvent::Resume { .. } => {
+                            info!("Android: Resumed");
+                            if let Some(ref win) = window {
+                                let flow = handler(Event::Lifecycle(LifecycleEvent::Resumed), win);
+                                if flow == ControlFlow::Exit {
+                                    should_exit = true;
+                                }
+                            }
+                        }
+
+                        MainEvent::Pause => {
+                            info!("Android: Paused");
+                            if let Some(ref win) = window {
+                                let flow =
+                                    handler(Event::Lifecycle(LifecycleEvent::Suspended), win);
+                                if flow == ControlFlow::Exit {
+                                    should_exit = true;
+                                }
+                            }
+                        }
+
+                        MainEvent::Destroy => {
+                            info!("Android: Destroyed");
+                            if let Some(ref win) = window {
+                                win.set_running(false);
+                                let flow = handler(Event::Window(WindowEvent::CloseRequested), win);
+                                if flow == ControlFlow::Exit {
+                                    should_exit = true;
+                                }
+                            }
+                            should_exit = true;
+                        }
+
+                        MainEvent::LowMemory => {
+                            warn!("Android: Low memory");
+                            if let Some(ref win) = window {
+                                let flow =
+                                    handler(Event::Lifecycle(LifecycleEvent::LowMemory), win);
+                                if flow == ControlFlow::Exit {
+                                    should_exit = true;
+                                }
+                            }
+                        }
+
                         _ => {}
-                    }
+                    },
+                    _ => {}
                 });
 
             // Frame tick when we have a focused window
