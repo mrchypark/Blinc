@@ -66,6 +66,9 @@ pub use text::{text, Text};
 // Renderer
 pub use renderer::{GlassPanel, ImageData, LayoutRenderer, RenderTree, SvgData, TextData};
 
+// Stateful elements
+pub use stateful::{SharedState, StateTransitions, StatefulInner};
+
 /// Prelude module - import everything commonly needed
 pub mod prelude {
     pub use crate::div::{
@@ -87,7 +90,7 @@ pub mod prelude {
     // Stateful elements with user-defined state types
     pub use crate::stateful::{
         // Core generic type
-        BoundStateful, Stateful, StateTransitions,
+        BoundStateful, SharedState, Stateful, StatefulInner, StateTransitions,
         // Built-in state types
         ButtonState, CheckboxState, TextFieldState, ToggleState,
         // Type aliases

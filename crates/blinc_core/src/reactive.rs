@@ -48,6 +48,32 @@ impl<T> Signal<T> {
     pub fn id(&self) -> SignalId {
         self.id
     }
+
+    /// Reconstruct a Signal from a raw SignalId
+    ///
+    /// # Safety
+    /// The caller must ensure the SignalId refers to a signal of type T.
+    /// This is primarily for internal use by the hook system.
+    pub fn from_id(id: SignalId) -> Self {
+        Signal {
+            id,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl SignalId {
+    /// Convert to raw u64 for storage
+    pub fn to_raw(&self) -> u64 {
+        use slotmap::Key;
+        // SlotMap key data contains version + index
+        self.data().as_ffi()
+    }
+
+    /// Reconstruct from raw u64
+    pub fn from_raw(raw: u64) -> Self {
+        slotmap::KeyData::from_ffi(raw).into()
+    }
 }
 
 /// A derived/computed value handle

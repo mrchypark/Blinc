@@ -4,33 +4,16 @@
 //! using the platform abstraction layer with a colorful music-player style background.
 //!
 //! Features demonstrated:
-//! - Reactive state with Signal<T> for hover/click effects (automatic dirty tracking!)
-//! - Window resize event handling for dynamic Size text
-//! - Window focus event handling for focus indicator
-//! - Hover effect on image element
-//! - Automatic UI rebuilds when signals are modified
+//! - `Stateful<S>` with `on_state` callback for reactive state management
+//! - Window resize/focus events via context properties
+//! - Image element with hover glow effect
 //!
 //! Run with: cargo run -p blinc_app --example windowed --features windowed
 
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_core::Shadow;
-use std::sync::{Arc, Mutex};
-
-/// Visual state for interactive elements
-#[derive(Clone, Copy, Debug, Default)]
-struct VisualState {
-    hovered: bool,
-    pressed: bool,
-}
-
-/// Application state using reactive signals
-struct AppState {
-    card1: Signal<VisualState>,
-    card2: Signal<VisualState>,
-    card3: Signal<VisualState>,
-    image: Signal<VisualState>,
-}
+use blinc_layout::stateful::ButtonState;
 
 fn main() -> Result<()> {
     // Initialize tracing for logging
@@ -47,30 +30,15 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    // Persistent app state across rebuilds
-    let state: Arc<Mutex<Option<AppState>>> = Arc::new(Mutex::new(None));
-    let state_clone = state.clone();
-
     // Run the windowed application
-    WindowedApp::run(config, move |ctx| {
-        // Initialize signals on first build
-        let mut state_guard = state_clone.lock().unwrap();
-        if state_guard.is_none() {
-            *state_guard = Some(AppState {
-                card1: ctx.use_signal(VisualState::default()),
-                card2: ctx.use_signal(VisualState::default()),
-                card3: ctx.use_signal(VisualState::default()),
-                image: ctx.use_signal(VisualState::default()),
-            });
-        }
-        let app_state = state_guard.as_ref().unwrap();
-
-        build_ui(ctx, app_state)
+    // Note: State is managed at the component level using keyed use_state
+    WindowedApp::run(config, |ctx| {
+        build_ui(ctx)
     })
 }
 
-/// Build the UI based on the current window context and application state
-fn build_ui(ctx: &WindowedContext, state: &AppState) -> impl ElementBuilder {
+/// Build the UI based on the current window context
+fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
     // Scale factor based on window size (baseline 800x600)
     let scale_x = ctx.width / 800.0;
     let scale_y = ctx.height / 600.0;
@@ -84,7 +52,7 @@ fn build_ui(ctx: &WindowedContext, state: &AppState) -> impl ElementBuilder {
         // Background color blobs layer
         .child(build_blobs(ctx.width, ctx.height, scale))
         // Main content layer
-        .child(build_content(ctx, state))
+        .child(build_content(ctx))
 }
 
 /// Build the colorful background blobs, scaled to window size
@@ -178,7 +146,7 @@ fn blob(size: f32, color: Color) -> Div {
 }
 
 /// Build the main content layer
-fn build_content(ctx: &WindowedContext, state: &AppState) -> impl ElementBuilder {
+fn build_content(ctx: &WindowedContext) -> impl ElementBuilder {
     let width = ctx.width;
     let height = ctx.height;
     let scale_factor = ctx.scale_factor;
@@ -212,18 +180,18 @@ fn build_content(ctx: &WindowedContext, state: &AppState) -> impl ElementBuilder
         )
         // Info panel showing window state with event-driven updates
         .child(build_info_panel(width, height, scale_factor, focused))
-        // Feature cards row with reactive hover/click effects
+        // Feature cards row - each card uses ctx.use_state() for reactive hover effects
         .child(
             div()
                 .flex_row()
                 .gap(16.0)
                 .items_center()
-                .child(feature_card(ctx, "Glass Effects", Color::rgba(1.0, 0.4, 0.6, 0.8), state.card1))
-                .child(feature_card(ctx, "Flexbox Layout", Color::rgba(0.3, 0.5, 1.0, 0.8), state.card2))
-                .child(feature_card(ctx, "GPU Rendered", Color::rgba(0.6, 0.3, 0.9, 0.8), state.card3)),
+                .child(feature_card(ctx, "Glass Effects", Color::rgba(1.0, 0.4, 0.6, 0.8)))
+                .child(feature_card(ctx, "Flexbox Layout", Color::rgba(0.3, 0.5, 1.0, 0.8)))
+                .child(feature_card(ctx, "GPU Rendered", Color::rgba(0.6, 0.3, 0.9, 0.8))),
         )
         // Image showcase card with hover effect
-        .child(build_image_showcase(ctx, state.image))
+        .child(build_image_showcase(ctx))
 }
 
 /// Build the info panel with window state (responds to resize/focus events)
@@ -290,97 +258,75 @@ fn info_item(label: &str, value: &str) -> impl ElementBuilder {
         .child(text(value).size(30.0).color(Color::WHITE))
 }
 
-/// Create a feature card with reactive hover effects using Signal<T>
+/// Create a feature card with reactive hover effects using Stateful<ButtonState>
 ///
-/// The Signal automatically triggers UI rebuilds when set() is called.
-fn feature_card(
-    ctx: &WindowedContext,
-    label: &str,
-    accent: Color,
-    signal: Signal<VisualState>,
-) -> impl ElementBuilder {
-    let visual = ctx.get(signal).unwrap_or_default();
-    let label_owned = label.to_string();
+/// Uses ctx.use_state_for() for reusable component with unique label key,
+/// then passes it to stateful() for automatic event handling.
+fn feature_card(ctx: &WindowedContext, label: &str, accent: Color) -> impl ElementBuilder {
+    // Persistent state that survives across rebuilds (keyed by label for reusable component)
+    let handle = ctx.use_state_for(label, ButtonState::Idle);
 
-    // Determine visual state based on current state
-    let (bg_color, shadow, scale, corner) = if visual.pressed {
-        let press_color = Color::rgba(
-            accent.r * 0.85,
-            accent.g * 0.85,
-            accent.b * 0.85,
-            accent.a,
-        );
-        (press_color, Shadow::new(0.0, 1.0, 2.0, Color::rgba(0.0, 0.0, 0.0, 0.15)), 0.95, 14.0)
-    } else if visual.hovered {
-        let hover_color = Color::rgba(
-            (accent.r * 1.15).min(1.0),
-            (accent.g * 1.15).min(1.0),
-            (accent.b * 1.15).min(1.0),
-            accent.a,
-        );
-        (hover_color, Shadow::new(0.0, 8.0, 16.0, Color::rgba(0.0, 0.0, 0.0, 0.35)), 1.05, 16.0)
-    } else {
-        (accent, Shadow::new(0.0, 2.0, 4.0, Color::rgba(0.0, 0.0, 0.0, 0.2)), 1.0, 14.0)
-    };
-
-    // Clone the reactive graph for use in event handlers
-    let reactive = ctx.reactive();
-
-    div()
+    stateful(handle)
         .w_fit()
-        .p(16.0)
-        .bg(bg_color)
-        .shadow(shadow)
-        .rounded(corner)
-        .transform(Transform::scale(scale, scale))
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .on_hover_enter({
-            let reactive = reactive.clone();
-            move |_| {
-                reactive.lock().unwrap().set(signal, VisualState { hovered: true, pressed: false });
+        .p(4.0)
+        .rounded(14.0)
+        .on_state(move |state, div| {
+            match state {
+                ButtonState::Idle => {
+                    *div = div.swap()
+                        .bg(accent)
+                        .shadow(Shadow::new(0.0, 2.0, 4.0, Color::rgba(0.0, 0.0, 0.0, 0.2)))
+                        .rounded(14.0);
+                }
+                ButtonState::Hovered => {
+                    let hover_color = Color::rgba(
+                        (accent.r * 1.15).min(1.0),
+                        (accent.g * 1.15).min(1.0),
+                        (accent.b * 1.15).min(1.0),
+                        accent.a,
+                    );
+                    *div = div.swap()
+                        .bg(hover_color)
+                        .shadow(Shadow::new(0.0, 8.0, 16.0, Color::rgba(0.0, 0.0, 0.0, 0.35)))
+                        .rounded(16.0)
+                        .transform(Transform::scale(1.05, 1.05));
+                }
+                ButtonState::Pressed => {
+                    let press_color = Color::rgba(
+                        accent.r * 0.85,
+                        accent.g * 0.85,
+                        accent.b * 0.85,
+                        accent.a,
+                    );
+                    *div = div.swap()
+                        .bg(press_color)
+                        .shadow(Shadow::new(0.0, 1.0, 2.0, Color::rgba(0.0, 0.0, 0.0, 0.15)))
+                        .rounded(14.0)
+                        .transform(Transform::scale(0.95, 0.95));
+                }
+                ButtonState::Disabled => {
+                    *div = div.swap()
+                        .bg(Color::GRAY)
+                        .rounded(14.0);
+                }
             }
         })
-        .on_hover_leave({
-            let reactive = reactive.clone();
-            move |_| {
-                reactive.lock().unwrap().set(signal, VisualState { hovered: false, pressed: false });
-            }
-        })
-        .on_mouse_down({
-            let reactive = reactive.clone();
-            move |_| {
-                reactive.lock().unwrap().set(signal, VisualState { hovered: true, pressed: true });
-            }
-        })
-        .on_mouse_up({
-            let reactive = reactive.clone();
-            let label = label_owned.clone();
-            move |_| {
-                reactive.lock().unwrap().set(signal, VisualState { hovered: true, pressed: false });
-                tracing::info!("'{}' clicked!", label);
-            }
+        .on_click({
+            let label = label.to_string();
+            move |_| tracing::info!("'{}' clicked!", label)
         })
         .child(
-            text(&label_owned)
+            text(label)
                 .align(TextAlign::Center)
                 .size(24.0)
                 .color(Color::WHITE),
         )
 }
 
-/// Build the image showcase card with hover effect
-fn build_image_showcase(ctx: &WindowedContext, signal: Signal<VisualState>) -> impl ElementBuilder {
-    let visual = ctx.get(signal).unwrap_or_default();
-    let reactive = ctx.reactive();
-
-    // Visual changes based on hover
-    let (image_shadow, image_scale) = if visual.hovered {
-        (Shadow::new(0.0, 12.0, 24.0, Color::rgba(0.4, 0.6, 1.0, 0.5)), 1.03)
-    } else {
-        (Shadow::new(0.0, 4.0, 8.0, Color::rgba(0.0, 0.0, 0.0, 0.2)), 1.0)
-    };
+/// Build the image showcase card with hover effect using Stateful<ButtonState>
+fn build_image_showcase(ctx: &WindowedContext) -> impl ElementBuilder {
+    // use_state() auto-keys by source location (works for unique call sites)
+    let handle = ctx.use_state(ButtonState::Idle);
 
     div()
         .glass()
@@ -390,27 +336,23 @@ fn build_image_showcase(ctx: &WindowedContext, signal: Signal<VisualState>) -> i
         .flex_row()
         .items_center()
         .gap(16.0)
-        // Image container with hover effect
+        // Image container with hover effect using stateful
         .child(
-            div()
-                .shadow(image_shadow)
-                .transform(Transform::scale(image_scale, image_scale))
-                .on_hover_enter({
-                    let reactive = reactive.clone();
-                    move |_| {
-                        reactive.lock().unwrap().set(signal, VisualState { hovered: true, pressed: false });
-                        tracing::info!("Image hover start - applying glow effect");
-                    }
-                })
-                .on_hover_leave({
-                    let reactive = reactive.clone();
-                    move |_| {
-                        reactive.lock().unwrap().set(signal, VisualState { hovered: false, pressed: false });
-                        tracing::info!("Image hover end - removing glow effect");
+            stateful(handle)
+                .on_state(|state, div| {
+                    match state {
+                        ButtonState::Idle | ButtonState::Disabled => {
+                            *div = div.swap()
+                                .shadow(Shadow::new(0.0, 4.0, 8.0, Color::rgba(0.0, 0.0, 0.0, 0.2)));
+                        }
+                        ButtonState::Hovered | ButtonState::Pressed => {
+                            *div = div.swap()
+                                .shadow(Shadow::new(0.0, 12.0, 24.0, Color::rgba(0.4, 0.6, 1.0, 0.5)))
+                                .transform(Transform::scale(1.03, 1.03));
+                        }
                     }
                 })
                 .child(
-                    // Image with rounded corners and cover fit
                     img("crates/blinc_app/examples/assets/original-c4197a5bf25a4356aa2bac6f82073eb2.webp")
                         .w(120.0 * 4.0)
                         .h(80.0 * 4.0)

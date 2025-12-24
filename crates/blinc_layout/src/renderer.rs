@@ -3,6 +3,10 @@
 //! This module provides the bridge between Taffy layout computation
 //! and the DrawContext rendering API.
 
+use std::any::Any;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use indexmap::IndexMap;
 
 use blinc_core::{Brush, Color, CornerRadius, DrawContext, GlassStyle, Rect, Transform};
@@ -162,6 +166,9 @@ pub trait LayoutRenderer {
     );
 }
 
+/// Type-erased node state storage
+pub type NodeStateStorage = Arc<Mutex<dyn Any + Send>>;
+
 /// RenderTree - bridges layout computation and rendering
 pub struct RenderTree {
     /// The underlying layout tree
@@ -174,6 +181,8 @@ pub struct RenderTree {
     handler_registry: crate::event_handler::HandlerRegistry,
     /// Dirty tracker for incremental rebuilds
     dirty_tracker: crate::interactive::DirtyTracker,
+    /// Per-node state storage (survives across rebuilds if tree is reused)
+    node_states: HashMap<LayoutNodeId, NodeStateStorage>,
 }
 
 impl Default for RenderTree {
@@ -191,6 +200,7 @@ impl RenderTree {
             root: None,
             handler_registry: crate::event_handler::HandlerRegistry::new(),
             dirty_tracker: crate::interactive::DirtyTracker::new(),
+            node_states: HashMap::new(),
         }
     }
 
@@ -459,6 +469,84 @@ impl RenderTree {
     /// Get the dirty tracker mutably
     pub fn dirty_tracker_mut(&mut self) -> &mut crate::interactive::DirtyTracker {
         &mut self.dirty_tracker
+    }
+
+    // =========================================================================
+    // Node State Storage (for Stateful elements)
+    // =========================================================================
+
+    /// Get or create state for a node
+    ///
+    /// If state doesn't exist for this node, creates it with the provided initial value.
+    /// Returns a clone of the Arc handle to the state.
+    pub fn get_or_create_state<S: Send + 'static>(
+        &mut self,
+        node_id: LayoutNodeId,
+        initial: S,
+    ) -> Arc<Mutex<S>> {
+        // Check if state already exists
+        if let Some(existing) = self.node_states.get(&node_id) {
+            // Try to downcast to the expected type
+            let guard = existing.lock().unwrap();
+            if guard.downcast_ref::<S>().is_some() {
+                drop(guard);
+                // Clone and downcast the Arc
+                let cloned = Arc::clone(existing);
+                // SAFETY: We just verified the type matches
+                return unsafe {
+                    Arc::from_raw(Arc::into_raw(cloned) as *const Mutex<S>)
+                };
+            }
+        }
+
+        // Create new state
+        let state: Arc<Mutex<S>> = Arc::new(Mutex::new(initial));
+        let erased: NodeStateStorage = state.clone();
+        self.node_states.insert(node_id, erased);
+        state
+    }
+
+    /// Get existing state for a node (if any)
+    pub fn get_state<S: Send + 'static>(&self, node_id: LayoutNodeId) -> Option<Arc<Mutex<S>>> {
+        self.node_states.get(&node_id).and_then(|existing| {
+            let guard = existing.lock().unwrap();
+            if guard.downcast_ref::<S>().is_some() {
+                drop(guard);
+                let cloned = Arc::clone(existing);
+                // SAFETY: We just verified the type matches
+                Some(unsafe { Arc::from_raw(Arc::into_raw(cloned) as *const Mutex<S>) })
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Update render props for a node
+    ///
+    /// This allows event handlers to modify visual properties without
+    /// triggering a full tree rebuild.
+    pub fn update_render_props<F>(&mut self, node_id: LayoutNodeId, f: F)
+    where
+        F: FnOnce(&mut RenderProps),
+    {
+        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+            f(&mut render_node.props);
+        }
+    }
+
+    /// Transfer node states from another tree
+    ///
+    /// This preserves state across rebuilds by copying the state storage
+    /// from the old tree to the new one.
+    pub fn transfer_states_from(&mut self, other: &RenderTree) {
+        for (node_id, state) in &other.node_states {
+            self.node_states.insert(*node_id, Arc::clone(state));
+        }
+    }
+
+    /// Get the node states map (for transferring to a new tree)
+    pub fn node_states(&self) -> &HashMap<LayoutNodeId, NodeStateStorage> {
+        &self.node_states
     }
 
     /// Render the entire tree to a DrawContext

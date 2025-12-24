@@ -22,6 +22,8 @@
 //! }
 //! ```
 
+use std::any::TypeId;
+use std::hash::{Hash, Hasher};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -46,6 +48,105 @@ pub type RefDirtyFlag = Arc<AtomicBool>;
 /// Shared reactive graph for the application (thread-safe)
 pub type SharedReactiveGraph = Arc<Mutex<ReactiveGraph>>;
 
+use std::collections::HashMap;
+
+/// Key for identifying a signal in the keyed state system
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StateKey {
+    /// Hash of the user-provided key
+    key_hash: u64,
+    /// Type ID of the signal value
+    type_id: TypeId,
+}
+
+impl StateKey {
+    fn new<T: 'static, K: Hash>(key: &K) -> Self {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        Self {
+            key_hash: hasher.finish(),
+            type_id: TypeId::of::<T>(),
+        }
+    }
+
+    fn from_string<T: 'static>(key: &str) -> Self {
+        Self::new::<T, _>(&key)
+    }
+}
+
+/// Stores keyed state across rebuilds
+///
+/// This enables component-level state management where each signal
+/// is identified by a unique string key rather than call order.
+pub struct HookState {
+    /// Keyed signals: key -> raw signal ID
+    signals: HashMap<StateKey, u64>,
+}
+
+impl HookState {
+    fn new() -> Self {
+        Self {
+            signals: HashMap::new(),
+        }
+    }
+
+    /// Get an existing signal by key
+    fn get(&self, key: &StateKey) -> Option<u64> {
+        self.signals.get(key).copied()
+    }
+
+    /// Store a signal with the given key
+    fn insert(&mut self, key: StateKey, signal_id: u64) {
+        self.signals.insert(key, signal_id);
+    }
+}
+
+/// Shared hook state for the application
+pub type SharedHookState = Arc<Mutex<HookState>>;
+
+/// A bound state value with direct get/set methods
+///
+/// This is returned by `use_state` and provides a convenient API for
+/// reading and writing state without needing to access the reactive graph directly.
+#[derive(Clone)]
+pub struct State<T> {
+    signal: Signal<T>,
+    reactive: SharedReactiveGraph,
+    dirty_flag: RefDirtyFlag,
+}
+
+impl<T: Clone + Send + 'static> State<T> {
+    /// Get the current value
+    pub fn get(&self) -> T
+    where
+        T: Default,
+    {
+        self.reactive.lock().unwrap().get(self.signal).unwrap_or_default()
+    }
+
+    /// Get the current value, returning None if not found
+    pub fn try_get(&self) -> Option<T> {
+        self.reactive.lock().unwrap().get(self.signal)
+    }
+
+    /// Set a new value
+    pub fn set(&self, value: T) {
+        self.reactive.lock().unwrap().set(self.signal, value);
+        self.dirty_flag.store(true, Ordering::SeqCst);
+    }
+
+    /// Update the value using a function
+    pub fn update(&self, f: impl FnOnce(T) -> T) {
+        self.reactive.lock().unwrap().update(self.signal, f);
+        self.dirty_flag.store(true, Ordering::SeqCst);
+    }
+
+    /// Get the underlying signal (for advanced use cases)
+    pub fn signal(&self) -> Signal<T> {
+        self.signal
+    }
+}
+
 /// Context passed to the UI builder function
 pub struct WindowedContext {
     /// Current window width in physical pixels (matches surface size)
@@ -62,6 +163,8 @@ pub struct WindowedContext {
     ref_dirty_flag: RefDirtyFlag,
     /// Reactive graph for signal-based state management
     reactive: SharedReactiveGraph,
+    /// Hook state for call-order based signal persistence
+    hooks: SharedHookState,
 }
 
 impl WindowedContext {
@@ -70,6 +173,7 @@ impl WindowedContext {
         event_router: EventRouter,
         ref_dirty_flag: RefDirtyFlag,
         reactive: SharedReactiveGraph,
+        hooks: SharedHookState,
     ) -> Self {
         // Use physical size for rendering - the surface is in physical pixels
         // UI layout and rendering must use physical dimensions to match the surface
@@ -82,8 +186,10 @@ impl WindowedContext {
             event_router,
             ref_dirty_flag,
             reactive,
+            hooks,
         }
     }
+
 
     /// Update context from window (preserving event router, dirty flag, and reactive graph)
     fn update_from_window<W: Window>(&mut self, window: &W) {
@@ -98,11 +204,70 @@ impl WindowedContext {
     // Reactive Signal API
     // =========================================================================
 
-    /// Create a new reactive signal with an initial value
+    /// Create a persistent state value that survives across UI rebuilds (keyed)
     ///
-    /// Signals are the core primitive of the reactive system. When a signal's
-    /// value changes, any derived values or effects that depend on it will
-    /// automatically update.
+    /// This creates component-level state identified by a unique string key.
+    /// Returns a `State<T>` with direct `.get()` and `.set()` methods.
+    ///
+    /// For stateful UI elements with `StateTransitions`, prefer `use_state(initial)`
+    /// which auto-keys by source location.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn my_button(ctx: &WindowedContext, id: &str) -> impl ElementBuilder {
+    ///     // Each button gets its own hover state, keyed by id
+    ///     let hovered = ctx.use_state_keyed(id, || false);
+    ///
+    ///     div()
+    ///         .bg(if hovered.get() { Color::RED } else { Color::BLUE })
+    ///         .on_hover_enter({
+    ///             let hovered = hovered.clone();
+    ///             move |_| hovered.set(true)
+    ///         })
+    ///         .on_hover_leave({
+    ///             let hovered = hovered.clone();
+    ///             move |_| hovered.set(false)
+    ///         })
+    /// }
+    /// ```
+    pub fn use_state_keyed<T, F>(&self, key: &str, init: F) -> State<T>
+    where
+        T: Clone + Send + 'static,
+        F: FnOnce() -> T,
+    {
+        use blinc_core::reactive::SignalId;
+
+        let state_key = StateKey::from_string::<T>(key);
+        let mut hooks = self.hooks.lock().unwrap();
+
+        // Check if we have an existing signal with this key
+        let signal = if let Some(raw_id) = hooks.get(&state_key) {
+            // Reconstruct the signal from stored ID
+            let signal_id = SignalId::from_raw(raw_id);
+            Signal::from_id(signal_id)
+        } else {
+            // First time - create a new signal and store it
+            let signal = self.reactive.lock().unwrap().create_signal(init());
+            let raw_id = signal.id().to_raw();
+            hooks.insert(state_key, raw_id);
+            signal
+        };
+
+        State {
+            signal,
+            reactive: Arc::clone(&self.reactive),
+            dirty_flag: Arc::clone(&self.ref_dirty_flag),
+        }
+    }
+
+    /// Create a new reactive signal with an initial value (low-level API)
+    ///
+    /// **Note**: Prefer `use_state` in most cases, as it automatically
+    /// persists signals across rebuilds.
+    ///
+    /// This method always creates a new signal. Use this for advanced
+    /// cases where you manage signal lifecycle manually.
     ///
     /// # Example
     ///
@@ -284,6 +449,92 @@ impl WindowedContext {
     pub fn dirty_flag(&self) -> RefDirtyFlag {
         Arc::clone(&self.ref_dirty_flag)
     }
+
+    /// Create a persistent state for stateful UI elements
+    ///
+    /// This creates a `SharedState<S>` that survives across UI rebuilds.
+    /// State is keyed automatically by source location using `#[track_caller]`.
+    ///
+    /// Use with `stateful()` for the cleanest API:
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use blinc_layout::prelude::*;
+    ///
+    /// fn my_button(ctx: &WindowedContext) -> impl ElementBuilder {
+    ///     let handle = ctx.use_state(ButtonState::Idle);
+    ///
+    ///     stateful(handle)
+    ///         .on_state(|state, div| {
+    ///             match state {
+    ///                 ButtonState::Hovered => { *div = div.swap().bg(Color::RED); }
+    ///                 _ => { *div = div.swap().bg(Color::BLUE); }
+    ///             }
+    ///         })
+    /// }
+    /// ```
+    #[track_caller]
+    pub fn use_state<S>(&self, initial: S) -> blinc_layout::SharedState<S>
+    where
+        S: blinc_layout::StateTransitions + Clone + Send + 'static,
+    {
+        // Use caller location as the key
+        let location = std::panic::Location::caller();
+        let key = format!("{}:{}:{}", location.file(), location.line(), location.column());
+        self.use_state_for(&key, initial)
+    }
+
+    /// Create a persistent state with an explicit key
+    ///
+    /// Use this for reusable components that are called multiple times
+    /// from the same location (e.g., in a loop or when the same component
+    /// function is called multiple times with different props).
+    ///
+    /// The key can be any type that implements `Hash` (strings, numbers, etc).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Reusable component - string key
+    /// fn feature_card(ctx: &WindowedContext, id: &str) -> impl ElementBuilder {
+    ///     let handle = ctx.use_state_for(id, ButtonState::Idle);
+    ///     stateful(handle).on_state(|state, div| { ... })
+    /// }
+    ///
+    /// // Or with numeric key in a loop
+    /// for i in 0..3 {
+    ///     let handle = ctx.use_state_for(i, ButtonState::Idle);
+    ///     // ...
+    /// }
+    /// ```
+    pub fn use_state_for<K, S>(&self, key: K, initial: S) -> blinc_layout::SharedState<S>
+    where
+        K: Hash,
+        S: blinc_layout::StateTransitions + Clone + Send + 'static,
+    {
+        use blinc_core::reactive::SignalId;
+        use blinc_layout::stateful::StatefulInner;
+
+        // We store the SharedState<S> as a signal value
+        let state_key = StateKey::new::<blinc_layout::SharedState<S>, _>(&key);
+        let mut hooks = self.hooks.lock().unwrap();
+
+        if let Some(raw_id) = hooks.get(&state_key) {
+            // Existing state - get the SharedState from the signal
+            let signal_id = SignalId::from_raw(raw_id);
+            let signal: Signal<blinc_layout::SharedState<S>> = Signal::from_id(signal_id);
+            self.reactive.lock().unwrap().get(signal).unwrap()
+        } else {
+            // New state - create SharedState and store in signal
+            let shared_state: blinc_layout::SharedState<S> =
+                Arc::new(Mutex::new(StatefulInner::new(initial)));
+            let signal = self.reactive.lock().unwrap().create_signal(shared_state.clone());
+            let raw_id = signal.id().to_raw();
+            hooks.insert(state_key, raw_id);
+            shared_state
+        }
+    }
 }
 
 /// Windowed application runner
@@ -370,6 +621,8 @@ impl WindowedApp {
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
         // Shared reactive graph for signal-based state management
         let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
+        // Shared hook state for use_state persistence
+        let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
 
         event_loop
             .run(move |event, window| {
@@ -400,12 +653,13 @@ impl WindowedApp {
                                     surface_config = Some(config);
                                     app = Some(blinc_app);
 
-                                    // Initialize context with event router, dirty flag, and reactive graph
+                                    // Initialize context with event router, dirty flag, reactive graph, and hooks
                                     ctx = Some(WindowedContext::from_window(
                                         window,
                                         EventRouter::new(),
                                         Arc::clone(&ref_dirty_flag),
                                         Arc::clone(&reactive),
+                                        Arc::clone(&hooks),
                                     ));
 
                                     tracing::info!("Blinc windowed app initialized");
@@ -623,6 +877,12 @@ impl WindowedApp {
                                 let ui = ui_builder(windowed_ctx);
                                 let mut tree = RenderTree::from_element(&ui);
                                 tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+
+                                // Transfer node states from old tree to preserve state across rebuilds
+                                if let Some(ref old_tree) = render_tree {
+                                    tree.transfer_states_from(old_tree);
+                                }
+
                                 render_tree = Some(tree);
                                 needs_rebuild = false;
                             }

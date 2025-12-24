@@ -57,15 +57,11 @@
 //! mutable reference to the inner `Div` for full mutation capability.
 
 use std::hash::Hash;
-use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
-use blinc_core::fsm::StateMachine;
-
 use crate::div::{Div, ElementBuilder, ElementRef, ElementTypeId};
 use crate::element::RenderProps;
-use crate::interactive::InteractiveContext;
 use crate::tree::{LayoutNodeId, LayoutTree};
 
 // =========================================================================
@@ -297,17 +293,30 @@ pub struct Stateful<S: StateTransitions> {
     /// Inner div with all layout/visual properties
     inner: Div,
 
+    /// Shared state that event handlers can mutate
+    shared_state: Arc<Mutex<StatefulInner<S>>>,
+}
+
+/// Internal state for Stateful<S>, wrapped in Arc<Mutex<...>> for event handler access
+///
+/// This is exposed publicly so that `SharedState<S>` can be created externally
+/// for state persistence across rebuilds.
+pub struct StatefulInner<S: StateTransitions> {
     /// Current state
-    state: S,
+    pub state: S,
 
     /// State change callback (receives state for pattern matching)
-    state_callback: Option<StateCallback<S>>,
+    pub(crate) state_callback: Option<StateCallback<S>>,
+}
 
-    /// Node ID for event dispatch
-    layout_node_id: Option<LayoutNodeId>,
-
-    /// Phantom for FSM (kept for future integration)
-    _fsm: PhantomData<StateMachine>,
+impl<S: StateTransitions> StatefulInner<S> {
+    /// Create a new StatefulInner with the given initial state
+    pub fn new(state: S) -> Self {
+        Self {
+            state,
+            state_callback: None,
+        }
+    }
 }
 
 impl<S: StateTransitions + Default> Default for Stateful<S> {
@@ -331,16 +340,51 @@ impl<S: StateTransitions> DerefMut for Stateful<S> {
     }
 }
 
+/// Shared state handle for `Stateful<S>` elements
+///
+/// This can be created externally and passed to multiple `Stateful` elements,
+/// or stored for persistence across rebuilds (e.g., via `ctx.use_state()`).
+pub type SharedState<S> = Arc<Mutex<StatefulInner<S>>>;
+
 impl<S: StateTransitions> Stateful<S> {
     /// Create a new stateful element with initial state
     pub fn new(initial_state: S) -> Self {
         Self {
             inner: Div::new(),
-            state: initial_state,
-            state_callback: None,
-            layout_node_id: None,
-            _fsm: PhantomData,
+            shared_state: Arc::new(Mutex::new(StatefulInner {
+                state: initial_state,
+                state_callback: None,
+            })),
         }
+    }
+
+    /// Create a stateful element with externally-provided shared state
+    ///
+    /// Use this when you need state to persist across rebuilds.
+    /// The shared state can come from `WindowedContext::use_stateful_state()`
+    /// or be created manually.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // State persists across rebuilds
+    /// let state = ctx.use_stateful_state("my_button", ButtonState::Idle);
+    /// stateful_button()
+    ///     .with_state(state)
+    ///     .on_state(|state, div| { ... })
+    /// ```
+    pub fn with_shared_state(shared_state: SharedState<S>) -> Self {
+        Self {
+            inner: Div::new(),
+            shared_state,
+        }
+    }
+
+    /// Get a clone of the shared state handle
+    ///
+    /// This can be stored externally for state persistence across rebuilds.
+    pub fn shared_state(&self) -> SharedState<S> {
+        Arc::clone(&self.shared_state)
     }
 
     /// Set the initial/default state
@@ -355,19 +399,20 @@ impl<S: StateTransitions> Stateful<S> {
     ///     .default_state(MyState::Ready)
     ///     .on_state(|state, div| { ... })
     /// ```
-    pub fn default_state(mut self, state: S) -> Self {
-        self.state = state;
+    pub fn default_state(self, state: S) -> Self {
+        self.shared_state.lock().unwrap().state = state;
         self
     }
 
-    /// Get the layout node ID (set after registration)
-    pub fn layout_node_id(&self) -> Option<LayoutNodeId> {
-        self.layout_node_id
+    /// Get the current state
+    pub fn state(&self) -> S {
+        self.shared_state.lock().unwrap().state
     }
 
-    /// Get the current state
-    pub fn state(&self) -> &S {
-        &self.state
+    /// Set the current state directly
+    pub fn set_state(&self, state: S) {
+        let mut inner = self.shared_state.lock().unwrap();
+        inner.state = state;
     }
 
     // =========================================================================
@@ -377,8 +422,9 @@ impl<S: StateTransitions> Stateful<S> {
     /// Set the state change callback
     ///
     /// The callback receives the current state for pattern matching and
-    /// a mutable reference to the inner Div for applying visual changes.
-    /// The callback is immediately applied to set the initial visual state.
+    /// a mutable reference to a Div for applying visual changes.
+    /// The callback is immediately applied to set the initial visual state,
+    /// and event handlers are automatically registered to trigger state transitions.
     ///
     /// # Example
     ///
@@ -393,10 +439,77 @@ impl<S: StateTransitions> Stateful<S> {
     where
         F: Fn(&S, &mut Div) + Send + Sync + 'static,
     {
-        self.state_callback = Some(Box::new(callback));
-        // Immediately apply to set initial visual state
+        // Store the callback
+        {
+            let mut inner = self.shared_state.lock().unwrap();
+            inner.state_callback = Some(Box::new(callback));
+        }
+
+        // Apply initial state to get the initial div styling
         self.apply_state_callback();
+
+        // Register event handlers that will trigger state transitions
+        self = self.register_state_handlers();
+
         self
+    }
+
+    /// Register event handlers for automatic state transitions
+    fn register_state_handlers(mut self) -> Self {
+        use blinc_core::events::event_types;
+
+        let shared = Arc::clone(&self.shared_state);
+
+        // POINTER_ENTER -> state transition
+        self.inner = std::mem::take(&mut self.inner).on_hover_enter({
+            let shared = Arc::clone(&shared);
+            move |_ctx| {
+                Self::handle_event_internal(&shared, event_types::POINTER_ENTER);
+            }
+        });
+
+        // POINTER_LEAVE -> state transition
+        self.inner = std::mem::take(&mut self.inner).on_hover_leave({
+            let shared = Arc::clone(&shared);
+            move |_ctx| {
+                Self::handle_event_internal(&shared, event_types::POINTER_LEAVE);
+            }
+        });
+
+        // POINTER_DOWN -> state transition
+        self.inner = std::mem::take(&mut self.inner).on_mouse_down({
+            let shared = Arc::clone(&shared);
+            move |_ctx| {
+                Self::handle_event_internal(&shared, event_types::POINTER_DOWN);
+            }
+        });
+
+        // POINTER_UP -> state transition
+        self.inner = std::mem::take(&mut self.inner).on_mouse_up({
+            let shared = Arc::clone(&shared);
+            move |_ctx| {
+                Self::handle_event_internal(&shared, event_types::POINTER_UP);
+            }
+        });
+
+        self
+    }
+
+    /// Internal handler for state transitions from event handlers
+    ///
+    /// This updates the state and marks dirty via the external flag,
+    /// triggering a UI rebuild.
+    fn handle_event_internal(shared: &Arc<Mutex<StatefulInner<S>>>, event: u32) {
+        let mut inner = shared.lock().unwrap();
+
+        // Check if state transition needed
+        let new_state = match inner.state.on_event(event) {
+            Some(s) if s != inner.state => s,
+            _ => return,
+        };
+
+        // Update state
+        inner.state = new_state;
     }
 
     /// Dispatch a new state
@@ -404,9 +517,13 @@ impl<S: StateTransitions> Stateful<S> {
     /// Updates the current state and applies the callback if the state changed.
     /// Returns true if the state changed.
     pub fn dispatch_state(&mut self, new_state: S) -> bool {
-        if self.state != new_state {
-            self.state = new_state;
-            self.apply_state_callback();
+        let mut inner = self.shared_state.lock().unwrap();
+        if inner.state != new_state {
+            inner.state = new_state;
+            // Apply callback
+            if let Some(ref callback) = inner.state_callback {
+                callback(&inner.state, &mut self.inner);
+            }
             true
         } else {
             false
@@ -417,7 +534,11 @@ impl<S: StateTransitions> Stateful<S> {
     ///
     /// Returns true if the state changed.
     pub fn handle_event(&mut self, event: u32) -> bool {
-        if let Some(new_state) = self.state.on_event(event) {
+        let new_state = {
+            let inner = self.shared_state.lock().unwrap();
+            inner.state.on_event(event)
+        };
+        if let Some(new_state) = new_state {
             self.dispatch_state(new_state)
         } else {
             false
@@ -426,23 +547,10 @@ impl<S: StateTransitions> Stateful<S> {
 
     /// Apply the callback for the current state (if any)
     fn apply_state_callback(&mut self) {
-        if let Some(ref callback) = self.state_callback {
-            callback(&self.state, &mut self.inner);
+        let inner = self.shared_state.lock().unwrap();
+        if let Some(ref callback) = inner.state_callback {
+            callback(&inner.state, &mut self.inner);
         }
-    }
-
-    /// Register with an interactive context for event handling
-    pub fn register(mut self, ctx: &mut InteractiveContext) -> Self {
-        use slotmap::KeyData;
-
-        // Generate unique ID
-        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let layout_id = LayoutNodeId::from(KeyData::from_ffi((1u64 << 32) | id));
-
-        ctx.register(layout_id, None);
-        self.layout_node_id = Some(layout_id);
-        self
     }
 
     // =========================================================================
@@ -1066,9 +1174,9 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
     }
 
     fn render_props(&self) -> RenderProps {
-        let mut props = self.inner.render_props();
-        props.node_id = self.layout_node_id;
-        props
+        // The inner div already has the correct styling from on_state callback
+        // (applied in on_state() and apply_state_callback())
+        self.inner.render_props()
     }
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
@@ -1105,9 +1213,18 @@ pub type StatefulTextField = Stateful<TextFieldState>;
 // Convenience Constructors
 // =========================================================================
 
-/// Create a new stateful element with default state
-pub fn stateful<S: StateTransitions + Default>() -> Stateful<S> {
-    Stateful::new(S::default())
+/// Create a stateful element from a shared state handle
+///
+/// This is the primary way to create stateful elements with persistent state:
+///
+/// ```ignore
+/// let handle = ctx.use_state(ButtonState::Idle);
+/// stateful(handle)
+///     .on_state(|state, div| { ... })
+///     .child(text("Click me"))
+/// ```
+pub fn stateful<S: StateTransitions>(handle: SharedState<S>) -> Stateful<S> {
+    Stateful::with_shared_state(handle)
 }
 
 /// Create a stateful button (idle state)
@@ -1204,7 +1321,7 @@ mod tests {
         // Transition to hovered
         let changed = elem.dispatch_state(ButtonState::Hovered);
         assert!(changed);
-        assert_eq!(*elem.state(), ButtonState::Hovered);
+        assert_eq!(elem.state(), ButtonState::Hovered);
 
         let props = elem.render_props();
         assert!(matches!(props.background, Some(Brush::Solid(c)) if c == Color::GREEN));
@@ -1231,22 +1348,22 @@ mod tests {
                 _ => {}
             });
 
-        assert_eq!(*elem.state(), ButtonState::Idle);
+        assert_eq!(elem.state(), ButtonState::Idle);
 
         // Pointer enter -> Hovered
         let changed = elem.handle_event(event_types::POINTER_ENTER);
         assert!(changed);
-        assert_eq!(*elem.state(), ButtonState::Hovered);
+        assert_eq!(elem.state(), ButtonState::Hovered);
 
         // Pointer down -> Pressed
         let changed = elem.handle_event(event_types::POINTER_DOWN);
         assert!(changed);
-        assert_eq!(*elem.state(), ButtonState::Pressed);
+        assert_eq!(elem.state(), ButtonState::Pressed);
 
         // Pointer up -> Back to Hovered
         let changed = elem.handle_event(event_types::POINTER_UP);
         assert!(changed);
-        assert_eq!(*elem.state(), ButtonState::Hovered);
+        assert_eq!(elem.state(), ButtonState::Hovered);
     }
 
     #[test]
@@ -1318,19 +1435,19 @@ mod tests {
             });
 
         // Initially off
-        assert_eq!(*toggle.state(), ToggleState::Off);
+        assert_eq!(toggle.state(), ToggleState::Off);
         let props = toggle.render_props();
         assert!(matches!(props.background, Some(Brush::Solid(c)) if c == Color::GRAY));
 
         // Click to toggle on
         toggle.handle_event(event_types::POINTER_UP);
-        assert_eq!(*toggle.state(), ToggleState::On);
+        assert_eq!(toggle.state(), ToggleState::On);
         let props = toggle.render_props();
         assert!(matches!(props.background, Some(Brush::Solid(c)) if c == Color::GREEN));
 
         // Click to toggle off
         toggle.handle_event(event_types::POINTER_UP);
-        assert_eq!(*toggle.state(), ToggleState::Off);
+        assert_eq!(toggle.state(), ToggleState::Off);
     }
 
     #[test]
@@ -1357,17 +1474,17 @@ mod tests {
 
         // Hover
         checkbox.handle_event(event_types::POINTER_ENTER);
-        assert_eq!(*checkbox.state(), CheckboxState::UncheckedHovered);
+        assert_eq!(checkbox.state(), CheckboxState::UncheckedHovered);
         assert!(checkbox.state().is_hovered());
 
         // Click to check
         checkbox.handle_event(event_types::POINTER_UP);
-        assert_eq!(*checkbox.state(), CheckboxState::CheckedHovered);
+        assert_eq!(checkbox.state(), CheckboxState::CheckedHovered);
         assert!(checkbox.state().is_checked());
 
         // Leave hover while checked
         checkbox.handle_event(event_types::POINTER_LEAVE);
-        assert_eq!(*checkbox.state(), CheckboxState::CheckedIdle);
+        assert_eq!(checkbox.state(), CheckboxState::CheckedIdle);
         assert!(checkbox.state().is_checked());
         assert!(!checkbox.state().is_hovered());
     }
@@ -1395,7 +1512,7 @@ mod tests {
                 }
             });
 
-        assert_eq!(*field.state(), TextFieldState::Idle);
+        assert_eq!(field.state(), TextFieldState::Idle);
         assert!(!field.state().is_focused());
 
         // Click to focus
@@ -1438,8 +1555,11 @@ mod tests {
             }
         }
 
-        let mut elem: Stateful<MyState> = stateful()
-            .default_state(MyState::Ready)
+        // Create shared state handle
+        let handle: SharedState<MyState> =
+            std::sync::Arc::new(std::sync::Mutex::new(StatefulInner::new(MyState::Ready)));
+
+        let mut elem: Stateful<MyState> = stateful(handle)
             .w(100.0)
             .on_state(|state, div| match state {
                 MyState::Ready => {
@@ -1456,17 +1576,17 @@ mod tests {
                 }
             });
 
-        assert_eq!(*elem.state(), MyState::Ready);
+        assert_eq!(elem.state(), MyState::Ready);
 
         // Transition via event
         elem.handle_event(1000); // START_LOADING
-        assert_eq!(*elem.state(), MyState::Loading);
+        assert_eq!(elem.state(), MyState::Loading);
 
         elem.handle_event(1001); // LOAD_SUCCESS
-        assert_eq!(*elem.state(), MyState::Success);
+        assert_eq!(elem.state(), MyState::Success);
 
         elem.handle_event(1003); // RESET
-        assert_eq!(*elem.state(), MyState::Ready);
+        assert_eq!(elem.state(), MyState::Ready);
     }
 
     #[test]
@@ -1506,14 +1626,14 @@ mod tests {
             .w(100.0)
             .on_state(|_state, _div| {});
 
-        assert_eq!(*btn.state(), ButtonState::Disabled);
+        assert_eq!(btn.state(), ButtonState::Disabled);
 
         // All events should be ignored
         assert!(!btn.handle_event(event_types::POINTER_ENTER));
         assert!(!btn.handle_event(event_types::POINTER_DOWN));
         assert!(!btn.handle_event(event_types::POINTER_UP));
 
-        assert_eq!(*btn.state(), ButtonState::Disabled);
+        assert_eq!(btn.state(), ButtonState::Disabled);
     }
 
     #[test]
@@ -1546,7 +1666,7 @@ mod tests {
         assert!(button_ref.is_bound());
 
         // Direct access via borrow() - cleaner API
-        let state = *button_ref.borrow().state();
+        let state = button_ref.borrow().state();
         assert_eq!(state, ButtonState::Idle);
 
         // Direct mutation via borrow_mut() - like the user's desired pattern:
@@ -1554,11 +1674,11 @@ mod tests {
         button_ref.borrow_mut().dispatch_state(ButtonState::Hovered);
 
         // Verify state changed
-        let new_state = *button_ref.borrow().state();
+        let new_state = button_ref.borrow().state();
         assert_eq!(new_state, ButtonState::Hovered);
 
         // Closure-based API still available for fallible access
-        let via_closure = button_ref.with(|btn| *btn.state());
+        let via_closure = button_ref.with(|btn| btn.state());
         assert_eq!(via_closure, Some(ButtonState::Hovered));
     }
 }
