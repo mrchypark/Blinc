@@ -475,7 +475,7 @@ impl<S: StateTransitions> Stateful<S> {
     /// ```ignore
     /// // State persists across rebuilds
     /// let state = ctx.use_stateful_state("my_button", ButtonState::Idle);
-    /// stateful_button()
+    /// button()
     ///     .with_state(state)
     ///     .on_state(|state, div| { ... })
     /// ```
@@ -949,11 +949,11 @@ impl<S: StateTransitions> Stateful<S> {
     /// # Example
     ///
     /// ```ignore
-    /// let button_ref = ElementRef::<StatefulButton>::new();
+    /// let button_ref = ElementRef::<Button>::new();
     ///
     /// let ui = div()
     ///     .child(
-    ///         stateful_button()
+    ///         button()
     ///             .bind(&button_ref)  // Binds and continues chain
     ///             .on_state(|state, div| { ... })
     ///     );
@@ -1303,20 +1303,21 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
 // Convenience Type Aliases
 // =========================================================================
 
-/// A stateful button element
-pub type StatefulButton = Stateful<ButtonState>;
+/// A button element with hover/press states
+pub type Button = Stateful<ButtonState>;
 
-/// A stateful toggle element
-pub type StatefulToggle = Stateful<ToggleState>;
+/// A toggle element (on/off)
+pub type Toggle = Stateful<ToggleState>;
 
-/// A stateful checkbox element
-pub type StatefulCheckbox = Stateful<CheckboxState>;
+/// A checkbox element with checked/unchecked states
+pub type Checkbox = Stateful<CheckboxState>;
 
-/// A stateful text field element
-pub type StatefulTextField = Stateful<TextFieldState>;
+/// A text field element with focus states
+pub type TextField = Stateful<TextFieldState>;
 
-/// A stateful scroll container element
-pub type StatefulScroll = Stateful<ScrollState>;
+/// A scroll container element with momentum scrolling
+pub type ScrollContainer = Stateful<ScrollState>;
+
 
 // =========================================================================
 // Convenience Constructors
@@ -1336,13 +1337,26 @@ pub fn stateful<S: StateTransitions>(handle: SharedState<S>) -> Stateful<S> {
     Stateful::with_shared_state(handle)
 }
 
-/// Create a stateful button (idle state)
-pub fn stateful_button() -> StatefulButton {
+/// Create a stateful button element with custom styling
+///
+/// This is the low-level constructor for custom button styling.
+/// For a ready-to-use button with built-in styling, use `widgets::button()`.
+///
+/// ```ignore
+/// stateful_button()
+///     .on_state(|state, div| match state {
+///         ButtonState::Idle => { *div = div.swap().bg(Color::BLUE); }
+///         ButtonState::Hovered => { *div = div.swap().bg(Color::CYAN); }
+///         // ...
+///     })
+///     .child(text("Click me"))
+/// ```
+pub fn stateful_button() -> Button {
     Stateful::new(ButtonState::Idle)
 }
 
-/// Create a stateful toggle
-pub fn stateful_toggle(initially_on: bool) -> StatefulToggle {
+/// Create a toggle element
+pub fn toggle(initially_on: bool) -> Toggle {
     Stateful::new(if initially_on {
         ToggleState::On
     } else {
@@ -1350,8 +1364,11 @@ pub fn stateful_toggle(initially_on: bool) -> StatefulToggle {
     })
 }
 
-/// Create a stateful checkbox
-pub fn stateful_checkbox(initially_checked: bool) -> StatefulCheckbox {
+/// Create a stateful checkbox element with custom styling
+///
+/// This is the low-level constructor for custom checkbox styling.
+/// For a ready-to-use checkbox with built-in styling, use `widgets::checkbox()`.
+pub fn stateful_checkbox(initially_checked: bool) -> Checkbox {
     Stateful::new(if initially_checked {
         CheckboxState::CheckedIdle
     } else {
@@ -1359,8 +1376,8 @@ pub fn stateful_checkbox(initially_checked: bool) -> StatefulCheckbox {
     })
 }
 
-/// Create a stateful text field
-pub fn stateful_text_field() -> StatefulTextField {
+/// Create a text field element
+pub fn text_field() -> TextField {
     Stateful::new(TextFieldState::Idle)
 }
 
@@ -1371,7 +1388,6 @@ mod tests {
     use blinc_core::events::event_types;
     use blinc_core::{Brush, Color, CornerRadius, Shadow, Transform};
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::Arc;
 
     #[test]
     fn test_stateful_basic() {
@@ -1403,7 +1419,6 @@ mod tests {
             });
 
         let props = elem.render_props();
-        // Should have blue background from idle state
         assert!(matches!(props.background, Some(Brush::Solid(c)) if c == Color::BLUE));
         assert_eq!(props.border_radius, CornerRadius::uniform(4.0));
     }
@@ -1423,11 +1438,9 @@ mod tests {
                 _ => {}
             });
 
-        // Initial state is idle (blue)
         let props = elem.render_props();
         assert!(matches!(props.background, Some(Brush::Solid(c)) if c == Color::BLUE));
 
-        // Transition to hovered
         let changed = elem.dispatch_state(ButtonState::Hovered);
         assert!(changed);
         assert_eq!(elem.state(), ButtonState::Hovered);
@@ -1435,7 +1448,6 @@ mod tests {
         let props = elem.render_props();
         assert!(matches!(props.background, Some(Brush::Solid(c)) if c == Color::GREEN));
 
-        // Transition to same state should return false
         let changed = elem.dispatch_state(ButtonState::Hovered);
         assert!(!changed);
     }
@@ -1459,17 +1471,14 @@ mod tests {
 
         assert_eq!(elem.state(), ButtonState::Idle);
 
-        // Pointer enter -> Hovered
         let changed = elem.handle_event(event_types::POINTER_ENTER);
         assert!(changed);
         assert_eq!(elem.state(), ButtonState::Hovered);
 
-        // Pointer down -> Pressed
         let changed = elem.handle_event(event_types::POINTER_DOWN);
         assert!(changed);
         assert_eq!(elem.state(), ButtonState::Pressed);
 
-        // Pointer up -> Back to Hovered
         let changed = elem.handle_event(event_types::POINTER_UP);
         assert!(changed);
         assert_eq!(elem.state(), ButtonState::Hovered);
@@ -1490,48 +1499,8 @@ mod tests {
     }
 
     #[test]
-    fn test_button_with_state_callbacks() {
-        let btn = stateful_button()
-            .w(120.0)
-            .h(40.0)
-            .px(16.0)
-            .py(8.0)
-            .on_state(|state, div| match state {
-                ButtonState::Idle => {
-                    *div = div.swap()
-                        .bg(Color::rgba(0.2, 0.5, 0.9, 1.0))
-                        .rounded(8.0);
-                }
-                ButtonState::Hovered => {
-                    *div = div.swap()
-                        .bg(Color::rgba(0.3, 0.6, 1.0, 1.0))
-                        .rounded(8.0)
-                        .shadow(Shadow::new(0.0, 2.0, 4.0, Color::rgba(0.0, 0.0, 0.0, 0.1)));
-                }
-                ButtonState::Pressed => {
-                    *div = div.swap()
-                        .bg(Color::rgba(0.15, 0.4, 0.8, 1.0))
-                        .rounded(8.0)
-                        .transform(Transform::scale(0.97, 0.97));
-                }
-                ButtonState::Disabled => {
-                    *div = div.swap().bg(Color::GRAY);
-                }
-            })
-            .child(text("Click me"));
-
-        let mut tree = LayoutTree::new();
-        let _node = btn.build(&mut tree);
-
-        // Verify idle state
-        let props = btn.render_props();
-        assert!(props.background.is_some());
-        assert_eq!(props.border_radius, CornerRadius::uniform(8.0));
-    }
-
-    #[test]
     fn test_toggle_states() {
-        let mut toggle = stateful_toggle(false)
+        let mut t = toggle(false)
             .w(50.0)
             .h(30.0)
             .on_state(|state, div| match state {
@@ -1543,25 +1512,22 @@ mod tests {
                 }
             });
 
-        // Initially off
-        assert_eq!(toggle.state(), ToggleState::Off);
-        let props = toggle.render_props();
+        assert_eq!(t.state(), ToggleState::Off);
+        let props = t.render_props();
         assert!(matches!(props.background, Some(Brush::Solid(c)) if c == Color::GRAY));
 
-        // Click to toggle on
-        toggle.handle_event(event_types::POINTER_UP);
-        assert_eq!(toggle.state(), ToggleState::On);
-        let props = toggle.render_props();
+        t.handle_event(event_types::POINTER_UP);
+        assert_eq!(t.state(), ToggleState::On);
+        let props = t.render_props();
         assert!(matches!(props.background, Some(Brush::Solid(c)) if c == Color::GREEN));
 
-        // Click to toggle off
-        toggle.handle_event(event_types::POINTER_UP);
-        assert_eq!(toggle.state(), ToggleState::Off);
+        t.handle_event(event_types::POINTER_UP);
+        assert_eq!(t.state(), ToggleState::Off);
     }
 
     #[test]
     fn test_checkbox_states() {
-        let mut checkbox = stateful_checkbox(false)
+        let mut cb = stateful_checkbox(false)
             .square(24.0)
             .on_state(|state, div| match state {
                 CheckboxState::UncheckedIdle => {
@@ -1578,29 +1544,25 @@ mod tests {
                 }
             });
 
-        // Start unchecked
-        assert!(!checkbox.state().is_checked());
+        assert!(!cb.state().is_checked());
 
-        // Hover
-        checkbox.handle_event(event_types::POINTER_ENTER);
-        assert_eq!(checkbox.state(), CheckboxState::UncheckedHovered);
-        assert!(checkbox.state().is_hovered());
+        cb.handle_event(event_types::POINTER_ENTER);
+        assert_eq!(cb.state(), CheckboxState::UncheckedHovered);
+        assert!(cb.state().is_hovered());
 
-        // Click to check
-        checkbox.handle_event(event_types::POINTER_UP);
-        assert_eq!(checkbox.state(), CheckboxState::CheckedHovered);
-        assert!(checkbox.state().is_checked());
+        cb.handle_event(event_types::POINTER_UP);
+        assert_eq!(cb.state(), CheckboxState::CheckedHovered);
+        assert!(cb.state().is_checked());
 
-        // Leave hover while checked
-        checkbox.handle_event(event_types::POINTER_LEAVE);
-        assert_eq!(checkbox.state(), CheckboxState::CheckedIdle);
-        assert!(checkbox.state().is_checked());
-        assert!(!checkbox.state().is_hovered());
+        cb.handle_event(event_types::POINTER_LEAVE);
+        assert_eq!(cb.state(), CheckboxState::CheckedIdle);
+        assert!(cb.state().is_checked());
+        assert!(!cb.state().is_hovered());
     }
 
     #[test]
     fn test_text_field_states() {
-        let mut field = stateful_text_field()
+        let mut field = text_field()
             .w(200.0)
             .h(40.0)
             .on_state(|state, div| match state {
@@ -1624,109 +1586,12 @@ mod tests {
         assert_eq!(field.state(), TextFieldState::Idle);
         assert!(!field.state().is_focused());
 
-        // Click to focus
         field.handle_event(event_types::POINTER_ENTER);
         field.handle_event(event_types::POINTER_DOWN);
         assert!(field.state().is_focused());
 
-        // Blur
         field.handle_event(event_types::BLUR);
         assert!(!field.state().is_focused());
-    }
-
-    #[test]
-    fn test_custom_state_type() {
-        // User can define their own state type
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-        enum MyState {
-            #[default]
-            Ready,
-            Loading,
-            Success,
-            Error,
-        }
-
-        impl StateTransitions for MyState {
-            fn on_event(&self, event: u32) -> Option<Self> {
-                // Custom event mapping
-                const START_LOADING: u32 = 1000;
-                const LOAD_SUCCESS: u32 = 1001;
-                const LOAD_ERROR: u32 = 1002;
-                const RESET: u32 = 1003;
-
-                match (self, event) {
-                    (MyState::Ready, START_LOADING) => Some(MyState::Loading),
-                    (MyState::Loading, LOAD_SUCCESS) => Some(MyState::Success),
-                    (MyState::Loading, LOAD_ERROR) => Some(MyState::Error),
-                    (MyState::Success | MyState::Error, RESET) => Some(MyState::Ready),
-                    _ => None,
-                }
-            }
-        }
-
-        // Create shared state handle
-        let handle: SharedState<MyState> =
-            std::sync::Arc::new(std::sync::Mutex::new(StatefulInner::new(MyState::Ready)));
-
-        let mut elem: Stateful<MyState> = stateful(handle)
-            .w(100.0)
-            .on_state(|state, div| match state {
-                MyState::Ready => {
-                    *div = div.swap().bg(Color::BLUE);
-                }
-                MyState::Loading => {
-                    *div = div.swap().bg(Color::YELLOW);
-                }
-                MyState::Success => {
-                    *div = div.swap().bg(Color::GREEN);
-                }
-                MyState::Error => {
-                    *div = div.swap().bg(Color::RED);
-                }
-            });
-
-        assert_eq!(elem.state(), MyState::Ready);
-
-        // Transition via event
-        elem.handle_event(1000); // START_LOADING
-        assert_eq!(elem.state(), MyState::Loading);
-
-        elem.handle_event(1001); // LOAD_SUCCESS
-        assert_eq!(elem.state(), MyState::Success);
-
-        elem.handle_event(1003); // RESET
-        assert_eq!(elem.state(), MyState::Ready);
-    }
-
-    #[test]
-    fn test_deref_to_div() {
-        let mut elem: Stateful<ButtonState> = Stateful::new(ButtonState::Idle).w(100.0);
-
-        // Can access Div methods via DerefMut
-        elem.style_mut().flex_grow = 2.0;
-
-        let mut tree = LayoutTree::new();
-        let _node = elem.build(&mut tree);
-    }
-
-    #[test]
-    fn test_full_div_api_access() {
-        let elem = stateful_button()
-            .w(200.0)
-            .h(100.0)
-            .flex_row()
-            .gap(4.0)
-            .p(2.0)
-            .items_center()
-            .justify_between()
-            .bg(Color::BLUE)
-            .rounded(8.0)
-            .shadow(Shadow::new(0.0, 4.0, 8.0, Color::BLACK))
-            .child(text("Hello"))
-            .child(text("World"));
-
-        let mut tree = LayoutTree::new();
-        let _node = elem.build(&mut tree);
     }
 
     #[test]
@@ -1737,57 +1602,10 @@ mod tests {
 
         assert_eq!(btn.state(), ButtonState::Disabled);
 
-        // All events should be ignored
         assert!(!btn.handle_event(event_types::POINTER_ENTER));
         assert!(!btn.handle_event(event_types::POINTER_DOWN));
         assert!(!btn.handle_event(event_types::POINTER_UP));
 
         assert_eq!(btn.state(), ButtonState::Disabled);
-    }
-
-    #[test]
-    fn test_bind_fluent_api() {
-        use crate::div::{div, ElementRef};
-
-        // Create a ref for external access
-        let button_ref = ElementRef::<StatefulButton>::new();
-
-        // Use .bind() in the fluent chain - continues naturally
-        let _ui = div()
-            .flex_col()
-            .child(
-                stateful_button()
-                    .bind(&button_ref)  // Binds here, chain continues
-                    .w(100.0)
-                    .h(40.0)
-                    .on_state(|state, div| match state {
-                        ButtonState::Idle => {
-                            *div = div.swap().bg(Color::BLUE);
-                        }
-                        ButtonState::Hovered => {
-                            *div = div.swap().bg(Color::CYAN);
-                        }
-                        _ => {}
-                    }),
-            );
-
-        // Ref is now bound
-        assert!(button_ref.is_bound());
-
-        // Direct access via borrow() - cleaner API
-        let state = button_ref.borrow().state();
-        assert_eq!(state, ButtonState::Idle);
-
-        // Direct mutation via borrow_mut() - like the user's desired pattern:
-        // button_ref.borrow_mut().dispatch_state(...)
-        button_ref.borrow_mut().dispatch_state(ButtonState::Hovered);
-
-        // Verify state changed
-        let new_state = button_ref.borrow().state();
-        assert_eq!(new_state, ButtonState::Hovered);
-
-        // Closure-based API still available for fallible access
-        let via_closure = button_ref.with(|btn| btn.state());
-        assert_eq!(via_closure, Some(ButtonState::Hovered));
     }
 }

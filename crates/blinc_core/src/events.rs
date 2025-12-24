@@ -20,6 +20,8 @@ pub mod event_types {
     pub const BLUR: EventType = 11;
     pub const KEY_DOWN: EventType = 20;
     pub const KEY_UP: EventType = 21;
+    /// Text input event (for character input, IME composition)
+    pub const TEXT_INPUT: EventType = 22;
     pub const SCROLL: EventType = 30;
     /// Scroll gesture ended (for deceleration/momentum)
     pub const SCROLL_END: EventType = 31;
@@ -32,6 +34,14 @@ pub mod event_types {
     // Element lifecycle events
     pub const MOUNT: EventType = 60;
     pub const UNMOUNT: EventType = 61;
+
+    // Clipboard events
+    pub const CUT: EventType = 70;
+    pub const COPY: EventType = 71;
+    pub const PASTE: EventType = 72;
+
+    // Selection events
+    pub const SELECT_ALL: EventType = 80;
 }
 
 /// A UI event with associated data
@@ -54,8 +64,22 @@ pub enum EventData {
         pressure: f32,
     },
     Key {
-        code: u32,
-        modifiers: u32,
+        /// Virtual key code (platform-specific, use KeyCode constants)
+        key: KeyCode,
+        /// Keyboard modifier flags
+        modifiers: Modifiers,
+        /// Whether this is a repeat event
+        repeat: bool,
+    },
+    /// Text input from keyboard or IME
+    TextInput {
+        /// The input text (may be multiple characters for IME)
+        text: String,
+    },
+    /// Clipboard paste data
+    Clipboard {
+        /// The pasted text content
+        text: String,
     },
     Scroll {
         delta_x: f32,
@@ -66,6 +90,149 @@ pub enum EventData {
         height: u32,
     },
     None,
+}
+
+/// Virtual key codes (platform-agnostic)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub struct KeyCode(pub u32);
+
+impl KeyCode {
+    // Alphanumeric keys
+    pub const A: KeyCode = KeyCode(0x41);
+    pub const B: KeyCode = KeyCode(0x42);
+    pub const C: KeyCode = KeyCode(0x43);
+    pub const D: KeyCode = KeyCode(0x44);
+    pub const E: KeyCode = KeyCode(0x45);
+    pub const F: KeyCode = KeyCode(0x46);
+    pub const G: KeyCode = KeyCode(0x47);
+    pub const H: KeyCode = KeyCode(0x48);
+    pub const I: KeyCode = KeyCode(0x49);
+    pub const J: KeyCode = KeyCode(0x4A);
+    pub const K: KeyCode = KeyCode(0x4B);
+    pub const L: KeyCode = KeyCode(0x4C);
+    pub const M: KeyCode = KeyCode(0x4D);
+    pub const N: KeyCode = KeyCode(0x4E);
+    pub const O: KeyCode = KeyCode(0x4F);
+    pub const P: KeyCode = KeyCode(0x50);
+    pub const Q: KeyCode = KeyCode(0x51);
+    pub const R: KeyCode = KeyCode(0x52);
+    pub const S: KeyCode = KeyCode(0x53);
+    pub const T: KeyCode = KeyCode(0x54);
+    pub const U: KeyCode = KeyCode(0x55);
+    pub const V: KeyCode = KeyCode(0x56);
+    pub const W: KeyCode = KeyCode(0x57);
+    pub const X: KeyCode = KeyCode(0x58);
+    pub const Y: KeyCode = KeyCode(0x59);
+    pub const Z: KeyCode = KeyCode(0x5A);
+
+    // Number keys
+    pub const KEY_0: KeyCode = KeyCode(0x30);
+    pub const KEY_1: KeyCode = KeyCode(0x31);
+    pub const KEY_2: KeyCode = KeyCode(0x32);
+    pub const KEY_3: KeyCode = KeyCode(0x33);
+    pub const KEY_4: KeyCode = KeyCode(0x34);
+    pub const KEY_5: KeyCode = KeyCode(0x35);
+    pub const KEY_6: KeyCode = KeyCode(0x36);
+    pub const KEY_7: KeyCode = KeyCode(0x37);
+    pub const KEY_8: KeyCode = KeyCode(0x38);
+    pub const KEY_9: KeyCode = KeyCode(0x39);
+
+    // Special keys
+    pub const BACKSPACE: KeyCode = KeyCode(0x08);
+    pub const TAB: KeyCode = KeyCode(0x09);
+    pub const ENTER: KeyCode = KeyCode(0x0D);
+    pub const ESCAPE: KeyCode = KeyCode(0x1B);
+    pub const SPACE: KeyCode = KeyCode(0x20);
+    pub const DELETE: KeyCode = KeyCode(0x7F);
+
+    // Arrow keys
+    pub const LEFT: KeyCode = KeyCode(0x25);
+    pub const UP: KeyCode = KeyCode(0x26);
+    pub const RIGHT: KeyCode = KeyCode(0x27);
+    pub const DOWN: KeyCode = KeyCode(0x28);
+
+    // Navigation keys
+    pub const HOME: KeyCode = KeyCode(0x24);
+    pub const END: KeyCode = KeyCode(0x23);
+    pub const PAGE_UP: KeyCode = KeyCode(0x21);
+    pub const PAGE_DOWN: KeyCode = KeyCode(0x22);
+
+    // Unknown/unmapped key
+    pub const UNKNOWN: KeyCode = KeyCode(0);
+}
+
+/// Keyboard modifier flags
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    bits: u8,
+}
+
+impl Modifiers {
+    pub const NONE: Modifiers = Modifiers { bits: 0 };
+    pub const SHIFT: u8 = 0b0001;
+    pub const CTRL: u8 = 0b0010;
+    pub const ALT: u8 = 0b0100;
+    pub const META: u8 = 0b1000; // Cmd on macOS, Win on Windows
+
+    /// Create new modifiers from flags
+    pub const fn new(shift: bool, ctrl: bool, alt: bool, meta: bool) -> Self {
+        let mut bits = 0;
+        if shift {
+            bits |= Self::SHIFT;
+        }
+        if ctrl {
+            bits |= Self::CTRL;
+        }
+        if alt {
+            bits |= Self::ALT;
+        }
+        if meta {
+            bits |= Self::META;
+        }
+        Self { bits }
+    }
+
+    /// Create from raw bits
+    pub const fn from_bits(bits: u8) -> Self {
+        Self { bits }
+    }
+
+    /// Check if shift is pressed
+    pub const fn shift(&self) -> bool {
+        self.bits & Self::SHIFT != 0
+    }
+
+    /// Check if ctrl is pressed
+    pub const fn ctrl(&self) -> bool {
+        self.bits & Self::CTRL != 0
+    }
+
+    /// Check if alt is pressed
+    pub const fn alt(&self) -> bool {
+        self.bits & Self::ALT != 0
+    }
+
+    /// Check if meta (Cmd/Win) is pressed
+    pub const fn meta(&self) -> bool {
+        self.bits & Self::META != 0
+    }
+
+    /// Check if any modifier is pressed
+    pub const fn any(&self) -> bool {
+        self.bits != 0
+    }
+
+    /// Check if command key is pressed (Ctrl on non-macOS, Meta on macOS)
+    #[cfg(target_os = "macos")]
+    pub const fn command(&self) -> bool {
+        self.meta()
+    }
+
+    /// Check if command key is pressed (Ctrl on non-macOS, Meta on macOS)
+    #[cfg(not(target_os = "macos"))]
+    pub const fn command(&self) -> bool {
+        self.ctrl()
+    }
 }
 
 impl Event {

@@ -93,21 +93,21 @@ fn test_scheduler_with_reactive_signals() {
     graph.set(opacity, 0.5);
 
     // Sync signal values to springs
-    if let Some(spring) = scheduler.get_spring_mut(scale_id) {
+    scheduler.with_spring_mut(scale_id, |spring| {
         spring.set_target(graph.get(scale).unwrap_or(1.0));
-    }
-    if let Some(spring) = scheduler.get_spring_mut(opacity_id) {
+    });
+    scheduler.with_spring_mut(opacity_id, |spring| {
         spring.set_target(graph.get(opacity).unwrap_or(1.0));
-    }
+    });
 
     // Now we have active animations
     assert!(scheduler.has_active_animations());
 
     // Simulate animation loop using the scheduler's iterator
     for _ in 0..120 {
-        for (_, spring) in scheduler.springs_iter_mut() {
+        scheduler.springs_iter_mut().for_each(|_, spring| {
             spring.step(1.0 / 60.0);
-        }
+        });
     }
 
     // Check springs have settled
@@ -443,18 +443,18 @@ fn test_complete_widget_integration() {
     graph.set(fsm_state, fsm.current_state());
 
     // Sync derived values to springs
-    if let Some(s) = scheduler.get_spring_mut(scale_id) {
+    scheduler.with_spring_mut(scale_id, |s| {
         s.set_target(graph.get_derived(target_scale).unwrap_or(1.0));
-    }
-    if let Some(s) = scheduler.get_spring_mut(brightness_id) {
+    });
+    scheduler.with_spring_mut(brightness_id, |s| {
         s.set_target(graph.get_derived(target_brightness).unwrap_or(1.0));
-    }
+    });
 
     // Animate
     for _ in 0..60 {
-        for (_, spring) in scheduler.springs_iter_mut() {
+        scheduler.springs_iter_mut().for_each(|_, spring| {
             spring.step(1.0 / 60.0);
-        }
+        });
     }
 
     let scale = scheduler.get_spring(scale_id).unwrap().value();
@@ -472,17 +472,17 @@ fn test_complete_widget_integration() {
     fsm.send(POINTER_DOWN);
     graph.set(fsm_state, fsm.current_state());
 
-    if let Some(s) = scheduler.get_spring_mut(scale_id) {
+    scheduler.with_spring_mut(scale_id, |s| {
         s.set_target(graph.get_derived(target_scale).unwrap_or(1.0));
-    }
-    if let Some(s) = scheduler.get_spring_mut(brightness_id) {
+    });
+    scheduler.with_spring_mut(brightness_id, |s| {
         s.set_target(graph.get_derived(target_brightness).unwrap_or(1.0));
-    }
+    });
 
     for _ in 0..60 {
-        for (_, spring) in scheduler.springs_iter_mut() {
+        scheduler.springs_iter_mut().for_each(|_, spring| {
             spring.step(1.0 / 60.0);
-        }
+        });
     }
 
     let scale = scheduler.get_spring(scale_id).unwrap().value();
@@ -505,17 +505,17 @@ fn test_complete_widget_integration() {
     fsm.send(POINTER_LEAVE);
     graph.set(fsm_state, fsm.current_state());
 
-    if let Some(s) = scheduler.get_spring_mut(scale_id) {
+    scheduler.with_spring_mut(scale_id, |s| {
         s.set_target(graph.get_derived(target_scale).unwrap_or(1.0));
-    }
-    if let Some(s) = scheduler.get_spring_mut(brightness_id) {
+    });
+    scheduler.with_spring_mut(brightness_id, |s| {
         s.set_target(graph.get_derived(target_brightness).unwrap_or(1.0));
-    }
+    });
 
     for _ in 0..90 {
-        for (_, spring) in scheduler.springs_iter_mut() {
+        scheduler.springs_iter_mut().for_each(|_, spring| {
             spring.step(1.0 / 60.0);
-        }
+        });
     }
 
     let scale = scheduler.get_spring(scale_id).unwrap().value();

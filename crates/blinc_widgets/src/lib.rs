@@ -47,11 +47,18 @@ pub mod checkbox;
 pub mod container;
 pub mod context;
 pub mod text;
+pub mod text_area;
+pub mod text_input;
 pub mod widget;
 
 pub use button::{button, Button, ButtonBuilder, ButtonConfig, ButtonState};
 pub use checkbox::{checkbox, Checkbox, CheckboxBuilder, CheckboxConfig, CheckboxState};
 pub use context::{DirtyTracker, WidgetContext, WidgetContextExt, WidgetState};
+pub use text_area::{text_area, TextArea, TextAreaBuilder, TextAreaConfig, TextAreaState, TextPosition};
+pub use text_input::{
+    text_input, InputType, NumberConstraints, TextInput, TextInputBuilder, TextInputConfig,
+    TextInputState,
+};
 pub use widget::{Widget, WidgetId};
 
 /// Prelude for convenient imports
@@ -59,5 +66,9 @@ pub mod prelude {
     pub use crate::button::{button, Button, ButtonBuilder, ButtonConfig};
     pub use crate::checkbox::{checkbox, Checkbox, CheckboxBuilder, CheckboxConfig};
     pub use crate::context::{WidgetContext, WidgetContextExt};
+    pub use crate::text_area::{text_area, TextArea, TextAreaBuilder, TextAreaConfig};
+    pub use crate::text_input::{
+        text_input, InputType, NumberConstraints, TextInput, TextInputBuilder, TextInputConfig,
+    };
     pub use crate::widget::{Widget, WidgetId};
 }

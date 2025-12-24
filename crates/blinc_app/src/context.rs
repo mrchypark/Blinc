@@ -7,7 +7,7 @@ use blinc_gpu::{
     GpuGlyph, GpuImage, GpuImageInstance, GpuPaintContext, GpuRenderer, ImageRenderingContext,
     TextAlignment, TextAnchor, TextRenderingContext,
 };
-use blinc_layout::div::{FontWeight, TextAlign};
+use blinc_layout::div::{FontWeight, TextAlign, TextVerticalAlign};
 use blinc_layout::prelude::*;
 use blinc_layout::renderer::ElementType;
 use blinc_svg::SvgDocument;
@@ -51,6 +51,8 @@ struct TextElement {
     color: [f32; 4],
     align: TextAlign,
     weight: FontWeight,
+    /// Vertical alignment within bounding box
+    v_align: TextVerticalAlign,
     /// Clip bounds from parent scroll container (x, y, width, height)
     clip_bounds: Option<[f32; 4]>,
 }
@@ -134,15 +136,28 @@ impl RenderContext {
                 TextAlign::Right => TextAlignment::Right,
             };
 
+            // Pass width for alignment (center/right) but wrapping is disabled by default
+            // in prepare_text_with_options (it uses LineBreakMode::None internally)
+            //
+            // Vertical alignment:
+            // - Center: Use TextAnchor::Center with y at vertical center of bounds.
+            //   This ensures text appears visually centered (by cap-height) rather than
+            //   mathematically centered by the full bounding box (which includes descenders).
+            // - Top: Use TextAnchor::Top with y at top of bounds. Used for multi-line text
+            //   like text areas where content flows from top.
+            let (anchor, y_pos) = match text.v_align {
+                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0),
+                TextVerticalAlign::Top => (TextAnchor::Top, text.y),
+            };
             if let Ok(mut glyphs) = self.text_ctx.prepare_text_with_options(
                 &text.content,
                 text.x,
-                text.y + text.height / 2.0,
+                y_pos,
                 text.font_size,
                 text.color,
-                TextAnchor::Center,
+                anchor,
                 alignment,
-                Some(text.width),
+                Some(text.width),  // Width for alignment (wrapping disabled internally)
             ) {
                 // Apply clip bounds to all glyphs if the text element has clip bounds
                 if let Some(clip) = text.clip_bounds {
@@ -639,6 +654,18 @@ impl RenderContext {
 
             match &render_node.element_type {
                 ElementType::Text(text_data) => {
+                    // Debug: Log text positioning at DEBUG level for visibility
+                    tracing::debug!(
+                        "Text '{}': abs=({:.1}, {:.1}), size=({:.1}x{:.1}), font={:.1}, align={:?}, v_align={:?}",
+                        text_data.content,
+                        abs_x,
+                        abs_y,
+                        bounds.width,
+                        bounds.height,
+                        text_data.font_size,
+                        text_data.align,
+                        text_data.v_align
+                    );
                     texts.push(TextElement {
                         content: text_data.content.clone(),
                         x: abs_x,
@@ -649,6 +676,7 @@ impl RenderContext {
                         color: text_data.color,
                         align: text_data.align,
                         weight: text_data.weight,
+                        v_align: text_data.v_align,
                         clip_bounds: current_clip,
                     });
                 }

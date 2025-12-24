@@ -47,6 +47,7 @@
 mod app;
 mod context;
 mod error;
+mod text_measurer;
 
 #[cfg(feature = "windowed")]
 pub mod windowed;
@@ -57,6 +58,7 @@ mod tests;
 pub use app::{BlincApp, BlincConfig};
 pub use context::RenderContext;
 pub use error::{BlincError, Result};
+pub use text_measurer::{init_text_measurer, FontTextMeasurer};
 
 // Re-export layout API for convenience
 pub use blinc_layout::prelude::*;
@@ -70,6 +72,7 @@ pub mod prelude {
     pub use crate::app::{BlincApp, BlincConfig};
     pub use crate::context::RenderContext;
     pub use crate::error::{BlincError, Result};
+    pub use crate::text_measurer::init_text_measurer;
 
     // Layout builders
     pub use blinc_layout::prelude::*;

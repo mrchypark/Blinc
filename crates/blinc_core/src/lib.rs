@@ -45,7 +45,7 @@ pub use draw::{
     LineCap, LineJoin, MaterialId, MeshId, MeshInstance, Path, PathCommand, RecordingContext,
     SdfBuilder, ShapeId, Stroke, TextAlign, TextBaseline, TextStyle, Transform,
 };
-pub use events::{Event, EventDispatcher, EventType};
+pub use events::{Event, EventData, EventDispatcher, EventType, KeyCode, Modifiers};
 pub use fsm::{FsmId, FsmRuntime, StateId, StateMachine, Transition};
 pub use layer::{
     Affine2D, BillboardFacing, BlendMode, Brush, CachePolicy, Camera, CameraProjection,

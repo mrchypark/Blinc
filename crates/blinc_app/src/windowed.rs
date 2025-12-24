@@ -33,7 +33,7 @@ use blinc_animation::{AnimationScheduler, SchedulerHandle};
 use blinc_core::reactive::{Derived, ReactiveGraph, Signal};
 use blinc_layout::prelude::*;
 use blinc_platform::{
-    ControlFlow, Event, EventLoop, InputEvent, KeyState, LifecycleEvent, MouseEvent, Platform,
+    ControlFlow, Event, EventLoop, InputEvent, Key, KeyState, LifecycleEvent, MouseEvent, Platform,
     TouchEvent, Window, WindowConfig, WindowEvent,
 };
 
@@ -628,6 +628,9 @@ impl WindowedApp {
         // Initialize the platform asset loader for cross-platform asset loading
         Self::init_asset_loader();
 
+        // Initialize the text measurer for accurate text layout
+        crate::text_measurer::init_text_measurer();
+
         let platform = DesktopPlatform::new().map_err(|e| BlincError::Platform(e.to_string()))?;
         let event_loop = platform
             .create_event_loop_with_config(config)
@@ -740,23 +743,67 @@ impl WindowedApp {
 
                     // Handle input events
                     Event::Input(input_event) => {
+                        // Pending event structure for deferred dispatch
+                        #[derive(Clone)]
+                        struct PendingEvent {
+                            node_id: LayoutNodeId,
+                            event_type: u32,
+                            mouse_x: f32,
+                            mouse_y: f32,
+                            scroll_delta_x: f32,
+                            scroll_delta_y: f32,
+                            key_char: Option<char>,
+                            key_code: u32,
+                            shift: bool,
+                            ctrl: bool,
+                            alt: bool,
+                            meta: bool,
+                            /// Ancestors for keyboard event bubbling (root to leaf order)
+                            ancestors: Vec<LayoutNodeId>,
+                        }
+
+                        impl Default for PendingEvent {
+                            fn default() -> Self {
+                                Self {
+                                    node_id: LayoutNodeId::default(),
+                                    event_type: 0,
+                                    mouse_x: 0.0,
+                                    mouse_y: 0.0,
+                                    scroll_delta_x: 0.0,
+                                    scroll_delta_y: 0.0,
+                                    key_char: None,
+                                    key_code: 0,
+                                    shift: false,
+                                    ctrl: false,
+                                    alt: false,
+                                    meta: false,
+                                    ancestors: Vec::new(),
+                                }
+                            }
+                        }
+
                         // First phase: collect events using immutable borrow
-                        let pending_events = if let (Some(ref mut windowed_ctx), Some(ref tree)) =
+                        let (pending_events, keyboard_events) = if let (Some(ref mut windowed_ctx), Some(ref tree)) =
                             (&mut ctx, &render_tree)
                         {
                             let router = &mut windowed_ctx.event_router;
 
                             // Collect events from router
-                            // Tuple: (node_id, event_type, mouse_x, mouse_y, scroll_delta_x, scroll_delta_y)
-                            let mut pending_events: Vec<(LayoutNodeId, u32, f32, f32, f32, f32)> = Vec::new();
+                            let mut pending_events: Vec<PendingEvent> = Vec::new();
+                            // Separate collection for keyboard events (TEXT_INPUT)
+                            let mut keyboard_events: Vec<PendingEvent> = Vec::new();
 
                             // Set up callback to collect events
                             router.set_event_callback({
-                                let events = &mut pending_events as *mut Vec<(LayoutNodeId, u32, f32, f32, f32, f32)>;
+                                let events = &mut pending_events as *mut Vec<PendingEvent>;
                                 move |node, event_type| {
                                     // SAFETY: This callback is only used within this scope
                                     unsafe {
-                                        (*events).push((node, event_type, 0.0, 0.0, 0.0, 0.0));
+                                        (*events).push(PendingEvent {
+                                            node_id: node,
+                                            event_type,
+                                            ..Default::default()
+                                        });
                                     }
                                 }
                             });
@@ -766,24 +813,24 @@ impl WindowedApp {
                                     MouseEvent::Moved { x, y } => {
                                         router.on_mouse_move(tree, x, y);
                                         for event in pending_events.iter_mut() {
-                                            event.2 = x;
-                                            event.3 = y;
+                                            event.mouse_x = x;
+                                            event.mouse_y = y;
                                         }
                                     }
                                     MouseEvent::ButtonPressed { button, x, y } => {
                                         let btn = convert_mouse_button(button);
                                         router.on_mouse_down(tree, x, y, btn);
                                         for event in pending_events.iter_mut() {
-                                            event.2 = x;
-                                            event.3 = y;
+                                            event.mouse_x = x;
+                                            event.mouse_y = y;
                                         }
                                     }
                                     MouseEvent::ButtonReleased { button, x, y } => {
                                         let btn = convert_mouse_button(button);
                                         router.on_mouse_up(tree, x, y, btn);
                                         for event in pending_events.iter_mut() {
-                                            event.2 = x;
-                                            event.3 = y;
+                                            event.mouse_x = x;
+                                            event.mouse_y = y;
                                         }
                                     }
                                     MouseEvent::Left => {
@@ -793,39 +840,156 @@ impl WindowedApp {
                                         let (mx, my) = router.mouse_position();
                                         router.on_mouse_move(tree, mx, my);
                                         for event in pending_events.iter_mut() {
-                                            event.2 = mx;
-                                            event.3 = my;
+                                            event.mouse_x = mx;
+                                            event.mouse_y = my;
                                         }
                                     }
                                 },
-                                InputEvent::Keyboard(kb_event) => match kb_event.state {
-                                    KeyState::Pressed => {
-                                        router.on_key_down(0);
-                                    }
-                                    KeyState::Released => {
-                                        router.on_key_up(0);
+                                InputEvent::Keyboard(kb_event) => {
+                                    let mods = &kb_event.modifiers;
+
+                                    // Extract character from key if applicable
+                                    let key_char = match &kb_event.key {
+                                        Key::Char(c) => Some(*c),
+                                        Key::Space => Some(' '),
+                                        Key::A => Some(if mods.shift { 'A' } else { 'a' }),
+                                        Key::B => Some(if mods.shift { 'B' } else { 'b' }),
+                                        Key::C => Some(if mods.shift { 'C' } else { 'c' }),
+                                        Key::D => Some(if mods.shift { 'D' } else { 'd' }),
+                                        Key::E => Some(if mods.shift { 'E' } else { 'e' }),
+                                        Key::F => Some(if mods.shift { 'F' } else { 'f' }),
+                                        Key::G => Some(if mods.shift { 'G' } else { 'g' }),
+                                        Key::H => Some(if mods.shift { 'H' } else { 'h' }),
+                                        Key::I => Some(if mods.shift { 'I' } else { 'i' }),
+                                        Key::J => Some(if mods.shift { 'J' } else { 'j' }),
+                                        Key::K => Some(if mods.shift { 'K' } else { 'k' }),
+                                        Key::L => Some(if mods.shift { 'L' } else { 'l' }),
+                                        Key::M => Some(if mods.shift { 'M' } else { 'm' }),
+                                        Key::N => Some(if mods.shift { 'N' } else { 'n' }),
+                                        Key::O => Some(if mods.shift { 'O' } else { 'o' }),
+                                        Key::P => Some(if mods.shift { 'P' } else { 'p' }),
+                                        Key::Q => Some(if mods.shift { 'Q' } else { 'q' }),
+                                        Key::R => Some(if mods.shift { 'R' } else { 'r' }),
+                                        Key::S => Some(if mods.shift { 'S' } else { 's' }),
+                                        Key::T => Some(if mods.shift { 'T' } else { 't' }),
+                                        Key::U => Some(if mods.shift { 'U' } else { 'u' }),
+                                        Key::V => Some(if mods.shift { 'V' } else { 'v' }),
+                                        Key::W => Some(if mods.shift { 'W' } else { 'w' }),
+                                        Key::X => Some(if mods.shift { 'X' } else { 'x' }),
+                                        Key::Y => Some(if mods.shift { 'Y' } else { 'y' }),
+                                        Key::Z => Some(if mods.shift { 'Z' } else { 'z' }),
+                                        Key::Num0 => Some(if mods.shift { ')' } else { '0' }),
+                                        Key::Num1 => Some(if mods.shift { '!' } else { '1' }),
+                                        Key::Num2 => Some(if mods.shift { '@' } else { '2' }),
+                                        Key::Num3 => Some(if mods.shift { '#' } else { '3' }),
+                                        Key::Num4 => Some(if mods.shift { '$' } else { '4' }),
+                                        Key::Num5 => Some(if mods.shift { '%' } else { '5' }),
+                                        Key::Num6 => Some(if mods.shift { '^' } else { '6' }),
+                                        Key::Num7 => Some(if mods.shift { '&' } else { '7' }),
+                                        Key::Num8 => Some(if mods.shift { '*' } else { '8' }),
+                                        Key::Num9 => Some(if mods.shift { '(' } else { '9' }),
+                                        Key::Minus => Some(if mods.shift { '_' } else { '-' }),
+                                        Key::Equals => Some(if mods.shift { '+' } else { '=' }),
+                                        Key::LeftBracket => Some(if mods.shift { '{' } else { '[' }),
+                                        Key::RightBracket => Some(if mods.shift { '}' } else { ']' }),
+                                        Key::Backslash => Some(if mods.shift { '|' } else { '\\' }),
+                                        Key::Semicolon => Some(if mods.shift { ':' } else { ';' }),
+                                        Key::Quote => Some(if mods.shift { '"' } else { '\'' }),
+                                        Key::Comma => Some(if mods.shift { '<' } else { ',' }),
+                                        Key::Period => Some(if mods.shift { '>' } else { '.' }),
+                                        Key::Slash => Some(if mods.shift { '?' } else { '/' }),
+                                        Key::Grave => Some(if mods.shift { '~' } else { '`' }),
+                                        _ => None,
+                                    };
+
+                                    // Key code for special key handling (backspace, arrows, etc)
+                                    let key_code = match &kb_event.key {
+                                        Key::Backspace => 8,
+                                        Key::Delete => 127,
+                                        Key::Enter => 13,
+                                        Key::Tab => 9,
+                                        Key::Escape => 27,
+                                        Key::Left => 37,
+                                        Key::Right => 39,
+                                        Key::Up => 38,
+                                        Key::Down => 40,
+                                        Key::Home => 36,
+                                        Key::End => 35,
+                                        _ => 0,
+                                    };
+
+                                    match kb_event.state {
+                                        KeyState::Pressed => {
+                                            // Dispatch KEY_DOWN for all keys
+                                            router.on_key_down(key_code);
+
+                                            // Get focused ancestors for bubbling (includes the focused element)
+                                            let focused_ancestors: Vec<LayoutNodeId> = router.focused_ancestors().to_vec();
+
+                                            // For character-producing keys, also dispatch TEXT_INPUT
+                                            if let Some(c) = key_char {
+                                                // Don't send text input if ctrl/cmd is held (shortcuts)
+                                                if !mods.ctrl && !mods.meta {
+                                                    if router.focused().is_some() {
+                                                        keyboard_events.push(PendingEvent {
+                                                            node_id: LayoutNodeId::default(), // Will use ancestors for bubbling
+                                                            event_type: blinc_core::events::event_types::TEXT_INPUT,
+                                                            key_char: Some(c),
+                                                            key_code,
+                                                            shift: mods.shift,
+                                                            ctrl: mods.ctrl,
+                                                            alt: mods.alt,
+                                                            meta: mods.meta,
+                                                            ancestors: focused_ancestors.clone(),
+                                                            ..Default::default()
+                                                        });
+                                                    }
+                                                }
+                                            }
+
+                                            // For KEY_DOWN events with special keys (backspace, arrows)
+                                            if key_code != 0 {
+                                                if router.focused().is_some() {
+                                                    keyboard_events.push(PendingEvent {
+                                                        node_id: LayoutNodeId::default(), // Will use ancestors for bubbling
+                                                        event_type: blinc_core::events::event_types::KEY_DOWN,
+                                                        key_char: None,
+                                                        key_code,
+                                                        shift: mods.shift,
+                                                        ctrl: mods.ctrl,
+                                                        alt: mods.alt,
+                                                        meta: mods.meta,
+                                                        ancestors: focused_ancestors.clone(),
+                                                        ..Default::default()
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        KeyState::Released => {
+                                            router.on_key_up(key_code);
+                                        }
                                     }
                                 },
                                 InputEvent::Touch(touch_event) => match touch_event {
                                     TouchEvent::Started { x, y, .. } => {
                                         router.on_mouse_down(tree, x, y, MouseButton::Left);
                                         for event in pending_events.iter_mut() {
-                                            event.2 = x;
-                                            event.3 = y;
+                                            event.mouse_x = x;
+                                            event.mouse_y = y;
                                         }
                                     }
                                     TouchEvent::Moved { x, y, .. } => {
                                         router.on_mouse_move(tree, x, y);
                                         for event in pending_events.iter_mut() {
-                                            event.2 = x;
-                                            event.3 = y;
+                                            event.mouse_x = x;
+                                            event.mouse_y = y;
                                         }
                                     }
                                     TouchEvent::Ended { x, y, .. } => {
                                         router.on_mouse_up(tree, x, y, MouseButton::Left);
                                         for event in pending_events.iter_mut() {
-                                            event.2 = x;
-                                            event.3 = y;
+                                            event.mouse_x = x;
+                                            event.mouse_y = y;
                                         }
                                     }
                                     TouchEvent::Cancelled { .. } => {
@@ -836,30 +1000,63 @@ impl WindowedApp {
                                     let (mx, my) = router.mouse_position();
                                     router.on_scroll(tree, delta_x, delta_y);
                                     for event in pending_events.iter_mut() {
-                                        event.2 = mx;
-                                        event.3 = my;
-                                        // Set scroll delta for scroll events
-                                        event.4 = delta_x;
-                                        event.5 = delta_y;
+                                        event.mouse_x = mx;
+                                        event.mouse_y = my;
+                                        event.scroll_delta_x = delta_x;
+                                        event.scroll_delta_y = delta_y;
                                     }
                                 }
                             }
 
                             router.clear_event_callback();
-                            pending_events
+                            (pending_events, keyboard_events)
                         } else {
-                            Vec::new()
+                            (Vec::new(), Vec::new())
                         };
 
                         // Second phase: dispatch events with mutable borrow
                         // This automatically marks the tree dirty when handlers fire
                         if let Some(ref mut tree) = render_tree {
-                            for (node, event_type, mouse_x, mouse_y, scroll_dx, scroll_dy) in pending_events {
-                                // Use scroll-specific dispatch for scroll events to pass delta
-                                if event_type == blinc_core::events::event_types::SCROLL {
-                                    tree.dispatch_scroll_event(node, mouse_x, mouse_y, scroll_dx, scroll_dy);
+                            // Dispatch mouse/touch/scroll events
+                            for event in pending_events {
+                                if event.event_type == blinc_core::events::event_types::SCROLL {
+                                    tree.dispatch_scroll_event(
+                                        event.node_id,
+                                        event.mouse_x,
+                                        event.mouse_y,
+                                        event.scroll_delta_x,
+                                        event.scroll_delta_y,
+                                    );
                                 } else {
-                                    tree.dispatch_event(node, event_type, mouse_x, mouse_y);
+                                    tree.dispatch_event(event.node_id, event.event_type, event.mouse_x, event.mouse_y);
+                                }
+                            }
+
+                            // Dispatch keyboard events with bubbling through ancestors
+                            for event in keyboard_events {
+                                if event.event_type == blinc_core::events::event_types::TEXT_INPUT {
+                                    if let Some(c) = event.key_char {
+                                        // Use bubbling dispatch - tries each ancestor until handler found
+                                        tree.dispatch_text_input_event_bubbling(
+                                            &event.ancestors,
+                                            c,
+                                            event.shift,
+                                            event.ctrl,
+                                            event.alt,
+                                            event.meta,
+                                        );
+                                    }
+                                } else {
+                                    // Use bubbling dispatch for KEY_DOWN
+                                    tree.dispatch_key_event_bubbling(
+                                        &event.ancestors,
+                                        event.event_type,
+                                        event.key_code,
+                                        event.shift,
+                                        event.ctrl,
+                                        event.alt,
+                                        event.meta,
+                                    );
                                 }
                             }
                         }

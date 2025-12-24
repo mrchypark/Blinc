@@ -8,6 +8,19 @@ use std::sync::Arc;
 
 use crate::primitives::GpuGlyph;
 
+/// Text measurement result with full metrics
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TextMeasurement {
+    /// Width in pixels
+    pub width: f32,
+    /// Height in pixels
+    pub height: f32,
+    /// Ascender in pixels (distance from baseline to top)
+    pub ascender: f32,
+    /// Descender in pixels (distance from baseline to bottom, typically negative)
+    pub descender: f32,
+}
+
 /// Text rendering context that manages font, atlas, and glyph preparation
 pub struct TextRenderingContext {
     /// The text renderer (font, atlas, rasterizer)
@@ -132,11 +145,35 @@ impl TextRenderingContext {
         alignment: TextAlignment,
         width: Option<f32>,
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
+        // For regular text, disable wrapping (LineBreakMode::None)
+        // This allows width to be used for alignment only
+        self.prepare_text_full(text, x, y, font_size, color, anchor, alignment, width, false)
+    }
+
+    /// Prepare text with full control over wrapping behavior
+    ///
+    /// * `wrap` - If true, text wraps at width boundary. If false, text stays on single line.
+    pub fn prepare_text_full(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [f32; 4],
+        anchor: TextAnchor,
+        alignment: TextAlignment,
+        width: Option<f32>,
+        wrap: bool,
+    ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
         let mut options = LayoutOptions::default();
         options.anchor = anchor;
         options.alignment = alignment;
         if let Some(w) = width {
             options.max_width = Some(w);
+        }
+        // Disable wrapping unless explicitly requested
+        if !wrap {
+            options.line_break = blinc_text::LineBreakMode::None;
         }
         let prepared = self
             .renderer
@@ -201,6 +238,49 @@ impl TextRenderingContext {
         }
 
         Ok(glyphs)
+    }
+
+    /// Measure text dimensions without rendering
+    ///
+    /// Returns (width, height) in pixels. This uses the actual font metrics
+    /// for accurate measurement.
+    pub fn measure_text(&mut self, text: &str, font_size: f32) -> (f32, f32) {
+        let options = LayoutOptions::default();
+        match self.renderer.prepare_text(text, font_size, [0.0; 4], &options) {
+            Ok(prepared) => (prepared.width, prepared.height),
+            Err(_) => {
+                // Fallback to estimation if font not loaded
+                let char_count = text.chars().count() as f32;
+                let width = char_count * font_size * 0.55;
+                let height = font_size * 1.2;
+                (width, height)
+            }
+        }
+    }
+
+    /// Measure text dimensions with full metrics
+    ///
+    /// Returns TextMeasurement with width, height, ascender, and descender.
+    pub fn measure_text_full(&mut self, text: &str, font_size: f32) -> TextMeasurement {
+        let options = LayoutOptions::default();
+        match self.renderer.prepare_text(text, font_size, [0.0; 4], &options) {
+            Ok(prepared) => TextMeasurement {
+                width: prepared.width,
+                height: prepared.height,
+                ascender: prepared.ascender,
+                descender: prepared.descender,
+            },
+            Err(_) => {
+                // Fallback to estimation if font not loaded
+                let char_count = text.chars().count() as f32;
+                TextMeasurement {
+                    width: char_count * font_size * 0.55,
+                    height: font_size * 1.2,
+                    ascender: font_size * 0.8,
+                    descender: font_size * -0.2,
+                }
+            }
+        }
     }
 
     /// Get the atlas texture view (creates it if needed)

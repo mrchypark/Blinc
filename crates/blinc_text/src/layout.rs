@@ -136,25 +136,43 @@ impl TextLayoutEngine {
         font_size: f32,
         options: &LayoutOptions,
     ) -> TextLayout {
+        let metrics = font.metrics();
+        let line_height = metrics.line_height_px(font_size) * options.line_height;
+
         if text.is_empty() {
+            // Empty text should still have proper height based on font metrics
+            // so that layout containers size correctly
             return TextLayout {
                 lines: Vec::new(),
                 width: 0.0,
-                height: 0.0,
+                height: line_height,
             };
         }
 
-        let metrics = font.metrics();
-        let line_height = metrics.line_height_px(font_size) * options.line_height;
         let ascender = metrics.ascender_px(font_size);
 
         // Shape the entire text first
         let shaped = self.shaper.shape(text, font, font_size);
 
-        // If no wrapping, return single line
+        // If no wrapping, return single line (but still apply alignment if max_width is set)
         if options.max_width.is_none() || options.line_break == LineBreakMode::None {
-            let line = self.create_line(&shaped, 0.0, ascender, options);
+            let mut line = self.create_line(&shaped, 0.0, ascender, options);
             let width = line.width;
+
+            // Apply alignment if max_width is set
+            if let Some(max_width) = options.max_width {
+                if options.alignment != TextAlignment::Left && width < max_width {
+                    let offset = match options.alignment {
+                        TextAlignment::Center => (max_width - width) / 2.0,
+                        TextAlignment::Right => max_width - width,
+                        TextAlignment::Left => 0.0,
+                    };
+                    for glyph in &mut line.glyphs {
+                        glyph.x += offset;
+                    }
+                }
+            }
+
             return TextLayout {
                 lines: vec![line],
                 width,

@@ -137,6 +137,14 @@ impl AnimationScheduler {
         self.inner.lock().unwrap().springs.get(id).copied()
     }
 
+    /// Apply a function to modify a spring if it exists
+    pub fn with_spring_mut<F, R>(&self, id: SpringId, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut Spring) -> R,
+    {
+        self.inner.lock().unwrap().springs.get_mut(id).map(f)
+    }
+
     pub fn get_spring_value(&self, id: SpringId) -> Option<f32> {
         self.inner
             .lock()
@@ -154,6 +162,16 @@ impl AnimationScheduler {
 
     pub fn remove_spring(&self, id: SpringId) -> Option<Spring> {
         self.inner.lock().unwrap().springs.remove(id)
+    }
+
+    /// Iterate over all springs mutably
+    ///
+    /// This is useful for manual animation loops where you want to step all springs.
+    /// Returns an iterator adapter that holds the mutex lock.
+    pub fn springs_iter_mut(&self) -> SpringsIterMut<'_> {
+        SpringsIterMut {
+            guard: self.inner.lock().unwrap(),
+        }
     }
 
     // =========================================================================
@@ -217,6 +235,37 @@ impl AnimationScheduler {
 impl Default for AnimationScheduler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Iterator adapter for mutable access to springs
+///
+/// Holds the mutex lock for the duration of iteration.
+/// Use in a `for` loop to step all springs.
+pub struct SpringsIterMut<'a> {
+    guard: std::sync::MutexGuard<'a, SchedulerInner>,
+}
+
+impl SpringsIterMut<'_> {
+    /// Get an iterator over springs mutably
+    ///
+    /// Use this with `for (id, spring) in iter.iter_mut() { ... }`
+    pub fn for_each<F>(&mut self, mut f: F)
+    where
+        F: FnMut(SpringId, &mut Spring),
+    {
+        for (id, spring) in self.guard.springs.iter_mut() {
+            f(id, spring);
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a mut SpringsIterMut<'_> {
+    type Item = (SpringId, &'a mut Spring);
+    type IntoIter = slotmap::basic::IterMut<'a, SpringId, Spring>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.guard.springs.iter_mut()
     }
 }
 

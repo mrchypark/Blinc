@@ -42,7 +42,9 @@ pub mod stateful;
 pub mod style;
 pub mod svg;
 pub mod text;
+pub mod text_measure;
 pub mod tree;
+pub mod widgets;
 
 // Core types
 pub use element::{ElementBounds, RenderLayer, RenderProps};
@@ -58,7 +60,7 @@ pub use element::{
 };
 
 // Builder API
-pub use div::{div, Div, ElementBuilder, ElementTypeId, FontWeight, ImageRenderInfo, TextAlign};
+pub use div::{div, Div, ElementBuilder, ElementTypeId, FontWeight, ImageRenderInfo, TextAlign, TextVerticalAlign};
 // Reference binding
 pub use div::{DivRef, ElementRef};
 pub use image::{image, img, Image, ImageFilter, ObjectFit, ObjectPosition};
@@ -74,10 +76,16 @@ pub use stateful::{SharedState, StateTransitions, StatefulInner};
 // Animation integration
 pub use animated::{AnimatedProperties, AnimationBuilder};
 
+// Text measurement
+pub use text_measure::{
+    measure_text, measure_text_with_options, set_text_measurer, TextLayoutOptions, TextMeasurer,
+    TextMetrics,
+};
+
 /// Prelude module - import everything commonly needed
 pub mod prelude {
     pub use crate::div::{
-        div, Div, ElementBuilder, ElementTypeId, FontWeight, ImageRenderInfo, TextAlign,
+        div, Div, ElementBuilder, ElementTypeId, FontWeight, ImageRenderInfo, TextAlign, TextVerticalAlign,
     };
     // Reference binding for external element access
     pub use crate::div::{DivRef, ElementRef};
@@ -92,18 +100,32 @@ pub mod prelude {
     pub use crate::interactive::{DirtyTracker, InteractiveContext, NodeState};
     // Unified element styling
     pub use crate::element_style::{style, ElementStyle};
-    // Stateful elements with user-defined state types
+    // Stateful elements with user-defined state types (core infrastructure)
     pub use crate::stateful::{
         // Core generic type
         BoundStateful, SharedState, Stateful, StatefulInner, StateTransitions,
-        // Built-in state types
-        ButtonState, CheckboxState, ScrollState, TextFieldState, ToggleState,
+        // Built-in state types (Copy-based for Stateful<S>)
+        ButtonState, CheckboxState as StatefulCheckboxState, ScrollState, TextFieldState, ToggleState,
         // Internal scroll events for FSM transitions
         scroll_events,
-        // Type aliases
-        StatefulButton, StatefulCheckbox, StatefulScroll, StatefulTextField, StatefulToggle,
-        // Constructor functions
-        stateful, stateful_button, stateful_checkbox, stateful_text_field, stateful_toggle,
+        // Type aliases for Stateful<S> - low-level for custom styling
+        Button as StatefulButton, Checkbox as StatefulCheckbox, ScrollContainer, TextField, Toggle,
+        // Low-level constructor functions for custom styling
+        stateful, stateful_button, stateful_checkbox, text_field, toggle,
+    };
+
+    // Ready-to-use widgets (production-ready, work in fluent API without .build())
+    pub use crate::widgets::{
+        // Button widget - ready-to-use
+        button, Button, ButtonConfig, ButtonVisualState,
+        // Checkbox widget - ready-to-use
+        checkbox, checkbox_labeled, checkbox_state, Checkbox, CheckboxConfig, CheckboxState, SharedCheckboxState,
+        // Text input widget - ready-to-use
+        text_input, text_input_state, text_input_state_with_placeholder,
+        InputType, NumberConstraints, SharedTextInputState, TextInput, TextInputConfig, TextInputState,
+        // Text area widget - ready-to-use
+        text_area, text_area_state, text_area_state_with_placeholder,
+        SharedTextAreaState, TextArea, TextAreaConfig, TextAreaState, TextPosition,
     };
     // Material system
     pub use crate::element::{
@@ -113,9 +135,10 @@ pub mod prelude {
     pub use crate::renderer::{
         GlassPanel, ImageData, LayoutRenderer, RenderTree, SvgData, TextData,
     };
-    // Scroll container
-    pub use crate::scroll::{
-        scroll, scroll_no_bounce, Scroll, ScrollConfig, ScrollDirection, ScrollRenderInfo,
+    // Scroll container (ready-to-use widget with Div extension)
+    pub use crate::widgets::{
+        scroll, scroll_no_bounce, Scroll, ScrollConfig, ScrollDirection, ScrollPhysics,
+        ScrollRenderInfo, SharedScrollPhysics,
     };
     pub use crate::svg::{svg, Svg};
     pub use crate::text::{text, Text};

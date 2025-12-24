@@ -350,6 +350,13 @@ impl Div {
     /// This is a convenience method for use in state callbacks where you need
     /// to consume `self` to chain builder methods, then assign back.
     ///
+    /// **Note**: This takes ownership of the current Div and leaves a default in its place.
+    /// All properties are preserved in the returned Div. You must assign the result back
+    /// to complete the update.
+    ///
+    /// For updating specific properties without the swap pattern, consider using
+    /// the setter methods directly (e.g., `set_bg()`, `set_transform()`).
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -365,6 +372,39 @@ impl Div {
     #[inline]
     pub fn swap(&mut self) -> Self {
         std::mem::take(self)
+    }
+
+    /// Set the background color/brush without consuming self
+    ///
+    /// This is useful in state callbacks where you want to update
+    /// properties without using the swap pattern.
+    #[inline]
+    pub fn set_bg(&mut self, color: impl Into<Brush>) {
+        self.background = Some(color.into());
+    }
+
+    /// Set the corner radius without consuming self
+    #[inline]
+    pub fn set_rounded(&mut self, radius: f32) {
+        self.border_radius = CornerRadius::uniform(radius);
+    }
+
+    /// Set the transform without consuming self
+    #[inline]
+    pub fn set_transform(&mut self, transform: Transform) {
+        self.transform = Some(transform);
+    }
+
+    /// Set the shadow without consuming self
+    #[inline]
+    pub fn set_shadow(&mut self, shadow: Shadow) {
+        self.shadow = Some(shadow);
+    }
+
+    /// Set the opacity without consuming self
+    #[inline]
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = opacity;
     }
 
 
@@ -1282,6 +1322,15 @@ impl Div {
         self
     }
 
+    /// Register a text input handler (receives character input when focused)
+    pub fn on_text_input<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers.on_text_input(handler);
+        self
+    }
+
     /// Register a resize handler
     pub fn on_resize<F>(mut self, handler: F) -> Self
     where
@@ -1375,6 +1424,17 @@ impl FontWeight {
     }
 }
 
+/// Vertical alignment for text within its bounding box
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextVerticalAlign {
+    /// Text is positioned at the top of its bounding box (default for multi-line text)
+    #[default]
+    Top,
+    /// Text is optically centered within its bounding box (for single-line centered text)
+    /// Uses cap-height based centering for better visual appearance
+    Center,
+}
+
 /// Text render data extracted from element
 #[derive(Clone)]
 pub struct TextRenderInfo {
@@ -1383,6 +1443,7 @@ pub struct TextRenderInfo {
     pub color: [f32; 4],
     pub align: TextAlign,
     pub weight: FontWeight,
+    pub v_align: TextVerticalAlign,
 }
 
 /// SVG render data extracted from element

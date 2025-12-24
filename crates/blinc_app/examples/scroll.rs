@@ -15,7 +15,7 @@
 
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
-use blinc_layout::scroll::{ScrollPhysics, SharedScrollPhysics};
+use blinc_layout::prelude::{ScrollPhysics, SharedScrollPhysics, Scroll};
 use std::sync::{Arc, Mutex};
 
 fn main() -> Result<()> {
@@ -136,8 +136,6 @@ fn build_scroll_container(
     direction: ScrollDirection,
     physics: SharedScrollPhysics,
 ) -> impl ElementBuilder {
-    use blinc_layout::scroll::Scroll;
-
     // Calculate scroll viewport size
     let viewport_width = ctx.width - 80.0;
     let viewport_height = ctx.height - 260.0;

@@ -59,6 +59,18 @@ pub struct EventContext {
     /// Scroll delta for SCROLL events (pixels scrolled)
     pub scroll_delta_x: f32,
     pub scroll_delta_y: f32,
+    /// Character for TEXT_INPUT events
+    pub key_char: Option<char>,
+    /// Key code for KEY_DOWN/KEY_UP events (platform-specific)
+    pub key_code: u32,
+    /// Whether shift modifier is held
+    pub shift: bool,
+    /// Whether ctrl modifier is held
+    pub ctrl: bool,
+    /// Whether alt modifier is held
+    pub alt: bool,
+    /// Whether meta modifier is held (Cmd on macOS, Win on Windows)
+    pub meta: bool,
 }
 
 impl EventContext {
@@ -73,6 +85,12 @@ impl EventContext {
             local_y: 0.0,
             scroll_delta_x: 0.0,
             scroll_delta_y: 0.0,
+            key_char: None,
+            key_code: 0,
+            shift: false,
+            ctrl: false,
+            alt: false,
+            meta: false,
         }
     }
 
@@ -94,6 +112,27 @@ impl EventContext {
     pub fn with_scroll_delta(mut self, dx: f32, dy: f32) -> Self {
         self.scroll_delta_x = dx;
         self.scroll_delta_y = dy;
+        self
+    }
+
+    /// Set key character (for TEXT_INPUT events)
+    pub fn with_key_char(mut self, c: char) -> Self {
+        self.key_char = Some(c);
+        self
+    }
+
+    /// Set key code (for KEY_DOWN/KEY_UP events)
+    pub fn with_key_code(mut self, code: u32) -> Self {
+        self.key_code = code;
+        self
+    }
+
+    /// Set modifier keys
+    pub fn with_modifiers(mut self, shift: bool, ctrl: bool, alt: bool, meta: bool) -> Self {
+        self.shift = shift;
+        self.ctrl = ctrl;
+        self.alt = alt;
+        self.meta = meta;
         self
     }
 }
@@ -264,6 +303,14 @@ impl EventHandlers {
         F: Fn(&EventContext) + Send + Sync + 'static,
     {
         self.on(event_types::RESIZE, handler);
+    }
+
+    /// Register a text input handler (for character input)
+    pub fn on_text_input<F>(&mut self, handler: F)
+    where
+        F: Fn(&EventContext) + Send + Sync + 'static,
+    {
+        self.on(event_types::TEXT_INPUT, handler);
     }
 }
 

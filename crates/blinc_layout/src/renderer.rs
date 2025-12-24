@@ -61,6 +61,7 @@ pub struct TextData {
     pub color: [f32; 4],
     pub align: crate::div::TextAlign,
     pub weight: crate::div::FontWeight,
+    pub v_align: crate::div::TextVerticalAlign,
 }
 
 /// SVG data for rendering
@@ -282,6 +283,7 @@ impl RenderTree {
                         color: info.color,
                         align: info.align,
                         weight: info.weight,
+                        v_align: info.v_align,
                     })
                 } else {
                     ElementType::Div
@@ -354,6 +356,7 @@ impl RenderTree {
                         color: info.color,
                         align: info.align,
                         weight: info.weight,
+                        v_align: info.v_align,
                     })
                 } else {
                     ElementType::Div
@@ -499,6 +502,114 @@ impl RenderTree {
         if self.handler_registry.has_handler(node_id, event_type) {
             self.handler_registry.dispatch(&ctx);
             self.dirty_tracker.mark(node_id);
+        }
+    }
+
+    /// Dispatch a text input event with character data
+    ///
+    /// This is used for character input in text fields.
+    pub fn dispatch_text_input_event(
+        &mut self,
+        node_id: LayoutNodeId,
+        key_char: char,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) {
+        let ctx = crate::event_handler::EventContext::new(
+            blinc_core::events::event_types::TEXT_INPUT,
+            node_id,
+        )
+        .with_key_char(key_char)
+        .with_modifiers(shift, ctrl, alt, meta);
+
+        if self
+            .handler_registry
+            .has_handler(node_id, blinc_core::events::event_types::TEXT_INPUT)
+        {
+            self.handler_registry.dispatch(&ctx);
+            // Mark dirty - text input changes state
+            self.dirty_tracker.mark(node_id);
+        }
+    }
+
+    /// Dispatch a text input event with bubbling through ancestors
+    ///
+    /// This is used for character input in text fields. The event bubbles up
+    /// through ancestors until a handler is found.
+    pub fn dispatch_text_input_event_bubbling(
+        &mut self,
+        ancestors: &[LayoutNodeId],
+        key_char: char,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) {
+        let event_type = blinc_core::events::event_types::TEXT_INPUT;
+
+        // Try each node in reverse order (leaf to root) until we find a handler
+        for &node_id in ancestors.iter().rev() {
+            if self.handler_registry.has_handler(node_id, event_type) {
+                let ctx = crate::event_handler::EventContext::new(event_type, node_id)
+                    .with_key_char(key_char)
+                    .with_modifiers(shift, ctrl, alt, meta);
+                self.handler_registry.dispatch(&ctx);
+                self.dirty_tracker.mark(node_id);
+                return; // Stop after first handler found
+            }
+        }
+    }
+
+    /// Dispatch a key event with key code and modifiers
+    ///
+    /// This is used for KEY_DOWN and KEY_UP events.
+    pub fn dispatch_key_event(
+        &mut self,
+        node_id: LayoutNodeId,
+        event_type: blinc_core::events::EventType,
+        key_code: u32,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) {
+        let ctx = crate::event_handler::EventContext::new(event_type, node_id)
+            .with_key_code(key_code)
+            .with_modifiers(shift, ctrl, alt, meta);
+
+        if self.handler_registry.has_handler(node_id, event_type) {
+            self.handler_registry.dispatch(&ctx);
+            // Mark dirty for key events
+            self.dirty_tracker.mark(node_id);
+        }
+    }
+
+    /// Dispatch a key event with bubbling through ancestors
+    ///
+    /// This is used for KEY_DOWN and KEY_UP events. The event bubbles up
+    /// through ancestors until a handler is found.
+    pub fn dispatch_key_event_bubbling(
+        &mut self,
+        ancestors: &[LayoutNodeId],
+        event_type: blinc_core::events::EventType,
+        key_code: u32,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) {
+        // Try each node in reverse order (leaf to root) until we find a handler
+        for &node_id in ancestors.iter().rev() {
+            if self.handler_registry.has_handler(node_id, event_type) {
+                let ctx = crate::event_handler::EventContext::new(event_type, node_id)
+                    .with_key_code(key_code)
+                    .with_modifiers(shift, ctrl, alt, meta);
+                self.handler_registry.dispatch(&ctx);
+                self.dirty_tracker.mark(node_id);
+                return; // Stop after first handler found
+            }
         }
     }
 

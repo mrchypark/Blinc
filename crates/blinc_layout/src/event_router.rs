@@ -92,6 +92,9 @@ pub struct EventRouter {
     /// Currently focused element (receives keyboard events)
     focused: Option<LayoutNodeId>,
 
+    /// Ancestors of the focused element (for BLUR bubbling)
+    focused_ancestors: Vec<LayoutNodeId>,
+
     /// Callback for routing events to elements
     event_callback: Option<EventCallback>,
 
@@ -116,6 +119,7 @@ impl EventRouter {
             pressed_target: None,
             pressed_ancestors: Vec::new(),
             focused: None,
+            focused_ancestors: Vec::new(),
             event_callback: None,
             scroll_delta_x: 0.0,
             scroll_delta_y: 0.0,
@@ -143,12 +147,36 @@ impl EventRouter {
         self.focused
     }
 
+    /// Get the ancestors of the focused element (for bubbling keyboard events)
+    ///
+    /// Returns ancestors from root to leaf order (the focused element is the last item
+    /// in this list).
+    pub fn focused_ancestors(&self) -> &[LayoutNodeId] {
+        &self.focused_ancestors
+    }
+
     /// Set focus to an element (or None to clear focus)
+    ///
+    /// BLUR is bubbled to ancestors (so container elements receive blur even when
+    /// focus was on a child leaf element).
     pub fn set_focus(&mut self, node: Option<LayoutNodeId>) {
-        // Send BLUR to old focused element
+        self.set_focus_with_ancestors(node, Vec::new());
+    }
+
+    /// Set focus to an element with its ancestor chain (for proper BLUR bubbling)
+    pub fn set_focus_with_ancestors(&mut self, node: Option<LayoutNodeId>, ancestors: Vec<LayoutNodeId>) {
+        // Send BLUR to old focused element AND bubble to its ancestors
         if let Some(old_focused) = self.focused {
             if Some(old_focused) != node {
+                // Use the stored focused_ancestors for bubbling BLUR
+                let old_ancestors = std::mem::take(&mut self.focused_ancestors);
                 self.emit_event(old_focused, event_types::BLUR);
+                // Bubble BLUR to ancestors (container elements with blur handlers)
+                for ancestor in old_ancestors {
+                    if ancestor != old_focused {
+                        self.emit_event(ancestor, event_types::BLUR);
+                    }
+                }
             }
         }
 
@@ -160,6 +188,7 @@ impl EventRouter {
         }
 
         self.focused = node;
+        self.focused_ancestors = ancestors;
     }
 
     /// Get current mouse position
@@ -233,8 +262,8 @@ impl EventRouter {
             // Store ancestors for bubbling on release
             self.pressed_ancestors = hit.ancestors.clone();
 
-            // Set focus to the clicked element
-            self.set_focus(Some(hit.node));
+            // Set focus to the clicked element WITH its ancestors (for BLUR bubbling later)
+            self.set_focus_with_ancestors(Some(hit.node), hit.ancestors.clone());
 
             // Emit to the hit node first
             self.emit_event(hit.node, event_types::POINTER_DOWN);
@@ -332,6 +361,19 @@ impl EventRouter {
         if let Some(focused) = self.focused {
             self.emit_event(focused, event_types::KEY_UP);
             Some((focused, event_types::KEY_UP))
+        } else {
+            None
+        }
+    }
+
+    /// Handle text input (character typed)
+    ///
+    /// Emits TEXT_INPUT to the focused element.
+    /// Returns the focused node if there is one.
+    pub fn on_text_input(&mut self, _char: char) -> Option<(LayoutNodeId, u32)> {
+        if let Some(focused) = self.focused {
+            self.emit_event(focused, event_types::TEXT_INPUT);
+            Some((focused, event_types::TEXT_INPUT))
         } else {
             None
         }

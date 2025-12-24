@@ -13,7 +13,7 @@
 use blinc_core::{Color, Shadow, Transform};
 use taffy::prelude::*;
 
-use crate::div::{ElementBuilder, ElementTypeId, FontWeight, TextAlign, TextRenderInfo};
+use crate::div::{ElementBuilder, ElementTypeId, FontWeight, TextAlign, TextRenderInfo, TextVerticalAlign};
 use crate::element::{RenderLayer, RenderProps};
 use crate::tree::{LayoutNodeId, LayoutTree};
 
@@ -25,8 +25,10 @@ pub struct Text {
     font_size: f32,
     /// Text color
     color: Color,
-    /// Text alignment
+    /// Text alignment (horizontal)
     align: TextAlign,
+    /// Vertical alignment within bounding box
+    v_align: TextVerticalAlign,
     /// Font weight
     weight: FontWeight,
     /// Taffy style for layout
@@ -47,6 +49,7 @@ impl Text {
             font_size: 14.0,
             color: Color::BLACK,
             align: TextAlign::default(),
+            v_align: TextVerticalAlign::default(),
             weight: FontWeight::default(),
             style: Style::default(),
             render_layer: RenderLayer::default(),
@@ -93,6 +96,31 @@ impl Text {
     /// Align text to the right
     pub fn text_right(self) -> Self {
         self.align(TextAlign::Right)
+    }
+
+    // =========================================================================
+    // Vertical Alignment
+    // =========================================================================
+
+    /// Set vertical alignment within bounding box
+    pub fn v_align(mut self, v_align: TextVerticalAlign) -> Self {
+        self.v_align = v_align;
+        self
+    }
+
+    /// Vertically center text with optical centering (cap-height based)
+    ///
+    /// Use this for single-line text in centered containers (like buttons)
+    /// to get proper visual centering that accounts for descenders.
+    pub fn v_center(self) -> Self {
+        self.v_align(TextVerticalAlign::Center)
+    }
+
+    /// Position text at top of bounding box (default)
+    ///
+    /// Use this for multi-line text or text that should start at the top.
+    pub fn v_top(self) -> Self {
+        self.v_align(TextVerticalAlign::Top)
     }
 
     // =========================================================================
@@ -176,16 +204,13 @@ impl Text {
         self.color
     }
 
-    /// Update size estimate based on content and font size
+    /// Update size using actual text measurement if available, otherwise estimate
     fn update_size_estimate(&mut self) {
-        // Rough estimate: average character width is ~0.6 * font_size for proportional fonts
-        // Using 0.6 as it provides better fit for most UI text
-        let char_count = self.content.chars().count() as f32;
-        let estimated_width = char_count * self.font_size * 0.6;
-        let estimated_height = self.font_size * 1.2; // Line height
+        // Use the global text measurer if available, otherwise fall back to estimation
+        let metrics = crate::text_measure::measure_text(&self.content, self.font_size);
 
-        self.style.size.width = Dimension::Length(estimated_width);
-        self.style.size.height = Dimension::Length(estimated_height);
+        self.style.size.width = Dimension::Length(metrics.width);
+        self.style.size.height = Dimension::Length(metrics.height);
     }
 
     // =========================================================================
@@ -307,6 +332,7 @@ impl ElementBuilder for Text {
             color: [self.color.r, self.color.g, self.color.b, self.color.a],
             align: self.align,
             weight: self.weight,
+            v_align: self.v_align,
         })
     }
 }
