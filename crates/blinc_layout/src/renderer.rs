@@ -172,6 +172,8 @@ pub struct RenderTree {
     root: Option<LayoutNodeId>,
     /// Event handlers registry for dispatching events
     handler_registry: crate::event_handler::HandlerRegistry,
+    /// Dirty tracker for incremental rebuilds
+    dirty_tracker: crate::interactive::DirtyTracker,
 }
 
 impl Default for RenderTree {
@@ -188,6 +190,7 @@ impl RenderTree {
             render_nodes: IndexMap::new(),
             root: None,
             handler_registry: crate::event_handler::HandlerRegistry::new(),
+            dirty_tracker: crate::interactive::DirtyTracker::new(),
         }
     }
 
@@ -394,10 +397,10 @@ impl RenderTree {
 
     /// Dispatch an event to a node's handlers
     ///
-    /// This is a convenience method that creates an EventContext and dispatches
-    /// to the appropriate handlers.
+    /// This automatically marks the tree as dirty after dispatching,
+    /// signaling that the UI needs to be rebuilt.
     pub fn dispatch_event(
-        &self,
+        &mut self,
         node_id: LayoutNodeId,
         event_type: blinc_core::events::EventType,
         mouse_x: f32,
@@ -405,12 +408,20 @@ impl RenderTree {
     ) {
         let ctx = crate::event_handler::EventContext::new(event_type, node_id)
             .with_mouse_pos(mouse_x, mouse_y);
-        self.handler_registry.dispatch(&ctx);
+
+        // Check if this node has handlers for this event type
+        if self.handler_registry.has_handler(node_id, event_type) {
+            self.handler_registry.dispatch(&ctx);
+            // Mark dirty after dispatching - any event that fires means state may have changed
+            self.dirty_tracker.mark(node_id);
+        }
     }
 
     /// Dispatch an event with local coordinates
+    ///
+    /// This automatically marks the tree as dirty after dispatching.
     pub fn dispatch_event_with_local(
-        &self,
+        &mut self,
         node_id: LayoutNodeId,
         event_type: blinc_core::events::EventType,
         mouse_x: f32,
@@ -421,7 +432,33 @@ impl RenderTree {
         let ctx = crate::event_handler::EventContext::new(event_type, node_id)
             .with_mouse_pos(mouse_x, mouse_y)
             .with_local_pos(local_x, local_y);
-        self.handler_registry.dispatch(&ctx);
+
+        if self.handler_registry.has_handler(node_id, event_type) {
+            self.handler_registry.dispatch(&ctx);
+            self.dirty_tracker.mark(node_id);
+        }
+    }
+
+    /// Check if the tree has any dirty nodes (needs rebuild)
+    pub fn needs_rebuild(&self) -> bool {
+        self.dirty_tracker.has_dirty()
+    }
+
+    /// Clear dirty tracking state
+    ///
+    /// Call this after rebuilding the UI.
+    pub fn clear_dirty(&mut self) {
+        self.dirty_tracker.clear_all();
+    }
+
+    /// Get the dirty tracker for more granular control
+    pub fn dirty_tracker(&self) -> &crate::interactive::DirtyTracker {
+        &self.dirty_tracker
+    }
+
+    /// Get the dirty tracker mutably
+    pub fn dirty_tracker_mut(&mut self) -> &mut crate::interactive::DirtyTracker {
+        &mut self.dirty_tracker
     }
 
     /// Render the entire tree to a DrawContext

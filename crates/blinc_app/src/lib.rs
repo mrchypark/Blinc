@@ -78,6 +78,9 @@ pub mod prelude {
     // Core types
     pub use blinc_core::{Color, Point, Rect, Size};
 
+    // Reactive primitives
+    pub use blinc_core::reactive::{Derived, Effect, ReactiveGraph, Signal};
+
     // Platform types
     pub use blinc_platform::WindowConfig;
 }

@@ -503,6 +503,18 @@ impl<S: StateTransitions> Stateful<S> {
         self
     }
 
+    /// Set width to fit content (builder pattern)
+    pub fn w_fit(mut self) -> Self {
+        self.inner = std::mem::take(&mut self.inner).w_fit();
+        self
+    }
+
+    /// Set height to fit content (builder pattern)
+    pub fn h_fit(mut self) -> Self {
+        self.inner = std::mem::take(&mut self.inner).h_fit();
+        self
+    }
+
     /// Set padding all sides (builder pattern)
     pub fn p(mut self, units: f32) -> Self {
         self.inner = std::mem::take(&mut self.inner).p(units);
@@ -829,6 +841,16 @@ impl<S: StateTransitions> BoundStateful<S> {
     /// Set flex grow (builder pattern)
     pub fn flex_grow(self) -> Self {
         self.transform_inner(|s| s.flex_grow())
+    }
+
+    /// Set width to fit content (builder pattern)
+    pub fn w_fit(self) -> Self {
+        self.transform_inner(|s| s.w_fit())
+    }
+
+    /// Set height to fit content (builder pattern)
+    pub fn h_fit(self) -> Self {
+        self.transform_inner(|s| s.h_fit())
     }
 
     /// Set padding all sides (builder pattern)

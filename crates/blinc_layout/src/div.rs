@@ -13,7 +13,10 @@
 //!     .child(text("Hello"));
 //! ```
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 use blinc_core::{Brush, Color, CornerRadius, Shadow, Transform};
 use taffy::prelude::*;
@@ -29,6 +32,9 @@ use crate::tree::{LayoutNodeId, LayoutTree};
 
 /// Shared storage for element references
 type RefStorage<T> = Arc<Mutex<Option<T>>>;
+
+/// Shared dirty flag for automatic rebuild triggering
+type DirtyFlag = Arc<AtomicBool>;
 
 /// A generic reference binding to an element that can be accessed externally
 ///
@@ -59,12 +65,15 @@ type RefStorage<T> = Arc<Mutex<Option<T>>>;
 /// ```
 pub struct ElementRef<T> {
     inner: RefStorage<T>,
+    /// Shared dirty flag - when set, signals that the UI needs to be rebuilt
+    dirty_flag: DirtyFlag,
 }
 
 impl<T> Clone for ElementRef<T> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            dirty_flag: Arc::clone(&self.dirty_flag),
         }
     }
 }
@@ -80,7 +89,41 @@ impl<T> ElementRef<T> {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
+            dirty_flag: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Create an ElementRef with a shared dirty flag
+    ///
+    /// This is used internally to share the same dirty flag across
+    /// multiple refs, allowing the windowed app to check for changes.
+    pub fn with_dirty_flag(dirty_flag: DirtyFlag) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+            dirty_flag,
+        }
+    }
+
+    /// Get the dirty flag handle (for sharing with other refs)
+    pub fn dirty_flag(&self) -> DirtyFlag {
+        Arc::clone(&self.dirty_flag)
+    }
+
+    /// Check if the element was modified and clear the flag
+    ///
+    /// Returns `true` if the element was modified since the last check.
+    pub fn take_dirty(&self) -> bool {
+        self.dirty_flag.swap(false, Ordering::SeqCst)
+    }
+
+    /// Check if the element was modified (without clearing)
+    pub fn is_dirty(&self) -> bool {
+        self.dirty_flag.load(Ordering::SeqCst)
+    }
+
+    /// Mark the element as dirty (needs rebuild)
+    pub fn mark_dirty(&self) {
+        self.dirty_flag.store(true, Ordering::SeqCst);
     }
 
     /// Check if an element is bound to this reference
@@ -135,11 +178,19 @@ impl<T> ElementRef<T> {
     ///     *div = div.swap().bg(Color::RED).rounded(8.0);
     /// });
     /// ```
+    ///
+    /// **Note:** This automatically marks the element as dirty after the callback,
+    /// triggering a UI rebuild.
     pub fn with_mut<F, R>(&self, f: F) -> Option<R>
     where
         F: FnOnce(&mut T) -> R,
     {
-        self.inner.lock().unwrap().as_mut().map(f)
+        let result = self.inner.lock().unwrap().as_mut().map(f);
+        if result.is_some() {
+            // Mark dirty after successful mutation
+            self.dirty_flag.store(true, Ordering::SeqCst);
+        }
+        result
     }
 
     /// Get a clone of the bound element, if any
@@ -151,8 +202,12 @@ impl<T> ElementRef<T> {
     }
 
     /// Replace the bound element with a new one, returning the old value
+    ///
+    /// **Note:** This automatically marks the element as dirty, triggering a UI rebuild.
     pub fn replace(&self, new_elem: T) -> Option<T> {
-        self.inner.lock().unwrap().replace(new_elem)
+        let old = self.inner.lock().unwrap().replace(new_elem);
+        self.dirty_flag.store(true, Ordering::SeqCst);
+        old
     }
 
     /// Take the bound element out of the reference, leaving None
@@ -183,11 +238,15 @@ impl<T> ElementRef<T> {
     /// Borrow the bound element mutably
     ///
     /// Returns a guard that dereferences to &mut T. Panics if not bound.
+    /// **When the guard is dropped, the element is automatically marked dirty**,
+    /// triggering a UI rebuild.
+    ///
     /// For fallible access, use `with_mut()` instead.
     ///
     /// # Example
     ///
     /// ```ignore
+    /// // This automatically triggers a rebuild when the guard is dropped
     /// button_ref.borrow_mut().dispatch_state(ButtonState::Hovered);
     /// ```
     ///
@@ -197,6 +256,7 @@ impl<T> ElementRef<T> {
     pub fn borrow_mut(&self) -> ElementRefGuardMut<'_, T> {
         ElementRefGuardMut {
             guard: self.inner.lock().unwrap(),
+            dirty_flag: Arc::clone(&self.dirty_flag),
         }
     }
 }
@@ -215,8 +275,12 @@ impl<T> std::ops::Deref for ElementRefGuard<'_, T> {
 }
 
 /// Guard for mutable access to a bound element
+///
+/// When this guard is dropped, the dirty flag is automatically set,
+/// signaling that the UI needs to be rebuilt.
 pub struct ElementRefGuardMut<'a, T> {
     guard: std::sync::MutexGuard<'a, Option<T>>,
+    dirty_flag: DirtyFlag,
 }
 
 impl<T> std::ops::Deref for ElementRefGuardMut<'_, T> {
@@ -230,6 +294,13 @@ impl<T> std::ops::Deref for ElementRefGuardMut<'_, T> {
 impl<T> std::ops::DerefMut for ElementRefGuardMut<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.guard.as_mut().expect("ElementRef not bound")
+    }
+}
+
+impl<T> Drop for ElementRefGuardMut<'_, T> {
+    fn drop(&mut self) {
+        // Mark dirty when the mutable borrow ends - user modified the element
+        self.dirty_flag.store(true, Ordering::SeqCst);
     }
 }
 

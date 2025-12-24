@@ -122,6 +122,11 @@ impl EventRouter {
         self.event_callback = Some(Box::new(callback));
     }
 
+    /// Clear the event callback
+    pub fn clear_event_callback(&mut self) {
+        self.event_callback = None;
+    }
+
     /// Get the currently focused element
     pub fn focused(&self) -> Option<LayoutNodeId> {
         self.focused
