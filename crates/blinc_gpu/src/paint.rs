@@ -676,6 +676,45 @@ impl DrawContext for GpuPaintContext {
                 );
             }
 
+            // Apply current clip bounds to glass primitive (for scroll containers)
+            let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+            match clip_type {
+                ClipType::None => {}
+                ClipType::Rect => {
+                    // Check if this is a rounded rect clip (non-zero radius)
+                    let has_radius = clip_radius.iter().any(|&r| r > 0.0);
+                    if has_radius {
+                        glass = glass.with_clip_rounded_rect_per_corner(
+                            clip_bounds[0],
+                            clip_bounds[1],
+                            clip_bounds[2],
+                            clip_bounds[3],
+                            clip_radius[0],
+                            clip_radius[1],
+                            clip_radius[2],
+                            clip_radius[3],
+                        );
+                    } else {
+                        glass = glass.with_clip_rect(
+                            clip_bounds[0],
+                            clip_bounds[1],
+                            clip_bounds[2],
+                            clip_bounds[3],
+                        );
+                    }
+                }
+                ClipType::Circle | ClipType::Ellipse => {
+                    // For circle/ellipse clips, use as rect for now
+                    // Full support would require shader changes
+                    glass = glass.with_clip_rect(
+                        clip_bounds[0] - clip_bounds[2],
+                        clip_bounds[1] - clip_bounds[3],
+                        clip_bounds[2] * 2.0,
+                        clip_bounds[3] * 2.0,
+                    );
+                }
+            }
+
             self.batch.push_glass(glass);
             return;
         }

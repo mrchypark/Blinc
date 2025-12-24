@@ -855,6 +855,13 @@ impl CornerRadius {
             self.bottom_left,
         ]
     }
+
+    /// Check if all corner radii are the same
+    pub fn is_uniform(&self) -> bool {
+        self.top_left == self.top_right
+            && self.top_right == self.bottom_right
+            && self.bottom_right == self.bottom_left
+    }
 }
 
 impl From<f32> for CornerRadius {

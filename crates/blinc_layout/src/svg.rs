@@ -248,6 +248,7 @@ impl ElementBuilder for Svg {
             shadow: self.shadow,
             transform: self.transform.clone(),
             opacity: 1.0,
+            clips_content: false,
         }
     }
 

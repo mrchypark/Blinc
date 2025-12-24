@@ -95,6 +95,16 @@ impl LayoutTree {
             .map(|layout| ElementBounds::from_layout(layout, parent_offset))
     }
 
+    /// Get the content size for a scrollable node
+    ///
+    /// Returns (content_width, content_height) representing the total size of all content
+    /// inside this node. This may be larger than the node's size when content overflows.
+    /// Useful for computing scroll bounds.
+    pub fn get_content_size(&self, id: LayoutNodeId) -> Option<(f32, f32)> {
+        self.get_layout(id)
+            .map(|layout| (layout.content_size.width, layout.content_size.height))
+    }
+
     /// Get the number of nodes in the tree
     pub fn len(&self) -> usize {
         self.node_map.len()

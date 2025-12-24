@@ -189,6 +189,8 @@ impl TextRenderingContext {
                 ],
                 uv_bounds: g.uv_bounds,
                 color: g.color,
+                // Default: no clip (will be set by caller if needed)
+                clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
             })
             .collect();
 

@@ -42,7 +42,7 @@ naga = "23.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 
 # Layout engine
-taffy = "0.6"
+taffy = { version = "0.6", features = ["content_size"] }
 
 # Windowing
 winit = "0.30"

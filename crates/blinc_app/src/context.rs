@@ -51,6 +51,8 @@ struct TextElement {
     color: [f32; 4],
     align: TextAlign,
     weight: FontWeight,
+    /// Clip bounds from parent scroll container (x, y, width, height)
+    clip_bounds: Option<[f32; 4]>,
 }
 
 /// Image element data for rendering
@@ -132,7 +134,7 @@ impl RenderContext {
                 TextAlign::Right => TextAlignment::Right,
             };
 
-            if let Ok(glyphs) = self.text_ctx.prepare_text_with_options(
+            if let Ok(mut glyphs) = self.text_ctx.prepare_text_with_options(
                 &text.content,
                 text.x,
                 text.y + text.height / 2.0,
@@ -142,6 +144,12 @@ impl RenderContext {
                 alignment,
                 Some(text.width),
             ) {
+                // Apply clip bounds to all glyphs if the text element has clip bounds
+                if let Some(clip) = text.clip_bounds {
+                    for glyph in &mut glyphs {
+                        glyph.clip_bounds = clip;
+                    }
+                }
                 all_glyphs.extend(glyphs);
             }
         }
@@ -567,6 +575,7 @@ impl RenderContext {
                 root,
                 (0.0, 0.0),
                 false,
+                None, // No initial clip
                 &mut texts,
                 &mut svgs,
                 &mut images,
@@ -582,6 +591,7 @@ impl RenderContext {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         inside_glass: bool,
+        current_clip: Option<[f32; 4]>,
         texts: &mut Vec<TextElement>,
         svgs: &mut Vec<(String, f32, f32, f32, f32)>,
         images: &mut Vec<ImageElement>,
@@ -603,6 +613,19 @@ impl RenderContext {
 
         // Track if children should be considered inside glass
         let children_inside_glass = inside_glass || is_glass;
+
+        // Check if this node clips its children (e.g., scroll containers)
+        let clips_content = tree
+            .get_render_node(node)
+            .map(|n| n.props.clips_content)
+            .unwrap_or(false);
+
+        // Update clip bounds for children if this node clips
+        let child_clip = if clips_content {
+            Some([abs_x, abs_y, bounds.width, bounds.height])
+        } else {
+            current_clip
+        };
 
         if let Some(render_node) = tree.get_render_node(node) {
             // Determine effective layer: children inside glass render in Foreground
@@ -626,6 +649,7 @@ impl RenderContext {
                         color: text_data.color,
                         align: text_data.align,
                         weight: text_data.weight,
+                        clip_bounds: current_clip,
                     });
                 }
                 ElementType::Svg(svg_data) => {
@@ -649,8 +673,7 @@ impl RenderContext {
                         opacity: image_data.opacity,
                         border_radius: image_data.border_radius,
                         tint: image_data.tint,
-                        // TODO: propagate clip bounds from parent elements with overflow:hidden
-                        clip_bounds: None,
+                        clip_bounds: current_clip,
                         clip_radius: [0.0; 4],
                         layer: effective_layer,
                     });
@@ -659,13 +682,16 @@ impl RenderContext {
             }
         }
 
-        let new_offset = (abs_x, abs_y);
+        // Include scroll offset when calculating child positions
+        let scroll_offset = tree.get_scroll_offset(node);
+        let new_offset = (abs_x + scroll_offset.0, abs_y + scroll_offset.1);
         for child_id in tree.layout().children(node) {
             self.collect_elements_recursive(
                 tree,
                 child_id,
                 new_offset,
                 children_inside_glass,
+                child_clip,
                 texts,
                 svgs,
                 images,

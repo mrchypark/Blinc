@@ -501,6 +501,8 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) world_pos: vec2<f32>,
+    @location(3) @interpolate(flat) clip_bounds: vec4<f32>,
 }
 
 struct TextUniforms {
@@ -515,6 +517,8 @@ struct GlyphInstance {
     uv_bounds: vec4<f32>,
     // Text color
     color: vec4<f32>,
+    // Clip bounds (x, y, width, height) - set to large values for no clip
+    clip_bounds: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: TextUniforms;
@@ -564,12 +568,44 @@ fn vs_main(
     out.position = vec4<f32>(clip_pos, 0.0, 1.0);
     out.uv = uv;
     out.color = glyph.color;
+    out.world_pos = pos;
+    out.clip_bounds = glyph.clip_bounds;
 
     return out;
 }
 
+// Calculate clip alpha for rectangular clip region
+fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>) -> f32 {
+    // Check if clipping is active (default bounds are very large negative values)
+    if clip_bounds.x < -5000.0 {
+        return 1.0;
+    }
+
+    // Clip bounds are (x, y, width, height)
+    let clip_min = clip_bounds.xy;
+    let clip_max = clip_bounds.xy + clip_bounds.zw;
+
+    // Calculate signed distance to clip rect edges
+    let d_left = p.x - clip_min.x;
+    let d_right = clip_max.x - p.x;
+    let d_top = p.y - clip_min.y;
+    let d_bottom = clip_max.y - p.y;
+
+    // Minimum distance to any edge (negative = outside)
+    let d = min(min(d_left, d_right), min(d_top, d_bottom));
+
+    // Soft anti-aliased edge (1 pixel transition)
+    return clamp(d + 0.5, 0.0, 1.0);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // Calculate clip alpha first - discard if completely outside
+    let clip_alpha = calculate_clip_alpha(in.world_pos, in.clip_bounds);
+    if clip_alpha < 0.001 {
+        discard;
+    }
+
     // Sample coverage value from atlas (0.0 = background, 1.0 = inside glyph)
     let coverage = textureSample(glyph_atlas, glyph_sampler, in.uv).r;
 
@@ -579,7 +615,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // pow(x, 0.7) brightens mid-tones, making strokes appear crisper
     let aa_alpha = pow(coverage, 0.7);
 
-    return vec4<f32>(in.color.rgb, in.color.a * aa_alpha);
+    // Apply both text alpha and clip alpha
+    return vec4<f32>(in.color.rgb, in.color.a * aa_alpha * clip_alpha);
 }
 "#;
 
@@ -780,6 +817,30 @@ fn gaussian_weight(x: f32, sigma: f32) -> f32 {
     return exp(-(x * x) / (2.0 * sigma * sigma));
 }
 
+// Calculate clip alpha for rectangular clip region (for scroll containers)
+fn calculate_glass_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>) -> f32 {
+    // Check if clipping is active (default bounds are very large negative values)
+    if clip_bounds.x < -5000.0 {
+        return 1.0;
+    }
+
+    // Clip bounds are (x, y, width, height)
+    let clip_min = clip_bounds.xy;
+    let clip_max = clip_bounds.xy + clip_bounds.zw;
+
+    // Calculate signed distance to clip rect edges
+    let d_left = p.x - clip_min.x;
+    let d_right = clip_max.x - p.x;
+    let d_top = p.y - clip_min.y;
+    let d_bottom = clip_max.y - p.y;
+
+    // Minimum distance to any edge (negative = outside)
+    let d = min(min(d_left, d_right), min(d_top, d_bottom));
+
+    // Soft anti-aliased edge (1 pixel transition)
+    return clamp(d + 0.5, 0.0, 1.0);
+}
+
 // High quality blur using spiral sampling pattern
 // More samples and better distribution to eliminate checkered artifacts
 fn blur_backdrop(uv: vec2<f32>, blur_radius: f32) -> vec4<f32> {
@@ -912,6 +973,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let prim = primitives[in.instance_index];
     let p = in.uv;
 
+    // Calculate clip alpha first - discard if completely outside clip bounds
+    let clip_alpha = calculate_glass_clip_alpha(p, prim.clip_bounds);
+    if clip_alpha < 0.001 {
+        discard;
+    }
+
     let origin = prim.bounds.xy;
     let size = prim.bounds.zw;
 
@@ -925,8 +992,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let d = sd_rounded_rect(p, origin, size, prim.corner_radius);
     let aa = fwidth(d) * 2.0; // Wide AA for smooth edges
 
-    // Smooth mask
-    let mask = 1.0 - smoothstep(-aa, aa, d);
+    // Smooth mask - combine with clip alpha
+    let mask = (1.0 - smoothstep(-aa, aa, d)) * clip_alpha;
 
     // ========================================================================
     // DROP SHADOW (rendered as pure shadow, no glass effects)
@@ -938,11 +1005,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if has_shadow {
         let shadow_origin = origin + vec2<f32>(shadow_offset_x, shadow_offset_y);
         let shadow_alpha = shadow_rounded_rect(p, shadow_origin, size, prim.corner_radius, shadow_blur);
-        shadow_color_premult = vec4<f32>(0.0, 0.0, 0.0, shadow_alpha * shadow_opacity);
+        // Apply clip alpha to shadow as well
+        shadow_color_premult = vec4<f32>(0.0, 0.0, 0.0, shadow_alpha * shadow_opacity * clip_alpha);
 
         // If we're completely outside the glass panel, just render the shadow
         if mask < 0.001 {
-            if shadow_alpha > 0.001 {
+            if shadow_alpha > 0.001 && clip_alpha > 0.001 {
                 return shadow_color_premult;
             }
             discard;

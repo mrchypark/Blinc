@@ -576,6 +576,13 @@ impl From<&blinc_layout::GlassPanel> for GpuGlassPrimitive {
 }
 
 /// A GPU text glyph instance (matches shader `GlyphInstance` struct)
+///
+/// Memory layout:
+/// - bounds: `vec4<f32>`       (16 bytes) - position and size
+/// - uv_bounds: `vec4<f32>`    (16 bytes) - UV coordinates in atlas
+/// - color: `vec4<f32>`        (16 bytes) - text color
+/// - clip_bounds: `vec4<f32>`  (16 bytes) - clip region (x, y, width, height)
+/// Total: 64 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuGlyph {
@@ -585,6 +592,8 @@ pub struct GpuGlyph {
     pub uv_bounds: [f32; 4],
     /// Text color (RGBA)
     pub color: [f32; 4],
+    /// Clip bounds (x, y, width, height) - set to large values for no clip
+    pub clip_bounds: [f32; 4],
 }
 
 impl Default for GpuGlyph {
@@ -593,7 +602,23 @@ impl Default for GpuGlyph {
             bounds: [0.0; 4],
             uv_bounds: [0.0, 0.0, 1.0, 1.0],
             color: [0.0, 0.0, 0.0, 1.0],
+            // Default: no clip (large bounds that won't clip anything)
+            clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
         }
+    }
+}
+
+impl GpuGlyph {
+    /// Set rectangular clip bounds for this glyph
+    pub fn with_clip_rect(mut self, x: f32, y: f32, width: f32, height: f32) -> Self {
+        self.clip_bounds = [x, y, width, height];
+        self
+    }
+
+    /// Clear clip bounds (no clipping)
+    pub fn with_no_clip(mut self) -> Self {
+        self.clip_bounds = [-10000.0, -10000.0, 100000.0, 100000.0];
+        self
     }
 }
 

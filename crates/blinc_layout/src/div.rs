@@ -1468,6 +1468,11 @@ pub trait ElementBuilder: Send {
     fn scroll_info(&self) -> Option<crate::scroll::ScrollRenderInfo> {
         None
     }
+
+    /// Get scroll physics handle if this is a scroll element
+    fn scroll_physics(&self) -> Option<crate::scroll::SharedScrollPhysics> {
+        None
+    }
 }
 
 impl ElementBuilder for Div {
@@ -1493,6 +1498,7 @@ impl ElementBuilder for Div {
             shadow: self.shadow,
             transform: self.transform.clone(),
             opacity: self.opacity,
+            clips_content: false,
         }
     }
 

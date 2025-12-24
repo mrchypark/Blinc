@@ -86,6 +86,9 @@ pub struct EventRouter {
     /// Element where mouse button was pressed (for proper release targeting)
     pressed_target: Option<LayoutNodeId>,
 
+    /// Ancestors of pressed target (for event bubbling on release)
+    pressed_ancestors: Vec<LayoutNodeId>,
+
     /// Currently focused element (receives keyboard events)
     focused: Option<LayoutNodeId>,
 
@@ -111,6 +114,7 @@ impl EventRouter {
             mouse_y: 0.0,
             hovered: HashSet::new(),
             pressed_target: None,
+            pressed_ancestors: Vec::new(),
             focused: None,
             event_callback: None,
             scroll_delta_x: 0.0,
@@ -208,7 +212,8 @@ impl EventRouter {
 
     /// Handle mouse button press
     ///
-    /// Emits POINTER_DOWN to the topmost hit element.
+    /// Emits POINTER_DOWN to the topmost hit element AND bubbles through ancestors.
+    /// This allows parent elements to receive click events even when clicking on children.
     /// Also sets focus to the clicked element.
     pub fn on_mouse_down(
         &mut self,
@@ -216,30 +221,44 @@ impl EventRouter {
         x: f32,
         y: f32,
         _button: MouseButton,
-    ) -> Option<(LayoutNodeId, u32)> {
+    ) -> Vec<(LayoutNodeId, u32)> {
         self.mouse_x = x;
         self.mouse_y = y;
+
+        let mut events = Vec::new();
 
         // Hit test for the topmost element
         if let Some(hit) = self.hit_test(tree, x, y) {
             self.pressed_target = Some(hit.node);
+            // Store ancestors for bubbling on release
+            self.pressed_ancestors = hit.ancestors.clone();
 
             // Set focus to the clicked element
             self.set_focus(Some(hit.node));
 
+            // Emit to the hit node first
             self.emit_event(hit.node, event_types::POINTER_DOWN);
-            Some((hit.node, event_types::POINTER_DOWN))
+            events.push((hit.node, event_types::POINTER_DOWN));
+
+            // Bubble through ancestors (leaf to root order)
+            // ancestors is root to leaf, so reverse and skip the hit node (last element)
+            for &ancestor in hit.ancestors.iter().rev().skip(1) {
+                self.emit_event(ancestor, event_types::POINTER_DOWN);
+                events.push((ancestor, event_types::POINTER_DOWN));
+            }
         } else {
             // Clicked outside any element - clear focus
             self.set_focus(None);
             self.pressed_target = None;
-            None
+            self.pressed_ancestors.clear();
         }
+
+        events
     }
 
     /// Handle mouse button release
     ///
-    /// Emits POINTER_UP to the element where the press started
+    /// Emits POINTER_UP to the element where the press started AND bubbles through ancestors.
     /// (ensures proper button release even if cursor moved).
     pub fn on_mouse_up(
         &mut self,
@@ -247,17 +266,30 @@ impl EventRouter {
         x: f32,
         y: f32,
         _button: MouseButton,
-    ) -> Option<(LayoutNodeId, u32)> {
+    ) -> Vec<(LayoutNodeId, u32)> {
         self.mouse_x = x;
         self.mouse_y = y;
 
+        let mut events = Vec::new();
+
         // Release goes to the element where press started
         if let Some(target) = self.pressed_target.take() {
+            // Emit to the target first
             self.emit_event(target, event_types::POINTER_UP);
-            Some((target, event_types::POINTER_UP))
+            events.push((target, event_types::POINTER_UP));
+
+            // Bubble through ancestors (stored from on_mouse_down)
+            // ancestors is root to leaf, so reverse and skip the target node (last element)
+            let ancestors = std::mem::take(&mut self.pressed_ancestors);
+            for &ancestor in ancestors.iter().rev().skip(1) {
+                self.emit_event(ancestor, event_types::POINTER_UP);
+                events.push((ancestor, event_types::POINTER_UP));
+            }
         } else {
-            None
+            self.pressed_ancestors.clear();
         }
+
+        events
     }
 
     /// Handle mouse leaving the window

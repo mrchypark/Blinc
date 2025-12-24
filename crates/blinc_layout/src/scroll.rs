@@ -38,6 +38,22 @@ use crate::stateful::{scroll_events, ScrollState, StateTransitions};
 use crate::tree::{LayoutNodeId, LayoutTree};
 
 // ============================================================================
+// Scroll Direction
+// ============================================================================
+
+/// Scroll direction for the container
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollDirection {
+    /// Vertical scrolling only (default)
+    #[default]
+    Vertical,
+    /// Horizontal scrolling only
+    Horizontal,
+    /// Both directions (free scroll)
+    Both,
+}
+
+// ============================================================================
 // Scroll Configuration
 // ============================================================================
 
@@ -48,12 +64,14 @@ pub struct ScrollConfig {
     pub bounce_enabled: bool,
     /// Spring configuration for bounce animation
     pub bounce_spring: SpringConfig,
-    /// Friction coefficient for deceleration (0.0-1.0, higher = more friction)
-    pub friction: f32,
+    /// Deceleration rate in pixels/second² (how fast momentum slows down)
+    pub deceleration: f32,
     /// Minimum velocity threshold for stopping (pixels/second)
     pub velocity_threshold: f32,
     /// Maximum overscroll distance as fraction of viewport (0.0-0.5)
     pub max_overscroll: f32,
+    /// Scroll direction
+    pub direction: ScrollDirection,
 }
 
 impl Default for ScrollConfig {
@@ -61,9 +79,10 @@ impl Default for ScrollConfig {
         Self {
             bounce_enabled: true,
             bounce_spring: SpringConfig::wobbly(),
-            friction: 0.95,
-            velocity_threshold: 0.5,
+            deceleration: 1500.0, // Decelerate at 1500 px/s²
+            velocity_threshold: 10.0, // Stop when below 10 px/s
             max_overscroll: 0.3,
+            direction: ScrollDirection::Vertical,
         }
     }
 }
@@ -101,18 +120,28 @@ impl ScrollConfig {
 /// Internal physics state for scroll animation
 #[derive(Clone)]
 pub struct ScrollPhysics {
-    /// Current scroll offset (negative = scrolled down)
+    /// Current vertical scroll offset (negative = scrolled down)
     pub offset_y: f32,
-    /// Current velocity (pixels per second)
+    /// Current vertical velocity (pixels per second)
     pub velocity_y: f32,
-    /// Spring animator for bounce (None when not bouncing)
-    pub spring: Option<Spring>,
+    /// Current horizontal scroll offset (negative = scrolled right)
+    pub offset_x: f32,
+    /// Current horizontal velocity (pixels per second)
+    pub velocity_x: f32,
+    /// Spring animator for vertical bounce (None when not bouncing)
+    pub spring_y: Option<Spring>,
+    /// Spring animator for horizontal bounce (None when not bouncing)
+    pub spring_x: Option<Spring>,
     /// Current FSM state
     pub state: ScrollState,
     /// Content height (calculated from children)
     pub content_height: f32,
     /// Viewport height
     pub viewport_height: f32,
+    /// Content width (calculated from children)
+    pub content_width: f32,
+    /// Viewport width
+    pub viewport_width: f32,
     /// Configuration
     pub config: ScrollConfig,
 }
@@ -122,10 +151,15 @@ impl Default for ScrollPhysics {
         Self {
             offset_y: 0.0,
             velocity_y: 0.0,
-            spring: None,
+            offset_x: 0.0,
+            velocity_x: 0.0,
+            spring_y: None,
+            spring_x: None,
             state: ScrollState::Idle,
             content_height: 0.0,
             viewport_height: 0.0,
+            content_width: 0.0,
+            viewport_width: 0.0,
             config: ScrollConfig::default(),
         }
     }
@@ -140,13 +174,13 @@ impl ScrollPhysics {
         }
     }
 
-    /// Maximum scroll offset (0 = top edge)
-    pub fn min_offset(&self) -> f32 {
+    /// Maximum vertical scroll offset (0 = top edge)
+    pub fn min_offset_y(&self) -> f32 {
         0.0
     }
 
-    /// Minimum scroll offset (negative, at bottom edge)
-    pub fn max_offset(&self) -> f32 {
+    /// Minimum vertical scroll offset (negative, at bottom edge)
+    pub fn max_offset_y(&self) -> f32 {
         let scrollable = self.content_height - self.viewport_height;
         if scrollable > 0.0 {
             -scrollable
@@ -155,47 +189,118 @@ impl ScrollPhysics {
         }
     }
 
-    /// Check if currently overscrolling (past bounds)
-    pub fn is_overscrolling(&self) -> bool {
-        self.offset_y > self.min_offset() || self.offset_y < self.max_offset()
+    /// Maximum horizontal scroll offset (0 = left edge)
+    pub fn min_offset_x(&self) -> f32 {
+        0.0
     }
 
-    /// Get amount of overscroll (positive at top, negative at bottom)
-    pub fn overscroll_amount(&self) -> f32 {
-        if self.offset_y > self.min_offset() {
-            self.offset_y - self.min_offset()
-        } else if self.offset_y < self.max_offset() {
-            self.offset_y - self.max_offset()
+    /// Minimum horizontal scroll offset (negative, at right edge)
+    pub fn max_offset_x(&self) -> f32 {
+        let scrollable = self.content_width - self.viewport_width;
+        if scrollable > 0.0 {
+            -scrollable
+        } else {
+            0.0
+        }
+    }
+
+    /// Check if currently overscrolling vertically (past bounds)
+    pub fn is_overscrolling_y(&self) -> bool {
+        self.offset_y > self.min_offset_y() || self.offset_y < self.max_offset_y()
+    }
+
+    /// Check if currently overscrolling horizontally (past bounds)
+    pub fn is_overscrolling_x(&self) -> bool {
+        self.offset_x > self.min_offset_x() || self.offset_x < self.max_offset_x()
+    }
+
+    /// Check if currently overscrolling in any direction
+    pub fn is_overscrolling(&self) -> bool {
+        match self.config.direction {
+            ScrollDirection::Vertical => self.is_overscrolling_y(),
+            ScrollDirection::Horizontal => self.is_overscrolling_x(),
+            ScrollDirection::Both => self.is_overscrolling_y() || self.is_overscrolling_x(),
+        }
+    }
+
+    /// Get amount of vertical overscroll (positive at top, negative at bottom)
+    pub fn overscroll_amount_y(&self) -> f32 {
+        if self.offset_y > self.min_offset_y() {
+            self.offset_y - self.min_offset_y()
+        } else if self.offset_y < self.max_offset_y() {
+            self.offset_y - self.max_offset_y()
+        } else {
+            0.0
+        }
+    }
+
+    /// Get amount of horizontal overscroll (positive at left, negative at right)
+    pub fn overscroll_amount_x(&self) -> f32 {
+        if self.offset_x > self.min_offset_x() {
+            self.offset_x - self.min_offset_x()
+        } else if self.offset_x < self.max_offset_x() {
+            self.offset_x - self.max_offset_x()
         } else {
             0.0
         }
     }
 
     /// Apply scroll delta (from user input)
-    pub fn apply_scroll_delta(&mut self, delta_y: f32) {
+    ///
+    /// Note: On macOS, the system already applies momentum physics to scroll events,
+    /// so we don't need to track velocity or apply our own momentum. We just apply
+    /// the delta directly with bounds clamping.
+    pub fn apply_scroll_delta(&mut self, delta_x: f32, delta_y: f32) {
         // Transition to scrolling state
         if let Some(new_state) = self.state.on_event(blinc_core::events::event_types::SCROLL) {
             self.state = new_state;
         }
 
-        // If overscrolling, apply rubber-band resistance
-        if self.is_overscrolling() && self.config.bounce_enabled {
-            let resistance = 0.5; // 50% resistance when overscrolling
-            self.offset_y += delta_y * resistance;
-        } else {
-            self.offset_y += delta_y;
+        let old_offset_y = self.offset_y;
+
+        // Apply vertical delta based on direction
+        if matches!(self.config.direction, ScrollDirection::Vertical | ScrollDirection::Both) {
+            // If overscrolling, apply rubber-band resistance
+            if self.is_overscrolling_y() && self.config.bounce_enabled {
+                let resistance = 0.3; // 30% resistance when overscrolling
+                self.offset_y += delta_y * resistance;
+            } else {
+                self.offset_y += delta_y;
+            }
+
+            // Clamp to bounds (or max overscroll if bounce enabled)
+            if !self.config.bounce_enabled {
+                self.offset_y = self.offset_y.clamp(self.max_offset_y(), self.min_offset_y());
+            } else {
+                // Clamp to max overscroll distance
+                let max_over = self.viewport_height * self.config.max_overscroll;
+                self.offset_y = self.offset_y.clamp(self.max_offset_y() - max_over, max_over);
+            }
+
+            tracing::trace!(
+                "Scroll delta_y={:.1} offset: {:.1} -> {:.1}, bounds=({:.0}, {:.0}), content={:.0}, viewport={:.0}",
+                delta_y, old_offset_y, self.offset_y, self.max_offset_y(), self.min_offset_y(),
+                self.content_height, self.viewport_height
+            );
         }
 
-        // Track velocity from delta (assuming 16ms frame time)
-        self.velocity_y = delta_y * 60.0; // Approximate velocity
+        // Apply horizontal delta based on direction
+        if matches!(self.config.direction, ScrollDirection::Horizontal | ScrollDirection::Both) {
+            // If overscrolling, apply rubber-band resistance
+            if self.is_overscrolling_x() && self.config.bounce_enabled {
+                let resistance = 0.3;
+                self.offset_x += delta_x * resistance;
+            } else {
+                self.offset_x += delta_x;
+            }
 
-        // Clamp overscroll if bounce disabled
-        if !self.config.bounce_enabled {
-            self.offset_y = self.offset_y.clamp(self.max_offset(), self.min_offset());
-        } else {
-            // Clamp to max overscroll
-            let max_over = self.viewport_height * self.config.max_overscroll;
-            self.offset_y = self.offset_y.clamp(self.max_offset() - max_over, max_over);
+            // Clamp to bounds (or max overscroll if bounce enabled)
+            if !self.config.bounce_enabled {
+                self.offset_x = self.offset_x.clamp(self.max_offset_x(), self.min_offset_x());
+            } else {
+                let max_over = self.viewport_width * self.config.max_overscroll;
+                self.offset_x = self.offset_x.clamp(self.max_offset_x() - max_over, max_over);
+            }
         }
     }
 
@@ -216,15 +321,31 @@ impl ScrollPhysics {
 
     /// Start bounce animation to return to bounds
     fn start_bounce(&mut self) {
-        let target = if self.offset_y > self.min_offset() {
-            self.min_offset()
-        } else {
-            self.max_offset()
-        };
+        // Start vertical bounce if needed
+        if self.is_overscrolling_y() && matches!(self.config.direction, ScrollDirection::Vertical | ScrollDirection::Both) {
+            let target = if self.offset_y > self.min_offset_y() {
+                self.min_offset_y()
+            } else {
+                self.max_offset_y()
+            };
 
-        let mut spring = Spring::new(self.config.bounce_spring, self.offset_y);
-        spring.set_target(target);
-        self.spring = Some(spring);
+            let mut spring = Spring::new(self.config.bounce_spring, self.offset_y);
+            spring.set_target(target);
+            self.spring_y = Some(spring);
+        }
+
+        // Start horizontal bounce if needed
+        if self.is_overscrolling_x() && matches!(self.config.direction, ScrollDirection::Horizontal | ScrollDirection::Both) {
+            let target = if self.offset_x > self.min_offset_x() {
+                self.min_offset_x()
+            } else {
+                self.max_offset_x()
+            };
+
+            let mut spring = Spring::new(self.config.bounce_spring, self.offset_x);
+            spring.set_target(target);
+            self.spring_x = Some(spring);
+        }
 
         if let Some(new_state) = self.state.on_event(scroll_events::HIT_EDGE) {
             self.state = new_state;
@@ -234,34 +355,68 @@ impl ScrollPhysics {
     /// Tick animation (called every frame)
     ///
     /// Returns true if still animating, false if settled
+    ///
+    /// Note: On macOS, the system provides momentum scrolling via continuous scroll events,
+    /// so our tick function mainly handles bounce-back animation when overscrolled.
     pub fn tick(&mut self, dt: f32) -> bool {
         match self.state {
             ScrollState::Idle => false,
 
             ScrollState::Scrolling => {
                 // Active scrolling is driven by events, not ticks
+                // Check if we should start bounce (in case scroll ended while overscrolling)
+                if self.is_overscrolling() && self.config.bounce_enabled {
+                    self.start_bounce();
+                    return true;
+                }
                 true
             }
 
             ScrollState::Decelerating => {
-                // Apply friction
-                self.velocity_y *= self.config.friction;
-                self.offset_y += self.velocity_y * dt;
-
-                // Check if hit edge
+                // On macOS, the system provides momentum via scroll events
+                // We don't need our own deceleration - just check for bounce
                 if self.is_overscrolling() && self.config.bounce_enabled {
                     self.start_bounce();
                     return true;
                 }
 
-                // Clamp if no bounce
-                if !self.config.bounce_enabled {
-                    self.offset_y = self.offset_y.clamp(self.max_offset(), self.min_offset());
+                // Settle to idle if not overscrolling
+                if let Some(new_state) = self.state.on_event(scroll_events::SETTLED) {
+                    self.state = new_state;
+                }
+                false
+            }
+
+            ScrollState::Bouncing => {
+                let mut still_bouncing = false;
+
+                // Tick vertical spring
+                if let Some(ref mut spring) = self.spring_y {
+                    spring.step(dt);
+                    self.offset_y = spring.value();
+
+                    if spring.is_settled() {
+                        self.offset_y = spring.target();
+                        self.spring_y = None;
+                    } else {
+                        still_bouncing = true;
+                    }
                 }
 
-                // Check if settled
-                if self.velocity_y.abs() < self.config.velocity_threshold {
-                    self.velocity_y = 0.0;
+                // Tick horizontal spring
+                if let Some(ref mut spring) = self.spring_x {
+                    spring.step(dt);
+                    self.offset_x = spring.value();
+
+                    if spring.is_settled() {
+                        self.offset_x = spring.target();
+                        self.spring_x = None;
+                    } else {
+                        still_bouncing = true;
+                    }
+                }
+
+                if !still_bouncing {
                     if let Some(new_state) = self.state.on_event(scroll_events::SETTLED) {
                         self.state = new_state;
                     }
@@ -270,35 +425,25 @@ impl ScrollPhysics {
 
                 true
             }
-
-            ScrollState::Bouncing => {
-                if let Some(ref mut spring) = self.spring {
-                    spring.step(dt);
-                    self.offset_y = spring.value();
-
-                    if spring.is_settled() {
-                        self.offset_y = spring.target();
-                        self.spring = None;
-                        if let Some(new_state) = self.state.on_event(scroll_events::SETTLED) {
-                            self.state = new_state;
-                        }
-                        return false;
-                    }
-                    true
-                } else {
-                    // No spring, shouldn't happen, settle
-                    if let Some(new_state) = self.state.on_event(scroll_events::SETTLED) {
-                        self.state = new_state;
-                    }
-                    false
-                }
-            }
         }
     }
 
     /// Check if animation is active
     pub fn is_animating(&self) -> bool {
         self.state.is_active()
+    }
+
+    /// Set the scroll direction
+    pub fn set_direction(&mut self, direction: ScrollDirection) {
+        self.config.direction = direction;
+        // Reset position when changing direction
+        self.offset_x = 0.0;
+        self.offset_y = 0.0;
+        self.velocity_x = 0.0;
+        self.velocity_y = 0.0;
+        self.spring_x = None;
+        self.spring_y = None;
+        self.state = ScrollState::Idle;
     }
 }
 
@@ -340,7 +485,9 @@ impl Scroll {
         let handlers = Self::create_internal_handlers(Arc::clone(&physics));
 
         Self {
-            inner: Div::new().overflow_clip(),
+            // Use overflow_scroll to allow children to be laid out at natural size
+            // (not constrained to viewport). We handle visual clipping ourselves.
+            inner: Div::new().overflow_scroll(),
             child: None,
             physics,
             handlers,
@@ -353,7 +500,7 @@ impl Scroll {
         let handlers = Self::create_internal_handlers(Arc::clone(&physics));
 
         Self {
-            inner: Div::new().overflow_clip(),
+            inner: Div::new().overflow_scroll(),
             child: None,
             physics,
             handlers,
@@ -365,7 +512,7 @@ impl Scroll {
         let handlers = Self::create_internal_handlers(Arc::clone(&physics));
 
         Self {
-            inner: Div::new().overflow_clip(),
+            inner: Div::new().overflow_scroll(),
             child: None,
             physics,
             handlers,
@@ -380,7 +527,7 @@ impl Scroll {
         handlers.on_scroll({
             let physics = Arc::clone(&physics);
             move |ctx| {
-                physics.lock().unwrap().apply_scroll_delta(ctx.scroll_delta_y);
+                physics.lock().unwrap().apply_scroll_delta(ctx.scroll_delta_x, ctx.scroll_delta_y);
             }
         });
 
@@ -417,9 +564,9 @@ impl Scroll {
         self.bounce(false)
     }
 
-    /// Set friction coefficient (0.0-1.0)
-    pub fn friction(self, friction: f32) -> Self {
-        self.physics.lock().unwrap().config.friction = friction.clamp(0.0, 1.0);
+    /// Set deceleration rate in pixels/second²
+    pub fn deceleration(self, decel: f32) -> Self {
+        self.physics.lock().unwrap().config.deceleration = decel.max(0.0);
         self
     }
 
@@ -429,6 +576,27 @@ impl Scroll {
         self
     }
 
+    /// Set scroll direction
+    pub fn direction(self, direction: ScrollDirection) -> Self {
+        self.physics.lock().unwrap().config.direction = direction;
+        self
+    }
+
+    /// Set to vertical-only scrolling
+    pub fn vertical(self) -> Self {
+        self.direction(ScrollDirection::Vertical)
+    }
+
+    /// Set to horizontal-only scrolling
+    pub fn horizontal(self) -> Self {
+        self.direction(ScrollDirection::Horizontal)
+    }
+
+    /// Set to free scrolling (both directions)
+    pub fn both_directions(self) -> Self {
+        self.direction(ScrollDirection::Both)
+    }
+
     // =========================================================================
     // Size
     // =========================================================================
@@ -436,6 +604,7 @@ impl Scroll {
     /// Set viewport width
     pub fn w(mut self, px: f32) -> Self {
         self.inner = std::mem::take(&mut self.inner).w(px);
+        self.physics.lock().unwrap().viewport_width = px;
         self
     }
 
@@ -449,7 +618,11 @@ impl Scroll {
     /// Set viewport size
     pub fn size(mut self, w: f32, h: f32) -> Self {
         self.inner = std::mem::take(&mut self.inner).size(w, h);
-        self.physics.lock().unwrap().viewport_height = h;
+        {
+            let mut physics = self.physics.lock().unwrap();
+            physics.viewport_width = w;
+            physics.viewport_height = h;
+        }
         self
     }
 
@@ -524,8 +697,8 @@ impl Scroll {
     }
 
     /// Apply scroll delta (called by event router)
-    pub fn apply_scroll_delta(&self, delta_y: f32) {
-        self.physics.lock().unwrap().apply_scroll_delta(delta_y);
+    pub fn apply_scroll_delta(&self, delta_x: f32, delta_y: f32) {
+        self.physics.lock().unwrap().apply_scroll_delta(delta_x, delta_y);
     }
 
     /// Called when scroll gesture ends
@@ -554,7 +727,10 @@ impl ElementBuilder for Scroll {
     }
 
     fn render_props(&self) -> RenderProps {
-        self.inner.render_props()
+        let mut props = self.inner.render_props();
+        // Scroll containers always clip their children
+        props.clips_content = true;
+        props
     }
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
@@ -581,11 +757,19 @@ impl ElementBuilder for Scroll {
     fn scroll_info(&self) -> Option<ScrollRenderInfo> {
         let physics = self.physics.lock().unwrap();
         Some(ScrollRenderInfo {
+            offset_x: physics.offset_x,
             offset_y: physics.offset_y,
+            viewport_width: physics.viewport_width,
             viewport_height: physics.viewport_height,
+            content_width: physics.content_width,
             content_height: physics.content_height,
             is_animating: physics.is_animating(),
+            direction: physics.config.direction,
         })
+    }
+
+    fn scroll_physics(&self) -> Option<SharedScrollPhysics> {
+        Some(Arc::clone(&self.physics))
     }
 }
 
@@ -596,14 +780,22 @@ impl ElementBuilder for Scroll {
 /// Information about scroll state for rendering
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ScrollRenderInfo {
-    /// Current scroll offset (negative = scrolled down)
+    /// Current horizontal scroll offset (negative = scrolled right)
+    pub offset_x: f32,
+    /// Current vertical scroll offset (negative = scrolled down)
     pub offset_y: f32,
+    /// Viewport width
+    pub viewport_width: f32,
     /// Viewport height
     pub viewport_height: f32,
+    /// Total content width
+    pub content_width: f32,
     /// Total content height
     pub content_height: f32,
     /// Whether scroll animation is active
     pub is_animating: bool,
+    /// Scroll direction
+    pub direction: ScrollDirection,
 }
 
 // ============================================================================
@@ -640,11 +832,11 @@ mod tests {
         physics.viewport_height = 400.0;
         physics.content_height = 1000.0;
 
-        assert_eq!(physics.min_offset(), 0.0);
-        assert_eq!(physics.max_offset(), -600.0); // 1000 - 400
+        assert_eq!(physics.min_offset_y(), 0.0);
+        assert_eq!(physics.max_offset_y(), -600.0); // 1000 - 400
 
-        // Apply scroll
-        physics.apply_scroll_delta(-50.0);
+        // Apply scroll (vertical)
+        physics.apply_scroll_delta(0.0, -50.0);
         assert_eq!(physics.offset_y, -50.0);
         assert_eq!(physics.state, ScrollState::Scrolling);
     }
@@ -655,10 +847,10 @@ mod tests {
         physics.viewport_height = 400.0;
         physics.content_height = 1000.0;
 
-        // Scroll past top
-        physics.apply_scroll_delta(50.0);
-        assert!(physics.is_overscrolling());
-        assert!(physics.overscroll_amount() > 0.0);
+        // Scroll past top (vertical)
+        physics.apply_scroll_delta(0.0, 50.0);
+        assert!(physics.is_overscrolling_y());
+        assert!(physics.overscroll_amount_y() > 0.0);
     }
 
     #[test]
@@ -676,7 +868,7 @@ mod tests {
 
         // Should be bouncing back
         assert_eq!(physics.state, ScrollState::Bouncing);
-        assert!(physics.spring.is_some());
+        assert!(physics.spring_y.is_some());
 
         // Tick until settled
         for _ in 0..120 {
@@ -696,30 +888,36 @@ mod tests {
         physics.viewport_height = 400.0;
         physics.content_height = 1000.0;
 
-        // Try to overscroll
-        physics.apply_scroll_delta(100.0);
+        // Try to overscroll (vertical)
+        physics.apply_scroll_delta(0.0, 100.0);
 
         // Should be clamped
         assert_eq!(physics.offset_y, 0.0);
     }
 
     #[test]
-    fn test_scroll_deceleration() {
+    fn test_scroll_settling() {
         let mut physics = ScrollPhysics::default();
         physics.viewport_height = 400.0;
         physics.content_height = 1000.0;
 
-        // Start scrolling with velocity
-        physics.apply_scroll_delta(-50.0);
+        // Start scrolling (vertical)
+        physics.apply_scroll_delta(0.0, -50.0);
+        assert_eq!(physics.state, ScrollState::Scrolling);
+        assert_eq!(physics.offset_y, -50.0);
+
+        // End scroll gesture
         physics.on_scroll_end();
 
+        // Should be in decelerating state
         assert_eq!(physics.state, ScrollState::Decelerating);
 
-        // Should decelerate over time
-        let initial_velocity = physics.velocity_y;
-        physics.tick(1.0 / 60.0);
+        // Tick should settle to idle (since macOS provides momentum)
+        let still_animating = physics.tick(1.0 / 60.0);
 
-        assert!(physics.velocity_y.abs() < initial_velocity.abs());
+        // Should settle immediately since we're not overscrolling
+        assert!(!still_animating);
+        assert_eq!(physics.state, ScrollState::Idle);
     }
 
     #[test]

@@ -114,7 +114,9 @@ pub mod prelude {
         GlassPanel, ImageData, LayoutRenderer, RenderTree, SvgData, TextData,
     };
     // Scroll container
-    pub use crate::scroll::{scroll, scroll_no_bounce, Scroll, ScrollConfig, ScrollRenderInfo};
+    pub use crate::scroll::{
+        scroll, scroll_no_bounce, Scroll, ScrollConfig, ScrollDirection, ScrollRenderInfo,
+    };
     pub use crate::svg::{svg, Svg};
     pub use crate::text::{text, Text};
     pub use crate::tree::{LayoutNodeId, LayoutTree};

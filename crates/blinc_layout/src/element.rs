@@ -590,6 +590,8 @@ pub struct RenderProps {
     pub transform: Option<Transform>,
     /// Opacity (0.0 = transparent, 1.0 = opaque)
     pub opacity: f32,
+    /// Whether this element clips its children (for scroll containers)
+    pub clips_content: bool,
 }
 
 impl Default for RenderProps {
@@ -603,6 +605,7 @@ impl Default for RenderProps {
             shadow: None,
             transform: None,
             opacity: 1.0,
+            clips_content: false,
         }
     }
 }
@@ -683,6 +686,12 @@ impl RenderProps {
     /// Set opacity (0.0 = transparent, 1.0 = opaque)
     pub fn with_opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set whether this element clips its children
+    pub fn with_clips_content(mut self, clips: bool) -> Self {
+        self.clips_content = clips;
         self
     }
 }

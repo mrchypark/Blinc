@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
 
-use blinc_core::{Brush, Color, CornerRadius, DrawContext, GlassStyle, Rect, Transform};
+use blinc_core::{Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle, Rect, Transform};
 use taffy::prelude::*;
 
 use crate::div::{ElementBuilder, ElementTypeId};
@@ -185,6 +185,8 @@ pub struct RenderTree {
     node_states: HashMap<LayoutNodeId, NodeStateStorage>,
     /// Scroll offsets for scroll containers (node_id -> (offset_x, offset_y))
     scroll_offsets: HashMap<LayoutNodeId, (f32, f32)>,
+    /// Scroll physics for scroll containers (keyed by node_id)
+    scroll_physics: HashMap<LayoutNodeId, crate::scroll::SharedScrollPhysics>,
 }
 
 impl Default for RenderTree {
@@ -204,6 +206,7 @@ impl RenderTree {
             dirty_tracker: crate::interactive::DirtyTracker::new(),
             node_states: HashMap::new(),
             scroll_offsets: HashMap::new(),
+            scroll_physics: HashMap::new(),
         }
     }
 
@@ -247,6 +250,11 @@ impl RenderTree {
         // Register event handlers if present
         if let Some(handlers) = element.event_handlers() {
             self.handler_registry.register(node_id, handlers.clone());
+        }
+
+        // Store scroll physics if this is a scroll element
+        if let Some(physics) = element.scroll_physics() {
+            self.scroll_physics.insert(node_id, physics);
         }
 
         // Get child node IDs from the layout tree
@@ -320,6 +328,11 @@ impl RenderTree {
             self.handler_registry.register(node_id, handlers.clone());
         }
 
+        // Store scroll physics if this is a scroll element
+        if let Some(physics) = element.scroll_physics() {
+            self.scroll_physics.insert(node_id, physics);
+        }
+
         // Get child node IDs from the layout tree
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
@@ -390,6 +403,43 @@ impl RenderTree {
                     height: AvailableSpace::Definite(height),
                 },
             );
+
+            // Update scroll physics with computed content dimensions
+            self.update_scroll_content_dimensions();
+        }
+    }
+
+    /// Update scroll physics with content dimensions from layout
+    fn update_scroll_content_dimensions(&mut self) {
+        // Collect node_ids to avoid borrowing issues
+        let node_ids: Vec<_> = self.scroll_physics.keys().copied().collect();
+
+        for node_id in node_ids {
+            // Get viewport bounds (the scroll container's own size)
+            let bounds = self.layout_tree.get_bounds(node_id, (0.0, 0.0));
+            let viewport_width = bounds.map(|b| b.width).unwrap_or(0.0);
+            let viewport_height = bounds.map(|b| b.height).unwrap_or(0.0);
+
+            // Get content size from Taffy's content_size (enabled via feature)
+            // This tells us the total size of all content that may overflow
+            let (content_width, content_height) = self.layout_tree
+                .get_content_size(node_id)
+                .unwrap_or((viewport_width, viewport_height));
+
+            // Update physics with dimensions
+            if let Some(physics) = self.scroll_physics.get(&node_id) {
+                if let Ok(mut p) = physics.lock() {
+                    p.viewport_width = viewport_width;
+                    p.viewport_height = viewport_height;
+                    p.content_width = content_width;
+                    p.content_height = content_height;
+
+                    tracing::trace!(
+                        "Scroll physics updated: viewport=({:.0}, {:.0}) content=({:.0}, {:.0}) max_offset_y={:.0}",
+                        viewport_width, viewport_height, content_width, content_height, p.max_offset_y()
+                    );
+                }
+            }
         }
     }
 
@@ -477,9 +527,9 @@ impl RenderTree {
             .has_handler(node_id, blinc_core::events::event_types::SCROLL);
 
         if has_handler {
-            // Update the scroll offset for this node
-            self.apply_scroll_delta(node_id, scroll_delta_x, scroll_delta_y);
-            // Dispatch to handlers (for user callbacks like logging)
+            // Dispatch to handlers - the Scroll element's internal handler will update
+            // ScrollPhysics with direction-aware bounds checking. We also update
+            // scroll_offsets here for rendering, but the internal handler may clamp values.
             self.handler_registry.dispatch(&ctx);
             // Don't mark dirty - scroll doesn't require tree rebuild
         }
@@ -489,10 +539,51 @@ impl RenderTree {
     // Scroll Offset Management
     // =========================================================================
 
-    /// Apply a scroll delta to a node's scroll offset
+    /// Apply a scroll delta to a node's scroll offset (without bounds checking)
     pub fn apply_scroll_delta(&mut self, node_id: LayoutNodeId, delta_x: f32, delta_y: f32) {
         let (current_x, current_y) = self.scroll_offsets.get(&node_id).copied().unwrap_or((0.0, 0.0));
         self.scroll_offsets.insert(node_id, (current_x + delta_x, current_y + delta_y));
+    }
+
+    /// Apply a scroll delta with bounds checking based on viewport and content size
+    pub fn apply_scroll_delta_with_bounds(&mut self, node_id: LayoutNodeId, delta_x: f32, delta_y: f32) {
+        let (current_x, current_y) = self.scroll_offsets.get(&node_id).copied().unwrap_or((0.0, 0.0));
+
+        // Get the viewport bounds for this node (parent offset doesn't matter for size)
+        let bounds = self.layout_tree.get_bounds(node_id, (0.0, 0.0));
+        let viewport_width = bounds.map(|b| b.width).unwrap_or(0.0);
+        let viewport_height = bounds.map(|b| b.height).unwrap_or(0.0);
+
+        // Get content size from Taffy's content_size
+        let (content_width, content_height) = self.layout_tree
+            .get_content_size(node_id)
+            .unwrap_or((viewport_width, viewport_height));
+
+        // Calculate scroll limits
+        let min_offset_x = 0.0;
+        let max_offset_x = if content_width > viewport_width {
+            -(content_width - viewport_width)
+        } else {
+            0.0
+        };
+        let min_offset_y = 0.0;
+        let max_offset_y = if content_height > viewport_height {
+            -(content_height - viewport_height)
+        } else {
+            0.0
+        };
+
+        // Apply delta with clamping
+        let new_x = (current_x + delta_x).clamp(max_offset_x, min_offset_x);
+        let new_y = (current_y + delta_y).clamp(max_offset_y, min_offset_y);
+
+        tracing::debug!(
+            "Scroll bounds: viewport=({:.0}, {:.0}) content=({:.0}, {:.0}) limits_y=({:.0}, {:.0}) delta_y={:.1} current={:.1} new={:.1}",
+            viewport_width, viewport_height, content_width, content_height,
+            max_offset_y, min_offset_y, delta_y, current_y, new_y
+        );
+
+        self.scroll_offsets.insert(node_id, (new_x, new_y));
     }
 
     /// Set the scroll offset for a node
@@ -501,7 +592,17 @@ impl RenderTree {
     }
 
     /// Get the scroll offset for a node
+    ///
+    /// Reads from scroll physics if available (has direction-aware bounds),
+    /// falls back to legacy scroll_offsets.
     pub fn get_scroll_offset(&self, node_id: LayoutNodeId) -> (f32, f32) {
+        // Check scroll physics first (has direction-aware scroll from element)
+        if let Some(physics) = self.scroll_physics.get(&node_id) {
+            if let Ok(p) = physics.try_lock() {
+                return (p.offset_x, p.offset_y);
+            }
+        }
+        // Fallback to legacy scroll_offsets
         self.scroll_offsets.get(&node_id).copied().unwrap_or((0.0, 0.0))
     }
 
@@ -509,6 +610,13 @@ impl RenderTree {
     pub fn transfer_scroll_offsets_from(&mut self, other: &RenderTree) {
         for (node_id, offset) in &other.scroll_offsets {
             self.scroll_offsets.insert(*node_id, *offset);
+        }
+    }
+
+    /// Transfer scroll physics from another tree (preserves scroll physics across rebuilds)
+    pub fn transfer_scroll_physics_from(&mut self, other: &RenderTree) {
+        for (node_id, physics) in &other.scroll_physics {
+            self.scroll_physics.insert(*node_id, physics.clone());
         }
     }
 
@@ -670,8 +778,19 @@ impl RenderTree {
             }
         }
 
-        // Check if this node has a scroll offset and apply it to children
-        let scroll_offset = self.scroll_offsets.get(&node).copied().unwrap_or((0.0, 0.0));
+        // Push clip if this element clips its children (e.g., scroll containers)
+        let clips_content = render_node.props.clips_content;
+        if clips_content {
+            let clip_shape = if radius.is_uniform() && radius.top_left > 0.0 {
+                ClipShape::rounded_rect(rect, radius)
+            } else {
+                ClipShape::rect(rect)
+            };
+            ctx.push_clip(clip_shape);
+        }
+
+        // Check if this node has scroll and apply the offset
+        let scroll_offset = self.get_scroll_offset(node);
         let has_scroll = scroll_offset.0.abs() > 0.001 || scroll_offset.1.abs() > 0.001;
 
         if has_scroll {
@@ -688,6 +807,11 @@ impl RenderTree {
         // Pop scroll transform if we pushed one
         if has_scroll {
             ctx.pop_transform();
+        }
+
+        // Pop clip if we pushed one
+        if clips_content {
+            ctx.pop_clip();
         }
 
         // Pop element-specific transform if we pushed one
@@ -858,8 +982,21 @@ impl RenderTree {
         // Once inside glass, stay inside glass for all descendants
         let children_inside_glass = inside_glass || is_glass;
 
+        // Push clip if this element clips its children (e.g., scroll containers)
+        let clips_content = render_node.props.clips_content;
+        if clips_content {
+            let rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+            let radius = render_node.props.border_radius;
+            let clip_shape = if radius.is_uniform() && radius.top_left > 0.0 {
+                ClipShape::rounded_rect(rect, radius)
+            } else {
+                ClipShape::rect(rect)
+            };
+            ctx.push_clip(clip_shape);
+        }
+
         // Check if this node has a scroll offset and apply it to children
-        let scroll_offset = self.scroll_offsets.get(&node).copied().unwrap_or((0.0, 0.0));
+        let scroll_offset = self.get_scroll_offset(node);
         let has_scroll = scroll_offset.0.abs() > 0.001 || scroll_offset.1.abs() > 0.001;
 
         if has_scroll {
@@ -882,6 +1019,11 @@ impl RenderTree {
         // Pop scroll transform if we pushed one
         if has_scroll {
             ctx.pop_transform();
+        }
+
+        // Pop clip if we pushed one
+        if clips_content {
+            ctx.pop_clip();
         }
 
         // Pop element-specific transform if we pushed one
@@ -1045,8 +1187,21 @@ impl RenderTree {
         // Track if children should be considered inside glass
         let children_inside_glass = inside_glass || is_glass;
 
+        // Push clip if this element clips its children (e.g., scroll containers)
+        let clips_content = render_node.props.clips_content;
+        if clips_content {
+            let rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+            let radius = render_node.props.border_radius;
+            let clip_shape = if radius.is_uniform() && radius.top_left > 0.0 {
+                ClipShape::rounded_rect(rect, radius)
+            } else {
+                ClipShape::rect(rect)
+            };
+            ctx.push_clip(clip_shape);
+        }
+
         // Check if this node has a scroll offset and apply it to children
-        let scroll_offset = self.scroll_offsets.get(&node).copied().unwrap_or((0.0, 0.0));
+        let scroll_offset = self.get_scroll_offset(node);
         let has_scroll = scroll_offset.0.abs() > 0.001 || scroll_offset.1.abs() > 0.001;
 
         if has_scroll {
@@ -1069,6 +1224,11 @@ impl RenderTree {
         // Pop scroll transform if we pushed one
         if has_scroll {
             ctx.pop_transform();
+        }
+
+        // Pop clip if we pushed one
+        if clips_content {
+            ctx.pop_clip();
         }
 
         // Pop element-specific transform if we pushed one
@@ -1141,7 +1301,12 @@ impl RenderTree {
             }
         }
 
-        let new_offset = (parent_offset.0 + bounds.x, parent_offset.1 + bounds.y);
+        // Include scroll offset when calculating child positions
+        let scroll_offset = self.get_scroll_offset(node);
+        let new_offset = (
+            parent_offset.0 + bounds.x + scroll_offset.0,
+            parent_offset.1 + bounds.y + scroll_offset.1,
+        );
         for child_id in self.layout_tree.children(node) {
             self.render_text_recursive(renderer, child_id, new_offset, children_inside_glass);
         }
@@ -1203,7 +1368,12 @@ impl RenderTree {
             }
         }
 
-        let new_offset = (parent_offset.0 + bounds.x, parent_offset.1 + bounds.y);
+        // Include scroll offset when calculating child positions
+        let scroll_offset = self.get_scroll_offset(node);
+        let new_offset = (
+            parent_offset.0 + bounds.x + scroll_offset.0,
+            parent_offset.1 + bounds.y + scroll_offset.1,
+        );
         for child_id in self.layout_tree.children(node) {
             self.render_svg_recursive(renderer, child_id, new_offset, children_inside_glass);
         }
@@ -1303,7 +1473,12 @@ impl RenderTree {
             }
         }
 
-        let new_offset = (parent_offset.0 + bounds.x, parent_offset.1 + bounds.y);
+        // Include scroll offset when calculating child positions
+        let scroll_offset = self.get_scroll_offset(node);
+        let new_offset = (
+            parent_offset.0 + bounds.x + scroll_offset.0,
+            parent_offset.1 + bounds.y + scroll_offset.1,
+        );
         for child_id in self.layout_tree.children(node) {
             self.collect_text_elements(child_id, new_offset, result);
         }
@@ -1350,7 +1525,12 @@ impl RenderTree {
             }
         }
 
-        let new_offset = (parent_offset.0 + bounds.x, parent_offset.1 + bounds.y);
+        // Include scroll offset when calculating child positions
+        let scroll_offset = self.get_scroll_offset(node);
+        let new_offset = (
+            parent_offset.0 + bounds.x + scroll_offset.0,
+            parent_offset.1 + bounds.y + scroll_offset.1,
+        );
         for child_id in self.layout_tree.children(node) {
             self.collect_svg_elements(child_id, new_offset, result);
         }
