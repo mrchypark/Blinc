@@ -197,6 +197,26 @@ impl BlincApp {
             .render_tree_with_state(tree, render_state, width, height, target)
     }
 
+    /// Render a pre-computed render tree with motion animations
+    ///
+    /// This method renders elements with enter/exit animations applied:
+    /// - opacity fading
+    /// - scale transformations
+    /// - translation animations
+    ///
+    /// Use this when you have elements wrapped in motion() containers.
+    pub fn render_tree_with_motion(
+        &mut self,
+        tree: &RenderTree,
+        render_state: &blinc_layout::RenderState,
+        target: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        self.ctx
+            .render_tree_with_motion(tree, render_state, width, height, target)
+    }
+
     /// Get the render context for advanced usage
     pub fn context(&mut self) -> &mut RenderContext {
         &mut self.ctx

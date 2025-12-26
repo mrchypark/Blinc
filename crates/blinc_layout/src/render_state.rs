@@ -45,7 +45,40 @@ use std::sync::{Arc, Mutex};
 use blinc_animation::{AnimationScheduler, SchedulerHandle, Spring, SpringConfig, SpringId};
 use blinc_core::{Color, Transform};
 
+use crate::element::{MotionAnimation, MotionKeyframe};
 use crate::tree::LayoutNodeId;
+
+/// State of a motion animation
+#[derive(Clone, Debug)]
+pub enum MotionState {
+    /// Animation hasn't started yet (waiting for delay)
+    Waiting { remaining_delay_ms: f32 },
+    /// Animation is playing (enter animation)
+    Entering { progress: f32, duration_ms: f32 },
+    /// Element is fully visible (enter complete)
+    Visible,
+    /// Animation is playing (exit animation)
+    Exiting { progress: f32, duration_ms: f32 },
+    /// Element should be removed (exit complete)
+    Removed,
+}
+
+impl Default for MotionState {
+    fn default() -> Self {
+        MotionState::Visible
+    }
+}
+
+/// Active motion animation for a node
+#[derive(Clone, Debug)]
+pub struct ActiveMotion {
+    /// The animation configuration
+    pub config: MotionAnimation,
+    /// Current state of the animation
+    pub state: MotionState,
+    /// Current interpolated values
+    pub current: MotionKeyframe,
+}
 
 /// Dynamic render state for a single node
 ///
@@ -94,6 +127,12 @@ pub struct NodeRenderState {
 
     /// Whether this node is currently pressed
     pub pressed: bool,
+
+    // =========================================================================
+    // Motion animation state
+    // =========================================================================
+    /// Active motion animation (enter/exit) for this node
+    pub motion: Option<ActiveMotion>,
 }
 
 impl Default for NodeRenderState {
@@ -110,6 +149,7 @@ impl Default for NodeRenderState {
             hovered: false,
             focused: false,
             pressed: false,
+            motion: None,
         }
     }
 }
@@ -125,6 +165,16 @@ impl NodeRenderState {
         self.opacity_spring.is_some()
             || self.bg_color_springs.is_some()
             || self.transform_springs.is_some()
+            || self.has_active_motion()
+    }
+
+    /// Check if this node has an active motion animation
+    pub fn has_active_motion(&self) -> bool {
+        if let Some(ref motion) = self.motion {
+            !matches!(motion.state, MotionState::Visible | MotionState::Removed)
+        } else {
+            false
+        }
     }
 }
 
@@ -189,6 +239,9 @@ pub struct RenderState {
 
     /// Cursor blink interval in ms
     cursor_blink_interval: u64,
+
+    /// Last tick time (for calculating delta time)
+    last_tick_time: Option<u64>,
 }
 
 impl RenderState {
@@ -201,6 +254,7 @@ impl RenderState {
             cursor_visible: true,
             cursor_blink_time: 0,
             cursor_blink_interval: 400,
+            last_tick_time: None,
         }
     }
 
@@ -213,6 +267,14 @@ impl RenderState {
     ///
     /// Returns true if any animations are active (need another frame)
     pub fn tick(&mut self, current_time_ms: u64) -> bool {
+        // Calculate delta time
+        let dt_ms = if let Some(last_time) = self.last_tick_time {
+            (current_time_ms.saturating_sub(last_time)) as f32
+        } else {
+            16.0 // Assume ~60fps for first frame
+        };
+        self.last_tick_time = Some(current_time_ms);
+
         // Tick the animation scheduler
         let animations_active = self.animations.lock().unwrap().tick();
 
@@ -222,7 +284,10 @@ impl RenderState {
             self.cursor_blink_time = current_time_ms;
         }
 
-        // Update node states from their animation springs
+        // Track if any motion animations are active
+        let mut motion_active = false;
+
+        // Update node states from their animation springs and motion animations
         let scheduler = self.animations.lock().unwrap();
         for (_node_id, state) in &mut self.node_states {
             // Update opacity from spring
@@ -253,6 +318,13 @@ impl RenderState {
                 state.transform = Some(Transform::translate(tx, ty));
                 state.scale = scale;
             }
+
+            // Update motion animation
+            if let Some(ref mut motion) = state.motion {
+                if Self::tick_motion(motion, dt_ms) {
+                    motion_active = true;
+                }
+            }
         }
 
         // Update cursor overlays with blink state
@@ -262,7 +334,80 @@ impl RenderState {
             }
         }
 
-        animations_active || self.has_overlays()
+        animations_active || motion_active || self.has_overlays()
+    }
+
+    /// Tick a motion animation, returns true if still active
+    fn tick_motion(motion: &mut ActiveMotion, dt_ms: f32) -> bool {
+        match &mut motion.state {
+            MotionState::Waiting { remaining_delay_ms } => {
+                *remaining_delay_ms -= dt_ms;
+                if *remaining_delay_ms <= 0.0 {
+                    // Start enter animation
+                    if motion.config.enter_from.is_some() && motion.config.enter_duration_ms > 0 {
+                        tracing::debug!(
+                            "Motion: Starting enter animation, duration={}ms",
+                            motion.config.enter_duration_ms
+                        );
+                        motion.state = MotionState::Entering {
+                            progress: 0.0,
+                            duration_ms: motion.config.enter_duration_ms as f32,
+                        };
+                        // Initialize current to the "from" state
+                        motion.current = motion.config.enter_from.clone().unwrap_or_default();
+                    } else {
+                        motion.state = MotionState::Visible;
+                        motion.current = MotionKeyframe::default(); // Fully visible
+                    }
+                }
+                true // Still animating
+            }
+            MotionState::Entering {
+                progress,
+                duration_ms,
+            } => {
+                *progress += dt_ms / *duration_ms;
+                if *progress >= 1.0 {
+                    motion.state = MotionState::Visible;
+                    motion.current = MotionKeyframe::default(); // Fully visible (opacity=1, scale=1, etc.)
+                    false // Done animating
+                } else {
+                    // Interpolate from enter_from to visible (default)
+                    let from = motion
+                        .config
+                        .enter_from
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_default();
+                    let to = MotionKeyframe::default();
+                    // Apply ease-out for enter animation
+                    let eased = ease_out_cubic(*progress);
+                    motion.current = from.lerp(&to, eased);
+                    true // Still animating
+                }
+            }
+            MotionState::Visible => false, // Not animating
+            MotionState::Exiting {
+                progress,
+                duration_ms,
+            } => {
+                *progress += dt_ms / *duration_ms;
+                if *progress >= 1.0 {
+                    motion.state = MotionState::Removed;
+                    motion.current = motion.config.exit_to.clone().unwrap_or_default();
+                    false // Done animating
+                } else {
+                    // Interpolate from visible to exit_to
+                    let from = MotionKeyframe::default();
+                    let to = motion.config.exit_to.as_ref().cloned().unwrap_or_default();
+                    // Apply ease-in for exit animation
+                    let eased = ease_in_cubic(*progress);
+                    motion.current = from.lerp(&to, eased);
+                    true // Still animating
+                }
+            }
+            MotionState::Removed => false, // Not animating
+        }
     }
 
     /// Reset cursor blink (call when focus changes or user types)
@@ -535,6 +680,100 @@ impl RenderState {
     pub fn is_pressed(&self, node_id: LayoutNodeId) -> bool {
         self.get(node_id).map(|s| s.pressed).unwrap_or(false)
     }
+
+    // =========================================================================
+    // Motion Animation Control
+    // =========================================================================
+
+    /// Start an enter motion animation for a node
+    ///
+    /// This is called when a node with motion config first appears in the tree.
+    pub fn start_enter_motion(&mut self, node_id: LayoutNodeId, config: MotionAnimation) {
+        let state = self.get_or_create(node_id);
+
+        // Determine initial state based on delay
+        let initial_state = if config.enter_delay_ms > 0 {
+            MotionState::Waiting {
+                remaining_delay_ms: config.enter_delay_ms as f32,
+            }
+        } else if config.enter_from.is_some() && config.enter_duration_ms > 0 {
+            MotionState::Entering {
+                progress: 0.0,
+                duration_ms: config.enter_duration_ms as f32,
+            }
+        } else {
+            MotionState::Visible
+        };
+
+        // Initial values come from enter_from (the starting state)
+        let current = if matches!(initial_state, MotionState::Visible) {
+            MotionKeyframe::default() // Already fully visible
+        } else {
+            config.enter_from.clone().unwrap_or_default()
+        };
+
+        state.motion = Some(ActiveMotion {
+            config,
+            state: initial_state,
+            current,
+        });
+    }
+
+    /// Start an exit motion animation for a node
+    ///
+    /// This is called when a node with motion config is about to be removed.
+    pub fn start_exit_motion(&mut self, node_id: LayoutNodeId) {
+        if let Some(state) = self.node_states.get_mut(&node_id) {
+            if let Some(ref mut motion) = state.motion {
+                if motion.config.exit_to.is_some() && motion.config.exit_duration_ms > 0 {
+                    motion.state = MotionState::Exiting {
+                        progress: 0.0,
+                        duration_ms: motion.config.exit_duration_ms as f32,
+                    };
+                    motion.current = MotionKeyframe::default(); // Start from visible
+                } else {
+                    motion.state = MotionState::Removed;
+                }
+            }
+        }
+    }
+
+    /// Get the current motion values for a node
+    ///
+    /// Returns the interpolated keyframe values if the node has an active motion.
+    pub fn get_motion_values(&self, node_id: LayoutNodeId) -> Option<&MotionKeyframe> {
+        self.get(node_id)
+            .and_then(|s| s.motion.as_ref())
+            .map(|m| &m.current)
+    }
+
+    /// Check if a node's motion animation is complete and should be removed
+    pub fn is_motion_removed(&self, node_id: LayoutNodeId) -> bool {
+        self.get(node_id)
+            .and_then(|s| s.motion.as_ref())
+            .map(|m| matches!(m.state, MotionState::Removed))
+            .unwrap_or(false)
+    }
+
+    /// Check if any nodes have active motion animations
+    pub fn has_active_motions(&self) -> bool {
+        self.node_states.values().any(|s| s.has_active_motion())
+    }
+}
+
+// ============================================================================
+// Easing helper functions
+// ============================================================================
+
+/// Cubic ease-out (fast start, slow end) - good for enter animations
+fn ease_out_cubic(t: f32) -> f32 {
+    let t = 1.0 - t;
+    1.0 - t * t * t
+}
+
+/// Cubic ease-in (slow start, fast end) - good for exit animations
+fn ease_in_cubic(t: f32) -> f32 {
+    t * t * t
 }
 
 #[cfg(test)]

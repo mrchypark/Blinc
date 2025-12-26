@@ -51,7 +51,10 @@ pub mod tree;
 pub mod widgets;
 
 // Core types
-pub use element::{DynRenderProps, ElementBounds, RenderLayer, RenderProps, ResolvedRenderProps};
+pub use element::{
+    DynRenderProps, ElementBounds, MotionAnimation, MotionKeyframe, RenderLayer, RenderProps,
+    ResolvedRenderProps,
+};
 pub use event_handler::{EventCallback, EventContext, EventHandlers, HandlerRegistry};
 pub use event_router::{EventRouter, HitTestResult, MouseButton};
 pub use interactive::{DirtyTracker, InteractiveContext, NodeState};
@@ -81,7 +84,7 @@ pub use renderer::{GlassPanel, ImageData, LayoutRenderer, RenderTree, SvgData, T
 pub use canvas::{canvas, Canvas, CanvasBounds, CanvasData, CanvasRenderFn};
 
 // Render state (dynamic properties separate from tree structure)
-pub use render_state::{NodeRenderState, Overlay, RenderState};
+pub use render_state::{ActiveMotion, MotionState, NodeRenderState, Overlay, RenderState};
 
 // Stateful elements
 pub use stateful::{SharedState, StateTransitions, StatefulInner};
@@ -90,7 +93,9 @@ pub use stateful::{SharedState, StateTransitions, StatefulInner};
 pub use animated::{AnimatedProperties, AnimationBuilder};
 
 // Motion container for entry/exit animations
-pub use motion::{motion, ElementAnimation, Motion, SlideDirection, StaggerConfig, StaggerDirection};
+pub use motion::{
+    motion, ElementAnimation, Motion, SlideDirection, StaggerConfig, StaggerDirection,
+};
 
 // Text measurement
 pub use text_measure::{
@@ -238,7 +243,9 @@ pub mod prelude {
     };
 
     // Render state (dynamic properties separate from tree structure)
-    pub use crate::render_state::{NodeRenderState, Overlay, RenderState};
+    pub use crate::render_state::{
+        ActiveMotion, MotionState, NodeRenderState, Overlay, RenderState,
+    };
 
     // Dynamic value system for render-time resolution
     pub use blinc_core::{AnimationAccess, DynFloat, DynValue, ReactiveAccess, ValueContext};

@@ -1389,6 +1389,8 @@ pub enum ElementTypeId {
     Svg,
     Image,
     Canvas,
+    /// Motion container (transparent wrapper for animations)
+    Motion,
 }
 
 /// Text alignment options
@@ -1561,6 +1563,17 @@ pub trait ElementBuilder {
     fn scroll_physics(&self) -> Option<crate::scroll::SharedScrollPhysics> {
         None
     }
+
+    /// Get motion animation config for a child at given index
+    ///
+    /// This is only implemented by Motion containers. The index corresponds
+    /// to the order of children as returned by children_builders().
+    fn motion_animation_for_child(
+        &self,
+        _child_index: usize,
+    ) -> Option<crate::element::MotionAnimation> {
+        None
+    }
 }
 
 impl ElementBuilder for Div {
@@ -1592,6 +1605,7 @@ impl ElementBuilder for Div {
             transform: self.transform.clone(),
             opacity: self.opacity,
             clips_content,
+            motion: None,
         }
     }
 

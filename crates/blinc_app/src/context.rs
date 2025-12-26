@@ -55,6 +55,8 @@ struct TextElement {
     v_align: TextVerticalAlign,
     /// Clip bounds from parent scroll container (x, y, width, height)
     clip_bounds: Option<[f32; 4]>,
+    /// Motion opacity inherited from parent motion container
+    motion_opacity: f32,
 }
 
 /// Image element data for rendering
@@ -548,6 +550,19 @@ impl RenderContext {
         Vec<(String, f32, f32, f32, f32)>,
         Vec<ImageElement>,
     ) {
+        self.collect_render_elements_with_state(tree, None)
+    }
+
+    /// Collect text, SVG, and image elements with motion state
+    fn collect_render_elements_with_state(
+        &self,
+        tree: &RenderTree,
+        render_state: Option<&blinc_layout::RenderState>,
+    ) -> (
+        Vec<TextElement>,
+        Vec<(String, f32, f32, f32, f32)>,
+        Vec<ImageElement>,
+    ) {
         let mut texts = Vec::new();
         let mut svgs = Vec::new();
         let mut images = Vec::new();
@@ -559,6 +574,8 @@ impl RenderContext {
                 (0.0, 0.0),
                 false,
                 None, // No initial clip
+                1.0,  // Initial motion opacity
+                render_state,
                 &mut texts,
                 &mut svgs,
                 &mut images,
@@ -575,6 +592,8 @@ impl RenderContext {
         parent_offset: (f32, f32),
         inside_glass: bool,
         current_clip: Option<[f32; 4]>,
+        inherited_motion_opacity: f32,
+        render_state: Option<&blinc_layout::RenderState>,
         texts: &mut Vec<TextElement>,
         svgs: &mut Vec<(String, f32, f32, f32, f32)>,
         images: &mut Vec<ImageElement>,
@@ -587,6 +606,20 @@ impl RenderContext {
 
         let abs_x = bounds.x;
         let abs_y = bounds.y;
+
+        // Calculate motion opacity for this node (from RenderState)
+        let node_motion_opacity = render_state
+            .and_then(|rs| rs.get_motion_values(node))
+            .and_then(|m| m.opacity)
+            .unwrap_or(1.0);
+
+        // Combine with inherited opacity
+        let effective_motion_opacity = inherited_motion_opacity * node_motion_opacity;
+
+        // Skip if completely transparent
+        if effective_motion_opacity <= 0.001 {
+            return;
+        }
 
         // Determine if this node is a glass element
         let is_glass = tree
@@ -646,6 +679,7 @@ impl RenderContext {
                         weight: text_data.weight,
                         v_align: text_data.v_align,
                         clip_bounds: current_clip,
+                        motion_opacity: effective_motion_opacity,
                     });
                 }
                 ElementType::Svg(svg_data) => {
@@ -690,6 +724,8 @@ impl RenderContext {
                 new_offset,
                 children_inside_glass,
                 child_clip,
+                effective_motion_opacity,
+                render_state,
                 texts,
                 svgs,
                 images,
@@ -732,6 +768,146 @@ impl RenderContext {
         self.render_tree(tree, width, height, target)?;
 
         // Then render overlays from RenderState
+        self.render_overlays(render_state, width, height, target);
+
+        Ok(())
+    }
+
+    /// Render a layout tree with motion animations from RenderState
+    ///
+    /// This method renders:
+    /// 1. The RenderTree with motion animations applied (opacity, scale, translate)
+    /// 2. RenderState overlays (cursors, selections, focus rings)
+    ///
+    /// Use this method when you have elements wrapped in motion() containers
+    /// for enter/exit animations.
+    pub fn render_tree_with_motion(
+        &mut self,
+        tree: &RenderTree,
+        render_state: &blinc_layout::RenderState,
+        width: u32,
+        height: u32,
+        target: &wgpu::TextureView,
+    ) -> Result<()> {
+        // Create a single paint context for all layers with text rendering support
+        let mut ctx =
+            GpuPaintContext::with_text_context(width as f32, height as f32, &mut self.text_ctx);
+
+        // Render with motion animations applied (all layers to same context)
+        tree.render_with_motion(&mut ctx, render_state);
+
+        // Take the batch
+        let batch = ctx.take_batch();
+
+        // Collect text, SVG, and image elements WITH motion state
+        let (texts, svgs, images) =
+            self.collect_render_elements_with_state(tree, Some(render_state));
+
+        // Pre-load all images into cache before rendering
+        self.preload_images(&images);
+
+        // Prepare text glyphs
+        let mut all_glyphs = Vec::new();
+        for text in &texts {
+            let alignment = match text.align {
+                TextAlign::Left => TextAlignment::Left,
+                TextAlign::Center => TextAlignment::Center,
+                TextAlign::Right => TextAlignment::Right,
+            };
+
+            // Apply motion opacity to text color
+            let color = if text.motion_opacity < 1.0 {
+                [
+                    text.color[0],
+                    text.color[1],
+                    text.color[2],
+                    text.color[3] * text.motion_opacity,
+                ]
+            } else {
+                text.color
+            };
+
+            if let Ok(glyphs) = self.text_ctx.prepare_text_with_options(
+                &text.content,
+                text.x,
+                text.y,
+                text.font_size,
+                color,
+                TextAnchor::Top,
+                alignment,
+                Some(text.width),
+            ) {
+                // Apply clip bounds if present
+                let mut glyphs = glyphs;
+                if let Some(clip) = text.clip_bounds {
+                    for glyph in &mut glyphs {
+                        glyph.clip_bounds = clip;
+                    }
+                }
+                all_glyphs.extend(glyphs);
+            }
+        }
+
+        // Render SVGs
+        let mut svg_ctx = GpuPaintContext::new(width as f32, height as f32);
+        for (source, x, y, w, h) in &svgs {
+            if let Ok(doc) = SvgDocument::from_str(source) {
+                doc.render_fit(&mut svg_ctx, Rect::new(*x, *y, *w, *h));
+            }
+        }
+
+        // Merge SVG batch into main batch
+        let mut batch = batch;
+        batch.merge(svg_ctx.take_batch());
+
+        self.renderer.resize(width, height);
+
+        let has_glass = batch.glass_count() > 0;
+
+        // Only allocate glass textures when glass is actually used
+        if has_glass {
+            self.ensure_glass_textures(width, height);
+        }
+        let use_msaa_overlay = self.sample_count > 1;
+
+        if has_glass {
+            // Glass path
+            let (bg_images, fg_images): (Vec<_>, Vec<_>) = images
+                .iter()
+                .partition(|img| img.layer == RenderLayer::Background);
+
+            {
+                let backdrop = self.backdrop_texture.as_ref().unwrap();
+                self.renderer.render_glass_frame(
+                    target,
+                    &backdrop.view,
+                    (backdrop.width, backdrop.height),
+                    &batch,
+                );
+            }
+
+            self.render_images_ref(target, &bg_images);
+            self.render_images_ref(target, &fg_images);
+
+            if !all_glyphs.is_empty() {
+                self.render_text(target, &all_glyphs);
+            }
+        } else {
+            // Simple path (no glass)
+            self.renderer
+                .render_with_clear(target, &batch, [0.0, 0.0, 0.0, 1.0]);
+
+            self.render_images(target, &images);
+
+            if !all_glyphs.is_empty() {
+                self.render_text(target, &all_glyphs);
+            }
+        }
+
+        // Poll the device to free completed command buffers
+        self.renderer.poll();
+
+        // Render overlays from RenderState
         self.render_overlays(render_state, width, height, target);
 
         Ok(())

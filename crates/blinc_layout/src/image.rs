@@ -576,6 +576,7 @@ impl ElementBuilder for Image {
             transform: self.transform.clone(),
             opacity: self.opacity,
             clips_content: false,
+            motion: None,
         }
     }
 

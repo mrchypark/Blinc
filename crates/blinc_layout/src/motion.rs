@@ -20,11 +20,11 @@
 //!     .children(items.iter().map(|item| div().child(text(item))))
 //! ```
 
-use crate::div::ElementBuilder;
-use crate::element::RenderProps;
+use crate::div::{ElementBuilder, ElementTypeId};
+use crate::element::{MotionAnimation, MotionKeyframe, RenderProps};
 use crate::tree::{LayoutNodeId, LayoutTree};
 use blinc_animation::{AnimationPreset, MultiKeyframeAnimation};
-use taffy::Style;
+use taffy::{Display, FlexDirection, Style};
 
 /// Animation configuration for element lifecycle
 #[derive(Clone)]
@@ -141,14 +141,13 @@ impl StaggerConfig {
     }
 }
 
-/// Style-less motion container for animations
+/// Motion container for enter/exit animations
 ///
-/// Wraps child elements and applies entry/exit animations without
-/// adding any visual styling of its own.
+/// Wraps child elements and applies entry/exit animations.
+/// The container itself is transparent but can have layout properties
+/// to control how children are arranged (flex direction, gap, etc.).
 pub struct Motion {
-    /// Single child element
-    child: Option<Box<dyn ElementBuilder>>,
-    /// Multiple children for stagger animations
+    /// Children to animate (single or multiple)
     children: Vec<Box<dyn ElementBuilder>>,
     /// Entry animation
     enter: Option<ElementAnimation>,
@@ -156,23 +155,30 @@ pub struct Motion {
     exit: Option<ElementAnimation>,
     /// Stagger configuration for multiple children
     stagger_config: Option<StaggerConfig>,
+    /// Layout style for the container
+    style: Style,
 }
 
 /// Create a motion container
 pub fn motion() -> Motion {
     Motion {
-        child: None,
         children: Vec::new(),
         enter: None,
         exit: None,
         stagger_config: None,
+        style: Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            ..Style::default()
+        },
     }
 }
 
 impl Motion {
     /// Set the child element to animate
     pub fn child(mut self, child: impl ElementBuilder + 'static) -> Self {
-        self.child = Some(Box::new(child));
+        // Store single child in children vec so it's returned by children_builders()
+        self.children = vec![Box::new(child)];
         self
     }
 
@@ -270,6 +276,55 @@ impl Motion {
         self.enter_animation(AnimationPreset::pop_in(duration_ms))
     }
 
+    // ========================================================================
+    // Layout methods - control how children are arranged
+    // ========================================================================
+
+    /// Set the gap between children (in pixels)
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.style.gap = taffy::Size {
+            width: taffy::LengthPercentage::Length(gap),
+            height: taffy::LengthPercentage::Length(gap),
+        };
+        self
+    }
+
+    /// Set flex direction to row
+    pub fn flex_row(mut self) -> Self {
+        self.style.flex_direction = FlexDirection::Row;
+        self
+    }
+
+    /// Set flex direction to column
+    pub fn flex_col(mut self) -> Self {
+        self.style.flex_direction = FlexDirection::Column;
+        self
+    }
+
+    /// Align items to center (cross-axis)
+    pub fn items_center(mut self) -> Self {
+        self.style.align_items = Some(taffy::AlignItems::Center);
+        self
+    }
+
+    /// Align items to start (cross-axis)
+    pub fn items_start(mut self) -> Self {
+        self.style.align_items = Some(taffy::AlignItems::FlexStart);
+        self
+    }
+
+    /// Justify content to center (main-axis)
+    pub fn justify_center(mut self) -> Self {
+        self.style.justify_content = Some(taffy::JustifyContent::Center);
+        self
+    }
+
+    /// Justify content with space between (main-axis)
+    pub fn justify_between(mut self) -> Self {
+        self.style.justify_content = Some(taffy::JustifyContent::SpaceBetween);
+        self
+    }
+
     /// Get the enter animation if set
     pub fn get_enter_animation(&self) -> Option<&ElementAnimation> {
         self.enter.as_ref()
@@ -285,39 +340,86 @@ impl Motion {
         self.stagger_config.as_ref()
     }
 
-    /// Get all children (either from children vec or single child)
-    fn all_children(&self) -> Vec<&Box<dyn ElementBuilder>> {
-        if !self.children.is_empty() {
-            self.children.iter().collect()
-        } else if let Some(ref child) = self.child {
-            vec![child]
-        } else {
-            vec![]
+    /// Get the motion animation configuration for a child at given index
+    ///
+    /// Takes stagger into account to compute the correct delay for each child.
+    pub fn motion_animation_for_child(&self, child_index: usize) -> Option<MotionAnimation> {
+        let total_children = self.children.len();
+
+        if total_children == 0 {
+            return None;
         }
+
+        // Calculate delay based on stagger config
+        let delay_ms = if let Some(ref stagger) = self.stagger_config {
+            stagger.delay_for_index(child_index, total_children)
+        } else {
+            0
+        };
+
+        // Get base animation (from stagger config or direct enter/exit)
+        let enter_anim = if let Some(ref stagger) = self.stagger_config {
+            Some(&stagger.animation.animation)
+        } else {
+            self.enter.as_ref().map(|e| &e.animation)
+        };
+
+        let exit_anim = self.exit.as_ref().map(|e| &e.animation);
+
+        // Build MotionAnimation
+        if let Some(enter) = enter_anim {
+            let enter_from = enter
+                .first_keyframe()
+                .map(|kf| MotionKeyframe::from_keyframe_properties(&kf.properties));
+
+            let mut motion = MotionAnimation {
+                enter_from,
+                enter_duration_ms: enter.duration_ms(),
+                enter_delay_ms: delay_ms,
+                exit_to: None,
+                exit_duration_ms: 0,
+            };
+
+            if let Some(exit) = exit_anim {
+                motion.exit_to = exit
+                    .last_keyframe()
+                    .map(|kf| MotionKeyframe::from_keyframe_properties(&kf.properties));
+                motion.exit_duration_ms = exit.duration_ms();
+            }
+
+            Some(motion)
+        } else if let Some(exit) = exit_anim {
+            let exit_to = exit
+                .last_keyframe()
+                .map(|kf| MotionKeyframe::from_keyframe_properties(&kf.properties));
+
+            Some(MotionAnimation {
+                enter_from: None,
+                enter_duration_ms: 0,
+                enter_delay_ms: delay_ms,
+                exit_to,
+                exit_duration_ms: exit.duration_ms(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Get the number of children
+    pub fn child_count(&self) -> usize {
+        self.children.len()
     }
 }
 
 impl ElementBuilder for Motion {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        // Create a transparent container node
-        let node = tree.create_node(Style::default());
+        // Create a container node with the configured style
+        let node = tree.create_node(self.style.clone());
 
-        // Build and add children
-        // For stagger, we would store animation metadata on the nodes
-        // For now, just build children normally
-        if let Some(ref stagger) = self.stagger_config {
-            let total = self.children.len();
-            for (index, child) in self.children.iter().enumerate() {
-                let child_node = child.build(tree);
-                tree.add_child(node, child_node);
-                // Calculate delay for this child (will be used by RenderState)
-                let _delay = stagger.delay_for_index(index, total);
-            }
-        } else {
-            for child in self.all_children() {
-                let child_node = child.build(tree);
-                tree.add_child(node, child_node);
-            }
+        // Build and add all children (stagger delay is computed later via motion_animation_for_child)
+        for child in &self.children {
+            let child_node = child.build(tree);
+            tree.add_child(node, child_node);
         }
 
         node
@@ -329,9 +431,16 @@ impl ElementBuilder for Motion {
     }
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
-        // Return children vec if non-empty, otherwise empty slice
-        // Note: single child is not returned here as it's boxed differently
+        // Return children vec - single child is now stored in children vec as well
         &self.children
+    }
+
+    fn element_type_id(&self) -> ElementTypeId {
+        ElementTypeId::Motion
+    }
+
+    fn motion_animation_for_child(&self, child_index: usize) -> Option<MotionAnimation> {
+        self.motion_animation_for_child(child_index)
     }
 }
 

@@ -322,11 +322,7 @@ impl AnimationPreset {
     /// Shake horizontally (for error feedback)
     pub fn shake(duration_ms: u32, intensity: f32) -> MultiKeyframeAnimation {
         MultiKeyframeAnimation::new(duration_ms)
-            .keyframe(
-                0.0,
-                KeyframeProperties::translate(0.0, 0.0),
-                Easing::Linear,
-            )
+            .keyframe(0.0, KeyframeProperties::translate(0.0, 0.0), Easing::Linear)
             .keyframe(
                 0.1,
                 KeyframeProperties::translate(-intensity, 0.0),

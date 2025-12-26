@@ -321,6 +321,7 @@ impl RenderTree {
                 render_fn: element.canvas_render_info(),
             }),
             ElementTypeId::Div => ElementType::Div,
+            ElementTypeId::Motion => ElementType::Div, // Motion is a transparent container
         };
 
         self.render_nodes.insert(
@@ -345,7 +346,109 @@ impl RenderTree {
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
 
+        // Check if this is a Motion container
+        let is_motion = element.element_type_id() == ElementTypeId::Motion;
+
         // Match children by index (they were built in order)
+        for (index, (child_builder, &child_node_id)) in
+            child_builders.iter().zip(child_node_ids.iter()).enumerate()
+        {
+            // If parent is Motion, propagate motion animation to child
+            if is_motion {
+                if let Some(motion_config) = element.motion_animation_for_child(index) {
+                    self.collect_render_props_boxed_with_motion(
+                        child_builder.as_ref(),
+                        child_node_id,
+                        Some(motion_config),
+                    );
+                    continue;
+                }
+            }
+            self.collect_render_props_boxed(child_builder.as_ref(), child_node_id);
+        }
+    }
+
+    /// Collect render props with motion animation config from parent
+    fn collect_render_props_boxed_with_motion(
+        &mut self,
+        element: &dyn ElementBuilder,
+        node_id: LayoutNodeId,
+        motion_config: Option<crate::element::MotionAnimation>,
+    ) {
+        let mut props = element.render_props();
+        props.node_id = Some(node_id);
+        props.motion = motion_config;
+
+        // Use the element_type_id to determine type
+        let element_type = match element.element_type_id() {
+            ElementTypeId::Text => {
+                if let Some(info) = element.text_render_info() {
+                    ElementType::Text(TextData {
+                        content: info.content,
+                        font_size: info.font_size,
+                        color: info.color,
+                        align: info.align,
+                        weight: info.weight,
+                        v_align: info.v_align,
+                    })
+                } else {
+                    ElementType::Div
+                }
+            }
+            ElementTypeId::Svg => {
+                if let Some(info) = element.svg_render_info() {
+                    ElementType::Svg(SvgData {
+                        source: info.source,
+                        tint: info.tint,
+                    })
+                } else {
+                    ElementType::Div
+                }
+            }
+            ElementTypeId::Image => {
+                if let Some(info) = element.image_render_info() {
+                    ElementType::Image(ImageData {
+                        source: info.source,
+                        object_fit: info.object_fit,
+                        object_position: info.object_position,
+                        opacity: info.opacity,
+                        border_radius: info.border_radius,
+                        tint: info.tint,
+                        filter: info.filter,
+                    })
+                } else {
+                    ElementType::Div
+                }
+            }
+            ElementTypeId::Canvas => ElementType::Canvas(CanvasData {
+                render_fn: element.canvas_render_info(),
+            }),
+            ElementTypeId::Div => ElementType::Div,
+            ElementTypeId::Motion => ElementType::Div,
+        };
+
+        self.render_nodes.insert(
+            node_id,
+            RenderNode {
+                props,
+                element_type,
+            },
+        );
+
+        // Register event handlers if present
+        if let Some(handlers) = element.event_handlers() {
+            self.handler_registry.register(node_id, handlers.clone());
+        }
+
+        // Store scroll physics if this is a scroll element
+        if let Some(physics) = element.scroll_physics() {
+            self.scroll_physics.insert(node_id, physics);
+        }
+
+        // Recursively process children (without motion - motion only applies to direct children)
+        let child_node_ids = self.layout_tree.children(node_id);
+        let child_builders = element.children_builders();
+
         for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
             self.collect_render_props_boxed(child_builder.as_ref(), child_node_id);
         }
@@ -397,6 +500,7 @@ impl RenderTree {
                 render_fn: element.canvas_render_info(),
             }),
             ElementTypeId::Div => ElementType::Div,
+            ElementTypeId::Motion => ElementType::Div, // Motion is a transparent container
         }
     }
 
@@ -703,6 +807,35 @@ impl RenderTree {
             self.handler_registry.dispatch(&ctx);
             // Don't mark dirty - scroll doesn't require tree rebuild
         }
+    }
+
+    // =========================================================================
+    // Motion Animation Initialization
+    // =========================================================================
+
+    /// Initialize motion animations for nodes with motion config
+    ///
+    /// Call this after building/rebuilding the tree to start enter animations
+    /// for any nodes wrapped in motion() containers.
+    pub fn initialize_motion_animations(
+        &self,
+        render_state: &mut crate::render_state::RenderState,
+    ) {
+        for (&node_id, render_node) in &self.render_nodes {
+            if let Some(ref motion_config) = render_node.props.motion {
+                render_state.start_enter_motion(node_id, motion_config.clone());
+            }
+        }
+    }
+
+    /// Get nodes with motion config (for external initialization)
+    pub fn nodes_with_motion(&self) -> Vec<(LayoutNodeId, crate::element::MotionAnimation)> {
+        self.render_nodes
+            .iter()
+            .filter_map(|(&node_id, render_node)| {
+                render_node.props.motion.clone().map(|m| (node_id, m))
+            })
+            .collect()
     }
 
     // =========================================================================
@@ -1047,6 +1180,255 @@ impl RenderTree {
             // Pass 3: Foreground (includes children of glass elements)
             self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Foreground, false);
         }
+    }
+
+    /// Render with motion animations from RenderState
+    ///
+    /// This method applies animated opacity, scale, and translation from motion
+    /// animations stored in RenderState. Use this when you have elements wrapped
+    /// in motion() containers.
+    pub fn render_with_motion(
+        &self,
+        ctx: &mut dyn DrawContext,
+        render_state: &crate::render_state::RenderState,
+    ) {
+        if let Some(root) = self.root {
+            // Pass 1: Background
+            self.render_layer_with_motion(
+                ctx,
+                root,
+                (0.0, 0.0),
+                RenderLayer::Background,
+                false,
+                render_state,
+            );
+
+            // Pass 2: Glass
+            self.render_layer_with_motion(
+                ctx,
+                root,
+                (0.0, 0.0),
+                RenderLayer::Glass,
+                false,
+                render_state,
+            );
+
+            // Pass 3: Foreground
+            self.render_layer_with_motion(
+                ctx,
+                root,
+                (0.0, 0.0),
+                RenderLayer::Foreground,
+                false,
+                render_state,
+            );
+        }
+    }
+
+    /// Render a layer with motion animation support
+    fn render_layer_with_motion(
+        &self,
+        ctx: &mut dyn DrawContext,
+        node: LayoutNodeId,
+        parent_offset: (f32, f32),
+        target_layer: RenderLayer,
+        inside_glass: bool,
+        render_state: &crate::render_state::RenderState,
+    ) {
+        let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
+            return;
+        };
+
+        let Some(render_node) = self.render_nodes.get(&node) else {
+            return;
+        };
+
+        // Check if this node should be skipped (motion removed)
+        if render_state.is_motion_removed(node) {
+            return;
+        }
+
+        // Get motion values for this node (if any)
+        let motion_values = render_state.get_motion_values(node);
+
+        // Calculate motion-adjusted opacity
+        let motion_opacity = motion_values.and_then(|m| m.opacity).unwrap_or(1.0);
+
+        // Skip rendering if completely transparent
+        if motion_opacity <= 0.001 {
+            return;
+        }
+
+        // Push position transform
+        ctx.push_transform(Transform::translate(bounds.x, bounds.y));
+
+        // Apply motion translation
+        if let Some(motion) = motion_values {
+            let (tx, ty) = motion.resolved_translate();
+            if tx.abs() > 0.001 || ty.abs() > 0.001 {
+                ctx.push_transform(Transform::translate(tx, ty));
+            }
+        }
+
+        // Apply motion scale (centered)
+        let has_motion_scale = motion_values
+            .map(|m| {
+                let (sx, sy) = m.resolved_scale();
+                (sx - 1.0).abs() > 0.001 || (sy - 1.0).abs() > 0.001
+            })
+            .unwrap_or(false);
+
+        if has_motion_scale {
+            let (sx, sy) = motion_values.unwrap().resolved_scale();
+            let center_x = bounds.width / 2.0;
+            let center_y = bounds.height / 2.0;
+            ctx.push_transform(Transform::translate(center_x, center_y));
+            ctx.push_transform(Transform::scale(sx, sy));
+            ctx.push_transform(Transform::translate(-center_x, -center_y));
+        }
+
+        // Apply element-specific transform if present
+        let has_element_transform = render_node.props.transform.is_some();
+        if let Some(ref transform) = render_node.props.transform {
+            let center_x = bounds.width / 2.0;
+            let center_y = bounds.height / 2.0;
+            ctx.push_transform(Transform::translate(center_x, center_y));
+            ctx.push_transform(transform.clone());
+            ctx.push_transform(Transform::translate(-center_x, -center_y));
+        }
+
+        // Determine if this node is a glass element
+        let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
+        let children_inside_glass = inside_glass || is_glass;
+
+        // Push clip if needed
+        let clips_content = render_node.props.clips_content;
+        if clips_content {
+            let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+            let radius = render_node.props.border_radius;
+            let clip_shape = if radius.is_uniform() && radius.top_left > 0.0 {
+                ClipShape::rounded_rect(clip_rect, radius)
+            } else {
+                ClipShape::rect(clip_rect)
+            };
+            ctx.push_clip(clip_shape);
+        }
+
+        // Determine effective layer
+        let effective_layer = if inside_glass && !is_glass {
+            RenderLayer::Foreground
+        } else if is_glass {
+            RenderLayer::Glass
+        } else {
+            render_node.props.layer
+        };
+
+        // Render if this node matches target layer
+        if effective_layer == target_layer {
+            let rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+            let radius = render_node.props.border_radius;
+
+            // Apply motion opacity to rendering
+            // TODO: When DrawContext supports opacity, apply motion_opacity here
+            // For now, we rely on the brush alpha
+
+            if let Some(Material::Glass(glass)) = &render_node.props.material {
+                let glass_brush = Brush::Glass(GlassStyle {
+                    blur: glass.blur,
+                    tint: glass.tint,
+                    saturation: glass.saturation,
+                    brightness: glass.brightness,
+                    noise: glass.noise,
+                    border_thickness: glass.border_thickness,
+                    shadow: render_node.props.shadow.clone(),
+                });
+                ctx.fill_rect(rect, radius, glass_brush);
+            } else {
+                if let Some(ref shadow) = render_node.props.shadow {
+                    ctx.draw_shadow(rect, radius, shadow.clone());
+                }
+                if let Some(ref bg) = render_node.props.background {
+                    // Apply motion opacity to background
+                    let brush = if motion_opacity < 1.0 {
+                        apply_opacity_to_brush(bg, motion_opacity)
+                    } else {
+                        bg.clone()
+                    };
+                    ctx.fill_rect(rect, radius, brush);
+                }
+            }
+
+            // Handle canvas elements
+            if let ElementType::Canvas(canvas_data) = &render_node.element_type {
+                if let Some(render_fn) = &canvas_data.render_fn {
+                    let canvas_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+                    ctx.push_clip(ClipShape::rect(canvas_rect));
+                    let canvas_bounds = crate::canvas::CanvasBounds {
+                        width: bounds.width,
+                        height: bounds.height,
+                    };
+                    render_fn(ctx, canvas_bounds);
+                    ctx.pop_clip();
+                }
+            }
+        }
+
+        // Apply scroll offset
+        let scroll_offset = self.get_scroll_offset(node);
+        let has_scroll = scroll_offset.0.abs() > 0.001 || scroll_offset.1.abs() > 0.001;
+        if has_scroll {
+            ctx.push_transform(Transform::translate(scroll_offset.0, scroll_offset.1));
+        }
+
+        // Render children
+        for child_id in self.layout_tree.children(node) {
+            self.render_layer_with_motion(
+                ctx,
+                child_id,
+                (0.0, 0.0),
+                target_layer,
+                children_inside_glass,
+                render_state,
+            );
+        }
+
+        // Pop scroll transform
+        if has_scroll {
+            ctx.pop_transform();
+        }
+
+        // Pop clip
+        if clips_content {
+            ctx.pop_clip();
+        }
+
+        // Pop element transforms
+        if has_element_transform {
+            ctx.pop_transform();
+            ctx.pop_transform();
+            ctx.pop_transform();
+        }
+
+        // Pop motion scale transforms
+        if has_motion_scale {
+            ctx.pop_transform();
+            ctx.pop_transform();
+            ctx.pop_transform();
+        }
+
+        // Pop motion translation
+        if motion_values
+            .map(|m| {
+                let (tx, ty) = m.resolved_translate();
+                tx.abs() > 0.001 || ty.abs() > 0.001
+            })
+            .unwrap_or(false)
+        {
+            ctx.pop_transform();
+        }
+
+        // Pop position transform
+        ctx.pop_transform();
     }
 
     /// Render with layer separation and explicit context control
@@ -1796,6 +2178,30 @@ impl RenderTree {
         );
         for child_id in self.layout_tree.children(node) {
             self.collect_svg_elements(child_id, new_offset, result);
+        }
+    }
+}
+
+/// Apply opacity to a brush by modifying its alpha component
+fn apply_opacity_to_brush(brush: &Brush, opacity: f32) -> Brush {
+    match brush {
+        Brush::Solid(color) => {
+            Brush::Solid(Color::rgba(color.r, color.g, color.b, color.a * opacity))
+        }
+        Brush::Gradient(gradient) => {
+            // For gradients, we'd need to modify both start and end colors
+            // For now, just return the gradient as-is
+            // TODO: Apply opacity to gradient stops
+            Brush::Gradient(gradient.clone())
+        }
+        Brush::Glass(glass) => {
+            // Glass already has its own opacity handling
+            Brush::Glass(glass.clone())
+        }
+        Brush::Image(image) => {
+            // Image brushes - return as-is for now
+            // TODO: Apply opacity to image brush
+            Brush::Image(image.clone())
         }
     }
 }

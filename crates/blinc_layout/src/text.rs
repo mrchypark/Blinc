@@ -316,6 +316,7 @@ impl ElementBuilder for Text {
             transform: self.transform.clone(),
             opacity: 1.0,
             clips_content: false,
+            motion: None,
         }
     }
 

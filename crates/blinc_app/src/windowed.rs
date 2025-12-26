@@ -1185,24 +1185,8 @@ impl WindowedApp {
                             }
 
                             // =========================================================
-                            // PHASE 2: Tick animations and dynamic render state
-                            // This does NOT require tree rebuild
-                            // =========================================================
-
-                            // Tick render state (handles cursor blink, color animations, etc.)
-                            // This updates dynamic properties without touching tree structure
-                            let current_time = elapsed_ms();
-                            let _animations_active = rs.tick(current_time);
-
-                            // Reset cursor blink when user types or focus changes
-                            // (This would be called from event handlers, not here)
-
-                            // Note: We no longer trigger rebuilds for cursor blink!
-                            // The cursor visibility is now in RenderState and will be
-                            // read during rendering without needing tree rebuild.
-
-                            // =========================================================
-                            // PHASE 3: Build/rebuild tree only for structural changes
+                            // PHASE 2: Build/rebuild tree only for structural changes
+                            // This must happen BEFORE tick() so motion animations are available
                             // =========================================================
 
                             if needs_rebuild || render_tree.is_none() {
@@ -1220,9 +1204,22 @@ impl WindowedApp {
                                     tree.transfer_scroll_offsets_from(old_tree);
                                 }
 
+                                // Initialize motion animations for any nodes wrapped in motion() containers
+                                tree.initialize_motion_animations(rs);
+
                                 render_tree = Some(tree);
                                 needs_rebuild = false;
                             }
+
+                            // =========================================================
+                            // PHASE 3: Tick animations and dynamic render state
+                            // This must happen AFTER tree rebuild so motions are initialized
+                            // =========================================================
+
+                            // Tick render state (handles cursor blink, color animations, etc.)
+                            // This updates dynamic properties without touching tree structure
+                            let current_time = elapsed_ms();
+                            let _animations_active = rs.tick(current_time);
 
                             // =========================================================
                             // PHASE 4: Render
@@ -1230,12 +1227,15 @@ impl WindowedApp {
                             // =========================================================
 
                             if let Some(ref tree) = render_tree {
-                                // TODO: Pass render_state to renderer for cursor overlays
-                                // and animated properties. For now, we still use tree-based
-                                // cursor rendering until the renderer is updated.
-                                if let Err(e) =
-                                    blinc_app.render_tree(tree, &view, windowed_ctx.width as u32, windowed_ctx.height as u32)
-                                {
+                                // Render with motion animations
+                                let result = blinc_app.render_tree_with_motion(
+                                    tree,
+                                    rs,
+                                    &view,
+                                    windowed_ctx.width as u32,
+                                    windowed_ctx.height as u32,
+                                );
+                                if let Err(e) = result {
                                     tracing::error!("Render error: {}", e);
                                 }
                             }
@@ -1257,7 +1257,14 @@ impl WindowedApp {
                             // Check if text widgets need continuous redraws (cursor blink)
                             let needs_cursor_redraw = blinc_layout::widgets::take_needs_continuous_redraw();
 
-                            if needs_animation_redraw || needs_cursor_redraw {
+                            // Check if motion animations are active (enter/exit animations)
+                            let needs_motion_redraw = if let Some(ref rs) = render_state {
+                                rs.has_active_motions()
+                            } else {
+                                false
+                            };
+
+                            if needs_animation_redraw || needs_cursor_redraw || needs_motion_redraw {
                                 // Request another frame to render updated animation values
                                 // For cursor blink, also re-request continuous redraw for next frame
                                 if needs_cursor_redraw {

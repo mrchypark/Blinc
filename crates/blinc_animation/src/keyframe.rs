@@ -326,9 +326,11 @@ impl MultiKeyframeAnimation {
 
     /// Add a keyframe to the animation (builder pattern)
     pub fn keyframe(mut self, time: f32, properties: KeyframeProperties, easing: Easing) -> Self {
-        self.keyframes.push(MultiKeyframe::new(time, properties, easing));
+        self.keyframes
+            .push(MultiKeyframe::new(time, properties, easing));
         // Keep keyframes sorted by time
-        self.keyframes.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+        self.keyframes
+            .sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
         self
     }
 
@@ -470,6 +472,21 @@ impl MultiKeyframeAnimation {
     /// Get total duration including delay
     pub fn total_duration_ms(&self) -> u32 {
         self.delay_ms + self.duration_ms
+    }
+
+    /// Get the first keyframe (if any)
+    pub fn first_keyframe(&self) -> Option<&MultiKeyframe> {
+        self.keyframes.first()
+    }
+
+    /// Get the last keyframe (if any)
+    pub fn last_keyframe(&self) -> Option<&MultiKeyframe> {
+        self.keyframes.last()
+    }
+
+    /// Get all keyframes
+    pub fn keyframes(&self) -> &[MultiKeyframe] {
+        &self.keyframes
     }
 }
 
