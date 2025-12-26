@@ -218,6 +218,150 @@ image("path/to/image.png") // Image element
     .rounded(8.0)
 ```
 
+## Animation
+
+Blinc provides a comprehensive animation system with spring physics, keyframe animations, and declarative motion containers.
+
+### Spring Animations
+
+Spring physics animations with RK4 integration for natural, interruptible motion:
+
+```rust
+use blinc_animation::{AnimatedValue, SpringConfig};
+
+// Create a spring-animated value
+let mut position = AnimatedValue::new(0.0);
+
+// Animate to a target with spring physics
+position.animate_to(100.0, SpringConfig::default());
+
+// Or use presets
+position.animate_to(100.0, SpringConfig::snappy());   // Quick, responsive
+position.animate_to(100.0, SpringConfig::bouncy());   // Playful bounce
+position.animate_to(100.0, SpringConfig::smooth());   // Gentle, smooth
+```
+
+### Keyframe Animations
+
+Multi-keyframe animations with custom easing:
+
+```rust
+use blinc_animation::{AnimatedTimeline, AnimatedKeyframe, Easing};
+
+let timeline = AnimatedTimeline::new()
+    .keyframe(AnimatedKeyframe::new(0.0).opacity(0.0).scale(0.8))
+    .keyframe(AnimatedKeyframe::new(0.5).opacity(1.0).scale(1.1))
+    .keyframe(AnimatedKeyframe::new(1.0).opacity(1.0).scale(1.0))
+    .duration_ms(500)
+    .easing(Easing::EaseOutCubic);
+```
+
+### Animation Presets
+
+Built-in presets for common animations:
+
+```rust
+use blinc_animation::AnimationPreset;
+
+// Fade animations
+AnimationPreset::fade_in(300)
+AnimationPreset::fade_out(200)
+
+// Scale animations
+AnimationPreset::scale_in(300)
+AnimationPreset::scale_out(200)
+
+// Bounce animations
+AnimationPreset::bounce_in(500)
+AnimationPreset::bounce_out(400)
+
+// Pop (scale with overshoot)
+AnimationPreset::pop_in(400)
+
+// Slide animations
+AnimationPreset::slide_in_left(300, 50.0)
+AnimationPreset::slide_in_right(300, 50.0)
+AnimationPreset::slide_in_top(300, 50.0)
+AnimationPreset::slide_in_bottom(300, 50.0)
+```
+
+### Motion Container
+
+The `motion()` container provides declarative enter/exit animations:
+
+```rust
+use blinc_layout::prelude::*;
+
+// Single element with enter/exit animations
+motion()
+    .fade_in(300)
+    .scale_in(300)
+    .fade_out(200)
+    .child(
+        div()
+            .w(100.0).h(100.0)
+            .bg([0.4, 0.7, 1.0, 1.0])
+            .rounded(8.0)
+    )
+
+// Slide animations
+motion()
+    .slide_in(SlideDirection::Left, 400)
+    .slide_out(SlideDirection::Right, 300)
+    .child(panel)
+
+// Custom animation presets
+motion()
+    .enter_animation(AnimationPreset::bounce_in(500))
+    .exit_animation(AnimationPreset::fade_out(200))
+    .child(modal)
+```
+
+### Stagger Animations
+
+Animate lists with staggered delays:
+
+```rust
+use blinc_layout::prelude::*;
+
+// Forward stagger (first to last)
+motion()
+    .gap(8.0)
+    .stagger(StaggerConfig::new(50, AnimationPreset::fade_in(300)))
+    .children(items.iter().map(|item| card(item)))
+
+// Reverse stagger (last to first)
+motion()
+    .stagger(StaggerConfig::new(50, AnimationPreset::fade_in(300)).reverse())
+    .children(items)
+
+// From center outward
+motion()
+    .stagger(StaggerConfig::new(50, AnimationPreset::fade_in(300)).from_center())
+    .children(items)
+
+// Limit stagger delay (cap at N items)
+motion()
+    .stagger(StaggerConfig::new(50, AnimationPreset::fade_in(300)).limit(5))
+    .children(items)
+```
+
+### Easing Functions
+
+```rust
+use blinc_animation::Easing;
+
+Easing::Linear
+Easing::EaseIn
+Easing::EaseOut
+Easing::EaseInOut
+Easing::EaseInCubic
+Easing::EaseOutCubic
+Easing::EaseInOutCubic
+Easing::EaseOutBack      // Overshoot
+Easing::EaseOutBounce    // Bounce effect
+```
+
 ## Platform Support
 
 | Platform | Status | Backend |
@@ -240,6 +384,9 @@ image("path/to/image.png") // Image element
 - SVG rendering
 - Image support with cross-platform loading
 - Spring physics animations
+- Keyframe animations with presets
+- Motion containers (enter/exit animations)
+- Stagger animations for lists
 - Reactive signals and state machines
 - Desktop and Android platforms
 
