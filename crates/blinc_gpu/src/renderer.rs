@@ -1724,6 +1724,204 @@ impl GpuRenderer {
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
+    /// Render glass frame with backdrop and glass primitives in a single encoder submission.
+    /// This is more efficient than separate render calls as it reduces command buffer overhead.
+    ///
+    /// Performs:
+    /// 1. Render background primitives to backdrop texture
+    /// 2. Render background primitives to target
+    /// 3. Render glass primitives with backdrop blur to target
+    pub fn render_glass_frame(
+        &mut self,
+        target: &wgpu::TextureView,
+        backdrop: &wgpu::TextureView,
+        backdrop_size: (u32, u32),
+        batch: &PrimitiveBatch,
+    ) {
+        // Update uniforms for backdrop (half resolution)
+        let backdrop_uniforms = Uniforms {
+            viewport_size: [backdrop_size.0 as f32, backdrop_size.1 as f32],
+            _padding: [0.0; 2],
+        };
+
+        // Update uniforms for main rendering
+        let main_uniforms = Uniforms {
+            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
+            _padding: [0.0; 2],
+        };
+
+        // Update primitives buffer
+        if !batch.primitives.is_empty() {
+            self.queue.write_buffer(
+                &self.buffers.primitives,
+                0,
+                bytemuck::cast_slice(&batch.primitives),
+            );
+        }
+
+        // Update glass primitives buffer
+        if !batch.glass_primitives.is_empty() {
+            self.queue.write_buffer(
+                &self.buffers.glass_primitives,
+                0,
+                bytemuck::cast_slice(&batch.glass_primitives),
+            );
+        }
+
+        // Update glass uniforms
+        let glass_uniforms = GlassUniforms {
+            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
+            time: self.time,
+            _padding: 0.0,
+        };
+        self.queue.write_buffer(
+            &self.buffers.glass_uniforms,
+            0,
+            bytemuck::bytes_of(&glass_uniforms),
+        );
+
+        // Ensure glass bind group is cached
+        let current_size = self.viewport_size;
+        let need_new_bind_group = match &self.cached_glass {
+            None => true,
+            Some(cached) => cached.bind_group.is_none() || cached.bind_group_size != current_size,
+        };
+
+        if self.cached_glass.is_none() {
+            let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Glass Backdrop Sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            });
+            self.cached_glass = Some(CachedGlassResources {
+                sampler,
+                bind_group: None,
+                bind_group_size: (0, 0),
+            });
+        }
+
+        if need_new_bind_group {
+            let cached_glass = self.cached_glass.as_ref().unwrap();
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Glass Bind Group"),
+                layout: &self.bind_group_layouts.glass,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.buffers.glass_uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.buffers.glass_primitives.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(backdrop),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&cached_glass.sampler),
+                    },
+                ],
+            });
+            if let Some(ref mut cached) = self.cached_glass {
+                cached.bind_group = Some(bind_group);
+                cached.bind_group_size = current_size;
+            }
+        }
+
+        // Create single command encoder for entire frame
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Blinc Glass Frame Encoder"),
+            });
+
+        // Pass 1: Render background primitives to backdrop texture (at half resolution)
+        {
+            self.queue.write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&backdrop_uniforms));
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Backdrop Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: backdrop,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            if !batch.primitives.is_empty() {
+                render_pass.set_pipeline(&self.pipelines.sdf);
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+            }
+        }
+
+        // Pass 2: Render background primitives to target (at full resolution)
+        {
+            self.queue.write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&main_uniforms));
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Target Background Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            if !batch.primitives.is_empty() {
+                render_pass.set_pipeline(&self.pipelines.sdf);
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+            }
+        }
+
+        // Pass 3: Render glass primitives with backdrop blur
+        if !batch.glass_primitives.is_empty() {
+            let glass_bind_group = self.cached_glass.as_ref().unwrap().bind_group.as_ref().unwrap();
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Glass Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.glass);
+            render_pass.set_bind_group(0, glass_bind_group, &[]);
+            render_pass.draw(0..6, 0..batch.glass_primitives.len() as u32);
+        }
+
+        // Single submission for all passes
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
     /// Render primitives as an overlay on existing content (1x sampled)
     ///
     /// This uses the overlay pipeline which is configured for sample_count=1,

@@ -240,49 +240,25 @@ impl RenderContext {
                 .iter()
                 .partition(|img| img.layer == RenderLayer::Background);
 
-            // Glass path (optimized - single backdrop texture):
-            // 1. Render background primitives to backdrop texture
-            // 2. Render background-layer images to backdrop texture (will be blurred by glass)
-            // 3. Render background primitives to target
-            // 4. Render background-layer images to target
-            // 5. Render glass with backdrop blur onto target
-            // 6. Render glass/foreground-layer images (on top of glass, not blurred)
-            // 7. Render foreground primitives (with MSAA if enabled)
-            // 8. Render text
-
-            // Step 1: Render background primitives to backdrop texture (for glass to sample)
-            // Backdrop is rendered at half resolution for memory efficiency
+            // Glass path - batched rendering for reduced command buffer overhead:
+            // Steps 1-3 are batched into a single encoder submission
             {
                 let backdrop = self.backdrop_texture.as_ref().unwrap();
-                self.renderer.render_at_size(
+                self.renderer.render_glass_frame(
+                    target,
                     &backdrop.view,
+                    (backdrop.width, backdrop.height),
                     &bg_batch,
-                    [0.0, 0.0, 0.0, 0.0],
-                    backdrop.width,
-                    backdrop.height,
                 );
             }
 
-            // Step 2: Render background-layer images to backdrop texture (so glass can blur them)
-            self.render_images_to_backdrop(&bg_images);
-
-            // Step 3: Render background primitives to target
-            self.renderer
-                .render_with_clear(target, &bg_batch, [0.0, 0.0, 0.0, 1.0]);
-
-            // Step 4: Render background-layer images to target
+            // Step 4: Render background-layer images to target (separate for now - images use different pipeline)
             self.render_images_ref(target, &bg_images);
 
-            // Step 5: Render glass with backdrop blur onto target
-            {
-                let backdrop_view = &self.backdrop_texture.as_ref().unwrap().view;
-                self.renderer.render_glass(target, backdrop_view, &bg_batch);
-            }
-
-            // Step 6: Render glass/foreground-layer images (on top of glass, NOT blurred)
+            // Step 5: Render glass/foreground-layer images (on top of glass, NOT blurred)
             self.render_images_ref(target, &fg_images);
 
-            // Step 7: Render foreground primitives with MSAA for smooth SVG edges
+            // Step 6: Render foreground primitives with MSAA for smooth SVG edges
             if !fg_batch.is_empty() {
                 if use_msaa_overlay {
                     self.renderer
@@ -292,7 +268,7 @@ impl RenderContext {
                 }
             }
 
-            // Step 8: Render text
+            // Step 7: Render text
             if !all_glyphs.is_empty() {
                 self.render_text(target, &all_glyphs);
             }
