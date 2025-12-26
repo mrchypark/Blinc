@@ -164,6 +164,14 @@ struct CachedGlassResources {
     bind_group_size: (u32, u32),
 }
 
+/// Cached text resources to avoid per-frame allocations
+struct CachedTextResources {
+    /// Cached bind group (valid when atlas texture view hasn't changed)
+    bind_group: wgpu::BindGroup,
+    /// Pointer to atlas view when bind group was created (for invalidation)
+    atlas_view_ptr: *const wgpu::TextureView,
+}
+
 /// The GPU renderer using wgpu
 ///
 /// This is the main rendering engine that:
@@ -206,6 +214,8 @@ pub struct GpuRenderer {
     cached_msaa: Option<CachedMsaaTextures>,
     /// Cached glass resources (avoids per-frame allocation)
     cached_glass: Option<CachedGlassResources>,
+    /// Cached text resources (avoids per-frame allocation)
+    cached_text: Option<CachedTextResources>,
 }
 
 /// Image rendering pipeline (created lazily on first image render)
@@ -473,6 +483,7 @@ impl GpuRenderer {
             image_pipeline: None,
             cached_msaa: None,
             cached_glass: None,
+            cached_text: None,
         })
     }
 
@@ -2053,29 +2064,44 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.glyphs, 0, bytemuck::cast_slice(glyphs));
 
-        // Create text bind group with the provided atlas
-        let text_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Text Bind Group"),
-            layout: &self.bind_group_layouts.text,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.buffers.uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.buffers.glyphs.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(atlas_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(atlas_sampler),
-                },
-            ],
-        });
+        // Check if we need to recreate the text bind group
+        // Invalidate if the atlas view pointer changed (texture was recreated)
+        let atlas_view_ptr = atlas_view as *const wgpu::TextureView;
+        let need_new_bind_group = match &self.cached_text {
+            Some(cached) => cached.atlas_view_ptr != atlas_view_ptr,
+            None => true,
+        };
+
+        if need_new_bind_group {
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Text Bind Group"),
+                layout: &self.bind_group_layouts.text,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.buffers.uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.buffers.glyphs.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(atlas_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(atlas_sampler),
+                    },
+                ],
+            });
+            self.cached_text = Some(CachedTextResources {
+                bind_group,
+                atlas_view_ptr,
+            });
+        }
+
+        let text_bind_group = &self.cached_text.as_ref().unwrap().bind_group;
 
         // Create command encoder
         let mut encoder = self
@@ -2103,7 +2129,7 @@ impl GpuRenderer {
 
             // Use text_overlay pipeline since we're rendering to 1x sampled texture
             render_pass.set_pipeline(&self.pipelines.text_overlay);
-            render_pass.set_bind_group(0, &text_bind_group, &[]);
+            render_pass.set_bind_group(0, text_bind_group, &[]);
             render_pass.draw(0..6, 0..glyphs.len() as u32);
         }
 
