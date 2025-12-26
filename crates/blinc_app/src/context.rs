@@ -251,10 +251,16 @@ impl RenderContext {
             // 8. Render text
 
             // Step 1: Render background primitives to backdrop texture (for glass to sample)
+            // Backdrop is rendered at half resolution for memory efficiency
             {
-                let backdrop_view = &self.backdrop_texture.as_ref().unwrap().view;
-                self.renderer
-                    .render_with_clear(backdrop_view, &bg_batch, [0.0, 0.0, 0.0, 0.0]);
+                let backdrop = self.backdrop_texture.as_ref().unwrap();
+                self.renderer.render_at_size(
+                    &backdrop.view,
+                    &bg_batch,
+                    [0.0, 0.0, 0.0, 0.0],
+                    backdrop.width,
+                    backdrop.height,
+                );
             }
 
             // Step 2: Render background-layer images to backdrop texture (so glass can blur them)
@@ -326,15 +332,20 @@ impl RenderContext {
     /// Only called when glass elements are present in the scene.
     ///
     /// We use a single texture for both rendering and sampling (backdrop_texture).
-    /// This saves ~2.5MB of GPU memory compared to using two separate textures.
+    /// The texture is rendered at half resolution to save memory (blur doesn't need full res).
     fn ensure_glass_textures(&mut self, width: u32, height: u32) {
         // Use the same texture format as the renderer's pipelines
         let format = self.renderer.texture_format();
 
+        // Use half resolution for glass backdrop - blur effect doesn't need full resolution
+        // This saves 75% of texture memory (e.g., 2.5MB -> 0.6MB for 900x700 window)
+        let backdrop_width = (width / 2).max(1);
+        let backdrop_height = (height / 2).max(1);
+
         let needs_backdrop = self
             .backdrop_texture
             .as_ref()
-            .map(|t| t.width != width || t.height != height)
+            .map(|t| t.width != backdrop_width || t.height != backdrop_height)
             .unwrap_or(true);
 
         if needs_backdrop {
@@ -342,8 +353,8 @@ impl RenderContext {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Glass Backdrop"),
                 size: wgpu::Extent3d {
-                    width,
-                    height,
+                    width: backdrop_width,
+                    height: backdrop_height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -357,8 +368,8 @@ impl RenderContext {
             self.backdrop_texture = Some(CachedTexture {
                 texture,
                 view,
-                width,
-                height,
+                width: backdrop_width,
+                height: backdrop_height,
             });
         }
     }

@@ -1336,6 +1336,24 @@ impl GpuRenderer {
         self.render_with_clear(target, batch, [0.0, 0.0, 0.0, 0.0]);
     }
 
+    /// Render primitives at a specific viewport size (for reduced-resolution rendering)
+    ///
+    /// Used for glass backdrop rendering at half resolution.
+    pub fn render_at_size(
+        &mut self,
+        target: &wgpu::TextureView,
+        batch: &PrimitiveBatch,
+        clear_color: [f64; 4],
+        width: u32,
+        height: u32,
+    ) {
+        // Temporarily override viewport size for this render
+        let original_size = self.viewport_size;
+        self.viewport_size = (width, height);
+        self.render_with_clear(target, batch, clear_color);
+        self.viewport_size = original_size;
+    }
+
     /// Render primitives with a specified clear color
     ///
     /// # Arguments
