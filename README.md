@@ -218,6 +218,65 @@ image("path/to/image.png") // Image element
     .rounded(8.0)
 ```
 
+## Canvas API 
+Custom drawing with paths, shapes, and transforms:
+
+![Canvas API](<Screenshot 2025-12-26 at 18.52.49.png>)
+
+```rust
+use blinc_paint::prelude::*;
+
+fn canvas_example() -> Canvas{
+    canvas(move |ctx: &mut dyn DrawContext, bounds| {
+        let bar_height = 20.0;
+        let bar_y = (bounds.height - bar_height) / 2.0;
+        let radius = CornerRadius::uniform(bar_height / 2.0);
+
+        // Background track
+        ctx.fill_rect(
+            Rect::new(0.0, bar_y, bounds.width, bar_height),
+            radius,
+            Brush::Solid(Color::rgba(0.2, 0.2, 0.25, 1.0)),
+        );
+
+        // Progress fill with gradient
+        let fill_width = bounds.width * progress.clamp(0.0, 1.0);
+        if fill_width > 0.0 {
+            let gradient = Brush::Gradient(Gradient::linear(
+                Point::new(0.0, bar_y),
+                Point::new(fill_width, bar_y),
+                Color::rgba(0.4, 0.6, 1.0, 1.0),
+                Color::rgba(0.6, 0.4, 1.0, 1.0),
+            ));
+            ctx.fill_rect(
+                Rect::new(0.0, bar_y, fill_width, bar_height),
+                radius,
+                gradient,
+            );
+        }
+
+        // Progress percentage indicator with text
+        let percent = (progress * 100.0) as i32;
+        let text_x = bounds.width / 2.0 - 15.0;
+        let text_bg = Rect::new(text_x - 5.0, bar_y - 25.0, 50.0, 18.0);
+        ctx.fill_rect(
+            text_bg,
+            CornerRadius::uniform(4.0),
+            Brush::Solid(Color::rgba(0.1, 0.1, 0.15, 0.9)),
+        );
+
+        // Draw the percentage text
+        ctx.draw_text(
+            &format!("{}%", percent),
+            Point::new(text_x, bar_y),
+            &TextStyle::new(18.0).with_color(Color::WHITE),
+        );
+    })
+    .w(228.0)
+    .h(80.0)
+}
+```
+
 ## Animation
 
 Blinc provides a comprehensive animation system with spring physics, keyframe animations, and declarative motion containers.
