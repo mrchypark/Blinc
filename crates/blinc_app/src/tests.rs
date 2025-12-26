@@ -1,6 +1,7 @@
 //! Visual tests for blinc_app API
 //!
 //! Tests render to PNG files in test_output/blinc_app/ for visual verification.
+//! These tests require a GPU and will be skipped in CI environments without one.
 
 use crate::app::BlincConfig;
 use crate::prelude::*;
@@ -11,12 +12,27 @@ use std::path::Path;
 const OUTPUT_DIR: &str = "test_output/blinc_app";
 
 /// Create test app with MSAA enabled for smooth SVG edges
-fn create_test_app() -> BlincApp {
-    BlincApp::with_config(BlincConfig {
+/// Returns None if no GPU adapter is available (e.g., in CI without GPU)
+fn create_test_app() -> Option<BlincApp> {
+    match BlincApp::with_config(BlincConfig {
         sample_count: 4, // 4x MSAA for smooth edges
         ..Default::default()
-    })
-    .expect("Failed to create test app")
+    }) {
+        Ok(app) => Some(app),
+        Err(e) => {
+            eprintln!("Skipping test: no GPU available ({e})");
+            None
+        }
+    }
+}
+
+/// Macro to skip test if no GPU is available
+macro_rules! require_gpu {
+    ($app:ident) => {
+        let Some(mut $app) = create_test_app() else {
+            return; // Skip test if no GPU
+        };
+    };
 }
 
 /// Create a test texture for rendering (must match renderer's format)
@@ -160,14 +176,14 @@ fn render_to_png(
 
 #[test]
 fn test_simple_red_box() {
-    let mut app = create_test_app();
+    require_gpu!(app);
     let ui = div().w(200.0).h(200.0).bg(Color::RED);
     render_to_png(&mut app, "simple_red_box", &ui, 200, 200);
 }
 
 #[test]
 fn test_nested_boxes() {
-    let mut app = create_test_app();
+    require_gpu!(app);
 
     let ui = div()
         .w(400.0)
@@ -185,7 +201,7 @@ fn test_nested_boxes() {
 
 #[test]
 fn test_text_element() {
-    let mut app = create_test_app();
+    require_gpu!(app);
 
     let ui = div()
         .w(400.0)
@@ -201,7 +217,7 @@ fn test_text_element() {
 
 #[test]
 fn test_svg_icon() {
-    let mut app = create_test_app();
+    require_gpu!(app);
 
     let svg_source = r##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#3B82F6"/></svg>"##;
 
@@ -219,7 +235,7 @@ fn test_svg_icon() {
 
 #[test]
 fn test_glass_panel() {
-    let mut app = create_test_app();
+    require_gpu!(app);
 
     let ui = div()
         .w(400.0)
@@ -289,7 +305,7 @@ fn test_glass_panel() {
 
 #[test]
 fn test_flex_row_justify() {
-    let mut app = create_test_app();
+    require_gpu!(app);
 
     let ui = div()
         .w(400.0)
@@ -308,7 +324,7 @@ fn test_flex_row_justify() {
 
 #[test]
 fn test_card_component() {
-    let mut app = create_test_app();
+    require_gpu!(app);
 
     let card = div()
         .w(300.0)
@@ -395,7 +411,7 @@ fn test_card_component() {
 
 #[test]
 fn test_music_player() {
-    let mut app = create_test_app();
+    require_gpu!(app);
     let scale = 2.0;
 
     // SVG icons
@@ -538,7 +554,7 @@ fn test_music_player() {
 
 #[test]
 fn test_render_tree_reuse() {
-    let mut app = create_test_app();
+    require_gpu!(app);
 
     let ui = div()
         .w(200.0)
