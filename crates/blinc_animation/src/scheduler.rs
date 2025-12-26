@@ -70,6 +70,9 @@ pub struct AnimationScheduler {
     inner: Arc<Mutex<SchedulerInner>>,
     /// Stop signal for background thread
     stop_flag: Arc<AtomicBool>,
+    /// Flag set by background thread when animations need redraw
+    /// The main thread should check and clear this to request window redraws
+    needs_redraw: Arc<AtomicBool>,
     /// Background thread handle (if running)
     thread_handle: Option<JoinHandle<()>>,
 }
@@ -85,6 +88,7 @@ impl AnimationScheduler {
                 target_fps: 120,
             })),
             stop_flag: Arc::new(AtomicBool::new(false)),
+            needs_redraw: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
         }
     }
@@ -93,6 +97,10 @@ impl AnimationScheduler {
     ///
     /// This ensures animations continue even when the window loses focus.
     /// The thread runs at the configured target FPS (default 120).
+    ///
+    /// The thread sets the `needs_redraw` flag whenever there are active
+    /// animations. The main thread should call `take_needs_redraw()` to
+    /// check and clear this flag, then request a window redraw.
     pub fn start_background(&mut self) {
         if self.thread_handle.is_some() {
             return; // Already running
@@ -100,6 +108,7 @@ impl AnimationScheduler {
 
         let inner = Arc::clone(&self.inner);
         let stop_flag = Arc::clone(&self.stop_flag);
+        let needs_redraw = Arc::clone(&self.needs_redraw);
 
         self.thread_handle = Some(thread::spawn(move || {
             let frame_duration = Duration::from_micros(1_000_000 / 120); // 120fps
@@ -107,8 +116,8 @@ impl AnimationScheduler {
             while !stop_flag.load(Ordering::Relaxed) {
                 let start = Instant::now();
 
-                // Tick animations
-                {
+                // Tick animations and check if any are active
+                let has_active = {
                     let mut inner = inner.lock().unwrap();
                     let now = Instant::now();
                     let dt = (now - inner.last_frame).as_secs_f32();
@@ -141,6 +150,16 @@ impl AnimationScheduler {
 
                     // Remove finished timelines (these are one-shot)
                     inner.timelines.retain(|_, t| t.is_playing());
+
+                    // Check if any animations are still active
+                    inner.springs.iter().any(|(_, s)| !s.is_settled())
+                        || !inner.keyframes.is_empty()
+                        || !inner.timelines.is_empty()
+                };
+
+                // Signal main thread that it needs to redraw
+                if has_active {
+                    needs_redraw.store(true, Ordering::Release);
                 }
 
                 // Sleep for remaining frame time
@@ -164,6 +183,26 @@ impl AnimationScheduler {
     /// Check if the background thread is running
     pub fn is_background_running(&self) -> bool {
         self.thread_handle.is_some()
+    }
+
+    /// Check and clear the needs_redraw flag
+    ///
+    /// The background thread sets this flag when animations are active.
+    /// Call this from the main thread's event loop to check if a redraw
+    /// is needed, then request a window redraw if true.
+    ///
+    /// This is an atomic swap operation that returns the previous value
+    /// and clears the flag in one operation.
+    pub fn take_needs_redraw(&self) -> bool {
+        self.needs_redraw.swap(false, Ordering::Acquire)
+    }
+
+    /// Manually request a redraw
+    ///
+    /// This sets the needs_redraw flag, which will be picked up by the
+    /// main thread on its next event loop iteration.
+    pub fn request_redraw(&self) {
+        self.needs_redraw.store(true, Ordering::Release);
     }
 
     /// Get a handle to this scheduler for passing to components
@@ -389,6 +428,7 @@ impl Clone for AnimationScheduler {
         Self {
             inner: Arc::clone(&self.inner),
             stop_flag: Arc::clone(&self.stop_flag),
+            needs_redraw: Arc::clone(&self.needs_redraw),
             // Cloned scheduler doesn't own the background thread
             thread_handle: None,
         }

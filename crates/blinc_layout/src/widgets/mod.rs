@@ -32,6 +32,7 @@
 
 pub mod button;
 pub mod checkbox;
+pub mod cursor;
 pub mod scroll;
 pub mod text_area;
 pub mod text_input;
@@ -50,7 +51,8 @@ pub use text_input::{
     text_input, text_input_state, text_input_state_with_placeholder, InputType,
     NumberConstraints, SharedTextInputState, TextInput, TextInputConfig, TextInputState,
     // Cursor blink timing utilities
-    elapsed_ms, has_focused_text_input, CURSOR_BLINK_INTERVAL_MS,
+    elapsed_ms, has_focused_text_input, take_needs_rebuild, take_needs_continuous_redraw,
+    CURSOR_BLINK_INTERVAL_MS,
 };
 
 // Re-export text area widget
@@ -63,4 +65,10 @@ pub use text_area::{
 pub use scroll::{
     scroll, scroll_no_bounce, Scroll, ScrollConfig, ScrollDirection, ScrollPhysics,
     ScrollRenderInfo, SharedScrollPhysics,
+};
+
+// Re-export cursor widget (canvas-based smooth cursor)
+pub use cursor::{
+    cursor_canvas, cursor_canvas_absolute, cursor_state, CursorAnimation, CursorState,
+    SharedCursorState,
 };

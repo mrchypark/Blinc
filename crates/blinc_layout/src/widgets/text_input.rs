@@ -40,6 +40,14 @@ use std::sync::Weak;
 /// Incremented when a text input gains focus, decremented when it loses focus
 static GLOBAL_FOCUS_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Global flag indicating text widgets need a UI rebuild
+/// Set by event handlers, checked by the windowed app
+static NEEDS_REBUILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Global flag indicating continuous redraws are needed (e.g., cursor blink)
+/// Unlike NEEDS_REBUILD, this doesn't trigger tree rebuild, just visual refresh
+static NEEDS_CONTINUOUS_REDRAW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Global reference to the currently focused text input state
 /// Used to forcibly blur the previous input when a new one gains focus
 static FOCUSED_TEXT_INPUT: Mutex<Option<Weak<Mutex<TextInputState>>>> = Mutex::new(None);
@@ -52,6 +60,44 @@ static FOCUSED_TEXT_AREA: Mutex<Option<Weak<Mutex<crate::widgets::text_area::Tex
 /// This is used by the windowed app to trigger cursor blink rebuilds
 pub fn has_focused_text_input() -> bool {
     GLOBAL_FOCUS_COUNT.load(Ordering::Relaxed) > 0
+}
+
+/// Check and clear the continuous redraw flag
+///
+/// Returns true if any text widget needs continuous redraws (e.g., cursor blink).
+/// Call this from the animation scheduler's redraw logic to keep cursor blinking.
+pub fn take_needs_continuous_redraw() -> bool {
+    NEEDS_CONTINUOUS_REDRAW.swap(false, Ordering::SeqCst)
+}
+
+/// Request continuous redraws (for cursor blink animation)
+///
+/// Called when a text input gains focus to keep cursor animation running.
+/// The windowed app should call `take_needs_continuous_redraw()` each frame
+/// and request redraw if true.
+fn request_continuous_redraw() {
+    if has_focused_text_input() {
+        NEEDS_CONTINUOUS_REDRAW.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Public version of request_continuous_redraw for windowed app to call
+/// This keeps cursor blink going as long as a text input is focused
+pub fn request_continuous_redraw_pub() {
+    request_continuous_redraw();
+}
+
+/// Check and clear the text widget rebuild flag
+/// Returns true if any text widget requested a rebuild since last check
+/// This is called by the windowed app in the render loop
+pub fn take_needs_rebuild() -> bool {
+    NEEDS_REBUILD.swap(false, Ordering::SeqCst)
+}
+
+/// Request a UI rebuild from a text widget event handler
+/// Called internally when focus/text changes require visual update
+pub(crate) fn request_rebuild() {
+    NEEDS_REBUILD.store(true, Ordering::SeqCst);
 }
 
 /// Called when a text input gains focus (internal use by text widgets)
@@ -190,12 +236,14 @@ fn blur_focused_text_area() {
     }
 }
 
+use crate::canvas::canvas;
 use crate::div::{div, Div, ElementBuilder};
 use crate::element::RenderProps;
 use crate::stateful::TextFieldState;
 use crate::text::text;
 use crate::text_selection::{set_selection, clear_selection, SelectionSource};
 use crate::tree::{LayoutNodeId, LayoutTree};
+use crate::widgets::cursor::{CursorAnimation, SharedCursorState, cursor_state};
 
 /// Input type enum similar to HTML input types
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -416,6 +464,9 @@ pub struct TextInputState {
     pub focus_time_ms: u64,
     /// Cursor blink interval in milliseconds
     pub cursor_blink_interval_ms: u64,
+    /// Canvas-based cursor state for smooth animation
+    /// This is cloned into the canvas render callback
+    pub cursor_state: SharedCursorState,
 }
 
 impl Default for TextInputState {
@@ -435,6 +486,7 @@ impl Default for TextInputState {
             is_valid: true,
             focus_time_ms: 0,
             cursor_blink_interval_ms: 530, // Standard cursor blink rate (~530ms)
+            cursor_state: cursor_state(),
         }
     }
 }
@@ -487,6 +539,10 @@ impl TextInputState {
     /// Reset cursor blink (call when focus gained or cursor moved)
     pub fn reset_cursor_blink(&mut self, current_time_ms: u64) {
         self.focus_time_ms = current_time_ms;
+        // Also reset the canvas cursor state for smooth animation
+        if let Ok(mut cs) = self.cursor_state.lock() {
+            cs.reset_blink();
+        }
     }
 
     /// Validate the current value
@@ -834,14 +890,10 @@ impl TextInput {
             border
         };
 
-        // Check if cursor should be shown (focused state + blink phase)
+        // Check if cursor should be shown (focused state)
         let is_focused = matches!(state_guard.visual, TextFieldState::Focused | TextFieldState::FocusedHovered);
         let cursor_color = config.cursor_color;
         let selection_color = config.selection_color;
-
-        // Check cursor visibility based on blink phase
-        let current_time = elapsed_ms();
-        let cursor_visible = is_focused && state_guard.is_cursor_visible(current_time);
 
         // Get cursor position and selection state
         let cursor_pos = state_guard.cursor;
@@ -849,7 +901,6 @@ impl TextInput {
 
         // Cursor height is based on font size (slightly taller for visibility)
         let cursor_height = config.font_size * 1.2;
-        let cursor_width = 2.0; // Standard cursor width
 
         // Get selection range (sorted: from < to)
         let selection_range: Option<(usize, usize)> = selection_start.map(|start| {
@@ -859,6 +910,9 @@ impl TextInput {
                 (cursor_pos, start)
             }
         });
+
+        // Clone the cursor state for the canvas callback
+        let cursor_state_for_canvas = Arc::clone(&state_guard.cursor_state);
 
         drop(state_guard);
 
@@ -945,19 +999,61 @@ impl TextInput {
             }
         }
 
-        // Add cursor as an absolutely positioned overlay (doesn't shift text)
-        if is_focused && cursor_visible && selection_range.is_none() {
+        // Add cursor as a canvas-based overlay with smooth animation
+        // The canvas handles its own opacity animation without tree rebuilds
+        if is_focused && selection_range.is_none() {
             // Calculate vertical center offset for the cursor
             let cursor_top = (config.height - config.border_width * 2.0 - cursor_height) / 2.0;
 
-            let cursor_bar = div()
-                .absolute()
-                .left(config.padding_x + cursor_x)
-                .top(cursor_top)
-                .w(cursor_width)
-                .h(cursor_height)
-                .bg(cursor_color);
-            inner_content = inner_content.child(cursor_bar);
+            // Update cursor state for the canvas to read
+            {
+                if let Ok(mut cs) = cursor_state_for_canvas.lock() {
+                    cs.visible = true;
+                    cs.color = cursor_color;
+                    cs.x = cursor_x;
+                    cs.animation = CursorAnimation::SmoothFade;
+                }
+            }
+
+            // Create canvas-based cursor with smooth fade animation
+            let cursor_state_clone = Arc::clone(&cursor_state_for_canvas);
+            let cursor_canvas = canvas(move |ctx: &mut dyn blinc_core::DrawContext, bounds: crate::canvas::CanvasBounds| {
+                let cs = cursor_state_clone.lock().unwrap();
+
+                if !cs.visible {
+                    return;
+                }
+
+                let opacity = cs.current_opacity();
+                if opacity < 0.01 {
+                    return;
+                }
+
+                let color = blinc_core::Color::rgba(
+                    cs.color.r,
+                    cs.color.g,
+                    cs.color.b,
+                    cs.color.a * opacity,
+                );
+
+                ctx.fill_rect(
+                    blinc_core::Rect::new(0.0, 0.0, cs.width, bounds.height),
+                    blinc_core::CornerRadius::default(),
+                    blinc_core::Brush::Solid(color),
+                );
+            })
+            .absolute()
+            .left(config.padding_x + cursor_x)
+            .top(cursor_top)
+            .w(2.0)
+            .h(cursor_height);
+
+            inner_content = inner_content.child(cursor_canvas);
+        } else {
+            // Cursor not visible - update state
+            if let Ok(mut cs) = cursor_state_for_canvas.lock() {
+                cs.visible = false;
+            }
         }
 
         // Build the outer container with size from config
@@ -999,6 +1095,7 @@ impl TextInput {
                             // Track global focus for cursor blink
                             if !was_focused && new_state.is_focused() {
                                 increment_focus_count();
+                                request_continuous_redraw();
                             }
                             tracing::info!("TextInput mouse_down: {:?} -> {:?}", old_state, new_state);
                         } else {
@@ -1044,6 +1141,8 @@ impl TextInput {
                         tracing::debug!("TextInput clicked, was_focused: {}, cursor: {}", was_focused, s.cursor);
                     }
                 }
+                // Request rebuild for focus/cursor change
+                request_rebuild();
             })
             .on_blur(move |_ctx| {
                 if let Ok(mut s) = state_for_blur.lock() {
@@ -1065,6 +1164,8 @@ impl TextInput {
                 }
                 // Clear this as the focused input if it was
                 clear_focused_text_input(&state_for_blur);
+                // Request rebuild for blur change
+                request_rebuild();
             })
             .on_hover_enter(move |_ctx| {
                 if let Ok(mut s) = state_for_hover_enter.lock() {
@@ -1072,6 +1173,7 @@ impl TextInput {
                         // Use FSM: POINTER_ENTER transitions hover states
                         if let Some(new_state) = s.visual.on_event(event_types::POINTER_ENTER) {
                             s.visual = new_state;
+                            request_rebuild();
                         }
                     }
                 }
@@ -1082,6 +1184,7 @@ impl TextInput {
                         // Use FSM: POINTER_LEAVE transitions hover states
                         if let Some(new_state) = s.visual.on_event(event_types::POINTER_LEAVE) {
                             s.visual = new_state;
+                            request_rebuild();
                         }
                     }
                 }
@@ -1096,6 +1199,7 @@ impl TextInput {
                             // Reset cursor blink to keep it visible while typing
                             s.reset_cursor_blink(elapsed_ms());
                             tracing::debug!("TextInput received char: {:?}, value: {}", c, s.value);
+                            request_rebuild();
                         }
                     }
                 }
@@ -1144,6 +1248,7 @@ impl TextInput {
                             s.reset_cursor_blink(elapsed_ms());
                             // Sync selection state with global clipboard state
                             s.sync_global_selection();
+                            request_rebuild();
                         }
                     }
                 }

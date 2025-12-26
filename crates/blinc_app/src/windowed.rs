@@ -1172,6 +1172,12 @@ impl WindowedApp {
                                 needs_rebuild = true;
                             }
 
+                            // Check if text widgets requested a rebuild (focus/text changes)
+                            if blinc_layout::widgets::take_needs_rebuild() {
+                                tracing::debug!("Rebuild triggered by: text widget state change");
+                                needs_rebuild = true;
+                            }
+
                             // =========================================================
                             // PHASE 2: Tick animations and dynamic render state
                             // This does NOT require tree rebuild
@@ -1235,16 +1241,25 @@ impl WindowedApp {
                             // This ensures smooth animation without waiting for events
                             // =========================================================
 
-                            // Check if there are active animations that need continuous rendering
+                            // Check if background animation thread signaled that redraw is needed
+                            // The background thread runs at 120fps and sets this flag when
+                            // there are active animations (springs, keyframes, timelines)
                             let scheduler = windowed_ctx.animations.lock().unwrap();
-                            let spring_count = scheduler.spring_count();
-                            let has_active = scheduler.has_active_animations();
+                            let needs_animation_redraw = scheduler.take_needs_redraw();
                             drop(scheduler); // Release lock before request_redraw
 
-                            if has_active || spring_count > 0 {
-                                // Request another frame to continue animation
-                                // We check spring_count > 0 to ensure we render the first frame
-                                // after a spring is created, even if it hasn't started moving yet
+                            // Check if text widgets need continuous redraws (cursor blink)
+                            let needs_cursor_redraw = blinc_layout::widgets::take_needs_continuous_redraw();
+
+                            if needs_animation_redraw || needs_cursor_redraw {
+                                // Request another frame to render updated animation values
+                                // For cursor blink, also re-request continuous redraw for next frame
+                                if needs_cursor_redraw {
+                                    // Keep requesting redraws as long as a text input is focused
+                                    if blinc_layout::widgets::has_focused_text_input() {
+                                        blinc_layout::widgets::text_input::request_continuous_redraw_pub();
+                                    }
+                                }
                                 window.request_redraw();
                             }
                         }

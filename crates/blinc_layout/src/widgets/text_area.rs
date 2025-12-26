@@ -13,14 +13,17 @@ use std::sync::{Arc, Mutex};
 
 use blinc_core::Color;
 
+use crate::canvas::canvas;
 use crate::div::{div, Div, ElementBuilder};
 use crate::element::RenderProps;
 use crate::stateful::TextFieldState;
 use crate::text::text;
 use crate::tree::{LayoutNodeId, LayoutTree};
+use crate::widgets::cursor::{cursor_state, CursorAnimation, SharedCursorState};
 use crate::widgets::text_input::{
     elapsed_ms, increment_focus_count, decrement_focus_count,
-    set_focused_text_area, clear_focused_text_area,
+    set_focused_text_area, clear_focused_text_area, request_rebuild,
+    request_continuous_redraw_pub,
 };
 
 /// Position in a multi-line text (line and column)
@@ -158,6 +161,8 @@ pub struct TextAreaState {
     pub focus_time_ms: u64,
     /// Cursor blink interval in milliseconds
     pub cursor_blink_interval_ms: u64,
+    /// Canvas-based cursor state for smooth animation
+    pub cursor_state: SharedCursorState,
 }
 
 impl Default for TextAreaState {
@@ -171,6 +176,7 @@ impl Default for TextAreaState {
             disabled: false,
             focus_time_ms: 0,
             cursor_blink_interval_ms: 530, // Standard cursor blink rate (~530ms)
+            cursor_state: cursor_state(),
         }
     }
 }
@@ -261,6 +267,10 @@ impl TextAreaState {
     /// Reset cursor blink (call when focus gained or cursor moved)
     pub fn reset_cursor_blink(&mut self, current_time_ms: u64) {
         self.focus_time_ms = current_time_ms;
+        // Also reset the canvas cursor state for smooth animation
+        if let Ok(mut cs) = self.cursor_state.lock() {
+            cs.reset_blink();
+        }
     }
 
     /// Insert text at cursor
@@ -638,13 +648,9 @@ impl TextArea {
             config.text_color
         };
 
-        // Check if cursor should be shown (focused state + blink phase)
+        // Check if cursor should be shown (focused state)
         let is_focused = matches!(state_guard.visual, TextFieldState::Focused | TextFieldState::FocusedHovered);
         let cursor_color = config.cursor_color;
-
-        // Check cursor visibility based on blink phase
-        let current_time = elapsed_ms();
-        let cursor_visible = is_focused && state_guard.is_cursor_visible(current_time);
 
         // Get cursor position
         let cursor_line = state_guard.cursor.line;
@@ -652,7 +658,6 @@ impl TextArea {
 
         // Cursor dimensions
         let cursor_height = config.font_size * 1.2;
-        let cursor_width = 2.0;
         let line_height = config.font_size * config.line_height;
 
         // Calculate cursor x position using text measurement
@@ -663,6 +668,9 @@ impl TextArea {
         } else {
             0.0
         };
+
+        // Clone the cursor state for the canvas callback
+        let cursor_state_for_canvas = Arc::clone(&state_guard.cursor_state);
 
         // Build content - left-aligned column of text lines (cursor added separately)
         let mut content = div().flex_col().justify_start().items_start();
@@ -714,20 +722,62 @@ impl TextArea {
             .overflow_clip()
             .child(content);
 
-        // Add cursor as an absolutely positioned overlay (doesn't shift text)
-        if is_focused && cursor_visible {
+        // Add cursor as a canvas-based overlay with smooth animation
+        // The canvas handles its own opacity animation without tree rebuilds
+        if is_focused {
             // Calculate cursor position
             let cursor_top = config.padding_y + (cursor_line as f32 * line_height) + (line_height - cursor_height) / 2.0;
             let cursor_left = config.padding_x + cursor_x;
 
-            let cursor_bar = div()
-                .absolute()
-                .left(cursor_left)
-                .top(cursor_top)
-                .w(cursor_width)
-                .h(cursor_height)
-                .bg(cursor_color);
-            inner_content = inner_content.child(cursor_bar);
+            // Update cursor state for the canvas to read
+            {
+                if let Ok(mut cs) = cursor_state_for_canvas.lock() {
+                    cs.visible = true;
+                    cs.color = cursor_color;
+                    cs.x = cursor_x;
+                    cs.animation = CursorAnimation::SmoothFade;
+                }
+            }
+
+            // Create canvas-based cursor with smooth fade animation
+            let cursor_state_clone = Arc::clone(&cursor_state_for_canvas);
+            let cursor_canvas = canvas(move |ctx: &mut dyn blinc_core::DrawContext, bounds: crate::canvas::CanvasBounds| {
+                let cs = cursor_state_clone.lock().unwrap();
+
+                if !cs.visible {
+                    return;
+                }
+
+                let opacity = cs.current_opacity();
+                if opacity < 0.01 {
+                    return;
+                }
+
+                let color = blinc_core::Color::rgba(
+                    cs.color.r,
+                    cs.color.g,
+                    cs.color.b,
+                    cs.color.a * opacity,
+                );
+
+                ctx.fill_rect(
+                    blinc_core::Rect::new(0.0, 0.0, cs.width, bounds.height),
+                    blinc_core::CornerRadius::default(),
+                    blinc_core::Brush::Solid(color),
+                );
+            })
+            .absolute()
+            .left(cursor_left)
+            .top(cursor_top)
+            .w(2.0)
+            .h(cursor_height);
+
+            inner_content = inner_content.child(cursor_canvas);
+        } else {
+            // Cursor not visible - update state
+            if let Ok(mut cs) = cursor_state_for_canvas.lock() {
+                cs.visible = false;
+            }
         }
 
         // Build the outer container with size from config
@@ -769,10 +819,12 @@ impl TextArea {
                             // Track focus globally (node-ID-independent)
                             if !was_focused && new_state.is_focused() {
                                 increment_focus_count();
+                                request_continuous_redraw_pub();
                             }
                         }
                     }
                 }
+                request_rebuild();
             })
             .on_blur(move |_ctx| {
                 if let Ok(mut s) = state_for_blur.lock() {
@@ -790,6 +842,7 @@ impl TextArea {
                 }
                 // Clear this as the focused area if it was
                 clear_focused_text_area(&state_for_blur);
+                request_rebuild();
             })
             .on_hover_enter(move |_ctx| {
                 if let Ok(mut s) = state_for_hover_enter.lock() {
@@ -797,6 +850,7 @@ impl TextArea {
                         // Use FSM: POINTER_ENTER transitions hover states
                         if let Some(new_state) = s.visual.on_event(event_types::POINTER_ENTER) {
                             s.visual = new_state;
+                            request_rebuild();
                         }
                     }
                 }
@@ -807,6 +861,7 @@ impl TextArea {
                         // Use FSM: POINTER_LEAVE transitions hover states
                         if let Some(new_state) = s.visual.on_event(event_types::POINTER_LEAVE) {
                             s.visual = new_state;
+                            request_rebuild();
                         }
                     }
                 }
@@ -821,6 +876,7 @@ impl TextArea {
                             // Reset cursor blink to keep it visible while typing
                             s.reset_cursor_blink(elapsed_ms());
                             tracing::debug!("TextArea received char: {:?}, value: {}", c, s.value());
+                            request_rebuild();
                         }
                     }
                 }
@@ -876,6 +932,7 @@ impl TextArea {
                         // Reset cursor blink to keep it visible during interaction
                         if cursor_changed {
                             s.reset_cursor_blink(elapsed_ms());
+                            request_rebuild();
                         }
                     }
                 }

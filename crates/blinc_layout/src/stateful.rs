@@ -603,8 +603,8 @@ impl<S: StateTransitions> Stateful<S> {
 
     /// Internal handler for state transitions from event handlers
     ///
-    /// This updates the state and marks dirty via the external flag,
-    /// triggering a UI rebuild.
+    /// This updates the state and requests a redraw so the visual change
+    /// is rendered on the next frame.
     fn handle_event_internal(shared: &Arc<Mutex<StatefulInner<S>>>, event: u32) {
         let mut inner = shared.lock().unwrap();
 
@@ -616,6 +616,10 @@ impl<S: StateTransitions> Stateful<S> {
 
         // Update state
         inner.state = new_state;
+
+        // Request a redraw so the state change is visible
+        // We use the text_input module's rebuild flag since it's already wired up
+        crate::widgets::text_input::request_rebuild();
     }
 
     /// Dispatch a new state
