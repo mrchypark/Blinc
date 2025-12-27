@@ -341,7 +341,8 @@ ctx.push_transform(matrix);
 - [x] Implement window creation via winit
 - [x] Implement event loop integration
 - [x] Implement input handling (keyboard, mouse, touch)
-- [ ] Implement DPI scaling
+- [x] Implement DPI scaling (scale factor tracking, logical/physical conversion)
+- [x] Implement scroll phase detection (Started, Moved, Ended, MomentumEnded)
 - [ ] Implement clipboard access
 - [ ] Implement system theme detection
 
@@ -423,13 +424,46 @@ ctx.push_transform(matrix);
 - [x] Implement Button widget with click handling
 - [x] Implement Container widget
 - [x] Implement Text widget
+- [x] Implement ScrollView with spring physics bounce-back
+  - [x] FSM states (Idle, Scrolling, Decelerating, Bouncing)
+  - [x] Webkit-style rubber-band overscroll
+  - [x] Configurable spring bounce (stiff, gentle, no-bounce presets)
+  - [x] Momentum and deceleration
+  - [x] Vertical, horizontal, and bidirectional scrolling
+- [x] Implement TextInput with validation
+  - [x] Input types (text, number, email, password, url, tel, search)
+  - [x] Character filtering and constraints
+  - [x] Cursor with smooth blink animation
+  - [x] Selection support (Shift+arrows, Ctrl+A)
+  - [x] Visual states (idle, hovered, focused, error)
+- [x] Implement TextArea (multi-line text editing)
+  - [x] Row/column sizing
+  - [x] Cursor and selection
+  - [x] Full keyboard navigation
+- [x] Implement Code/Pre elements with syntax highlighting
+  - [x] Regex-based token matching
+  - [x] Optional line numbers in gutter
+  - [x] Read-only and editable modes
+  - [x] Canvas-based cursor animation
+- [x] Implement Motion container for enter/exit animations
+  - [x] Fade, scale, bounce, pop, slide presets
+  - [x] Stagger animations (forward, reverse, from-center)
+  - [x] Enter/exit animation support
+- [x] Implement Typography helpers
+  - [x] Headings: h1-h6 with semantic sizing
+  - [x] Inline text: b, strong, span, small, label, muted
+  - [x] Block text: p (paragraph), caption, inline_code
+- [x] Implement Table elements
+  - [x] HTML-like API: table, thead, tbody, tfoot, tr, th, td
+  - [x] TableBuilder for declarative data tables
+  - [x] Striped rows support
+  - [x] Cell styling and alignment
 - [ ] Implement Checkbox with animation
 - [ ] Implement Toggle with spring animation
-- [ ] Implement TextField with floating label
 - [ ] Implement Dropdown with expand animation
 - [ ] Implement Modal with backdrop
 - [ ] Implement Tabs with indicator animation
-- [ ] Implement ScrollView with momentum
+- [ ] Implement Slider with drag handling
 
 ### 5.3 Theming System
 
@@ -540,16 +574,16 @@ File Change → Grammar Recompile → JIT Update → State Preserved
 
 | Crate | Lines | Tests | Status |
 |-------|-------|-------|--------|
-| **blinc_core** | ~3,000 | ✓ | Reactive signals, FSM runtime, draw context, Brush types |
+| **blinc_core** | ~3,500 | ✓ | Reactive signals, FSM runtime, draw context, Brush types, events |
 | **blinc_animation** | ~1,500 | ✓ | Springs (RK4), keyframes, timelines, easing |
-| **blinc_layout** | ~2,500 | ✓ | Taffy + GPUI-style builder API, image element |
+| **blinc_layout** | ~8,000 | ✓ | Taffy, GPUI-style builder, widgets (scroll, text input, code, tables, typography, motion) |
 | **blinc_gpu** | ~4,000 | ✓ | SDF rendering, glass, MSAA, compositing, image textures |
 | **blinc_paint** | ~1,500 | ✓ | Canvas API, paths, shapes, transforms |
-| **blinc_text** | ~2,000 | ✓ | Font loading, shaping, atlas, layout |
+| **blinc_text** | ~2,000 | ✓ | Font loading, shaping, atlas, layout, text wrapping |
 | **blinc_image** | ~500 | ✓ | Image loading, decoding, cross-platform assets |
 | **blinc_svg** | ~800 | ✓ | SVG parsing and rendering |
-| **blinc_platform** | ~1,000 | ✓ | Cross-platform traits, asset loading |
-| **blinc_app** | ~800 | ✓ | High-level app framework, windowed runner |
+| **blinc_platform** | ~1,200 | ✓ | Cross-platform traits, asset loading, scroll phases |
+| **blinc_app** | ~1,500 | ✓ | High-level app framework, windowed runner, DPI scaling |
 | **blinc_widgets** | ~400 | - | Button, container, text (basic) |
 | **blinc_runtime** | ~200 | - | Embedding SDK |
 | **blinc_cli** | ~2,000 | - | CLI tool |
@@ -559,7 +593,7 @@ File Change → Grammar Recompile → JIT Update → State Preserved
 
 | Extension | Status |
 |-----------|--------|
-| **blinc_platform_desktop** | Window creation, input handling, filesystem assets via winit |
+| **blinc_platform_desktop** | Window creation, input handling, filesystem assets, DPI scaling, scroll phases via winit |
 | **blinc_platform_android** | NativeActivity, JNI, Vulkan, NDK AssetManager (~530KB binary) |
 | **blinc_platform_ios** | UIKit, Metal, touch input |
 
@@ -567,18 +601,19 @@ File Change → Grammar Recompile → JIT Update → State Preserved
 
 | Component | Features |
 |-----------|----------|
-| **blinc_core** | Reactive signals, FSM runtime, draw context, layer model, Brush::Image |
+| **blinc_core** | Reactive signals, FSM runtime, draw context, layer model, Brush::Image, event system |
 | **blinc_animation** | Springs (RK4), keyframes, timelines, easing, presets |
 | **blinc_layout** | Taffy integration, GPUI-style builder, RenderTree, materials, image element |
+| **blinc_layout widgets** | Scroll (spring physics), TextInput, TextArea, Code/Pre (syntax highlighting), Motion (enter/exit animations), Typography (h1-h6, span, muted), Tables (TableBuilder) |
 | **blinc_gpu** | SDF shaders, gradients, glass/blur, MSAA, path tessellation, image textures |
 | **blinc_paint** | Paint context, paths, shapes, transforms, shadows |
-| **blinc_text** | Font loading, text shaping, glyph atlas, layout |
+| **blinc_text** | Font loading, text shaping, glyph atlas, layout, text wrapping |
 | **blinc_image** | Image decoding (PNG/JPEG/GIF/WebP/BMP), cross-platform asset loading |
 | **blinc_svg** | SVG parsing, rendering, element builder |
-| **blinc_platform** | Platform traits, event system, cross-platform AssetLoader |
-| **blinc_app** | BlincApp, RenderContext, WindowedApp runner, visual tests |
+| **blinc_platform** | Platform traits, event system, cross-platform AssetLoader, scroll phases |
+| **blinc_app** | BlincApp, RenderContext, WindowedApp runner, DPI scaling, visual tests |
 | **blinc_cli** | Full CLI with new/init/build/dev/doctor/info |
-| **blinc_platform_desktop** | winit integration, filesystem assets |
+| **blinc_platform_desktop** | winit integration, filesystem assets, DPI scaling, scroll phase detection |
 | **blinc_platform_android** | NDK integration, JNI bridge, Vulkan, NDK AssetManager |
 | **blinc_platform_ios** | UIKit, Metal, touch input |
 | **CI/CD** | GitHub Actions for CI, Android, releases |
@@ -590,15 +625,14 @@ File Change → Grammar Recompile → JIT Update → State Preserved
 |-----------|--------|
 | **Zyntax Integration** | Waiting for Grammar2/Runtime2 |
 | **ZRTL C-ABI exports** | Pending Zyntax integration |
-| **Widget Library** | Basic widgets only (Button, Container, Text) |
 
 ### Next Priorities
 
 1. **Zyntax Grammar2 Integration** - Enable .blinc file parsing
 2. **ZRTL Function Exports** - Bridge Rust runtime to Zyntax
-3. **Core Widgets** - Complete widget library with FSM + animations
-4. **Hot Reload** - File watcher + JIT recompilation
-5. **Theming System** - Colors, typography, dark/light mode
+3. **Remaining Widgets** - Checkbox, Toggle, Dropdown, Modal, Tabs, Slider
+4. **Theming System** - Colors, typography, dark/light mode
+5. **Hot Reload** - File watcher + JIT recompilation
 
 ---
 
@@ -647,7 +681,9 @@ File Change → Grammar Recompile → JIT Update → State Preserved
 ## Demo Applications
 
 ### Music Player UI
+
 A complete music player interface demonstrating:
+
 - Glass/vibrancy effects with backdrop blur
 - SVG icons (rewind, pause, forward)
 - Text rendering with proper anchoring
@@ -657,10 +693,44 @@ A complete music player interface demonstrating:
 Location: `crates/blinc_test_suite/src/tests/layout.rs` (music_player test)
 
 ### Glass Card UI
+
 Demonstrates glassmorphism with:
+
 - Multiple layered glass panels
 - Background elements visible through blur
 - Foreground children rendered on top
 - Automatic layer separation
 
 Location: `crates/blinc_test_suite/src/tests/layout.rs` (glass_card test)
+
+### Typography Demo
+
+Demonstrates typography helpers:
+
+- Heading hierarchy (h1-h6) with semantic sizing
+- Inline text elements (bold, span, small, label, muted)
+- Block text (paragraphs, captions, inline code)
+- Text wrapping and layout
+
+Location: `crates/blinc_app/examples/typography_demo.rs`
+
+### Table Demo
+
+Demonstrates table components:
+
+- TableBuilder for declarative data tables
+- Manual table construction (thead, tbody, tr, td, th)
+- Striped rows for better readability
+- Cell styling and alignment options
+
+Location: `crates/blinc_app/examples/table_demo.rs`
+
+### Animation Demo
+
+Demonstrates motion animations:
+
+- Enter/exit animations (fade, scale, bounce, slide)
+- Stagger animations with configurable direction
+- Spring-based smooth transitions
+
+Location: `crates/blinc_app/examples/animation_demo.rs`
