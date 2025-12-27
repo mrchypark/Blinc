@@ -64,7 +64,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         .bg(Color::rgba(0.1, 0.1, 0.15, 1.0))
         .flex_col()
         .items_center()
-        .p(20.0)
+        .p(8.0)
         .gap(5.0)
         // Title
         .child(
@@ -103,9 +103,11 @@ fn build_direction_toggle(ctx: &WindowedContext, _current: ScrollDirection) -> i
                 .px(4.0)
                 .py(2.0)
                 .rounded(8.0)
+                .justify_center()
+                .items_center()
                 // When direction_state changes, refresh this element's on_state
                 .deps(&[direction_state.signal_id()])
-                .on_state(move |state, div| {
+                .on_state(move |state, container| {
                     let bg = match state {
                         ButtonState::Idle => Color::rgba(0.3, 0.5, 1.0, 0.8),
                         ButtonState::Hovered => Color::rgba(0.4, 0.6, 1.0, 0.9),
@@ -121,8 +123,11 @@ fn build_direction_toggle(ctx: &WindowedContext, _current: ScrollDirection) -> i
                     };
 
                     // Merge changes into the div
-                    div.merge(
-                        blinc_layout::div::div()
+                    container.merge(
+                        div()
+                        .w_fit()
+                        .items_center()
+                        .justify_center()
                             .bg(bg)
                             .child(span(label).weight(FontWeight::SemiBold).color(Color::WHITE)),
                     );
@@ -148,7 +153,7 @@ fn build_scroll_container(
 ) -> impl ElementBuilder {
     // Calculate scroll viewport size
     let viewport_width = ctx.width - 80.0;
-    let viewport_height = ctx.height - 260.0;
+    let viewport_height = ctx.height - 100.0;
 
     // Update viewport dimensions in physics
     {

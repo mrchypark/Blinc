@@ -306,24 +306,23 @@ impl Text {
         // Store measured width for render-time comparison
         self.measured_width = metrics.width;
 
-        // Use measured width for layout. This allows text to respect
-        // parent flex alignment (items_center, etc.).
-        //
         // Text wrapping behavior:
-        // - wrap=true (default): flex_shrink=1.0 + min_width=0 allows text to
-        //   shrink below content size and wrap at render time
-        // - wrap=false (.no_wrap()): flex_shrink=0.0 keeps natural width,
-        //   text stays on single line
-        self.style.size.width = Dimension::Length(metrics.width);
-        self.style.size.height = Dimension::Length(metrics.height);
-
+        // - wrap=true (default): Use 100% width to match parent, wrap at render time
+        // - wrap=false (.no_wrap()): Use explicit measured width, single line
         if self.wrap {
-            // Allow shrinking below content size so text can constrain to parent
-            // and wrap at render time. min_width: 0 is essential for flexbox shrinking.
-            self.style.flex_shrink = 1.0;
+            // Width: 100% makes text take full parent width.
+            // Text will wrap at render time based on this computed width.
+            self.style.size.width = Dimension::Percent(1.0);
+            // Height needs to be computed - for now use measured single-line height
+            // as minimum, actual height will be determined by wrapped text at render
+            self.style.size.height = Dimension::Length(metrics.height);
+            // Don't shrink below 0 - prevents negative sizing
             self.style.min_size.width = Dimension::Length(0.0);
         } else {
-            // Don't shrink - use natural size
+            // Use measured dimensions - text stays on single line
+            self.style.size.width = Dimension::Length(metrics.width);
+            self.style.size.height = Dimension::Length(metrics.height);
+            // Don't shrink - keep natural size
             self.style.flex_shrink = 0.0;
             self.style.min_size.width = Dimension::Auto;
         }

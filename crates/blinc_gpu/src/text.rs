@@ -232,17 +232,20 @@ impl TextRenderingContext {
         let y_offset = match anchor {
             TextAnchor::Top => y,
             TextAnchor::Center => {
-                // For optical centering, center based on cap-height region (baseline to cap top)
-                // rather than full glyph bounds (which includes descenders)
-                // Cap height is approximately ascender (the baseline is at y = ascender in layout coords)
-                // The visual center of text without descenders is at: baseline - cap_height/2
-                // In layout coordinates: ascender - (ascender * 0.7) / 2 = ascender * 0.65
+                // Center text so the visual center of the line aligns with y.
                 //
-                // But we want to center the cap-height region at user's y
-                // Cap top is at glyph_min_y (≈0), cap bottom is at baseline (≈ascender)
-                // So cap center is at ascender / 2
-                let cap_center = prepared.ascender / 2.0;
-                y - cap_center
+                // Text layout coordinates:
+                // - y=0 is top of em-box (where text starts rendering)
+                // - height = ascender - descender (descender is negative)
+                //   represents total vertical space for glyphs
+                //
+                // User passes y = center of bounding box.
+                // We want the center of the text content to be at y.
+                //
+                // Visual center from text top = height/2
+                // So: text_top + height/2 = y
+                //     text_top = y - height/2
+                y - prepared.height / 2.0
             }
             TextAnchor::Baseline => {
                 // Baseline is at y = ascender from the top of the em box
@@ -323,8 +326,8 @@ impl TextRenderingContext {
         let y_offset = match anchor {
             TextAnchor::Top => y,
             TextAnchor::Center => {
-                let cap_center = prepared.ascender / 2.0;
-                y - cap_center
+                // Center text so visual center aligns with y
+                y - prepared.height / 2.0
             }
             TextAnchor::Baseline => y - prepared.ascender,
         };

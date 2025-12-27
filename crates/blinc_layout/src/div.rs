@@ -432,12 +432,25 @@ impl Div {
     /// ```
     #[inline]
     pub fn merge(&mut self, other: Div) {
-        // Merge render properties
+        // Create a default for comparison
+        let default = Div::new();
+
+        // Merge style if it differs from default
+        // Style is complex, so we merge it field by field via taffy
+        self.merge_style(&other.style, &default.style);
+
+        // Merge render properties - take other's value if non-default
         if other.background.is_some() {
             self.background = other.background;
         }
-        if other.border_radius != CornerRadius::default() {
+        if other.border_radius != default.border_radius {
             self.border_radius = other.border_radius;
+        }
+        if other.render_layer != default.render_layer {
+            self.render_layer = other.render_layer;
+        }
+        if other.material.is_some() {
+            self.material = other.material;
         }
         if other.shadow.is_some() {
             self.shadow = other.shadow;
@@ -445,16 +458,93 @@ impl Div {
         if other.transform.is_some() {
             self.transform = other.transform;
         }
-        if other.opacity != 1.0 {
+        if other.opacity != default.opacity {
             self.opacity = other.opacity;
-        }
-        if other.material.is_some() {
-            self.material = other.material;
         }
 
         // Merge children - if other has children, replace ours
         if !other.children.is_empty() {
             self.children = other.children;
+        }
+
+        // Note: event_handlers are NOT merged - they're set on the base element
+    }
+
+    /// Merge taffy Style fields from other if they differ from default
+    fn merge_style(&mut self, other: &Style, default: &Style) {
+        // Display & position
+        if other.display != default.display {
+            self.style.display = other.display;
+        }
+        if other.position != default.position {
+            self.style.position = other.position;
+        }
+        if other.overflow != default.overflow {
+            self.style.overflow = other.overflow;
+        }
+
+        // Flex container properties
+        if other.flex_direction != default.flex_direction {
+            self.style.flex_direction = other.flex_direction;
+        }
+        if other.flex_wrap != default.flex_wrap {
+            self.style.flex_wrap = other.flex_wrap;
+        }
+        if other.justify_content != default.justify_content {
+            self.style.justify_content = other.justify_content;
+        }
+        if other.align_items != default.align_items {
+            self.style.align_items = other.align_items;
+        }
+        if other.align_content != default.align_content {
+            self.style.align_content = other.align_content;
+        }
+        if other.gap != default.gap {
+            self.style.gap = other.gap;
+        }
+
+        // Flex item properties
+        if other.flex_grow != default.flex_grow {
+            self.style.flex_grow = other.flex_grow;
+        }
+        if other.flex_shrink != default.flex_shrink {
+            self.style.flex_shrink = other.flex_shrink;
+        }
+        if other.flex_basis != default.flex_basis {
+            self.style.flex_basis = other.flex_basis;
+        }
+        if other.align_self != default.align_self {
+            self.style.align_self = other.align_self;
+        }
+
+        // Size constraints
+        if other.size != default.size {
+            self.style.size = other.size;
+        }
+        if other.min_size != default.min_size {
+            self.style.min_size = other.min_size;
+        }
+        if other.max_size != default.max_size {
+            self.style.max_size = other.max_size;
+        }
+        if other.aspect_ratio != default.aspect_ratio {
+            self.style.aspect_ratio = other.aspect_ratio;
+        }
+
+        // Spacing
+        if other.margin != default.margin {
+            self.style.margin = other.margin;
+        }
+        if other.padding != default.padding {
+            self.style.padding = other.padding;
+        }
+        if other.border != default.border {
+            self.style.border = other.border;
+        }
+
+        // Inset (for absolute positioning)
+        if other.inset != default.inset {
+            self.style.inset = other.inset;
         }
     }
 
