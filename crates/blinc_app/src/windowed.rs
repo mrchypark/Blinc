@@ -883,7 +883,7 @@ impl WindowedApp {
                         }
 
                         // First phase: collect events using immutable borrow
-                        let (pending_events, keyboard_events, scroll_ended) = if let (Some(ref mut windowed_ctx), Some(ref tree)) =
+                        let (pending_events, keyboard_events, scroll_ended, scroll_info) = if let (Some(ref mut windowed_ctx), Some(ref tree)) =
                             (&mut ctx, &render_tree)
                         {
                             let router = &mut windowed_ctx.event_router;
@@ -894,6 +894,8 @@ impl WindowedApp {
                             let mut keyboard_events: Vec<PendingEvent> = Vec::new();
                             // Track if scroll ended
                             let mut scroll_ended = false;
+                            // Track scroll info for nested scroll dispatch (mouse_x, mouse_y, delta_x, delta_y)
+                            let mut scroll_info: Option<(f32, f32, f32, f32)> = None;
 
                             // Set up callback to collect events
                             router.set_event_callback({
@@ -1115,13 +1117,11 @@ impl WindowedApp {
                                     // Scroll deltas are also in physical pixels, convert to logical
                                     let ldx = delta_x;
                                     let ldy = delta_y;
-                                    router.on_scroll(tree, ldx, ldy);
-                                    for event in pending_events.iter_mut() {
-                                        event.mouse_x = mx;
-                                        event.mouse_y = my;
-                                        event.scroll_delta_x = ldx;
-                                        event.scroll_delta_y = ldy;
-                                    }
+
+                                    // Use nested scroll support - get hit result for smart dispatch
+                                    // Store mouse position and delta for dispatch phase
+                                    // We'll re-do hit test in dispatch phase since we need mutable borrow
+                                    scroll_info = Some((mx, my, ldx, ldy));
                                 }
                                 InputEvent::ScrollEnd => {
                                     // Scroll gesture ended - will trigger bounce-back
@@ -1130,34 +1130,47 @@ impl WindowedApp {
                             }
 
                             router.clear_event_callback();
-                            (pending_events, keyboard_events, scroll_ended)
+                            (pending_events, keyboard_events, scroll_ended, scroll_info)
                         } else {
-                            (Vec::new(), Vec::new(), false)
+                            (Vec::new(), Vec::new(), false, None)
                         };
 
                         // Second phase: dispatch events with mutable borrow
                         // This automatically marks the tree dirty when handlers fire
                         if let Some(ref mut tree) = render_tree {
-                            // Dispatch mouse/touch/scroll events
-                            for event in pending_events {
-                                if event.event_type == blinc_core::events::event_types::SCROLL {
-                                    tree.dispatch_scroll_event(
-                                        event.node_id,
-                                        event.mouse_x,
-                                        event.mouse_y,
-                                        event.scroll_delta_x,
-                                        event.scroll_delta_y,
-                                    );
-                                } else {
-                                    tree.dispatch_event_with_local(
-                                        event.node_id,
-                                        event.event_type,
-                                        event.mouse_x,
-                                        event.mouse_y,
-                                        event.local_x,
-                                        event.local_y,
-                                    );
+                            // Handle scroll with nested scroll support
+                            if let Some((mouse_x, mouse_y, delta_x, delta_y)) = scroll_info {
+                                // Re-do hit test with mutable borrow to get ancestor chain
+                                // Then use dispatch_scroll_chain for proper nested scroll handling
+                                if let Some(ref mut windowed_ctx) = ctx {
+                                    let router = &mut windowed_ctx.event_router;
+                                    if let Some(hit) = router.hit_test(tree, mouse_x, mouse_y) {
+                                        tree.dispatch_scroll_chain(
+                                            hit.node,
+                                            &hit.ancestors,
+                                            mouse_x,
+                                            mouse_y,
+                                            delta_x,
+                                            delta_y,
+                                        );
+                                    }
                                 }
+                            }
+
+                            // Dispatch mouse/touch events (scroll is handled above with nested support)
+                            for event in pending_events {
+                                // Skip scroll events - already handled with nested scroll support
+                                if event.event_type == blinc_core::events::event_types::SCROLL {
+                                    continue;
+                                }
+                                tree.dispatch_event_with_local(
+                                    event.node_id,
+                                    event.event_type,
+                                    event.mouse_x,
+                                    event.mouse_y,
+                                    event.local_x,
+                                    event.local_y,
+                                );
                             }
 
                             // Dispatch keyboard events

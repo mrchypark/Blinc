@@ -450,6 +450,25 @@ impl EventRouter {
         events
     }
 
+    /// Handle scroll event with smart nested scroll support
+    ///
+    /// Returns the hit result (node and ancestors) for use with RenderTree::dispatch_scroll_chain.
+    /// This enables nested scrolls where inner scrolls consume delta for their direction
+    /// before outer scrolls receive the remaining delta.
+    pub fn on_scroll_nested(
+        &mut self,
+        tree: &RenderTree,
+        delta_x: f32,
+        delta_y: f32,
+    ) -> Option<HitTestResult> {
+        // Store delta for event dispatch
+        self.scroll_delta_x = delta_x;
+        self.scroll_delta_y = delta_y;
+
+        // Return the hit result - caller will use dispatch_scroll_chain
+        self.hit_test(tree, self.mouse_x, self.mouse_y)
+    }
+
     /// Get the last scroll delta
     ///
     /// Use this to retrieve scroll delta when dispatching scroll events.
@@ -650,11 +669,17 @@ impl EventRouter {
 
         ancestors.push(node);
 
+        // Get scroll offset for this node (if it's a scroll container)
+        // Children are rendered at bounds + scroll_offset, so we need to
+        // include the scroll offset when hit testing children
+        let scroll_offset = tree.get_scroll_offset(node);
+        let child_offset = (bounds.x + scroll_offset.0, bounds.y + scroll_offset.1);
+
         // Check children in reverse order (last child is on top)
         let children = tree.layout().children(node);
         for child in children.into_iter().rev() {
             if let Some(result) =
-                self.hit_test_node(tree, child, x, y, (bounds.x, bounds.y), ancestors.clone())
+                self.hit_test_node(tree, child, x, y, child_offset, ancestors.clone())
             {
                 return Some(result);
             }
@@ -699,6 +724,12 @@ impl EventRouter {
             ancestors: ancestors.clone(),
         });
 
+        // Get scroll offset for this node (if it's a scroll container)
+        // Children are rendered at bounds + scroll_offset, so we need to
+        // include the scroll offset when hit testing children
+        let scroll_offset = tree.get_scroll_offset(node);
+        let child_offset = (bounds.x + scroll_offset.0, bounds.y + scroll_offset.1);
+
         // Check children
         let children = tree.layout().children(node);
         for child in children {
@@ -707,7 +738,7 @@ impl EventRouter {
                 child,
                 x,
                 y,
-                (bounds.x, bounds.y),
+                child_offset,
                 ancestors.clone(),
                 results,
             );

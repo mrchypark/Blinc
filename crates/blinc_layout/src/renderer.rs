@@ -894,6 +894,76 @@ impl RenderTree {
         }
     }
 
+    /// Dispatch scroll event through ancestor chain with consumption tracking
+    ///
+    /// For nested scrolls, inner scrolls consume delta for their direction,
+    /// and outer scrolls only receive the remaining delta.
+    ///
+    /// - `hit_node`: The innermost node under the cursor
+    /// - `ancestors`: The ancestor chain from root to hit_node
+    /// - Returns the remaining delta after all consumption
+    pub fn dispatch_scroll_chain(
+        &mut self,
+        hit_node: LayoutNodeId,
+        ancestors: &[LayoutNodeId],
+        mouse_x: f32,
+        mouse_y: f32,
+        mut delta_x: f32,
+        mut delta_y: f32,
+    ) -> (f32, f32) {
+        // Build the chain from leaf to root (hit_node first, then ancestors in reverse)
+        // ancestors is root to leaf, so we iterate in reverse and include hit_node
+        let mut chain: Vec<LayoutNodeId> = vec![hit_node];
+        for &ancestor in ancestors.iter().rev() {
+            if ancestor != hit_node {
+                chain.push(ancestor);
+            }
+        }
+
+        // Dispatch to each node in the chain
+        for node_id in chain {
+            // Skip if no remaining delta
+            if delta_x.abs() < 0.001 && delta_y.abs() < 0.001 {
+                break;
+            }
+
+            // Check if this node can consume the scroll
+            let (can_x, can_y) = self.can_consume_scroll(node_id, delta_x, delta_y);
+
+            // Determine the delta to dispatch to this node
+            let dispatch_x = if can_x { delta_x } else { 0.0 };
+            let dispatch_y = if can_y { delta_y } else { 0.0 };
+
+            // Only dispatch if there's something to dispatch
+            if dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001 {
+                let ctx = crate::event_handler::EventContext::new(
+                    blinc_core::events::event_types::SCROLL,
+                    node_id,
+                )
+                .with_mouse_pos(mouse_x, mouse_y)
+                .with_scroll_delta(dispatch_x, dispatch_y);
+
+                let has_handler = self
+                    .handler_registry
+                    .has_handler(node_id, blinc_core::events::event_types::SCROLL);
+
+                if has_handler {
+                    self.handler_registry.dispatch(&ctx);
+                }
+
+                // Mark the consumed delta as consumed
+                if can_x {
+                    delta_x = 0.0;
+                }
+                if can_y {
+                    delta_y = 0.0;
+                }
+            }
+        }
+
+        (delta_x, delta_y)
+    }
+
     // =========================================================================
     // Motion Animation Initialization
     // =========================================================================
@@ -1010,6 +1080,75 @@ impl RenderTree {
             .get(&node_id)
             .copied()
             .unwrap_or((0.0, 0.0))
+    }
+
+    /// Get the scroll direction for a node (if it's a scroll container)
+    ///
+    /// Returns None if the node is not a scroll container.
+    pub fn get_scroll_direction(&self, node_id: LayoutNodeId) -> Option<crate::scroll::ScrollDirection> {
+        self.scroll_physics.get(&node_id).and_then(|physics| {
+            physics.try_lock().ok().map(|p| p.config.direction)
+        })
+    }
+
+    /// Check if a scroll container can scroll in the given delta direction
+    ///
+    /// Returns true if the scroll container handles that axis AND has room to scroll.
+    /// Used for nested scroll event handling.
+    pub fn can_consume_scroll(&self, node_id: LayoutNodeId, delta_x: f32, delta_y: f32) -> (bool, bool) {
+        let Some(physics) = self.scroll_physics.get(&node_id) else {
+            return (false, false);
+        };
+
+        let Ok(p) = physics.try_lock() else {
+            return (false, false);
+        };
+
+        let can_x = match p.config.direction {
+            crate::scroll::ScrollDirection::Horizontal | crate::scroll::ScrollDirection::Both => {
+                // Can consume horizontal if there's room to scroll
+                let scrollable_x = p.content_width - p.viewport_width;
+                if scrollable_x > 0.0 {
+                    // Check if we're not at the edge or scrolling away from edge
+                    if delta_x < 0.0 {
+                        // Scrolling left (content moves right) - can consume if not at left edge
+                        p.offset_x > p.max_offset_x()
+                    } else if delta_x > 0.0 {
+                        // Scrolling right (content moves left) - can consume if not at right edge
+                        p.offset_x < p.min_offset_x()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+
+        let can_y = match p.config.direction {
+            crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both => {
+                // Can consume vertical if there's room to scroll
+                let scrollable_y = p.content_height - p.viewport_height;
+                if scrollable_y > 0.0 {
+                    // Check if we're not at the edge or scrolling away from edge
+                    if delta_y < 0.0 {
+                        // Scrolling up (content moves down) - can consume if not at top edge
+                        p.offset_y > p.max_offset_y()
+                    } else if delta_y > 0.0 {
+                        // Scrolling down (content moves up) - can consume if not at bottom edge
+                        p.offset_y < p.min_offset_y()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+
+        (can_x, can_y)
     }
 
     /// Transfer scroll offsets from another tree (preserves scroll position across rebuilds)
