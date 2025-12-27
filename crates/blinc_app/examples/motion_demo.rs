@@ -139,51 +139,72 @@ fn list_item(label: &str) -> Div {
 /// Showcase the motion() API
 fn api_showcase() -> Scroll {
     scroll()
+        .w_full()
         .h(600.0)
         .direction(ScrollDirection::Vertical)
         .p(20.0)
         .rounded(12.0)
-        .bg(Color::rgba(0.12, 0.12, 0.16, 1.0))
+        .bg(Color::from_hex(0x222222))
         .child(
             div()
-                .w_fit()
+                .w_full()
                 .flex_col()
-                .gap(12.0)
+                .gap(8.0)
                 .child(
                     text("motion() API Reference")
                         .size(24.0)
                         .weight(FontWeight::ExtraBold)
                         .color(Color::WHITE),
                 )
-                .child(code_block(
-                    "// Single element with animations
+                .child(
+                    code(
+                        "// Single element with animations
 motion()
     .fade_in(300)
     .scale_in(300)
     .fade_out(200)
     .child(my_element)",
-                ))
-                .child(code_block(
-                    "// Staggered list animation
+                    )
+                    .syntax(SyntaxConfig::new(RustHighlighter::new()))
+                    .font_size(12.0)
+                    .w_full(),
+                )
+                .child(
+                    code(
+                        "// Staggered list animation
 motion()
     .stagger(StaggerConfig::new(50, AnimationPreset::fade_in(300))
         .from_center())
     .children(items.iter().map(|i| card(i)))",
-                ))
-                .child(code_block(
-                    "// Slide animations
+                    )
+                    .syntax(SyntaxConfig::new(RustHighlighter::new()))
+                    .font_size(12.0)
+                    .w_full(),
+                )
+                .child(
+                    code(
+                        "// Slide animations
 motion()
     .slide_in(SlideDirection::Left, 400)
     .slide_out(SlideDirection::Right, 300)
     .child(panel)",
-                ))
-                .child(code_block(
-                    "// Custom animation with presets
+                    )
+                    .syntax(SyntaxConfig::new(RustHighlighter::new()))
+                    .font_size(12.0)
+                    .w_full(),
+                )
+                .child(
+                    code(
+                        "// Custom animation with presets
 motion()
     .enter_animation(AnimationPreset::bounce_in(500))
     .exit_animation(AnimationPreset::fade_out(200))
     .child(modal)",
-                ))
+                    )
+                    .syntax(SyntaxConfig::new(RustHighlighter::new()))
+                    .font_size(12.0)
+                    .w_full(),
+                )
                 .child(
                     div()
                         .p(12.0)
@@ -196,14 +217,6 @@ motion()
                         ),
                 ),
         )
-}
-
-fn code_block(code: &str) -> Div {
-    div()
-        .p(12.0)
-        .bg(Color::rgba(0.08, 0.08, 0.1, 1.0))
-        .rounded(6.0)
-        .child(text(code).size(11.0).color(Color::rgba(0.7, 0.8, 0.9, 1.0)))
 }
 
 fn demo_card(title: &str, subtitle: &str) -> Div {

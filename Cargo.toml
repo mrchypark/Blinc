@@ -78,6 +78,9 @@ smallvec = "1.11"
 rustc-hash = "2.0"
 indexmap = "2.7"
 
+# Regex for syntax highlighting
+regex = "1.10"
+
 # Path tessellation
 lyon = "1.0"
 

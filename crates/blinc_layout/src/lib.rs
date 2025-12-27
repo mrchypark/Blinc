@@ -43,7 +43,9 @@ pub mod renderer;
 pub mod scroll;
 pub mod stateful;
 pub mod style;
+pub mod styled_text;
 pub mod svg;
+pub mod syntax;
 pub mod text;
 pub mod text_measure;
 pub mod text_selection;
@@ -214,6 +216,15 @@ pub mod prelude {
     pub use crate::widgets::{
         scroll, scroll_no_bounce, Scroll, ScrollConfig, ScrollDirection, ScrollPhysics,
         ScrollRenderInfo, SharedScrollPhysics,
+    };
+
+    // Code block widget with syntax highlighting
+    pub use crate::widgets::{code, pre, Code, CodeConfig};
+
+    // Syntax highlighting
+    pub use crate::syntax::{
+        JsonHighlighter, PlainHighlighter, RustHighlighter, SyntaxConfig, SyntaxHighlighter,
+        TokenHit, TokenRule, TokenType,
     };
 
     // Canvas element

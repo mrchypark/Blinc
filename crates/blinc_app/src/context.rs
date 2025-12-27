@@ -663,8 +663,22 @@ impl RenderContext {
             .unwrap_or(false);
 
         // Update clip bounds for children if this node clips
+        // When a node clips, we INTERSECT its bounds with any existing clip
+        // This ensures nested clipping works correctly (inner clips can't expand outer clips)
         let child_clip = if clips_content {
-            Some([abs_x, abs_y, bounds.width, bounds.height])
+            let this_clip = [abs_x, abs_y, bounds.width, bounds.height];
+            if let Some(parent_clip) = current_clip {
+                // Intersect: take the overlap of parent_clip and this_clip
+                let x1 = parent_clip[0].max(this_clip[0]);
+                let y1 = parent_clip[1].max(this_clip[1]);
+                let x2 = (parent_clip[0] + parent_clip[2]).min(this_clip[0] + this_clip[2]);
+                let y2 = (parent_clip[1] + parent_clip[3]).min(this_clip[1] + this_clip[3]);
+                let w = (x2 - x1).max(0.0);
+                let h = (y2 - y1).max(0.0);
+                Some([x1, y1, w, h])
+            } else {
+                Some(this_clip)
+            }
         } else {
             current_clip
         };

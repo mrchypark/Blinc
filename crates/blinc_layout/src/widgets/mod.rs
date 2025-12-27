@@ -10,6 +10,7 @@
 //! - [`text_input()`] - Single-line text input with validation
 //! - [`text_area()`] - Multi-line text area
 //! - [`scroll()`] - Scrollable container with bounce physics
+//! - [`code()`] - Code block with syntax highlighting and line numbers
 //!
 //! # Example
 //!
@@ -32,6 +33,7 @@
 
 pub mod button;
 pub mod checkbox;
+pub mod code;
 pub mod cursor;
 pub mod scroll;
 pub mod text_area;
@@ -82,3 +84,6 @@ pub use cursor::{
     cursor_canvas, cursor_canvas_absolute, cursor_state, CursorAnimation, CursorState,
     SharedCursorState,
 };
+
+// Re-export code widget
+pub use code::{code, pre, Code, CodeConfig};

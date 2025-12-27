@@ -24,3 +24,6 @@ indexmap.workspace = true
 
 # Logging
 tracing.workspace = true
+
+# Regex for syntax highlighting
+regex.workspace = true
