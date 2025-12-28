@@ -306,25 +306,19 @@ impl Text {
         // Store measured width for render-time comparison
         self.measured_width = metrics.width;
 
-        // Text wrapping behavior:
-        // - wrap=true (default): Use 100% width to match parent, wrap at render time
-        // - wrap=false (.no_wrap()): Use explicit measured width, single line
-        if self.wrap {
-            // Width: 100% makes text take full parent width.
-            // Text will wrap at render time based on this computed width.
-            self.style.size.width = Dimension::Percent(1.0);
-            // Height needs to be computed - for now use measured single-line height
-            // as minimum, actual height will be determined by wrapped text at render
-            self.style.size.height = Dimension::Length(metrics.height);
-            // Don't shrink below 0 - prevents negative sizing
-            self.style.min_size.width = Dimension::Length(0.0);
-        } else {
-            // Use measured dimensions - text stays on single line
-            self.style.size.width = Dimension::Length(metrics.width);
-            self.style.size.height = Dimension::Length(metrics.height);
-            // Don't shrink - keep natural size
+        // Text sizing for flex layouts:
+        // Use measured width as basis, constrained by max_width: 100%
+        // This allows:
+        // - Short text to be centered by flexbox (takes natural width)
+        // - Long text to wrap at parent boundary (max 100%)
+        // - text_center() to center within text bounds
+        self.style.size.width = Dimension::Length(metrics.width);
+        self.style.size.height = Dimension::Length(metrics.height);
+        self.style.max_size.width = Dimension::Percent(1.0);
+
+        if !self.wrap {
+            // No wrapping: don't shrink, keep natural size
             self.style.flex_shrink = 0.0;
-            self.style.min_size.width = Dimension::Auto;
         }
     }
 

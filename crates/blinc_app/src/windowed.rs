@@ -898,8 +898,10 @@ impl WindowedApp {
                             let mut pending_events: Vec<PendingEvent> = Vec::new();
                             // Separate collection for keyboard events (TEXT_INPUT)
                             let mut keyboard_events: Vec<PendingEvent> = Vec::new();
-                            // Track if scroll ended
+                            // Track if scroll ended (momentum finished)
                             let mut scroll_ended = false;
+                            // Track if gesture ended (finger lifted - may still have momentum)
+                            let mut gesture_ended = false;
                             // Track scroll info for nested scroll dispatch (mouse_x, mouse_y, delta_x, delta_y)
                             let mut scroll_info: Option<(f32, f32, f32, f32)> = None;
 
