@@ -107,6 +107,8 @@ pub struct GpuPaintContext<'a> {
     camera: Option<Camera>,
     /// Text rendering context (optional, for draw_text support)
     text_ctx: Option<&'a mut TextRenderingContext>,
+    /// Whether we're rendering to the foreground layer (after glass)
+    is_foreground: bool,
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -122,7 +124,16 @@ impl<'a> GpuPaintContext<'a> {
             is_3d: false,
             camera: None,
             text_ctx: None,
+            is_foreground: false,
         }
+    }
+
+    /// Set whether we're rendering to the foreground layer
+    ///
+    /// When true, primitives are pushed to the foreground batch (rendered after glass).
+    /// When false (default), primitives go to the background batch.
+    pub fn set_foreground(&mut self, is_foreground: bool) {
+        self.is_foreground = is_foreground;
     }
 
     /// Create a new GPU paint context with text rendering support
@@ -141,6 +152,7 @@ impl<'a> GpuPaintContext<'a> {
             is_3d: false,
             camera: None,
             text_ctx: Some(text_ctx),
+            is_foreground: false,
         }
     }
 
@@ -734,11 +746,19 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
     }
 
+    fn set_foreground_layer(&mut self, is_foreground: bool) {
+        self.is_foreground = is_foreground;
+    }
+
     fn fill_path(&mut self, path: &Path, brush: Brush) {
         // Tessellate the path using lyon
         let tessellated = tessellate_fill(path, &brush);
         if !tessellated.is_empty() {
-            self.batch.push_path(tessellated);
+            if self.is_foreground {
+                self.batch.push_foreground_path(tessellated);
+            } else {
+                self.batch.push_path(tessellated);
+            }
         }
     }
 
@@ -746,7 +766,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         // Tessellate the stroke using lyon
         let tessellated = tessellate_stroke(path, stroke, &brush);
         if !tessellated.is_empty() {
-            self.batch.push_path(tessellated);
+            if self.is_foreground {
+                self.batch.push_foreground_path(tessellated);
+            } else {
+                self.batch.push_path(tessellated);
+            }
         }
     }
 
@@ -868,7 +892,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
         };
 
-        self.batch.push(primitive);
+        if self.is_foreground {
+            self.batch.push_foreground(primitive);
+        } else {
+            self.batch.push(primitive);
+        }
     }
 
     fn stroke_rect(
@@ -912,7 +940,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
         };
 
-        self.batch.push(primitive);
+        if self.is_foreground {
+            self.batch.push_foreground(primitive);
+        } else {
+            self.batch.push(primitive);
+        }
     }
 
     fn fill_circle(&mut self, center: Point, radius: f32, brush: Brush) {
@@ -978,7 +1010,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
         };
 
-        self.batch.push(primitive);
+        if self.is_foreground {
+            self.batch.push_foreground(primitive);
+        } else {
+            self.batch.push(primitive);
+        }
     }
 
     fn stroke_circle(&mut self, center: Point, radius: f32, stroke: &Stroke, brush: Brush) {
@@ -1027,7 +1063,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
         };
 
-        self.batch.push(primitive);
+        if self.is_foreground {
+            self.batch.push_foreground(primitive);
+        } else {
+            self.batch.push(primitive);
+        }
     }
 
     fn draw_text(&mut self, text: &str, origin: Point, style: &TextStyle) {
@@ -1143,7 +1183,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
         };
 
-        self.batch.push(primitive);
+        if self.is_foreground {
+            self.batch.push_foreground(primitive);
+        } else {
+            self.batch.push(primitive);
+        }
     }
 
     fn draw_inner_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow) {
@@ -1186,7 +1230,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
         };
 
-        self.batch.push(primitive);
+        if self.is_foreground {
+            self.batch.push_foreground(primitive);
+        } else {
+            self.batch.push(primitive);
+        }
     }
 
     fn draw_circle_shadow(&mut self, center: Point, radius: f32, shadow: Shadow) {
@@ -1226,7 +1274,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
         };
 
-        self.batch.push(primitive);
+        if self.is_foreground {
+            self.batch.push_foreground(primitive);
+        } else {
+            self.batch.push(primitive);
+        }
     }
 
     fn draw_circle_inner_shadow(&mut self, center: Point, radius: f32, shadow: Shadow) {
@@ -1265,7 +1317,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
         };
 
-        self.batch.push(primitive);
+        if self.is_foreground {
+            self.batch.push_foreground(primitive);
+        } else {
+            self.batch.push(primitive);
+        }
     }
 
     fn sdf_build(&mut self, f: &mut dyn FnMut(&mut dyn SdfBuilder)) {

@@ -232,20 +232,23 @@ impl TextRenderingContext {
         let y_offset = match anchor {
             TextAnchor::Top => y,
             TextAnchor::Center => {
-                // Center text so the visual center of the line aligns with y.
+                // Center text so the visual center of glyphs aligns with y.
                 //
-                // Text layout coordinates:
-                // - y=0 is top of em-box (where text starts rendering)
-                // - height = ascender - descender (descender is negative)
-                //   represents total vertical space for glyphs
+                // Text layout coordinates (from text top = 0):
+                // - baseline is at y = ascender
+                // - glyph tops are near y = 0
+                // - glyph bottoms extend to y = ascender - descender (descender < 0)
                 //
-                // User passes y = center of bounding box.
-                // We want the center of the text content to be at y.
+                // The actual glyph extent is: ascender - descender
+                // (prepared.height includes line_gap which adds extra whitespace)
                 //
-                // Visual center from text top = height/2
-                // So: text_top + height/2 = y
-                //     text_top = y - height/2
-                y - prepared.height / 2.0
+                // Visual center of glyphs = glyph_extent / 2 from text top
+                // We want this center to align with user's y (center of bounding box).
+                //
+                // So: text_top + glyph_extent/2 = y
+                //     text_top = y - glyph_extent/2
+                let glyph_extent = prepared.ascender - prepared.descender;
+                y - glyph_extent / 2.0
             }
             TextAnchor::Baseline => {
                 // Baseline is at y = ascender from the top of the em box
@@ -326,8 +329,9 @@ impl TextRenderingContext {
         let y_offset = match anchor {
             TextAnchor::Top => y,
             TextAnchor::Center => {
-                // Center text so visual center aligns with y
-                y - prepared.height / 2.0
+                // Center text using actual glyph extent (without line_gap)
+                let glyph_extent = prepared.ascender - prepared.descender;
+                y - glyph_extent / 2.0
             }
             TextAnchor::Baseline => y - prepared.ascender,
         };

@@ -694,33 +694,48 @@ pub struct PathBatch {
 
 /// Batch of GPU primitives for efficient rendering
 pub struct PrimitiveBatch {
+    /// Background primitives (rendered before glass)
     pub primitives: Vec<GpuPrimitive>,
+    /// Foreground primitives (rendered after glass)
+    pub foreground_primitives: Vec<GpuPrimitive>,
     pub glass_primitives: Vec<GpuGlassPrimitive>,
     pub glyphs: Vec<GpuGlyph>,
     /// Tessellated path geometry
     pub paths: PathBatch,
+    /// Foreground tessellated path geometry
+    pub foreground_paths: PathBatch,
 }
 
 impl PrimitiveBatch {
     pub fn new() -> Self {
         Self {
             primitives: Vec::new(),
+            foreground_primitives: Vec::new(),
             glass_primitives: Vec::new(),
             glyphs: Vec::new(),
             paths: PathBatch::default(),
+            foreground_paths: PathBatch::default(),
         }
     }
 
     pub fn clear(&mut self) {
         self.primitives.clear();
+        self.foreground_primitives.clear();
         self.glass_primitives.clear();
         self.glyphs.clear();
         self.paths.vertices.clear();
         self.paths.indices.clear();
+        self.foreground_paths.vertices.clear();
+        self.foreground_paths.indices.clear();
     }
 
     pub fn push(&mut self, primitive: GpuPrimitive) {
         self.primitives.push(primitive);
+    }
+
+    /// Push a primitive to the foreground layer (rendered after glass)
+    pub fn push_foreground(&mut self, primitive: GpuPrimitive) {
+        self.foreground_primitives.push(primitive);
     }
 
     pub fn push_glass(&mut self, glass: GpuGlassPrimitive) {
@@ -744,11 +759,25 @@ impl PrimitiveBatch {
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
     }
 
+    /// Add tessellated path geometry to the foreground batch
+    pub fn push_foreground_path(&mut self, tessellated: crate::path::TessellatedPath) {
+        if tessellated.is_empty() {
+            return;
+        }
+        let base_vertex = self.foreground_paths.vertices.len() as u32;
+        self.foreground_paths.vertices.extend(tessellated.vertices);
+        self.foreground_paths
+            .indices
+            .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+    }
+
     pub fn is_empty(&self) -> bool {
         self.primitives.is_empty()
+            && self.foreground_primitives.is_empty()
             && self.glass_primitives.is_empty()
             && self.glyphs.is_empty()
             && self.paths.vertices.is_empty()
+            && self.foreground_paths.vertices.is_empty()
     }
 
     pub fn path_vertex_count(&self) -> usize {
@@ -759,8 +788,20 @@ impl PrimitiveBatch {
         self.paths.indices.len()
     }
 
+    pub fn foreground_path_vertex_count(&self) -> usize {
+        self.foreground_paths.vertices.len()
+    }
+
+    pub fn foreground_path_index_count(&self) -> usize {
+        self.foreground_paths.indices.len()
+    }
+
     pub fn primitive_count(&self) -> usize {
         self.primitives.len()
+    }
+
+    pub fn foreground_primitive_count(&self) -> usize {
+        self.foreground_primitives.len()
     }
 
     pub fn glass_count(&self) -> usize {
@@ -776,6 +817,7 @@ impl PrimitiveBatch {
     /// Useful for combining batches from different paint contexts.
     pub fn merge(&mut self, other: PrimitiveBatch) {
         self.primitives.extend(other.primitives);
+        self.foreground_primitives.extend(other.foreground_primitives);
         self.glass_primitives.extend(other.glass_primitives);
         self.glyphs.extend(other.glyphs);
 
@@ -785,6 +827,13 @@ impl PrimitiveBatch {
         self.paths
             .indices
             .extend(other.paths.indices.iter().map(|i| i + base_vertex));
+
+        // Merge foreground paths
+        let fg_base_vertex = self.foreground_paths.vertices.len() as u32;
+        self.foreground_paths.vertices.extend(other.foreground_paths.vertices);
+        self.foreground_paths
+            .indices
+            .extend(other.foreground_paths.indices.iter().map(|i| i + fg_base_vertex));
     }
 }
 

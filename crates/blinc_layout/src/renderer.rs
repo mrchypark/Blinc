@@ -1550,13 +1550,16 @@ impl RenderTree {
     pub fn render_layered_simple(&self, ctx: &mut dyn DrawContext) {
         if let Some(root) = self.root {
             // Pass 1: Background (excludes children of glass elements)
+            ctx.set_foreground_layer(false);
             self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Background, false);
 
             // Pass 2: Glass - these render as Brush::Glass which becomes glass primitives
             self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Glass, false);
 
-            // Pass 3: Foreground (includes children of glass elements)
+            // Pass 3: Foreground (includes children of glass elements, rendered after glass)
+            ctx.set_foreground_layer(true);
             self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Foreground, false);
+            ctx.set_foreground_layer(false);
         }
     }
 
@@ -1577,7 +1580,8 @@ impl RenderTree {
                 ctx.push_transform(Transform::scale(self.scale_factor, self.scale_factor));
             }
 
-            // Pass 1: Background
+            // Pass 1: Background (primitives go to background batch)
+            ctx.set_foreground_layer(false);
             self.render_layer_with_motion(
                 ctx,
                 root,
@@ -1587,7 +1591,7 @@ impl RenderTree {
                 render_state,
             );
 
-            // Pass 2: Glass
+            // Pass 2: Glass (primitives go to glass batch)
             self.render_layer_with_motion(
                 ctx,
                 root,
@@ -1597,7 +1601,8 @@ impl RenderTree {
                 render_state,
             );
 
-            // Pass 3: Foreground
+            // Pass 3: Foreground (primitives go to foreground batch, rendered after glass)
+            ctx.set_foreground_layer(true);
             self.render_layer_with_motion(
                 ctx,
                 root,
@@ -1606,6 +1611,7 @@ impl RenderTree {
                 false,
                 render_state,
             );
+            ctx.set_foreground_layer(false);
 
             // Pop the DPI scale transform
             if has_scale {

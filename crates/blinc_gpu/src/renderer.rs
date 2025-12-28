@@ -1936,8 +1936,47 @@ impl GpuRenderer {
             render_pass.draw(0..6, 0..batch.glass_primitives.len() as u32);
         }
 
-        // Single submission for all passes
+        // Submit background and glass passes first
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Pass 4: Render foreground primitives (on top of glass)
+        // This requires a separate submission because we need to overwrite the primitives buffer
+        if !batch.foreground_primitives.is_empty() {
+            // Upload foreground primitives to the buffer
+            self.queue.write_buffer(
+                &self.buffers.primitives,
+                0,
+                bytemuck::cast_slice(&batch.foreground_primitives),
+            );
+
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Blinc Foreground Encoder"),
+                });
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Foreground Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.sdf);
+            render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+            render_pass.draw(0..6, 0..batch.foreground_primitives.len() as u32);
+
+            drop(render_pass);
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
     }
 
     /// Render primitives as an overlay on existing content (1x sampled)

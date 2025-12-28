@@ -841,6 +841,15 @@ pub trait DrawContext {
     /// Pop the top blend mode from the stack
     fn pop_blend_mode(&mut self);
 
+    /// Set whether we're rendering to the foreground layer (after glass)
+    ///
+    /// When true, primitives should be rendered on top of glass elements.
+    /// Default is false (background layer). This is used by the three-pass
+    /// rendering system to separate background and foreground primitives.
+    fn set_foreground_layer(&mut self, _is_foreground: bool) {
+        // Default implementation does nothing (for contexts that don't support layering)
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 2D Drawing Operations
     // ─────────────────────────────────────────────────────────────────────────
