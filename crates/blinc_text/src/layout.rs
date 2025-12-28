@@ -531,16 +531,10 @@ mod tests {
             .collect();
 
         // The original text with whitespace normalized (single spaces between words)
-        let original_normalized: String = original
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let original_normalized: String = original.split_whitespace().collect::<Vec<_>>().join(" ");
 
         // The wrapped text should have the same content (just with different whitespace)
-        let wrapped_normalized: String = wrapped
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let wrapped_normalized: String = wrapped.split_whitespace().collect::<Vec<_>>().join(" ");
 
         assert_eq!(
             wrapped_normalized, original_normalized,
@@ -667,7 +661,10 @@ mod tests {
         verify_content_preserved(&lines, text);
 
         // Should have multiple lines due to wrapping
-        assert!(lines.len() > 1, "Text should have wrapped into multiple lines");
+        assert!(
+            lines.len() > 1,
+            "Text should have wrapped into multiple lines"
+        );
     }
 
     #[test]

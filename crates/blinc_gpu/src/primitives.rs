@@ -16,6 +16,8 @@ pub enum PrimitiveType {
     InnerShadow = 4,
     CircleShadow = 5,
     CircleInnerShadow = 6,
+    /// Text glyph - samples from atlas texture using gradient_params as UV bounds
+    Text = 7,
 }
 
 /// Fill types (must match shader constants)
@@ -96,7 +98,7 @@ pub struct GpuPrimitive {
     pub clip_radius: [f32; 4],
     /// Gradient parameters: linear (x1, y1, x2, y2), radial (cx, cy, r, 0)
     pub gradient_params: [f32; 4],
-    /// Type info (primitive_type, fill_type, clip_type, 0)
+    /// Type info (primitive_type, fill_type, clip_type, z_layer)
     pub type_info: [u32; 4],
 }
 
@@ -266,6 +268,79 @@ impl GpuPrimitive {
         self.clip_radius = [0.0; 4];
         self.type_info[2] = ClipType::None as u32;
         self
+    }
+
+    /// Set the z-layer for interleaved rendering
+    ///
+    /// Z-layers control the order in which primitives and text are rendered
+    /// together. All primitives and text with the same z-layer are rendered
+    /// before moving to the next z-layer.
+    pub fn with_z_layer(mut self, layer: u32) -> Self {
+        self.type_info[3] = layer;
+        self
+    }
+
+    /// Get the z-layer of this primitive
+    pub fn z_layer(&self) -> u32 {
+        self.type_info[3]
+    }
+
+    /// Set the z-layer in place
+    pub fn set_z_layer(&mut self, layer: u32) {
+        self.type_info[3] = layer;
+    }
+
+    /// Create a text glyph primitive from a GpuGlyph
+    ///
+    /// This converts a text glyph into a unified primitive that can be rendered
+    /// in the same pass as shapes, enabling proper z-ordering.
+    ///
+    /// The glyph's UV bounds are stored in `gradient_params` and the color in `color`.
+    pub fn from_glyph(glyph: &GpuGlyph) -> Self {
+        Self {
+            bounds: glyph.bounds,
+            corner_radius: [0.0; 4],
+            color: glyph.color,
+            color2: [0.0; 4],
+            border: [0.0; 4],
+            border_color: [0.0; 4],
+            shadow: [0.0; 4],
+            shadow_color: [0.0; 4],
+            clip_bounds: glyph.clip_bounds,
+            clip_radius: [0.0; 4],
+            // Store UV bounds (u_min, v_min, u_max, v_max) in gradient_params
+            gradient_params: glyph.uv_bounds,
+            type_info: [PrimitiveType::Text as u32, 0, ClipType::None as u32, 0],
+        }
+    }
+
+    /// Create a text glyph primitive with explicit parameters
+    pub fn text_glyph(
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        uv_min_x: f32,
+        uv_min_y: f32,
+        uv_max_x: f32,
+        uv_max_y: f32,
+        color: [f32; 4],
+    ) -> Self {
+        Self {
+            bounds: [x, y, width, height],
+            corner_radius: [0.0; 4],
+            color,
+            color2: [0.0; 4],
+            border: [0.0; 4],
+            border_color: [0.0; 4],
+            shadow: [0.0; 4],
+            shadow_color: [0.0; 4],
+            clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
+            clip_radius: [0.0; 4],
+            // Store UV bounds in gradient_params
+            gradient_params: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
+            type_info: [PrimitiveType::Text as u32, 0, ClipType::None as u32, 0],
+        }
     }
 }
 
@@ -812,12 +887,46 @@ impl PrimitiveBatch {
         self.glyphs.len()
     }
 
+    /// Get the maximum z_layer used by primitives in this batch
+    pub fn max_z_layer(&self) -> u32 {
+        self.primitives
+            .iter()
+            .chain(self.foreground_primitives.iter())
+            .map(|p| p.z_layer())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Filter primitives by z_layer, returning a new batch with only matching primitives
+    pub fn primitives_for_layer(&self, z_layer: u32) -> Vec<GpuPrimitive> {
+        self.primitives
+            .iter()
+            .filter(|p| p.z_layer() == z_layer)
+            .cloned()
+            .collect()
+    }
+
+    /// Filter foreground primitives by z_layer
+    pub fn foreground_primitives_for_layer(&self, z_layer: u32) -> Vec<GpuPrimitive> {
+        self.foreground_primitives
+            .iter()
+            .filter(|p| p.z_layer() == z_layer)
+            .cloned()
+            .collect()
+    }
+
+    /// Check if any primitives use z_layer (i.e., max_z_layer > 0)
+    pub fn has_z_layers(&self) -> bool {
+        self.max_z_layer() > 0
+    }
+
     /// Merge another batch into this one
     ///
     /// Useful for combining batches from different paint contexts.
     pub fn merge(&mut self, other: PrimitiveBatch) {
         self.primitives.extend(other.primitives);
-        self.foreground_primitives.extend(other.foreground_primitives);
+        self.foreground_primitives
+            .extend(other.foreground_primitives);
         self.glass_primitives.extend(other.glass_primitives);
         self.glyphs.extend(other.glyphs);
 
@@ -830,10 +939,16 @@ impl PrimitiveBatch {
 
         // Merge foreground paths
         let fg_base_vertex = self.foreground_paths.vertices.len() as u32;
-        self.foreground_paths.vertices.extend(other.foreground_paths.vertices);
         self.foreground_paths
-            .indices
-            .extend(other.foreground_paths.indices.iter().map(|i| i + fg_base_vertex));
+            .vertices
+            .extend(other.foreground_paths.vertices);
+        self.foreground_paths.indices.extend(
+            other
+                .foreground_paths
+                .indices
+                .iter()
+                .map(|i| i + fg_base_vertex),
+        );
     }
 }
 

@@ -60,7 +60,11 @@ impl GlyphKey {
     fn new(font_id: u32, glyph_id: u16, font_size: f32) -> Self {
         // Quantize font size to reduce cache entries (0.5px granularity)
         let size_key = (font_size * 2.0).round() as u16;
-        Self { font_id, glyph_id, size_key }
+        Self {
+            font_id,
+            glyph_id,
+            size_key,
+        }
     }
 }
 

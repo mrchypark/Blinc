@@ -201,8 +201,16 @@ impl MotionBindings {
     /// Returns a translation transform for the tx/ty bindings.
     /// Scale and rotation should be queried separately for proper centered application.
     pub fn get_transform(&self) -> Option<Transform> {
-        let tx = self.translate_x.as_ref().map(|v| v.lock().unwrap().get()).unwrap_or(0.0);
-        let ty = self.translate_y.as_ref().map(|v| v.lock().unwrap().get()).unwrap_or(0.0);
+        let tx = self
+            .translate_x
+            .as_ref()
+            .map(|v| v.lock().unwrap().get())
+            .unwrap_or(0.0);
+        let ty = self
+            .translate_y
+            .as_ref()
+            .map(|v| v.lock().unwrap().get())
+            .unwrap_or(0.0);
 
         if tx.abs() > 0.001 || ty.abs() > 0.001 {
             Some(Transform::translate(tx, ty))
@@ -265,7 +273,6 @@ pub struct Motion {
     // =========================================================================
     // Continuous animation bindings (AnimatedValue driven)
     // =========================================================================
-
     /// Animated X translation
     translate_x: Option<SharedAnimatedValue>,
     /// Animated Y translation

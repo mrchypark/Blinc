@@ -4,9 +4,7 @@
 //! and stack on top of each other. The last child in document order appears on top.
 
 use blinc_core::{Brush, Color, Shadow, Transform};
-use taffy::{
-    Dimension, LengthPercentageAuto, Overflow, Position, Rect, Style,
-};
+use taffy::{Dimension, LengthPercentageAuto, Overflow, Position, Rect, Style};
 
 use crate::div::Div;
 use crate::element::{Material, RenderLayer, RenderProps};
@@ -58,13 +56,16 @@ impl Stack {
         let mut inner = Div::new();
         // Stack is a positioning context
         inner.style.position = Position::Relative;
+        // Clip children to Stack bounds by default
+        inner.style.overflow.x = Overflow::Clip;
+        inner.style.overflow.y = Overflow::Clip;
         Self { inner }
     }
 
     /// Add a child element (will be absolutely positioned)
     pub fn child(mut self, child: impl ElementBuilder + 'static) -> Self {
         // Wrap child in an absolutely positioned container
-        let wrapper = StackChild { inner: Box::new(child) };
+        let wrapper = StackChild::new(Box::new(child));
         self.inner.children.push(Box::new(wrapper));
         self
     }
@@ -76,7 +77,7 @@ impl Stack {
         I::Item: ElementBuilder + 'static,
     {
         for child in children {
-            let wrapper = StackChild { inner: Box::new(child) };
+            let wrapper = StackChild::new(Box::new(child));
             self.inner.children.push(Box::new(wrapper));
         }
         self
@@ -597,7 +598,9 @@ impl Stack {
 
     /// Render in foreground layer
     pub fn foreground(self) -> Self {
-        Self { inner: self.inner.foreground() }
+        Self {
+            inner: self.inner.foreground(),
+        }
     }
 
     // =========================================================================
@@ -612,32 +615,44 @@ impl Stack {
 
     /// Apply an effect material
     pub fn effect(self, effect: impl Into<Material>) -> Self {
-        Self { inner: self.inner.effect(effect) }
+        Self {
+            inner: self.inner.effect(effect),
+        }
     }
 
     /// Apply glass material with default settings
     pub fn glass(self) -> Self {
-        Self { inner: self.inner.glass() }
+        Self {
+            inner: self.inner.glass(),
+        }
     }
 
     /// Apply metallic material
     pub fn metallic(self) -> Self {
-        Self { inner: self.inner.metallic() }
+        Self {
+            inner: self.inner.metallic(),
+        }
     }
 
     /// Apply chrome material
     pub fn chrome(self) -> Self {
-        Self { inner: self.inner.chrome() }
+        Self {
+            inner: self.inner.chrome(),
+        }
     }
 
     /// Apply gold material
     pub fn gold(self) -> Self {
-        Self { inner: self.inner.gold() }
+        Self {
+            inner: self.inner.gold(),
+        }
     }
 
     /// Apply wood material
     pub fn wood(self) -> Self {
-        Self { inner: self.inner.wood() }
+        Self {
+            inner: self.inner.wood(),
+        }
     }
 
     // =========================================================================
@@ -652,27 +667,37 @@ impl Stack {
 
     /// Apply a shadow with custom parameters
     pub fn shadow_params(self, offset_x: f32, offset_y: f32, blur: f32, color: Color) -> Self {
-        Self { inner: self.inner.shadow_params(offset_x, offset_y, blur, color) }
+        Self {
+            inner: self.inner.shadow_params(offset_x, offset_y, blur, color),
+        }
     }
 
     /// Apply a small drop shadow
     pub fn shadow_sm(self) -> Self {
-        Self { inner: self.inner.shadow_sm() }
+        Self {
+            inner: self.inner.shadow_sm(),
+        }
     }
 
     /// Apply a medium drop shadow
     pub fn shadow_md(self) -> Self {
-        Self { inner: self.inner.shadow_md() }
+        Self {
+            inner: self.inner.shadow_md(),
+        }
     }
 
     /// Apply a large drop shadow
     pub fn shadow_lg(self) -> Self {
-        Self { inner: self.inner.shadow_lg() }
+        Self {
+            inner: self.inner.shadow_lg(),
+        }
     }
 
     /// Apply an extra large drop shadow
     pub fn shadow_xl(self) -> Self {
-        Self { inner: self.inner.shadow_xl() }
+        Self {
+            inner: self.inner.shadow_xl(),
+        }
     }
 
     // =========================================================================
@@ -687,27 +712,37 @@ impl Stack {
 
     /// Apply a translation transform
     pub fn translate(self, x: f32, y: f32) -> Self {
-        Self { inner: self.inner.translate(x, y) }
+        Self {
+            inner: self.inner.translate(x, y),
+        }
     }
 
     /// Apply a uniform scale transform
     pub fn scale(self, factor: f32) -> Self {
-        Self { inner: self.inner.scale(factor) }
+        Self {
+            inner: self.inner.scale(factor),
+        }
     }
 
     /// Apply a non-uniform scale transform
     pub fn scale_xy(self, sx: f32, sy: f32) -> Self {
-        Self { inner: self.inner.scale_xy(sx, sy) }
+        Self {
+            inner: self.inner.scale_xy(sx, sy),
+        }
     }
 
     /// Apply a rotation transform (radians)
     pub fn rotate(self, angle: f32) -> Self {
-        Self { inner: self.inner.rotate(angle) }
+        Self {
+            inner: self.inner.rotate(angle),
+        }
     }
 
     /// Apply a rotation transform (degrees)
     pub fn rotate_deg(self, degrees: f32) -> Self {
-        Self { inner: self.inner.rotate_deg(degrees) }
+        Self {
+            inner: self.inner.rotate_deg(degrees),
+        }
     }
 
     // =========================================================================
@@ -722,17 +757,23 @@ impl Stack {
 
     /// Set fully opaque
     pub fn opaque(self) -> Self {
-        Self { inner: self.inner.opaque() }
+        Self {
+            inner: self.inner.opaque(),
+        }
     }
 
     /// Set translucent (50% opacity)
     pub fn translucent(self) -> Self {
-        Self { inner: self.inner.translucent() }
+        Self {
+            inner: self.inner.translucent(),
+        }
     }
 
     /// Set invisible (0% opacity)
     pub fn invisible(self) -> Self {
-        Self { inner: self.inner.invisible() }
+        Self {
+            inner: self.inner.invisible(),
+        }
     }
 
     // =========================================================================
@@ -855,41 +896,63 @@ impl ElementBuilder for Stack {
 
 /// Internal wrapper that makes a child absolutely positioned
 struct StackChild {
-    inner: Box<dyn ElementBuilder>,
+    /// The actual child element, stored in a Vec for children_builders() to return a slice
+    children: Vec<Box<dyn ElementBuilder>>,
+}
+
+impl StackChild {
+    fn new(child: Box<dyn ElementBuilder>) -> Self {
+        Self {
+            children: vec![child],
+        }
+    }
 }
 
 impl ElementBuilder for StackChild {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        // Build the child first
-        let child_node = self.inner.build(tree);
-
-        // Create a wrapper node with absolute positioning
+        // Create a wrapper node with absolute positioning that fills the entire Stack
+        // Using inset: 0 on all sides makes the wrapper fill the containing block
         let mut style = Style::default();
         style.position = Position::Absolute;
+        // Set all inset values to 0 to fill the entire containing block
+        // This stretches the wrapper to match the Stack's size
         style.inset = Rect {
             left: LengthPercentageAuto::Length(0.0),
-            right: LengthPercentageAuto::Auto,
+            right: LengthPercentageAuto::Length(0.0),
             top: LengthPercentageAuto::Length(0.0),
-            bottom: LengthPercentageAuto::Auto,
+            bottom: LengthPercentageAuto::Length(0.0),
         };
-        // Size to fit content
-        style.size.width = Dimension::Auto;
-        style.size.height = Dimension::Auto;
+        // Clip children to this layer's bounds - important for z-ordering
+        // Each Stack layer clips its own content so text doesn't bleed through
+        style.overflow.x = Overflow::Clip;
+        style.overflow.y = Overflow::Clip;
+        // With inset: 0 on all sides, size is determined by the inset, not explicit size
+        // So we leave size as Auto
 
         let wrapper = tree.create_node(style);
-        tree.add_child(wrapper, child_node);
+
+        // Build the child and add it to wrapper
+        if let Some(child) = self.children.first() {
+            let child_node = child.build(tree);
+            tree.add_child(wrapper, child_node);
+        }
 
         wrapper
     }
 
     fn render_props(&self) -> RenderProps {
-        // Wrapper is transparent
-        RenderProps::default()
+        // Wrapper clips its children for proper z-ordering in Stack
+        // is_stack_layer causes z_layer to increment when entering this node
+        RenderProps {
+            clips_content: true,
+            is_stack_layer: true,
+            ..RenderProps::default()
+        }
     }
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
-        // No direct access to the wrapped child's children from here
-        &[]
+        // Return the wrapped child so render traversal can continue
+        &self.children
     }
 }
 

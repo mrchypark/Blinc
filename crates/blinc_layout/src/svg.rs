@@ -250,6 +250,7 @@ impl ElementBuilder for Svg {
             opacity: 1.0,
             clips_content: false,
             motion: None,
+            is_stack_layer: false,
         }
     }
 

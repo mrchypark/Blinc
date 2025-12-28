@@ -152,7 +152,11 @@ impl LayoutTree {
 
     /// Replace children of a node with new children
     /// Returns the IDs of the old children that were removed
-    pub fn replace_children(&mut self, parent: LayoutNodeId, new_children: Vec<LayoutNodeId>) -> Vec<LayoutNodeId> {
+    pub fn replace_children(
+        &mut self,
+        parent: LayoutNodeId,
+        new_children: Vec<LayoutNodeId>,
+    ) -> Vec<LayoutNodeId> {
         let Some(&parent_taffy) = self.node_map.get(parent) else {
             return Vec::new();
         };

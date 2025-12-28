@@ -1881,6 +1881,7 @@ impl ElementBuilder for Div {
             opacity: self.opacity,
             clips_content,
             motion: None,
+            is_stack_layer: false,
         }
     }
 

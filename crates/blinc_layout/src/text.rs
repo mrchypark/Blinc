@@ -297,11 +297,8 @@ impl Text {
         options.font_name = self.font_family.name.clone();
         options.generic_font = self.font_family.generic;
 
-        let metrics = crate::text_measure::measure_text_with_options(
-            &self.content,
-            self.font_size,
-            &options,
-        );
+        let metrics =
+            crate::text_measure::measure_text_with_options(&self.content, self.font_size, &options);
 
         // Store measured width for render-time comparison
         self.measured_width = metrics.width;
@@ -447,6 +444,7 @@ impl ElementBuilder for Text {
             opacity: 1.0,
             clips_content: false,
             motion: None,
+            is_stack_layer: false,
         }
     }
 

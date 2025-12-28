@@ -250,7 +250,9 @@ pub fn label(content: impl Into<String>) -> Text {
 /// muted("Less important information")
 /// ```
 pub fn muted(content: impl Into<String>) -> Text {
-    text(content).color(Color::rgba(0.6, 0.6, 0.65, 1.0)).no_wrap()
+    text(content)
+        .color(Color::rgba(0.6, 0.6, 0.65, 1.0))
+        .no_wrap()
 }
 
 /// Create a paragraph text element (16px with line height 1.5)

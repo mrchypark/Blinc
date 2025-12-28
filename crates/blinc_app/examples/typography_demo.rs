@@ -208,7 +208,9 @@ fn font_family_section() -> Div {
                         .gap(8.0)
                         .items_center()
                         .child(label("System (default):").color(Color::GRAY))
-                        .child(text("The quick brown fox jumps over the lazy dog").color(Color::WHITE)),
+                        .child(
+                            text("The quick brown fox jumps over the lazy dog").color(Color::WHITE),
+                        ),
                 )
                 // Monospace
                 .child(

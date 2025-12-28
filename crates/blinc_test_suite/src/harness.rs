@@ -11,9 +11,9 @@ use blinc_gpu::{
     GpuGlassPrimitive, GpuGlyph, GpuPaintContext, GpuRenderer, PrimitiveBatch, RendererConfig,
     TextRenderingContext,
 };
+use blinc_layout::div::FontFamily;
 use blinc_layout::prelude::*;
 use blinc_layout::renderer::ElementType;
-use blinc_layout::div::FontFamily;
 use blinc_svg::SvgDocument;
 use blinc_text::TextAnchor;
 use image::{ImageBuffer, Rgba, RgbaImage};
@@ -396,8 +396,15 @@ impl TestHarness {
 
         // Preload common fonts that tests might use
         text_ctx.preload_fonts(&[
-            "SF Mono", "Menlo", "Fira Code", "Inter", "SF Pro",
-            "Consolas", "Monaco", "Source Code Pro", "JetBrains Mono",
+            "SF Mono",
+            "Menlo",
+            "Fira Code",
+            "Inter",
+            "SF Pro",
+            "Consolas",
+            "Monaco",
+            "Source Code Pro",
+            "JetBrains Mono",
         ]);
 
         // Create output directories
@@ -480,8 +487,8 @@ impl TestHarness {
         anchor: TextAnchor,
         font_family: &FontFamily,
     ) -> Result<Vec<GpuGlyph>> {
-        use blinc_text::{TextAlignment, GenericFont as TextGenericFont};
         use blinc_layout::div::GenericFont as LayoutGenericFont;
+        use blinc_text::{GenericFont as TextGenericFont, TextAlignment};
 
         // Convert from layout GenericFont to text GenericFont
         let generic = match font_family.generic {
@@ -501,8 +508,8 @@ impl TestHarness {
                 color,
                 anchor,
                 TextAlignment::Left,
-                None,   // width
-                false,  // wrap
+                None,  // width
+                false, // wrap
                 font_family.name.as_deref(),
                 generic,
             )

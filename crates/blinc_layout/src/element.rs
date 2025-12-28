@@ -756,6 +756,9 @@ pub struct RenderProps {
     pub clips_content: bool,
     /// Motion animation configuration (enter/exit animations)
     pub motion: Option<MotionAnimation>,
+    /// Whether this is a Stack layer that increments z_layer for proper z-ordering
+    /// When true, entering this node increments the DrawContext's z_layer
+    pub is_stack_layer: bool,
 }
 
 impl Default for RenderProps {
@@ -771,6 +774,7 @@ impl Default for RenderProps {
             opacity: 1.0,
             clips_content: false,
             motion: None,
+            is_stack_layer: false,
         }
     }
 }

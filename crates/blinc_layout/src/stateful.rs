@@ -60,10 +60,10 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use blinc_core::reactive::SignalId;
 use crate::div::{Div, ElementBuilder, ElementRef, ElementTypeId};
 use crate::element::RenderProps;
 use crate::tree::{LayoutNodeId, LayoutTree};
+use blinc_core::reactive::SignalId;
 
 // =========================================================================
 // Global Redraw Flag
@@ -118,10 +118,13 @@ unsafe impl Send for PendingSubtreeRebuild {}
 
 /// Queue a subtree rebuild for a node
 pub fn queue_subtree_rebuild(parent_id: LayoutNodeId, new_child: crate::div::Div) {
-    PENDING_SUBTREE_REBUILDS.lock().unwrap().push(PendingSubtreeRebuild {
-        parent_id,
-        new_child,
-    });
+    PENDING_SUBTREE_REBUILDS
+        .lock()
+        .unwrap()
+        .push(PendingSubtreeRebuild {
+            parent_id,
+            new_child,
+        });
 }
 
 /// Take all pending subtree rebuilds
@@ -705,9 +708,12 @@ impl<S: StateTransitions> Stateful<S> {
         let deps = shared.lock().unwrap().deps.clone();
         if !deps.is_empty() {
             let shared_for_refresh = Arc::clone(&shared);
-            register_stateful_deps(deps, Box::new(move || {
-                refresh_stateful(&shared_for_refresh);
-            }));
+            register_stateful_deps(
+                deps,
+                Box::new(move || {
+                    refresh_stateful(&shared_for_refresh);
+                }),
+            );
         }
 
         self
@@ -784,7 +790,11 @@ impl<S: StateTransitions> Stateful<S> {
     ///
     /// This updates the state, computes new render props via the callback,
     /// and queues an incremental prop update. No tree rebuild is needed.
-    fn handle_event_internal(shared: &Arc<Mutex<StatefulInner<S>>>, event: u32, node_id: LayoutNodeId) {
+    fn handle_event_internal(
+        shared: &Arc<Mutex<StatefulInner<S>>>,
+        event: u32,
+        node_id: LayoutNodeId,
+    ) {
         let mut guard = shared.lock().unwrap();
 
         // Store node_id for future use
@@ -837,19 +847,17 @@ impl<S: StateTransitions> Stateful<S> {
         let guard = shared.lock().unwrap();
 
         // Need node_id and callback to refresh
-        let (callback, state_copy, cached_node_id, base_props) = match (
-            guard.state_callback.as_ref(),
-            guard.node_id,
-        ) {
-            (Some(cb), Some(nid)) => {
-                let callback = Arc::clone(cb);
-                let state = guard.state;
-                let base = guard.base_render_props.clone();
-                drop(guard);
-                (callback, state, nid, base)
-            }
-            _ => return,
-        };
+        let (callback, state_copy, cached_node_id, base_props) =
+            match (guard.state_callback.as_ref(), guard.node_id) {
+                (Some(cb), Some(nid)) => {
+                    let callback = Arc::clone(cb);
+                    let state = guard.state;
+                    let base = guard.base_render_props.clone();
+                    drop(guard);
+                    (callback, state, nid, base)
+                }
+                _ => return,
+            };
 
         // Create temp div, apply callback to get state-specific changes
         let mut temp_div = Div::new();
@@ -1056,6 +1064,12 @@ impl<S: StateTransitions> Stateful<S> {
     /// Set transform (builder pattern)
     pub fn transform(mut self, transform: blinc_core::Transform) -> Self {
         self.inner = self.inner.swap().transform(transform);
+        self
+    }
+
+    /// Set overflow to clip (clips children to container bounds)
+    pub fn overflow_clip(mut self) -> Self {
+        self.inner = self.inner.swap().overflow_clip();
         self
     }
 
@@ -1394,6 +1408,11 @@ impl<S: StateTransitions> BoundStateful<S> {
     /// Set transform (builder pattern)
     pub fn transform_style(self, xform: blinc_core::Transform) -> Self {
         self.transform_inner(|s| s.transform(xform))
+    }
+
+    /// Set overflow to clip (clips children to container bounds)
+    pub fn overflow_clip(self) -> Self {
+        self.transform_inner(|s| s.overflow_clip())
     }
 
     /// Add child (builder pattern)

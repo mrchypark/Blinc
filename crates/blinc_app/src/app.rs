@@ -120,8 +120,16 @@ impl BlincApp {
         // Preload common fonts that apps might use
         // This ensures fonts are cached before render time
         text_ctx.preload_fonts(&[
-            "Inter", "Fira Code", "Menlo", "SF Mono", "SF Pro", "Roboto",
-            "Consolas", "Monaco", "Source Code Pro", "JetBrains Mono",
+            "Inter",
+            "Fira Code",
+            "Menlo",
+            "SF Mono",
+            "SF Pro",
+            "Roboto",
+            "Consolas",
+            "Monaco",
+            "Source Code Pro",
+            "JetBrains Mono",
         ]);
 
         let ctx = RenderContext::new(renderer, text_ctx, device, queue, config.sample_count);
@@ -334,8 +342,16 @@ impl BlincApp {
         // Preload common fonts that apps might use
         // This ensures fonts are cached before render time
         text_ctx.preload_fonts(&[
-            "Inter", "Fira Code", "Menlo", "SF Mono", "SF Pro", "Roboto",
-            "Consolas", "Monaco", "Source Code Pro", "JetBrains Mono",
+            "Inter",
+            "Fira Code",
+            "Menlo",
+            "SF Mono",
+            "SF Pro",
+            "Roboto",
+            "Consolas",
+            "Monaco",
+            "Source Code Pro",
+            "JetBrains Mono",
         ]);
 
         let ctx = RenderContext::new(renderer, text_ctx, device, queue, config.sample_count);

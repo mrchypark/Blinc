@@ -5,7 +5,8 @@
 use blinc_core::{Brush, Color, CornerRadius, DrawCommand, Rect, Stroke};
 use blinc_gpu::{
     GenericFont as GpuGenericFont, GpuGlyph, GpuImage, GpuImageInstance, GpuPaintContext,
-    GpuRenderer, ImageRenderingContext, TextAlignment, TextAnchor, TextRenderingContext,
+    GpuRenderer, ImageRenderingContext, PrimitiveBatch, TextAlignment, TextAnchor,
+    TextRenderingContext,
 };
 use blinc_layout::div::{FontFamily, FontWeight, GenericFont, TextAlign, TextVerticalAlign};
 use blinc_layout::prelude::*;
@@ -67,6 +68,8 @@ struct TextElement {
     font_family: FontFamily,
     /// Word spacing in pixels (0.0 = normal)
     word_spacing: f32,
+    /// Z-index for rendering order (higher = on top)
+    z_index: u32,
 }
 
 /// Image element data for rendering
@@ -143,7 +146,6 @@ impl RenderContext {
 
         // Collect text, SVG, and image elements
         let (texts, svgs, images) = self.collect_render_elements(tree);
-
 
         // Pre-load all images into cache before rendering
         self.preload_images(&images);
@@ -574,6 +576,7 @@ impl RenderContext {
         let scale = tree.scale_factor();
 
         if let Some(root) = tree.root() {
+            let mut z_layer = 0u32;
             self.collect_elements_recursive(
                 tree,
                 root,
@@ -583,11 +586,15 @@ impl RenderContext {
                 1.0,  // Initial motion opacity
                 render_state,
                 scale,
+                &mut z_layer,
                 &mut texts,
                 &mut svgs,
                 &mut images,
             );
         }
+
+        // Sort texts by z_index (z_layer) to ensure correct rendering order with primitives
+        texts.sort_by_key(|t| t.z_index);
 
         (texts, svgs, images)
     }
@@ -602,6 +609,7 @@ impl RenderContext {
         inherited_motion_opacity: f32,
         render_state: Option<&blinc_layout::RenderState>,
         scale: f32,
+        z_layer: &mut u32,
         texts: &mut Vec<TextElement>,
         svgs: &mut Vec<(String, f32, f32, f32, f32)>,
         images: &mut Vec<ImageElement>,
@@ -643,6 +651,15 @@ impl RenderContext {
             .get_render_node(node)
             .map(|n| n.props.clips_content)
             .unwrap_or(false);
+
+        // Check if this is a Stack layer - if so, increment z_layer for proper z-ordering
+        let is_stack_layer = tree
+            .get_render_node(node)
+            .map(|n| n.props.is_stack_layer)
+            .unwrap_or(false);
+        if is_stack_layer {
+            *z_layer += 1;
+        }
 
         // Update clip bounds for children if this node clips
         // When a node clips, we INTERSECT its bounds with any existing clip
@@ -690,7 +707,7 @@ impl RenderContext {
                         .map(|[cx, cy, cw, ch]| [cx * scale, cy * scale, cw * scale, ch * scale]);
 
                     tracing::debug!(
-                        "Text '{}': abs=({:.1}, {:.1}), size=({:.1}x{:.1}), font={:.1}, align={:?}, v_align={:?}",
+                        "Text '{}': abs=({:.1}, {:.1}), size=({:.1}x{:.1}), font={:.1}, align={:?}, v_align={:?}, z_layer={}",
                         text_data.content,
                         scaled_x,
                         scaled_y,
@@ -698,8 +715,10 @@ impl RenderContext {
                         scaled_height,
                         scaled_font_size,
                         text_data.align,
-                        text_data.v_align
+                        text_data.v_align,
+                        *z_layer
                     );
+
                     texts.push(TextElement {
                         content: text_data.content.clone(),
                         x: scaled_x,
@@ -718,6 +737,7 @@ impl RenderContext {
                         measured_width: scaled_measured_width,
                         font_family: text_data.font_family.clone(),
                         word_spacing: text_data.word_spacing,
+                        z_index: *z_layer,
                     });
                 }
                 ElementType::Svg(svg_data) => {
@@ -761,12 +781,11 @@ impl RenderContext {
 
         // Include scroll offset and motion offset when calculating child positions
         let scroll_offset = tree.get_scroll_offset(node);
-        let motion_offset = tree.get_motion_transform(node)
-            .map(|t| {
-                match t {
-                    blinc_core::Transform::Affine2D(a) => (a.elements[4], a.elements[5]),
-                    _ => (0.0, 0.0),
-                }
+        let motion_offset = tree
+            .get_motion_transform(node)
+            .map(|t| match t {
+                blinc_core::Transform::Affine2D(a) => (a.elements[4], a.elements[5]),
+                _ => (0.0, 0.0),
             })
             .unwrap_or((0.0, 0.0));
         let new_offset = (
@@ -783,6 +802,7 @@ impl RenderContext {
                 effective_motion_opacity,
                 render_state,
                 scale,
+                z_layer,
                 texts,
                 svgs,
                 images,
@@ -863,8 +883,10 @@ impl RenderContext {
         // Pre-load all images into cache before rendering
         self.preload_images(&images);
 
-        // Prepare text glyphs
-        let mut all_glyphs = Vec::new();
+        // Prepare text glyphs with z_layer information
+        // Store (z_layer, glyphs) to enable interleaved rendering
+        let mut glyphs_by_layer: std::collections::BTreeMap<u32, Vec<GpuGlyph>> =
+            std::collections::BTreeMap::new();
         for text in &texts {
             let alignment = match text.align {
                 TextAlign::Left => TextAlignment::Left,
@@ -933,7 +955,11 @@ impl RenderContext {
                         glyph.clip_bounds = clip;
                     }
                 }
-                all_glyphs.extend(glyphs);
+                // Group glyphs by their z_layer
+                glyphs_by_layer
+                    .entry(text.z_index)
+                    .or_default()
+                    .extend(glyphs);
             }
         }
 
@@ -978,18 +1004,72 @@ impl RenderContext {
             self.render_images_ref(target, &bg_images);
             self.render_images_ref(target, &fg_images);
 
+            // Collect all glyphs for glass path (TODO: implement interleaved glass rendering)
+            let all_glyphs: Vec<_> = glyphs_by_layer.values().flatten().cloned().collect();
             if !all_glyphs.is_empty() {
                 self.render_text(target, &all_glyphs);
             }
         } else {
             // Simple path (no glass)
-            self.renderer
-                .render_with_clear(target, &batch, [0.0, 0.0, 0.0, 1.0]);
+            let max_z = batch.max_z_layer();
+            let max_text_z = glyphs_by_layer.keys().cloned().max().unwrap_or(0);
+            let max_layer = max_z.max(max_text_z);
 
-            self.render_images(target, &images);
+            if max_layer > 0 {
+                // Interleaved z-layer rendering for proper Stack z-ordering
+                // First pass: render z_layer=0 primitives with clear
+                let z0_primitives = batch.primitives_for_layer(0);
+                if !z0_primitives.is_empty() {
+                    // Create a temporary batch for z=0
+                    let mut z0_batch = PrimitiveBatch::new();
+                    z0_batch.primitives = z0_primitives;
+                    self.renderer
+                        .render_with_clear(target, &z0_batch, [0.0, 0.0, 0.0, 1.0]);
+                } else {
+                    // Still need to clear even if no z=0 primitives
+                    let empty_batch = PrimitiveBatch::new();
+                    self.renderer
+                        .render_with_clear(target, &empty_batch, [0.0, 0.0, 0.0, 1.0]);
+                }
 
-            if !all_glyphs.is_empty() {
-                self.render_text(target, &all_glyphs);
+                // Render z=0 text
+                if let Some(glyphs) = glyphs_by_layer.get(&0) {
+                    if !glyphs.is_empty() {
+                        self.render_text(target, glyphs);
+                    }
+                }
+
+                // Render subsequent layers interleaved
+                for z in 1..=max_layer {
+                    // Render primitives for this layer
+                    let layer_primitives = batch.primitives_for_layer(z);
+                    if !layer_primitives.is_empty() {
+                        self.renderer
+                            .render_primitives_overlay(target, &layer_primitives);
+                    }
+
+                    // Render text for this layer
+                    if let Some(glyphs) = glyphs_by_layer.get(&z) {
+                        if !glyphs.is_empty() {
+                            self.render_text(target, glyphs);
+                        }
+                    }
+                }
+
+                // Images render on top (existing behavior)
+                self.render_images(target, &images);
+            } else {
+                // No z-layers, use original fast path
+                self.renderer
+                    .render_with_clear(target, &batch, [0.0, 0.0, 0.0, 1.0]);
+
+                self.render_images(target, &images);
+
+                // Collect all glyphs for flat rendering
+                let all_glyphs: Vec<_> = glyphs_by_layer.values().flatten().cloned().collect();
+                if !all_glyphs.is_empty() {
+                    self.render_text(target, &all_glyphs);
+                }
             }
         }
 

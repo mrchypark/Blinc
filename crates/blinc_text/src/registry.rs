@@ -4,7 +4,7 @@
 
 use crate::font::FontFace;
 use crate::{Result, TextError};
-use fontdb::{Database, Family, Query, Source, Weight, Style, Stretch};
+use fontdb::{Database, Family, Query, Source, Stretch, Style, Weight};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -95,7 +95,10 @@ impl FontRegistry {
             Some(id) => id,
             None => {
                 self.faces.insert(name.to_string(), None);
-                return Err(TextError::FontLoadError(format!("Font '{}' not found", name)));
+                return Err(TextError::FontLoadError(format!(
+                    "Font '{}' not found",
+                    name
+                )));
             }
         };
 
@@ -112,22 +115,18 @@ impl FontRegistry {
     /// Load a font face by fontdb ID
     fn load_face_by_id(&self, id: fontdb::ID) -> Result<FontFace> {
         // Get the face source info
-        let (src, face_index) = self.db.face_source(id)
+        let (src, face_index) = self
+            .db
+            .face_source(id)
             .ok_or_else(|| TextError::FontLoadError("Font source not found".to_string()))?;
 
         // Load the font data
         let data = match src {
-            Source::File(path) => {
-                std::fs::read(&path).map_err(|e| {
-                    TextError::FontLoadError(format!("Failed to read font file {:?}: {}", path, e))
-                })?
-            }
-            Source::Binary(arc) => {
-                arc.as_ref().as_ref().to_vec()
-            }
-            Source::SharedFile(_path, data) => {
-                data.as_ref().as_ref().to_vec()
-            }
+            Source::File(path) => std::fs::read(&path).map_err(|e| {
+                TextError::FontLoadError(format!("Failed to read font file {:?}: {}", path, e))
+            })?,
+            Source::Binary(arc) => arc.as_ref().as_ref().to_vec(),
+            Source::SharedFile(_path, data) => data.as_ref().as_ref().to_vec(),
         };
 
         // Create FontFace with the correct index
@@ -165,7 +164,10 @@ impl FontRegistry {
             Some(id) => id,
             None => {
                 self.faces.insert(cache_key, None);
-                return Err(TextError::FontLoadError(format!("Generic font {:?} not found", generic)));
+                return Err(TextError::FontLoadError(format!(
+                    "Generic font {:?} not found",
+                    generic
+                )));
             }
         };
 
@@ -189,7 +191,12 @@ impl FontRegistry {
             // Check if we've already tried this font (avoid repeated warnings)
             let already_tried = self.faces.contains_key(name);
 
-            tracing::trace!("load_with_fallback: name={}, already_tried={}, cache_size={}", name, already_tried, self.faces.len());
+            tracing::trace!(
+                "load_with_fallback: name={}, already_tried={}, cache_size={}",
+                name,
+                already_tried,
+                self.faces.len()
+            );
 
             if let Ok(face) = self.load_font(name) {
                 return Ok(face);
@@ -218,7 +225,11 @@ impl FontRegistry {
 
     /// Fast font lookup for rendering - only uses cache, never loads
     /// Returns the requested font if cached, or None if loading is needed
-    pub fn get_for_render(&self, name: Option<&str>, generic: GenericFont) -> Option<Arc<FontFace>> {
+    pub fn get_for_render(
+        &self,
+        name: Option<&str>,
+        generic: GenericFont,
+    ) -> Option<Arc<FontFace>> {
         // Try named font from cache first
         if let Some(name) = name {
             // For named fonts, only return if we have that specific font cached
@@ -233,10 +244,10 @@ impl FontRegistry {
 
     /// List available font families on the system
     pub fn list_families(&self) -> Vec<String> {
-        let mut families: Vec<String> = self.db.faces()
-            .filter_map(|face| {
-                face.families.first().map(|(name, _)| name.clone())
-            })
+        let mut families: Vec<String> = self
+            .db
+            .faces()
+            .filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
             .collect();
 
         families.sort();
@@ -357,20 +368,28 @@ mod tests {
             Ok(f) => f,
             Err(_) => {
                 // Fall back to monospace
-                registry.load_generic(GenericFont::Monospace).expect("Should load monospace")
+                registry
+                    .load_generic(GenericFont::Monospace)
+                    .expect("Should load monospace")
             }
         };
 
         println!("\n=== Testing text shaping for 'SF Mono' ===");
-        println!("Using font: {} (face_index={})", font.family_name(), font.face_index());
+        println!(
+            "Using font: {} (face_index={})",
+            font.family_name(),
+            font.face_index()
+        );
 
         // Shape the text "SF"
         let shaped = shaper.shape("SF", &font, 24.0);
 
         println!("Shaped 'SF' -> {} glyphs:", shaped.glyphs.len());
         for (i, glyph) in shaped.glyphs.iter().enumerate() {
-            println!("  [{}] glyph_id={}, x_advance={}, cluster={}",
-                i, glyph.glyph_id, glyph.x_advance, glyph.cluster);
+            println!(
+                "  [{}] glyph_id={}, x_advance={}, cluster={}",
+                i, glyph.glyph_id, glyph.x_advance, glyph.cluster
+            );
         }
 
         // The glyph IDs for 'S' and 'F' should be different
@@ -384,8 +403,8 @@ mod tests {
 
     #[test]
     fn test_full_text_rendering() {
-        use crate::renderer::TextRenderer;
         use crate::layout::LayoutOptions;
+        use crate::renderer::TextRenderer;
 
         let mut renderer = TextRenderer::new();
 

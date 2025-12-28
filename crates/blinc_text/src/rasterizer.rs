@@ -52,7 +52,8 @@ impl GlyphRasterizer {
             .ok_or_else(|| TextError::InvalidFontData)?;
 
         // Create a scaler for this font at the requested size
-        let mut scaler = self.scale_context
+        let mut scaler = self
+            .scale_context
             .builder(swash_font)
             .size(font_size)
             .build();

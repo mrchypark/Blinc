@@ -69,7 +69,6 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         // Title
         .child(
             h2("Scroll Container Demo")
-               
                 .weight(FontWeight::Bold)
                 .color(Color::WHITE),
         )
@@ -125,9 +124,9 @@ fn build_direction_toggle(ctx: &WindowedContext, _current: ScrollDirection) -> i
                     // Merge changes into the div
                     container.merge(
                         div()
-                        .w_fit()
-                        .items_center()
-                        .justify_center()
+                            .w_fit()
+                            .items_center()
+                            .justify_center()
                             .bg(bg)
                             .child(span(label).weight(FontWeight::SemiBold).color(Color::WHITE)),
                     );

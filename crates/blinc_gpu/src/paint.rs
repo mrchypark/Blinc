@@ -109,6 +109,8 @@ pub struct GpuPaintContext<'a> {
     text_ctx: Option<&'a mut TextRenderingContext>,
     /// Whether we're rendering to the foreground layer (after glass)
     is_foreground: bool,
+    /// Current z-layer for interleaved rendering (used by Stack for proper z-ordering)
+    z_layer: u32,
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -125,6 +127,7 @@ impl<'a> GpuPaintContext<'a> {
             camera: None,
             text_ctx: None,
             is_foreground: false,
+            z_layer: 0,
         }
     }
 
@@ -153,6 +156,7 @@ impl<'a> GpuPaintContext<'a> {
             camera: None,
             text_ctx: Some(text_ctx),
             is_foreground: false,
+            z_layer: 0,
         }
     }
 
@@ -750,6 +754,14 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         self.is_foreground = is_foreground;
     }
 
+    fn set_z_layer(&mut self, layer: u32) {
+        self.z_layer = layer;
+    }
+
+    fn z_layer(&self) -> u32 {
+        self.z_layer
+    }
+
     fn fill_path(&mut self, path: &Path, brush: Brush) {
         // Tessellate the path using lyon
         let tessellated = tessellate_fill(path, &brush);
@@ -888,7 +900,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 PrimitiveType::Rect as u32,
                 fill_type as u32,
                 clip_type as u32,
-                0,
+                self.z_layer,
             ],
         };
 
@@ -936,7 +948,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 PrimitiveType::Rect as u32,
                 fill_type as u32,
                 clip_type as u32,
-                0,
+                self.z_layer,
             ],
         };
 
@@ -1006,7 +1018,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 PrimitiveType::Circle as u32,
                 fill_type as u32,
                 clip_type as u32,
-                0,
+                self.z_layer,
             ],
         };
 
@@ -1059,7 +1071,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 PrimitiveType::Circle as u32,
                 fill_type as u32,
                 clip_type as u32,
-                0,
+                self.z_layer,
             ],
         };
 
@@ -1179,7 +1191,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 PrimitiveType::Shadow as u32,
                 FillType::Solid as u32,
                 clip_type as u32,
-                0,
+                self.z_layer,
             ],
         };
 
@@ -1226,7 +1238,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 PrimitiveType::InnerShadow as u32,
                 FillType::Solid as u32,
                 clip_type as u32,
-                0,
+                self.z_layer,
             ],
         };
 
@@ -1270,7 +1282,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 PrimitiveType::CircleShadow as u32,
                 FillType::Solid as u32,
                 clip_type as u32,
-                0,
+                self.z_layer,
             ],
         };
 
@@ -1313,7 +1325,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 PrimitiveType::CircleInnerShadow as u32,
                 FillType::Solid as u32,
                 clip_type as u32,
-                0,
+                self.z_layer,
             ],
         };
 

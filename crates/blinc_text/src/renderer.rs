@@ -322,7 +322,9 @@ impl TextRenderer {
         // We need to map glyph cluster (byte position) to color
         let byte_positions: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
 
-        for (i, (positioned, glyph_info)) in positioned_glyphs.iter().zip(glyph_infos.iter()).enumerate() {
+        for (i, (positioned, glyph_info)) in
+            positioned_glyphs.iter().zip(glyph_infos.iter()).enumerate()
+        {
             let glyph_info = match glyph_info {
                 Some(info) => *info,
                 None => continue,
@@ -363,11 +365,7 @@ impl TextRenderer {
 
     /// Resolve font by name or generic category, with fallback to default
     /// Uses only cached fonts - fonts should be preloaded at app startup
-    fn resolve_font(
-        &self,
-        font_name: Option<&str>,
-        generic: GenericFont,
-    ) -> Result<Arc<FontFace>> {
+    fn resolve_font(&self, font_name: Option<&str>, generic: GenericFont) -> Result<Arc<FontFace>> {
         // Use cache-only lookup - fonts should be preloaded at startup
         if let Some(font) = self.font_registry.get_for_render(font_name, generic) {
             return Ok(font);
@@ -379,13 +377,16 @@ impl TextRenderer {
                 return Ok(font);
             }
             // Ultimate fallback to SansSerif
-            if let Some(font) = self.font_registry.get_cached_generic(GenericFont::SansSerif) {
+            if let Some(font) = self
+                .font_registry
+                .get_cached_generic(GenericFont::SansSerif)
+            {
                 return Ok(font);
             }
         }
 
         Err(TextError::FontLoadError(
-            "No fonts available - fonts should be preloaded at startup".to_string()
+            "No fonts available - fonts should be preloaded at startup".to_string(),
         ))
     }
 

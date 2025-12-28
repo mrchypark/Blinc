@@ -850,6 +850,20 @@ pub trait DrawContext {
         // Default implementation does nothing (for contexts that don't support layering)
     }
 
+    /// Set the current z-layer for rendering
+    ///
+    /// Z-layers are used to interleave primitive and text rendering for proper
+    /// Stack z-ordering. Each Stack child increments the z-layer, ensuring that
+    /// all content (primitives + text) within that child renders together.
+    fn set_z_layer(&mut self, _layer: u32) {
+        // Default implementation does nothing
+    }
+
+    /// Get the current z-layer
+    fn z_layer(&self) -> u32 {
+        0
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 2D Drawing Operations
     // ─────────────────────────────────────────────────────────────────────────

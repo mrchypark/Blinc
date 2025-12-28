@@ -87,9 +87,9 @@ impl Default for ScrollConfig {
             // Critical damping = 2 * sqrt(stiffness * mass) = 2 * sqrt(3000) ≈ 109.5
             // Using damping = 110 (slightly overdamped) for fast snap with no rebound
             bounce_spring: SpringConfig::new(3000.0, 110.0, 1.0),
-            deceleration: 1500.0,    // Decelerate at 1500 px/s²
+            deceleration: 1500.0,     // Decelerate at 1500 px/s²
             velocity_threshold: 10.0, // Stop when below 10 px/s
-            max_overscroll: 0.3,     // 30% of viewport for visible elastic effect
+            max_overscroll: 0.3,      // 30% of viewport for visible elastic effect
             direction: ScrollDirection::Vertical,
         }
     }
@@ -185,7 +185,10 @@ impl ScrollPhysics {
     }
 
     /// Create new physics with scheduler for animation-driven bounce
-    pub fn with_scheduler(config: ScrollConfig, scheduler: &Arc<Mutex<AnimationScheduler>>) -> Self {
+    pub fn with_scheduler(
+        config: ScrollConfig,
+        scheduler: &Arc<Mutex<AnimationScheduler>>,
+    ) -> Self {
         Self {
             config,
             scheduler: Arc::downgrade(scheduler),
@@ -297,10 +300,10 @@ impl ScrollPhysics {
             ScrollDirection::Vertical | ScrollDirection::Both
         ) {
             let overscroll = self.overscroll_amount_y();
-            let pushing_further = (overscroll > 0.0 && delta_y > 0.0)
-                || (overscroll < 0.0 && delta_y < 0.0);
-            let pulling_back = (overscroll > 0.0 && delta_y < 0.0)
-                || (overscroll < 0.0 && delta_y > 0.0);
+            let pushing_further =
+                (overscroll > 0.0 && delta_y > 0.0) || (overscroll < 0.0 && delta_y < 0.0);
+            let pulling_back =
+                (overscroll > 0.0 && delta_y < 0.0) || (overscroll < 0.0 && delta_y > 0.0);
 
             // If overscrolling and delta is trying to pull us back (momentum),
             // ignore it - let the spring handle the return animation instead.
@@ -345,10 +348,10 @@ impl ScrollPhysics {
             ScrollDirection::Horizontal | ScrollDirection::Both
         ) {
             let overscroll = self.overscroll_amount_x();
-            let pushing_further = (overscroll > 0.0 && delta_x > 0.0)
-                || (overscroll < 0.0 && delta_x < 0.0);
-            let pulling_back = (overscroll > 0.0 && delta_x < 0.0)
-                || (overscroll < 0.0 && delta_x > 0.0);
+            let pushing_further =
+                (overscroll > 0.0 && delta_x > 0.0) || (overscroll < 0.0 && delta_x < 0.0);
+            let pulling_back =
+                (overscroll > 0.0 && delta_x < 0.0) || (overscroll < 0.0 && delta_x > 0.0);
 
             // If overscrolling and delta is trying to pull us back (momentum),
             // ignore it - let the spring handle the return animation instead.
@@ -524,8 +527,12 @@ impl ScrollPhysics {
                 // Read spring values from scheduler (scheduler ticks them on background thread)
                 let Some(scheduler_arc) = self.scheduler.upgrade() else {
                     // No scheduler - snap to bounds and settle
-                    self.offset_y = self.offset_y.clamp(self.max_offset_y(), self.min_offset_y());
-                    self.offset_x = self.offset_x.clamp(self.max_offset_x(), self.min_offset_x());
+                    self.offset_y = self
+                        .offset_y
+                        .clamp(self.max_offset_y(), self.min_offset_y());
+                    self.offset_x = self
+                        .offset_x
+                        .clamp(self.max_offset_x(), self.min_offset_x());
                     self.state = ScrollState::Idle;
                     return false;
                 };

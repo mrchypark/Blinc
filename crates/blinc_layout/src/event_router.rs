@@ -302,7 +302,13 @@ impl EventRouter {
                 events.push((target, event_types::DRAG));
 
                 // Collect ancestors to avoid borrow conflict
-                let ancestors: Vec<_> = self.pressed_ancestors.iter().rev().skip(1).copied().collect();
+                let ancestors: Vec<_> = self
+                    .pressed_ancestors
+                    .iter()
+                    .rev()
+                    .skip(1)
+                    .copied()
+                    .collect();
                 for ancestor in ancestors {
                     self.emit_event(ancestor, event_types::DRAG);
                     events.push((ancestor, event_types::DRAG));
@@ -804,15 +810,7 @@ impl EventRouter {
         // Check children
         let children = tree.layout().children(node);
         for child in children {
-            self.hit_test_node_all(
-                tree,
-                child,
-                x,
-                y,
-                child_offset,
-                ancestors.clone(),
-                results,
-            );
+            self.hit_test_node_all(tree, child, x, y, child_offset, ancestors.clone(), results);
         }
     }
 

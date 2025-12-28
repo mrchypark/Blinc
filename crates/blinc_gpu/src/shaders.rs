@@ -38,6 +38,7 @@ const PRIM_SHADOW: u32 = 3u;
 const PRIM_INNER_SHADOW: u32 = 4u;
 const PRIM_CIRCLE_SHADOW: u32 = 5u;
 const PRIM_CIRCLE_INNER_SHADOW: u32 = 6u;
+const PRIM_TEXT: u32 = 7u;  // Text glyph - samples from atlas texture
 
 // Fill types
 const FILL_SOLID: u32 = 0u;

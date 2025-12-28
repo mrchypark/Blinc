@@ -577,6 +577,7 @@ impl ElementBuilder for Image {
             opacity: self.opacity,
             clips_content: false,
             motion: None,
+            is_stack_layer: false,
         }
     }
 

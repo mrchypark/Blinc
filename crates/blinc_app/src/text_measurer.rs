@@ -159,10 +159,7 @@ impl TextMeasurer for FontTextMeasurer {
 
         // Fast path: use cached fonts only (never load during measurement)
         let registry = self.font_registry.lock().unwrap();
-        let font = match registry.get_for_render(
-            options.font_name.as_deref(),
-            generic_font,
-        ) {
+        let font = match registry.get_for_render(options.font_name.as_deref(), generic_font) {
             Some(f) => f,
             None => return Self::estimate_size(text, font_size, options),
         };

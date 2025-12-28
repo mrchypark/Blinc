@@ -975,7 +975,10 @@ impl RenderTree {
 
         tracing::trace!(
             "dispatch_scroll_chain: hit={:?}, chain_len={}, delta=({:.1}, {:.1})",
-            hit_node, chain.len(), delta_x, delta_y
+            hit_node,
+            chain.len(),
+            delta_x,
+            delta_y
         );
 
         // Dispatch to each node in the chain
@@ -1000,10 +1003,17 @@ impl RenderTree {
 
             // Determine if this scroll handles each axis (based on direction)
             let handles_x = direction.map_or(false, |d| {
-                matches!(d, crate::scroll::ScrollDirection::Horizontal | crate::scroll::ScrollDirection::Both)
+                matches!(
+                    d,
+                    crate::scroll::ScrollDirection::Horizontal
+                        | crate::scroll::ScrollDirection::Both
+                )
             });
             let handles_y = direction.map_or(false, |d| {
-                matches!(d, crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both)
+                matches!(
+                    d,
+                    crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both
+                )
             });
 
             // Dispatch the remaining delta for axes this scroll handles
@@ -1026,7 +1036,9 @@ impl RenderTree {
 
                 tracing::trace!(
                     "    dispatching to {:?}: delta=({:.1}, {:.1})",
-                    node_id, dispatch_x, dispatch_y
+                    node_id,
+                    dispatch_x,
+                    dispatch_y
                 );
                 self.handler_registry.dispatch(&ctx);
 
@@ -1167,26 +1179,34 @@ impl RenderTree {
     /// Returns the current translation transform from any bound AnimatedValue(s).
     /// This is sampled every frame, enabling continuous smooth animations.
     pub fn get_motion_transform(&self, node_id: LayoutNodeId) -> Option<Transform> {
-        self.motion_bindings.get(&node_id).and_then(|b| b.get_transform())
+        self.motion_bindings
+            .get(&node_id)
+            .and_then(|b| b.get_transform())
     }
 
     /// Get the motion scale for a node (if it has motion bindings)
     ///
     /// Returns (scale_x, scale_y) if scale bindings are present.
     pub fn get_motion_scale(&self, node_id: LayoutNodeId) -> Option<(f32, f32)> {
-        self.motion_bindings.get(&node_id).and_then(|b| b.get_scale())
+        self.motion_bindings
+            .get(&node_id)
+            .and_then(|b| b.get_scale())
     }
 
     /// Get the motion rotation for a node (if it has motion bindings)
     ///
     /// Returns rotation in degrees if rotation binding is present.
     pub fn get_motion_rotation(&self, node_id: LayoutNodeId) -> Option<f32> {
-        self.motion_bindings.get(&node_id).and_then(|b| b.get_rotation())
+        self.motion_bindings
+            .get(&node_id)
+            .and_then(|b| b.get_rotation())
     }
 
     /// Get the motion opacity for a node (if it has motion bindings)
     pub fn get_motion_opacity(&self, node_id: LayoutNodeId) -> Option<f32> {
-        self.motion_bindings.get(&node_id).and_then(|b| b.get_opacity())
+        self.motion_bindings
+            .get(&node_id)
+            .and_then(|b| b.get_opacity())
     }
 
     /// Check if a node has motion bindings
@@ -1197,10 +1217,13 @@ impl RenderTree {
     /// Get the scroll direction for a node (if it's a scroll container)
     ///
     /// Returns None if the node is not a scroll container.
-    pub fn get_scroll_direction(&self, node_id: LayoutNodeId) -> Option<crate::scroll::ScrollDirection> {
-        self.scroll_physics.get(&node_id).and_then(|physics| {
-            physics.try_lock().ok().map(|p| p.config.direction)
-        })
+    pub fn get_scroll_direction(
+        &self,
+        node_id: LayoutNodeId,
+    ) -> Option<crate::scroll::ScrollDirection> {
+        self.scroll_physics
+            .get(&node_id)
+            .and_then(|physics| physics.try_lock().ok().map(|p| p.config.direction))
     }
 
     /// Check if a scroll container can scroll in the given delta direction
@@ -1211,7 +1234,12 @@ impl RenderTree {
     /// A scroll container consumes scroll for its direction(s) unless:
     /// - It has no scrollable content (content fits within viewport)
     /// - It's at an edge AND scrolling further into that edge AND bounce is disabled
-    pub fn can_consume_scroll(&self, node_id: LayoutNodeId, delta_x: f32, delta_y: f32) -> (bool, bool) {
+    pub fn can_consume_scroll(
+        &self,
+        node_id: LayoutNodeId,
+        delta_x: f32,
+        delta_y: f32,
+    ) -> (bool, bool) {
         let Some(physics) = self.scroll_physics.get(&node_id) else {
             return (false, false);
         };
@@ -1874,6 +1902,14 @@ impl RenderTree {
         // Determine if this node is a glass element
         let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
         let children_inside_glass = inside_glass || is_glass;
+
+        // Increment z_layer for Stack children for proper interleaved rendering
+        // This ensures primitives AND text in each Stack layer render together
+        let is_stack_layer = render_node.props.is_stack_layer;
+        if is_stack_layer {
+            let current_z = ctx.z_layer();
+            ctx.set_z_layer(current_z + 1);
+        }
 
         // Push clip if needed
         let clips_content = render_node.props.clips_content;
@@ -2562,11 +2598,9 @@ impl RenderTree {
         let motion_transform = self.get_motion_transform(node);
         let motion_offset = motion_transform
             .as_ref()
-            .map(|t| {
-                match t {
-                    Transform::Affine2D(a) => (a.elements[4], a.elements[5]),
-                    _ => (0.0, 0.0),
-                }
+            .map(|t| match t {
+                Transform::Affine2D(a) => (a.elements[4], a.elements[5]),
+                _ => (0.0, 0.0),
             })
             .unwrap_or((0.0, 0.0));
 
@@ -2644,12 +2678,11 @@ impl RenderTree {
         // - motion_offset: this node's motion transform translation (for animated elements)
         let scroll_offset = self.get_scroll_offset(node);
 
-        let motion_offset = self.get_motion_transform(node)
-            .map(|t| {
-                match t {
-                    Transform::Affine2D(a) => (a.elements[4], a.elements[5]),
-                    _ => (0.0, 0.0),
-                }
+        let motion_offset = self
+            .get_motion_transform(node)
+            .map(|t| match t {
+                Transform::Affine2D(a) => (a.elements[4], a.elements[5]),
+                _ => (0.0, 0.0),
             })
             .unwrap_or((0.0, 0.0));
 

@@ -2061,6 +2061,68 @@ impl GpuRenderer {
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
+    /// Render a slice of primitives as overlay (LoadOp::Load, keeps existing content)
+    ///
+    /// This is used for interleaved z-layer rendering where primitives need
+    /// to be rendered per-layer to properly interleave with text.
+    pub fn render_primitives_overlay(
+        &mut self,
+        target: &wgpu::TextureView,
+        primitives: &[GpuPrimitive],
+    ) {
+        if primitives.is_empty() {
+            return;
+        }
+
+        // Update uniforms
+        let uniforms = Uniforms {
+            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
+            _padding: [0.0; 2],
+        };
+        self.queue
+            .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
+
+        // Update primitives buffer
+        self.queue.write_buffer(
+            &self.buffers.primitives,
+            0,
+            bytemuck::cast_slice(primitives),
+        );
+
+        // Create command encoder
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Blinc Layer Primitives Encoder"),
+            });
+
+        // Begin render pass (load existing content)
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blinc Layer Primitives Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // Render SDF primitives
+            render_pass.set_pipeline(&self.pipelines.sdf_overlay);
+            render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+            render_pass.draw(0..6, 0..primitives.len() as u32);
+        }
+
+        // Submit commands
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
     /// Render overlay primitives with MSAA anti-aliasing
     ///
     /// This method renders paths/primitives to a temporary MSAA texture,

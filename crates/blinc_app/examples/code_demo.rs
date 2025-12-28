@@ -221,7 +221,6 @@ fn line_numbers_section() -> Div {
                 .direction(ScrollDirection::Horizontal)
                 .child(
                     div()
-                      
                         .flex_row()
                         .gap(5.0)
                         .justify_between()
@@ -242,7 +241,6 @@ fn line_numbers_section() -> Div {
                         .child(div().h_full().w(1.0).bg(Color::WHITE.with_alpha(0.5)))
                         .child(
                             div()
-                               
                                 .flex_col()
                                 .gap(4.0)
                                 .flex_grow()

@@ -340,7 +340,12 @@ impl TextRenderingContext {
             .glyphs
             .iter()
             .map(|g| GpuGlyph {
-                bounds: [g.bounds[0] + x, g.bounds[1] + y_offset, g.bounds[2], g.bounds[3]],
+                bounds: [
+                    g.bounds[0] + x,
+                    g.bounds[1] + y_offset,
+                    g.bounds[2],
+                    g.bounds[3],
+                ],
                 uv_bounds: g.uv_bounds,
                 color: g.color,
                 clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
