@@ -14,6 +14,7 @@ use blinc_core::{Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle,
 use taffy::prelude::*;
 
 use crate::canvas::CanvasData;
+use crate::diff::DivHash;
 use crate::div::{ElementBuilder, ElementTypeId};
 use crate::element::{ElementBounds, GlassMaterial, Material, RenderLayer, RenderProps};
 use crate::tree::{LayoutNodeId, LayoutTree};
@@ -248,6 +249,22 @@ pub struct RenderTree {
     scale_factor: f32,
     /// Animation scheduler for scroll bounce springs
     animations: Weak<Mutex<AnimationScheduler>>,
+    /// Hash of the element tree used to build this RenderTree
+    /// Used for quick equality checks to skip unnecessary rebuilds
+    tree_hash: Option<DivHash>,
+}
+
+/// Result of an incremental update attempt
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateResult {
+    /// No changes detected, tree unchanged
+    NoChanges,
+    /// Only visual properties changed (no layout needed)
+    VisualOnly,
+    /// Layout properties changed (layout needs recomputation)
+    LayoutChanged,
+    /// Structure changed (full rebuild was performed)
+    FullRebuild,
 }
 
 impl Default for RenderTree {
@@ -272,6 +289,7 @@ impl RenderTree {
             last_scroll_tick_ms: None,
             scale_factor: 1.0,
             animations: Weak::new(),
+            tree_hash: None,
         }
     }
 
@@ -289,8 +307,101 @@ impl RenderTree {
     /// Build a render tree from an element builder
     pub fn from_element<E: ElementBuilder>(element: &E) -> Self {
         let mut tree = Self::new();
+        // Compute tree hash for change detection
+        tree.tree_hash = Some(DivHash::compute_element_tree(element));
         tree.root = Some(tree.build_element(element));
         tree
+    }
+
+    /// Get the tree hash for this render tree
+    pub fn tree_hash(&self) -> Option<DivHash> {
+        self.tree_hash
+    }
+
+    /// Check if a new element tree would produce the same render tree
+    ///
+    /// Returns true if the element tree hash matches, meaning no rebuild is needed.
+    pub fn matches_element<E: ElementBuilder>(&self, element: &E) -> bool {
+        match self.tree_hash {
+            Some(hash) => hash == DivHash::compute_element_tree(element),
+            None => false,
+        }
+    }
+
+    /// Update the render tree from a new element if it has changed
+    ///
+    /// Returns `true` if the tree was updated, `false` if no changes were detected.
+    /// This is an optimization to skip full rebuilds when the UI hasn't changed.
+    pub fn update_if_changed<E: ElementBuilder>(&mut self, element: &E) -> bool {
+        let new_hash = DivHash::compute_element_tree(element);
+
+        // If hash matches, no changes - skip rebuild
+        if self.tree_hash == Some(new_hash) {
+            return false;
+        }
+
+        // Hash differs - need to rebuild
+        // For now, do a full rebuild. Future optimization: use diff for incremental updates
+        self.tree_hash = Some(new_hash);
+
+        // Clear existing data
+        self.render_nodes.clear();
+        self.handler_registry = crate::event_handler::HandlerRegistry::new();
+
+        // Preserve node_states, scroll_offsets, scroll_physics, motion_bindings
+        // as these should survive rebuilds
+
+        // Rebuild the layout tree
+        self.layout_tree = LayoutTree::new();
+        self.root = Some(self.build_element(element));
+
+        true
+    }
+
+    /// Incrementally update the render tree from a new element
+    ///
+    /// This method attempts to apply minimal updates based on what changed:
+    /// - If nothing changed: returns NoChanges, no work done
+    /// - If only visual props changed: updates render props, returns VisualOnly
+    /// - If layout changed: updates props + needs relayout, returns LayoutChanged
+    /// - If children changed: does full rebuild, returns FullRebuild
+    ///
+    /// The caller should:
+    /// - NoChanges: skip layout and just render
+    /// - VisualOnly: skip layout, just render with updated props
+    /// - LayoutChanged: call compute_layout(), then render
+    /// - FullRebuild: call compute_layout(), transfer states, then render
+    pub fn incremental_update<E: ElementBuilder>(&mut self, element: &E) -> UpdateResult {
+        let new_hash = DivHash::compute_element_tree(element);
+
+        // Quick path: if hash matches, nothing changed
+        if self.tree_hash == Some(new_hash) {
+            return UpdateResult::NoChanges;
+        }
+
+        // Hash differs - need to analyze what changed
+        // For now, we do a simplified check: compute element's own hash (without children)
+        // vs the new element to determine change category
+
+        // Since we don't have the old element stored, we need to do a full rebuild
+        // for any structural change. However, we can optimize the common case of
+        // prop-only changes by walking the tree and updating props in place.
+
+        // For this initial implementation, we categorize based on tree hash change:
+        // - Different hash = something changed = need rebuild
+        // Future optimization: store element references or per-node hashes for
+        // more granular change detection
+
+        // Update the stored hash
+        self.tree_hash = Some(new_hash);
+
+        // Clear and rebuild
+        self.render_nodes.clear();
+        self.handler_registry = crate::event_handler::HandlerRegistry::new();
+        self.layout_tree = LayoutTree::new();
+        self.root = Some(self.build_element(element));
+
+        UpdateResult::FullRebuild
     }
 
     /// Set the DPI scale factor for this render tree

@@ -1405,34 +1405,50 @@ impl WindowedApp {
                             // =========================================================
 
                             if needs_rebuild || render_tree.is_none() {
-                                // Build UI and create render tree
+                                // Build UI element tree
                                 let ui = ui_builder(windowed_ctx);
-                                let mut tree = RenderTree::from_element(&ui);
 
-                                // Set animation scheduler for scroll bounce springs
-                                tree.set_animations(&windowed_ctx.animations);
+                                // Check if tree hash matches existing tree (optimization)
+                                let needs_full_rebuild = if let Some(ref existing_tree) = render_tree {
+                                    // Use hash comparison to skip rebuild if unchanged
+                                    !existing_tree.matches_element(&ui)
+                                } else {
+                                    true // No existing tree, must build
+                                };
 
-                                // Set DPI scale factor for HiDPI rendering
-                                // Layout uses logical pixels (ctx.width/height), then scaling
-                                // is applied at render time to map to physical pixels
-                                tree.set_scale_factor(windowed_ctx.scale_factor as f32);
+                                if needs_full_rebuild {
+                                    // Hash differs or no tree exists - do full rebuild
+                                    let mut tree = RenderTree::from_element(&ui);
 
-                                // Compute layout in logical pixels
-                                tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                    // Set animation scheduler for scroll bounce springs
+                                    tree.set_animations(&windowed_ctx.animations);
 
-                                // Transfer node states from old tree to preserve state across rebuilds
-                                // Note: scroll_physics comes from the element itself via scroll_physics()
-                                // and should NOT be transferred to avoid desync with element handlers
-                                if let Some(ref old_tree) = render_tree {
-                                    tree.transfer_states_from(old_tree);
-                                    // Legacy scroll_offsets still transferred for non-physics scroll
-                                    tree.transfer_scroll_offsets_from(old_tree);
+                                    // Set DPI scale factor for HiDPI rendering
+                                    // Layout uses logical pixels (ctx.width/height), then scaling
+                                    // is applied at render time to map to physical pixels
+                                    tree.set_scale_factor(windowed_ctx.scale_factor as f32);
+
+                                    // Compute layout in logical pixels
+                                    tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+
+                                    // Transfer node states from old tree to preserve state across rebuilds
+                                    // Note: scroll_physics comes from the element itself via scroll_physics()
+                                    // and should NOT be transferred to avoid desync with element handlers
+                                    if let Some(ref old_tree) = render_tree {
+                                        tree.transfer_states_from(old_tree);
+                                        // Legacy scroll_offsets still transferred for non-physics scroll
+                                        tree.transfer_scroll_offsets_from(old_tree);
+                                    }
+
+                                    // Initialize motion animations for any nodes wrapped in motion() containers
+                                    tree.initialize_motion_animations(rs);
+
+                                    render_tree = Some(tree);
+                                } else {
+                                    // Hash matches - tree is identical, skip rebuild
+                                    tracing::trace!("Skipping rebuild: tree hash unchanged");
                                 }
 
-                                // Initialize motion animations for any nodes wrapped in motion() containers
-                                tree.initialize_motion_animations(rs);
-
-                                render_tree = Some(tree);
                                 needs_rebuild = false;
                             }
 
