@@ -8,13 +8,12 @@
 //!
 //! Run with: cargo run -p blinc_app --example keyframe_canvas --features windowed
 
-use blinc_animation::{AnimatedTimeline, Easing, KeyframeProperties, MultiKeyframeAnimation};
+use blinc_animation::timeline::TimelineEntryId;
 use blinc_app::prelude::*;
-use blinc_app::windowed::{WindowedApp, WindowedContext};
+use blinc_app::windowed::{SharedAnimatedTimeline, WindowedApp, WindowedContext};
 use blinc_core::{Brush, Color, CornerRadius, DrawContext, Gradient, Point, Rect};
-use std::cell::RefCell;
 use std::f32::consts::PI;
-use std::rc::Rc;
+use std::sync::Arc;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -67,21 +66,24 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
 
 /// Demo 1: Spinning loader using rotation keyframes
 fn spinning_loader_demo(ctx: &WindowedContext) -> Div {
-    // Create a looping rotation animation using timeline
-    let rotation = Rc::new(RefCell::new({
-        let mut timeline = AnimatedTimeline::new(ctx.animation_handle());
-        let entry = timeline.add(0, 1000, 0.0, 360.0); // 1 second full rotation
-        timeline.set_loop(-1); // Infinite loop
-        timeline.start();
-        (timeline, entry)
-    }));
+    // Create a looping rotation animation using timeline - persisted across UI rebuilds
+    // Uses #[track_caller] to auto-generate unique key from call site
+    let timeline = ctx.use_animated_timeline();
 
-    let render_rotation = Rc::clone(&rotation);
+    // Configure timeline on first use (closure only runs once, returns existing IDs after)
+    let entry_id = timeline.lock().unwrap().configure(|t| {
+        let entry = t.add(0, 1000, 0.0, 360.0); // 1 second full rotation
+        t.set_loop(-1); // Infinite loop
+        t.start();
+        entry
+    });
+
+    let render_timeline = Arc::clone(&timeline);
 
     demo_card("Spinning Loader").child(
         canvas(move |ctx: &mut dyn DrawContext, bounds| {
-            let (timeline, entry) = &*render_rotation.borrow();
-            let angle_deg = timeline.get(*entry).unwrap_or(0.0);
+            let timeline = render_timeline.lock().unwrap();
+            let angle_deg = timeline.get(entry_id).unwrap_or(0.0);
             let angle_rad = angle_deg * PI / 180.0;
 
             let cx = bounds.width / 2.0;
@@ -132,21 +134,29 @@ fn spinning_loader_demo(ctx: &WindowedContext) -> Div {
 
 /// Demo 2: Pulsing dots with staggered keyframes
 fn pulsing_dots_demo(ctx: &WindowedContext) -> Div {
-    // Create three dots with staggered pulse animations
-    let dots: Vec<Rc<RefCell<(AnimatedTimeline, _, _)>>> = (0..3)
-        .map(|i| {
-            let mut timeline = AnimatedTimeline::new(ctx.animation_handle());
-            // Stagger start by 200ms per dot
-            let offset = i as i32 * 200;
-            let scale_entry = timeline.add(offset, 600, 0.5, 1.0);
-            let opacity_entry = timeline.add(offset, 600, 0.3, 1.0);
-            timeline.set_loop(-1);
-            timeline.start();
-            Rc::new(RefCell::new((timeline, scale_entry, opacity_entry)))
+    // Create three dots with staggered pulse animations - persisted across UI rebuilds
+    let timelines: Vec<SharedAnimatedTimeline> = (0..3)
+        .map(|i| ctx.use_animated_timeline_for(format!("pulsing_dot_{}", i)))
+        .collect();
+
+    // Configure timelines on first use (closure only runs once per timeline)
+    let entry_ids: Vec<(TimelineEntryId, TimelineEntryId)> = timelines
+        .iter()
+        .enumerate()
+        .map(|(i, timeline)| {
+            timeline.lock().unwrap().configure(|t| {
+                // Stagger start by 200ms per dot
+                let offset = i as i32 * 200;
+                let scale_entry = t.add(offset, 600, 0.5, 1.0);
+                let opacity_entry = t.add(offset, 600, 0.3, 1.0);
+                t.set_loop(-1);
+                t.start();
+                (scale_entry, opacity_entry)
+            })
         })
         .collect();
 
-    let dots_clone = dots.clone();
+    let timelines_clone: Vec<_> = timelines.iter().map(Arc::clone).collect();
 
     demo_card("Pulsing Dots").child(
         canvas(move |ctx: &mut dyn DrawContext, bounds| {
@@ -155,10 +165,12 @@ fn pulsing_dots_demo(ctx: &WindowedContext) -> Div {
             let dot_radius = 8.0;
             let spacing = 25.0;
 
-            for (i, dot) in dots_clone.iter().enumerate() {
-                let (timeline, scale_entry, opacity_entry) = &*dot.borrow();
-                let scale = timeline.get(*scale_entry).unwrap_or(1.0);
-                let opacity = timeline.get(*opacity_entry).unwrap_or(1.0);
+            for (i, (timeline, (scale_entry, opacity_entry))) in
+                timelines_clone.iter().zip(entry_ids.iter()).enumerate()
+            {
+                let t = timeline.lock().unwrap();
+                let scale = t.get(*scale_entry).unwrap_or(1.0);
+                let opacity = t.get(*opacity_entry).unwrap_or(1.0);
 
                 let x = cx + (i as f32 - 1.0) * spacing;
                 let r = dot_radius * scale;
@@ -177,23 +189,25 @@ fn pulsing_dots_demo(ctx: &WindowedContext) -> Div {
 
 /// Demo 3: Progress bar with eased fill animation
 fn progress_bar_demo(ctx: &WindowedContext) -> Div {
-    // Keyframe animation for progress (with ease-in-out)
-    let progress = Rc::new(RefCell::new({
-        let mut timeline = AnimatedTimeline::new(ctx.animation_handle());
-        // Create keyframes: slow start, fast middle, slow end
-        let entry = timeline.add(0, 2000, 0.0, 1.0);
-        timeline.start();
-        (timeline, entry)
-    }));
+    // Keyframe animation for progress - persisted across UI rebuilds
+    // Uses #[track_caller] to auto-generate unique key from call site
+    let timeline = ctx.use_animated_timeline();
 
-    let render_progress = Rc::clone(&progress);
-    let click_progress = Rc::clone(&progress);
+    // Configure timeline on first use (closure only runs once, returns existing IDs after)
+    let entry_id = timeline.lock().unwrap().configure(|t| {
+        let entry = t.add(0, 2000, 0.0, 1.0);
+        t.start();
+        entry
+    });
+
+    let render_timeline = Arc::clone(&timeline);
+    let click_timeline = Arc::clone(&timeline);
 
     demo_card("Progress Bar")
         .child(
             canvas(move |ctx: &mut dyn DrawContext, bounds| {
-                let (timeline, entry) = &*render_progress.borrow();
-                let progress_val = timeline.get(*entry).unwrap_or(0.0);
+                let timeline = render_timeline.lock().unwrap();
+                let progress_val = timeline.get(entry_id).unwrap_or(0.0);
 
                 let bar_width = bounds.width - 20.0;
                 let bar_height = 12.0;
@@ -223,7 +237,7 @@ fn progress_bar_demo(ctx: &WindowedContext) -> Div {
                 }
 
                 // Percentage text background
-                let percent = (progress_val * 100.0) as i32;
+                let _percent = (progress_val * 100.0) as i32;
                 let text_x = bounds.width / 2.0 - 15.0;
                 ctx.fill_rect(
                     Rect::new(text_x - 5.0, bar_y + bar_height + 5.0, 40.0, 16.0),
@@ -241,29 +255,31 @@ fn progress_bar_demo(ctx: &WindowedContext) -> Div {
         )
         .on_click(move |_| {
             // Restart animation on click
-            let (timeline, _) = &*click_progress.borrow();
-            timeline.restart();
+            click_timeline.lock().unwrap().restart();
         })
 }
 
 /// Demo 4: Bouncing ball with squash and stretch
 fn bouncing_ball_demo(ctx: &WindowedContext) -> Div {
-    // Bounce animation timeline
-    let bounce = Rc::new(RefCell::new({
-        let mut timeline = AnimatedTimeline::new(ctx.animation_handle());
-        // Y position (0 = top, 1 = bottom)
-        let y_entry = timeline.add(0, 800, 0.0, 1.0);
-        timeline.set_loop(-1);
-        timeline.start();
-        (timeline, y_entry)
-    }));
+    // Bounce animation timeline - persisted across UI rebuilds
+    // Uses #[track_caller] to auto-generate unique key from call site
+    let timeline = ctx.use_animated_timeline();
 
-    let render_bounce = Rc::clone(&bounce);
+    // Configure timeline on first use (closure only runs once, returns existing IDs after)
+    let entry_id = timeline.lock().unwrap().configure(|t| {
+        // Y position (0 = top, 1 = bottom)
+        let y_entry = t.add(0, 800, 0.0, 1.0);
+        t.set_loop(-1);
+        t.start();
+        y_entry
+    });
+
+    let render_timeline = Arc::clone(&timeline);
 
     demo_card("Bouncing Ball").child(
         canvas(move |ctx: &mut dyn DrawContext, bounds| {
-            let (timeline, y_entry) = &*render_bounce.borrow();
-            let t = timeline.get(*y_entry).unwrap_or(0.0);
+            let timeline = render_timeline.lock().unwrap();
+            let t = timeline.get(entry_id).unwrap_or(0.0);
 
             let bounce_height = 50.0;
             let ground_y = bounds.height - 25.0;

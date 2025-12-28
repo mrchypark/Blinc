@@ -67,6 +67,9 @@ pub use blinc_layout::RenderTree;
 // Re-export platform types for windowed applications
 pub use blinc_platform::WindowConfig;
 
+// Re-export derive macro
+pub use blinc_macros::BlincComponent;
+
 /// Prelude module - import everything commonly needed
 pub mod prelude {
     pub use crate::app::{BlincApp, BlincConfig};
@@ -86,4 +89,7 @@ pub mod prelude {
 
     // Platform types
     pub use blinc_platform::WindowConfig;
+
+    // Derive macro for components
+    pub use blinc_macros::BlincComponent;
 }

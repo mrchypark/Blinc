@@ -1007,6 +1007,46 @@ impl Drop for AnimatedKeyframe {
 // Animated Timeline
 // ============================================================================
 
+/// Trait for types that can be returned from `AnimatedTimeline::configure()`
+///
+/// Implemented for single `TimelineEntryId` and tuples of entry IDs.
+/// This allows `configure()` to reconstruct the return value from stored entry IDs
+/// when the timeline is already configured.
+pub trait ConfigureResult {
+    /// Reconstruct the result from a list of entry IDs
+    fn from_entry_ids(ids: &[crate::timeline::TimelineEntryId]) -> Self;
+}
+
+impl ConfigureResult for crate::timeline::TimelineEntryId {
+    fn from_entry_ids(ids: &[crate::timeline::TimelineEntryId]) -> Self {
+        ids[0]
+    }
+}
+
+impl ConfigureResult for (crate::timeline::TimelineEntryId, crate::timeline::TimelineEntryId) {
+    fn from_entry_ids(ids: &[crate::timeline::TimelineEntryId]) -> Self {
+        (ids[0], ids[1])
+    }
+}
+
+impl ConfigureResult
+    for (
+        crate::timeline::TimelineEntryId,
+        crate::timeline::TimelineEntryId,
+        crate::timeline::TimelineEntryId,
+    )
+{
+    fn from_entry_ids(ids: &[crate::timeline::TimelineEntryId]) -> Self {
+        (ids[0], ids[1], ids[2])
+    }
+}
+
+impl ConfigureResult for Vec<crate::timeline::TimelineEntryId> {
+    fn from_entry_ids(ids: &[crate::timeline::TimelineEntryId]) -> Self {
+        ids.to_vec()
+    }
+}
+
 /// A timeline animation that automatically registers with the scheduler
 ///
 /// Orchestrates multiple animations with offsets and looping support.
@@ -1051,6 +1091,39 @@ impl AnimatedTimeline {
         Self {
             handle,
             timeline_id,
+        }
+    }
+
+    /// Configure the timeline if not already configured, returning entry IDs
+    ///
+    /// The closure is only called on the first invocation (when the timeline has no entries).
+    /// On subsequent calls, it returns the existing entry IDs.
+    ///
+    /// This is the recommended way to set up persisted timelines, as it handles
+    /// both initial configuration and retrieval of existing entries in one call.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let timeline = ctx.use_animated_timeline();
+    /// let entry_id = timeline.lock().unwrap().configure(|t| {
+    ///     let id = t.add(0, 1000, 0.0, 1.0);
+    ///     t.set_loop(-1);
+    ///     t.start();
+    ///     id  // Return entry ID(s) for later use
+    /// });
+    /// ```
+    pub fn configure<T, F>(&mut self, f: F) -> T
+    where
+        F: FnOnce(&mut Self) -> T,
+        T: ConfigureResult,
+    {
+        if self.has_entries() {
+            // Already configured - return existing entry IDs
+            T::from_entry_ids(&self.entry_ids())
+        } else {
+            // First time - run configuration
+            f(self)
         }
     }
 
@@ -1130,6 +1203,33 @@ impl AnimatedTimeline {
             self.handle.is_timeline_playing(id)
         } else {
             false
+        }
+    }
+
+    /// Check if the timeline has any entries
+    ///
+    /// Returns true if at least one animation has been added to the timeline.
+    /// Useful for checking if a persisted timeline needs configuration.
+    pub fn has_entries(&self) -> bool {
+        if let Some(id) = self.timeline_id {
+            self.handle
+                .with_timeline(id, |timeline| timeline.entry_count() > 0)
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    /// Get all entry IDs in this timeline
+    ///
+    /// Useful for retrieving persisted entry IDs after a timeline has been restored.
+    pub fn entry_ids(&self) -> Vec<crate::timeline::TimelineEntryId> {
+        if let Some(id) = self.timeline_id {
+            self.handle
+                .with_timeline(id, |timeline| timeline.entry_ids())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
         }
     }
 }

@@ -6,6 +6,7 @@
 //! - Different stagger directions (forward, reverse, from center)
 //! - Various animation presets (fade, scale, slide, bounce, pop)
 //! - Pull-to-refresh with FSM + AnimatedValue for smooth drag animation
+//! - BlincComponent derive macro for type-safe animation hooks
 //!
 //! Note: Enter/exit animations require RenderTree integration (pending).
 //! This example showcases the API design and stagger delay calculations.
@@ -19,6 +20,22 @@ use blinc_core::Color;
 use blinc_layout::motion::{motion, StaggerConfig};
 use blinc_layout::widgets::scroll::Scroll;
 use std::sync::{Arc, Mutex};
+
+/// Component for the pull-to-refresh demo.
+/// The BlincComponent derive generates type-safe animation hooks.
+/// Fields marked with #[animation] generate SharedAnimatedValue accessors.
+#[derive(BlincComponent)]
+struct PullToRefresh {
+    /// Y offset for dragging content down
+    #[animation]
+    content_offset: f32,
+    /// Scale of the refresh icon
+    #[animation]
+    icon_scale: f32,
+    /// Opacity of the refresh icon
+    #[animation]
+    icon_opacity: f32,
+}
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -177,18 +194,17 @@ impl blinc_layout::prelude::StateTransitions for PullState {
 /// - motion() wraps refresh icon to scale it up when armed/refreshing
 /// - stateful() handles FSM for pointer events and state transitions
 fn pull_to_refresh_demo(ctx: &WindowedContext) -> Div {
-    // AnimatedValue for content Y offset - drags content down
-    // Using use_animated_value_for to persist across UI rebuilds
+    // AnimatedValues using BlincComponent derive macro for type-safe hooks
+    // Each f32 field in PullToRefresh struct gets a use_<field_name> method
+    // that returns SharedAnimatedValue
     let content_offset_y =
-        ctx.use_animated_value_for("pull_refresh_content_offset", 0.0, SpringConfig::wobbly());
+        PullToRefresh::use_content_offset(ctx, 0.0, SpringConfig::wobbly());
 
-    // AnimatedValue for refresh icon scale - scales up when armed/refreshing
     let icon_scale =
-        ctx.use_animated_value_for("pull_refresh_icon_scale", 0.5, SpringConfig::snappy());
+        PullToRefresh::use_icon_scale(ctx, 0.5, SpringConfig::snappy());
 
-    // AnimatedValue for refresh icon opacity - fades in when pulling
     let icon_opacity =
-        ctx.use_animated_value_for("pull_refresh_icon_opacity", 0.0, SpringConfig::snappy());
+        PullToRefresh::use_icon_opacity(ctx, 0.0, SpringConfig::snappy());
 
     // Track start Y position for drag calculation
     let drag_start_y = Arc::new(Mutex::new(0.0f32));

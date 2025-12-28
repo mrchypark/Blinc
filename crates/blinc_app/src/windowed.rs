@@ -29,7 +29,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
-use blinc_animation::{AnimatedValue, AnimationScheduler, SchedulerHandle, SpringConfig};
+use blinc_animation::{AnimatedTimeline, AnimatedValue, AnimationScheduler, SchedulerHandle, SpringConfig};
 use blinc_core::reactive::{Derived, ReactiveGraph, Signal};
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager, OverlayManagerExt};
@@ -43,6 +43,12 @@ use crate::error::{BlincError, Result};
 
 /// Shared animation scheduler for the application (thread-safe)
 pub type SharedAnimationScheduler = Arc<Mutex<AnimationScheduler>>;
+
+/// Shared animated value for persisting across UI rebuilds (thread-safe)
+pub type SharedAnimatedValue = Arc<Mutex<AnimatedValue>>;
+
+/// Shared animated timeline for persisting across UI rebuilds (thread-safe)
+pub type SharedAnimatedTimeline = Arc<Mutex<AnimatedTimeline>>;
 
 #[cfg(all(feature = "windowed", not(target_os = "android")))]
 use blinc_platform_desktop::DesktopPlatform;
@@ -767,6 +773,84 @@ impl WindowedContext {
             let raw_id = signal.id().to_raw();
             hooks.insert(state_key, raw_id);
             animated_value
+        }
+    }
+
+    /// Create or retrieve a persistent animated timeline
+    ///
+    /// AnimatedTimeline provides keyframe-based animations that persist across
+    /// UI rebuilds. Use this for timeline animations that need to survive
+    /// layout changes and window resizes.
+    ///
+    /// The returned timeline is empty on first call - add keyframes using
+    /// `timeline.add()` then call `start()`. Use `has_entries()` to check
+    /// if the timeline needs configuration.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let timeline = ctx.use_animated_timeline();
+    /// let entry_id = {
+    ///     let mut t = timeline.lock().unwrap();
+    ///     if !t.has_entries() {
+    ///         let id = t.add(0, 2000, 0.0, 1.0);
+    ///         t.start();
+    ///         id
+    ///     } else {
+    ///         t.entry_ids().first().copied().unwrap()
+    ///     }
+    /// };
+    /// ```
+    #[track_caller]
+    pub fn use_animated_timeline(&self) -> SharedAnimatedTimeline {
+        let location = std::panic::Location::caller();
+        let key = format!(
+            "{}:{}:{}",
+            location.file(),
+            location.line(),
+            location.column()
+        );
+        self.use_animated_timeline_for(&key)
+    }
+
+    /// Create or retrieve a persistent animated timeline with an explicit key
+    ///
+    /// Use this for reusable components or when creating multiple timelines
+    /// at the same source location (e.g., in a loop).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Multiple timelines with unique keys
+    /// for i in 0..3 {
+    ///     let timeline = ctx.use_animated_timeline_for(format!("dot_{}", i));
+    ///     // ...
+    /// }
+    /// ```
+    pub fn use_animated_timeline_for<K: Hash>(&self, key: K) -> SharedAnimatedTimeline {
+        use blinc_core::reactive::SignalId;
+
+        // Use a type marker for SharedAnimatedTimeline
+        let state_key = StateKey::new::<SharedAnimatedTimeline, _>(&key);
+        let mut hooks = self.hooks.lock().unwrap();
+
+        if let Some(raw_id) = hooks.get(&state_key) {
+            // Existing timeline - retrieve from signal
+            let signal_id = SignalId::from_raw(raw_id);
+            let signal: Signal<SharedAnimatedTimeline> = Signal::from_id(signal_id);
+            self.reactive.lock().unwrap().get(signal).unwrap()
+        } else {
+            // New timeline - create and store in signal
+            let timeline: SharedAnimatedTimeline =
+                Arc::new(Mutex::new(AnimatedTimeline::new(self.animation_handle())));
+            let signal = self
+                .reactive
+                .lock()
+                .unwrap()
+                .create_signal(timeline.clone());
+            let raw_id = signal.id().to_raw();
+            hooks.insert(state_key, raw_id);
+            timeline
         }
     }
 }

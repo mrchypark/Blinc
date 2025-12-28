@@ -79,6 +79,16 @@ impl Timeline {
         self.playing
     }
 
+    /// Get the number of entries in this timeline
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Get all entry IDs in this timeline
+    pub fn entry_ids(&self) -> Vec<TimelineEntryId> {
+        self.entries.keys().collect()
+    }
+
     /// Advance the timeline
     pub fn tick(&mut self, dt_ms: f32) {
         if !self.playing {

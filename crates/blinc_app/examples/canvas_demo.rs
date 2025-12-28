@@ -8,17 +8,23 @@
 //! - Canvas respects layout transforms and clipping
 //! - Procedural graphics (animated shapes, patterns)
 //! - Canvas for cursor/indicator rendering
+//! - BlincComponent derive macro for type-safe animation hooks
 //!
 //! Run with: cargo run -p blinc_app --example canvas_demo --features windowed
 
-use blinc_animation::{AnimatedValue, SpringConfig};
+use blinc_animation::SpringConfig;
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_core::{
     Brush, Color, CornerRadius, DrawContext, Gradient, GradientStop, Point, Rect, TextStyle,
 };
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
+
+/// Component for the animated demo card.
+/// The BlincComponent derive generates a unique compile-time key and
+/// provides type-safe use_animated_value/use_animated_timeline methods.
+#[derive(BlincComponent)]
+struct AnimatedDemoCard;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -295,21 +301,14 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Color {
 /// Demo 7: Animated bouncing ball using AnimatedValue
 ///
 /// Uses the built-in AnimatedValue wrapper which handles spring management.
-/// With `Rc<RefCell>` - no thread-safety overhead since UI is single-threaded.
+/// With BlincComponent derive macro for type-safe animation hooks.
 fn animated_demo_card(ctx: &WindowedContext) -> Div {
-    // AnimatedValue manages the spring internally
-    let ball_x = Rc::new(RefCell::new(AnimatedValue::new(
-        ctx.animation_handle(),
-        20.0,
-        SpringConfig::wobbly(),
-    )));
+    // AnimatedValue persisted to context using component-based key
+    // The BlincComponent derive macro generates a unique key from the type
+    let ball_x = AnimatedDemoCard::use_animated_value(ctx, 20.0, SpringConfig::wobbly());
 
-    // Track toggle state
-    let is_right = Rc::new(RefCell::new(false));
-
-    let render_ball_x = Rc::clone(&ball_x);
-    let click_ball_x = Rc::clone(&ball_x);
-    let click_is_right = Rc::clone(&is_right);
+    let render_ball_x = Arc::clone(&ball_x);
+    let click_ball_x = Arc::clone(&ball_x);
 
     div()
         .w(300.0)
@@ -329,7 +328,7 @@ fn animated_demo_card(ctx: &WindowedContext) -> Div {
         .child(
             canvas(move |ctx: &mut dyn DrawContext, bounds| {
                 // Get current animated value - AnimatedValue handles all the complexity
-                let current_x = render_ball_x.borrow().get();
+                let current_x = render_ball_x.lock().unwrap().get();
 
                 // Draw track
                 let track_y = bounds.height / 2.0;
@@ -358,12 +357,12 @@ fn animated_demo_card(ctx: &WindowedContext) -> Div {
         )
         .on_click(move |_| {
             println!("Canvas clicked - toggling ball direction");
-            // Toggle direction
-            let mut is_right = click_is_right.borrow_mut();
-            *is_right = !*is_right;
-            let new_target = if *is_right { 194.0 } else { 20.0 };
+            // Toggle direction by checking current target
+            let mut ball = click_ball_x.lock().unwrap();
+            let current_target = ball.target();
+            let new_target = if current_target < 100.0 { 194.0 } else { 20.0 };
 
             // Set new target - AnimatedValue handles the spring
-            click_ball_x.borrow_mut().set_target(new_target);
+            ball.set_target(new_target);
         })
 }
