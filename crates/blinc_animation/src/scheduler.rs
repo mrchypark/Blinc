@@ -1023,7 +1023,12 @@ impl ConfigureResult for crate::timeline::TimelineEntryId {
     }
 }
 
-impl ConfigureResult for (crate::timeline::TimelineEntryId, crate::timeline::TimelineEntryId) {
+impl ConfigureResult
+    for (
+        crate::timeline::TimelineEntryId,
+        crate::timeline::TimelineEntryId,
+    )
+{
     fn from_entry_ids(ids: &[crate::timeline::TimelineEntryId]) -> Self {
         (ids[0], ids[1])
     }

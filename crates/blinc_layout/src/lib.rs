@@ -64,8 +64,8 @@ pub use element::{
 
 // Diff and reconciliation
 pub use diff::{
-    diff, diff_children, diff_elements, reconcile,
-    ChangeCategory, ChildDiff, DiffResult, DivHash, ReconcileActions,
+    diff, diff_children, diff_elements, reconcile, ChangeCategory, ChildDiff, DiffResult, DivHash,
+    ReconcileActions,
 };
 pub use event_handler::{EventCallback, EventContext, EventHandlers, HandlerRegistry};
 pub use event_router::{EventRouter, HitTestResult, MouseButton};
@@ -156,8 +156,8 @@ pub mod prelude {
     pub use crate::element_style::{style, ElementStyle};
     // Diff and reconciliation
     pub use crate::diff::{
-        diff, diff_children, diff_elements, reconcile,
-        ChangeCategory, ChildDiff, DiffResult, DivHash, ReconcileActions,
+        diff, diff_children, diff_elements, reconcile, ChangeCategory, ChildDiff, DiffResult,
+        DivHash, ReconcileActions,
     };
     // Stateful elements with user-defined state types (core infrastructure)
     pub use crate::stateful::{

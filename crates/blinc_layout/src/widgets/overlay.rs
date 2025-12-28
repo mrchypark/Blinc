@@ -710,8 +710,7 @@ impl OverlayManagerInner {
 
     /// Remove closed overlays
     pub fn cleanup(&mut self) {
-        self.overlays
-            .retain(|_, o| o.state != OverlayState::Closed);
+        self.overlays.retain(|_, o| o.state != OverlayState::Closed);
     }
 
     /// Handle escape key - close topmost dismissable overlay
@@ -753,7 +752,11 @@ impl OverlayManagerInner {
             .values()
             .filter(|o| {
                 o.state.is_open()
-                    && o.config.backdrop.as_ref().map(|b| b.dismiss_on_click).unwrap_or(false)
+                    && o.config
+                        .backdrop
+                        .as_ref()
+                        .map(|b| b.dismiss_on_click)
+                        .unwrap_or(false)
             })
             .max_by_key(|o| o.config.z_priority)
             .map(|o| o.handle)
@@ -786,7 +789,11 @@ impl OverlayManagerInner {
             .values()
             .filter(|o| {
                 o.state.is_open()
-                    && o.config.backdrop.as_ref().map(|b| b.dismiss_on_click).unwrap_or(false)
+                    && o.config
+                        .backdrop
+                        .as_ref()
+                        .map(|b| b.dismiss_on_click)
+                        .unwrap_or(false)
             })
             .max_by_key(|o| o.config.z_priority)
         {
@@ -867,7 +874,10 @@ impl OverlayManagerInner {
 
         for overlay in self.overlays_sorted() {
             if overlay.is_visible() {
-                tracing::debug!("build_overlay_tree: adding overlay {:?}", overlay.config.kind);
+                tracing::debug!(
+                    "build_overlay_tree: adding overlay {:?}",
+                    overlay.config.kind
+                );
                 root = root.child(self.build_overlay_layer(overlay, width, height));
             }
         }
@@ -905,30 +915,22 @@ impl OverlayManagerInner {
                 backdrop_config.color
             );
             // Use stack: first child (backdrop) renders behind, second child (content) on top
-            div()
-                .w(vp_width)
-                .h(vp_height)
-                .child(
-                    stack()
-                        .w_full()
-                        .h_full()
-                        // Backdrop layer (behind)
-                        .child(
-                            div()
-                                .w_full()
-                                .h_full()
-                                .bg(backdrop_config.color),
-                        )
-                        // Content layer (on top) - centered
-                        .child(
-                            div()
-                                .w_full()
-                                .h_full()
-                                .items_center()
-                                .justify_center()
-                                .child(content),
-                        ),
-                )
+            div().w(vp_width).h(vp_height).child(
+                stack()
+                    .w_full()
+                    .h_full()
+                    // Backdrop layer (behind)
+                    .child(div().w_full().h_full().bg(backdrop_config.color))
+                    // Content layer (on top) - centered
+                    .child(
+                        div()
+                            .w_full()
+                            .h_full()
+                            .items_center()
+                            .justify_center()
+                            .child(content),
+                    ),
+            )
         } else {
             // No backdrop - position content according to config
             div()
@@ -961,10 +963,7 @@ impl OverlayManagerInner {
 
             OverlayPosition::AtPoint { x, y } => {
                 // Absolute positioning at point
-                div()
-                    .w(vp_width)
-                    .h(vp_height)
-                    .child(content.ml(*x).mt(*y))
+                div().w(vp_width).h(vp_height).child(content.ml(*x).mt(*y))
             }
 
             OverlayPosition::Corner(corner) => {
@@ -974,9 +973,7 @@ impl OverlayManagerInner {
             }
 
             OverlayPosition::RelativeToAnchor {
-                offset_x,
-                offset_y,
-                ..
+                offset_x, offset_y, ..
             } => {
                 // For now, treat as point position
                 // TODO: Look up anchor bounds from tree
@@ -1000,9 +997,18 @@ impl OverlayManagerInner {
         let container = div().w(vp_width).h(vp_height);
 
         match corner {
-            Corner::TopLeft => container.items_start().justify_start().child(content.m(margin)),
-            Corner::TopRight => container.items_end().justify_start().child(content.m(margin)),
-            Corner::BottomLeft => container.items_start().justify_end().child(content.m(margin)),
+            Corner::TopLeft => container
+                .items_start()
+                .justify_start()
+                .child(content.m(margin)),
+            Corner::TopRight => container
+                .items_end()
+                .justify_start()
+                .child(content.m(margin)),
+            Corner::BottomLeft => container
+                .items_start()
+                .justify_end()
+                .child(content.m(margin)),
             Corner::BottomRight => container.items_end().justify_end().child(content.m(margin)),
         }
     }
@@ -1028,9 +1034,10 @@ impl OverlayManagerInner {
                 Corner::TopLeft => (margin, y_offset),
                 Corner::TopRight => (vp_width - margin - 300.0, y_offset), // Assume 300px width
                 Corner::BottomLeft => (margin, vp_height - y_offset - estimated_height),
-                Corner::BottomRight => {
-                    (vp_width - margin - 300.0, vp_height - y_offset - estimated_height)
-                }
+                Corner::BottomRight => (
+                    vp_width - margin - 300.0,
+                    vp_height - y_offset - estimated_height,
+                ),
             };
 
             positions.push((toast.handle, x, y));
@@ -1158,7 +1165,9 @@ impl OverlayManagerExt for OverlayManager {
     }
 
     fn set_viewport_with_scale(&self, width: f32, height: f32, scale_factor: f32) {
-        self.lock().unwrap().set_viewport_with_scale(width, height, scale_factor);
+        self.lock()
+            .unwrap()
+            .set_viewport_with_scale(width, height, scale_factor);
     }
 
     fn build_overlay_tree(&self) -> Option<RenderTree> {
@@ -1399,9 +1408,7 @@ impl DropdownBuilder {
     /// Set offset from anchor
     pub fn offset(mut self, x: f32, y: f32) -> Self {
         if let OverlayPosition::RelativeToAnchor {
-            offset_x,
-            offset_y,
-            ..
+            offset_x, offset_y, ..
         } = &mut self.config.position
         {
             *offset_x = x;

@@ -69,7 +69,7 @@ impl Default for ButtonConfig {
 type ClickHandler = Arc<dyn Fn(&crate::event_handler::EventContext) + Send + Sync>;
 type StateCallback = Arc<dyn Fn(ButtonState, &mut Div) + Send + Sync>;
 
-/// Button widget - wraps Stateful<ButtonState>
+/// Button widget - wraps `Stateful<ButtonState>`
 ///
 /// Buttons can have custom content via `button_with()` or use the simple
 /// `button("Label")` constructor for text-only buttons.
@@ -493,7 +493,6 @@ where
         .justify_center()
 }
 
-
 impl ElementBuilder for Button {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         tracing::info!("Button::build called");
@@ -511,34 +510,42 @@ impl ElementBuilder for Button {
         {
             let shared_state = self.inner.shared_state();
             let mut shared = shared_state.lock().unwrap();
-            shared.state_callback = Some(Arc::new(move |state: &ButtonState, container: &mut Div| {
-                tracing::info!("Button on_state callback fired, state={:?}", state);
-                let cfg = config_for_state.lock().unwrap();
-                let bg = match state {
-                    ButtonState::Idle => cfg.bg_color,
-                    ButtonState::Hovered => cfg.hover_color,
-                    ButtonState::Pressed => cfg.pressed_color,
-                    ButtonState::Disabled => cfg.disabled_color,
-                };
+            shared.state_callback =
+                Some(Arc::new(move |state: &ButtonState, container: &mut Div| {
+                    tracing::info!("Button on_state callback fired, state={:?}", state);
+                    let cfg = config_for_state.lock().unwrap();
+                    let bg = match state {
+                        ButtonState::Idle => cfg.bg_color,
+                        ButtonState::Hovered => cfg.hover_color,
+                        ButtonState::Pressed => cfg.pressed_color,
+                        ButtonState::Disabled => cfg.disabled_color,
+                    };
 
-                // Apply background color and content
-                let mut update = div().bg(bg);
+                    // Apply background color and content
+                    let mut update = div().bg(bg);
 
-                // Add content based on whether we have custom content or label
-                if let Some(ref callback) = custom_callback {
-                    callback(*state, &mut update);
-                } else if let Some(ref label) = cfg.label {
-                    tracing::info!("Button adding label child: {}", label);
-                    update = update.child(text(label).size(cfg.text_size).color(cfg.text_color));
-                }
+                    // Add content based on whether we have custom content or label
+                    if let Some(ref callback) = custom_callback {
+                        callback(*state, &mut update);
+                    } else if let Some(ref label) = cfg.label {
+                        tracing::info!("Button adding label child: {}", label);
+                        update =
+                            update.child(text(label).size(cfg.text_size).color(cfg.text_color));
+                    }
 
-                let update_children = update.children.len();
-                tracing::info!("Button update div has {} children before merge", update_children);
-                drop(cfg);
-                container.merge(update);
-                let container_children = container.children.len();
-                tracing::info!("Button container has {} children after merge", container_children);
-            }));
+                    let update_children = update.children.len();
+                    tracing::info!(
+                        "Button update div has {} children before merge",
+                        update_children
+                    );
+                    drop(cfg);
+                    container.merge(update);
+                    let container_children = container.children.len();
+                    tracing::info!(
+                        "Button container has {} children after merge",
+                        container_children
+                    );
+                }));
             shared.base_render_props = Some(self.inner.inner_render_props());
             shared.needs_visual_update = true;
         }

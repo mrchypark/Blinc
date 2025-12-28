@@ -197,14 +197,11 @@ fn pull_to_refresh_demo(ctx: &WindowedContext) -> Div {
     // AnimatedValues using BlincComponent derive macro for type-safe hooks
     // Each f32 field in PullToRefresh struct gets a use_<field_name> method
     // that returns SharedAnimatedValue
-    let content_offset_y =
-        PullToRefresh::use_content_offset(ctx, 0.0, SpringConfig::wobbly());
+    let content_offset_y = PullToRefresh::use_content_offset(ctx, 0.0, SpringConfig::wobbly());
 
-    let icon_scale =
-        PullToRefresh::use_icon_scale(ctx, 0.5, SpringConfig::snappy());
+    let icon_scale = PullToRefresh::use_icon_scale(ctx, 0.5, SpringConfig::snappy());
 
-    let icon_opacity =
-        PullToRefresh::use_icon_opacity(ctx, 0.0, SpringConfig::snappy());
+    let icon_opacity = PullToRefresh::use_icon_opacity(ctx, 0.0, SpringConfig::snappy());
 
     // Track start Y position for drag calculation
     let drag_start_y = Arc::new(Mutex::new(0.0f32));

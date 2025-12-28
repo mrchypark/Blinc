@@ -103,6 +103,24 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libvulkan-dev \
+            mesa-vulkan-drivers \
+            libfontconfig1-dev \
+            fonts-dejavu-core \
+            xvfb
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -118,4 +136,7 @@ jobs:
         run: cargo check --workspace
 
       - name: Run tests
-        run: cargo test --workspace
+        run: xvfb-run --auto-servernum cargo test --workspace
+        env:
+          MESA_GL_VERSION_OVERRIDE: "4.5"
+          LIBGL_ALWAYS_SOFTWARE: "1"

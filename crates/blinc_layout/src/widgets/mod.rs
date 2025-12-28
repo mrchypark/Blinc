@@ -92,7 +92,7 @@ pub use code::{code, pre, Code, CodeConfig};
 
 // Re-export overlay widget
 pub use overlay::{
-    overlay_events, overlay_manager, BackdropConfig, Corner, ContextMenuBuilder, DialogBuilder,
+    overlay_events, overlay_manager, BackdropConfig, ContextMenuBuilder, Corner, DialogBuilder,
     DropdownBuilder, ModalBuilder, OverlayAnimation, OverlayConfig, OverlayHandle, OverlayKind,
     OverlayManager, OverlayManagerExt, OverlayPosition, OverlayState, ToastBuilder,
 };

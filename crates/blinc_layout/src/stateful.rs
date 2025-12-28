@@ -655,7 +655,6 @@ impl<S: StateTransitions> Stateful<S> {
         Arc::clone(&self.shared_state)
     }
 
-
     /// Set the initial/default state
     ///
     /// This is useful when using the generic `stateful()` constructor
@@ -692,7 +691,6 @@ impl<S: StateTransitions> Stateful<S> {
     pub fn apply_callback(&self) {
         self.apply_state_callback();
     }
-
 
     /// Set the current state directly
     pub fn set_state(&self, state: S) {
@@ -1308,7 +1306,9 @@ impl<S: StateTransitions> Stateful<S> {
     where
         F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
     {
-        self.event_handlers_cache.borrow_mut().on_mouse_down(handler);
+        self.event_handlers_cache
+            .borrow_mut()
+            .on_mouse_down(handler);
         self
     }
 
@@ -1326,7 +1326,9 @@ impl<S: StateTransitions> Stateful<S> {
     where
         F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
     {
-        self.event_handlers_cache.borrow_mut().on_hover_enter(handler);
+        self.event_handlers_cache
+            .borrow_mut()
+            .on_hover_enter(handler);
         self
     }
 
@@ -1335,7 +1337,9 @@ impl<S: StateTransitions> Stateful<S> {
     where
         F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
     {
-        self.event_handlers_cache.borrow_mut().on_hover_leave(handler);
+        self.event_handlers_cache
+            .borrow_mut()
+            .on_hover_leave(handler);
         self
     }
 
@@ -1407,7 +1411,9 @@ impl<S: StateTransitions> Stateful<S> {
     where
         F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
     {
-        self.event_handlers_cache.borrow_mut().on(blinc_core::events::event_types::POINTER_MOVE, handler);
+        self.event_handlers_cache
+            .borrow_mut()
+            .on(blinc_core::events::event_types::POINTER_MOVE, handler);
         self
     }
 
@@ -1425,7 +1431,9 @@ impl<S: StateTransitions> Stateful<S> {
     where
         F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
     {
-        self.event_handlers_cache.borrow_mut().on(event_type, handler);
+        self.event_handlers_cache
+            .borrow_mut()
+            .on(event_type, handler);
         self
     }
 

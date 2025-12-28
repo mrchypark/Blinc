@@ -4,13 +4,14 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Data, Fields};
+use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
 /// Check if a field has the #[animation] attribute
 fn has_animation_attr(field: &syn::Field) -> bool {
-    field.attrs.iter().any(|attr| {
-        attr.path().is_ident("animation")
-    })
+    field
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("animation"))
 }
 
 /// Derive macro that generates a unique compile-time key for a component
@@ -93,46 +94,48 @@ pub fn derive_blinc_component(input: TokenStream) -> TokenStream {
     let field_methods = match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(fields) => {
-                fields.named.iter().map(|field| {
-                    let field_name = field.ident.as_ref().unwrap();
-                    let field_type = &field.ty;
-                    let method_name = syn::Ident::new(
-                        &format!("use_{}", field_name),
-                        field_name.span(),
-                    );
-                    let field_key = format!("{}", field_name);
+                fields
+                    .named
+                    .iter()
+                    .map(|field| {
+                        let field_name = field.ident.as_ref().unwrap();
+                        let field_type = &field.ty;
+                        let method_name =
+                            syn::Ident::new(&format!("use_{}", field_name), field_name.span());
+                        let field_key = format!("{}", field_name);
 
-                    if has_animation_attr(field) {
-                        // #[animation] attribute -> SharedAnimatedValue
-                        quote! {
-                            /// Get a persisted animated value for this field.
-                            ///
-                            /// Returns a `SharedAnimatedValue` that is persisted across UI rebuilds.
-                            pub fn #method_name(
-                                ctx: &blinc_app::windowed::WindowedContext,
-                                initial: f32,
-                                config: blinc_animation::SpringConfig,
-                            ) -> blinc_app::windowed::SharedAnimatedValue {
-                                let key = format!("{}:{}", Self::COMPONENT_KEY, #field_key);
-                                ctx.use_animated_value_for(key, initial, config)
+                        if has_animation_attr(field) {
+                            // #[animation] attribute -> SharedAnimatedValue
+                            quote! {
+                                /// Get a persisted animated value for this field.
+                                ///
+                                /// Returns a `SharedAnimatedValue` that is persisted across UI rebuilds.
+                                pub fn #method_name(
+                                    ctx: &blinc_app::windowed::WindowedContext,
+                                    initial: f32,
+                                    config: blinc_animation::SpringConfig,
+                                ) -> blinc_app::windowed::SharedAnimatedValue {
+                                    let key = format!("{}:{}", Self::COMPONENT_KEY, #field_key);
+                                    ctx.use_animated_value_for(key, initial, config)
+                                }
+                            }
+                        } else {
+                            // No attribute -> State<T>
+                            quote! {
+                                /// Get a persisted state value for this field.
+                                ///
+                                /// Returns a `State<#field_type>` that is persisted across UI rebuilds.
+                                pub fn #method_name(
+                                    ctx: &blinc_app::windowed::WindowedContext,
+                                    initial: #field_type,
+                                ) -> blinc_app::windowed::State<#field_type> {
+                                    let key = format!("{}:{}", Self::COMPONENT_KEY, #field_key);
+                                    ctx.use_state_keyed(&key, || initial)
+                                }
                             }
                         }
-                    } else {
-                        // No attribute -> State<T>
-                        quote! {
-                            /// Get a persisted state value for this field.
-                            ///
-                            /// Returns a `State<#field_type>` that is persisted across UI rebuilds.
-                            pub fn #method_name(
-                                ctx: &blinc_app::windowed::WindowedContext,
-                                initial: #field_type,
-                            ) -> blinc_app::windowed::State<#field_type> {
-                                let key = format!("{}:{}", Self::COMPONENT_KEY, #field_key);
-                                ctx.use_state_keyed(&key, || initial)
-                            }
-                        }
-                    }
-                }).collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
             }
             Fields::Unnamed(_) => Vec::new(),
             Fields::Unit => Vec::new(),

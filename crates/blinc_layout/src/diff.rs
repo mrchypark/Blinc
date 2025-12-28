@@ -19,11 +19,13 @@
 //! assert!(!result.changes.layout);     // Width unchanged
 //! ```
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 
-use blinc_core::{Brush, Color, Shadow, Transform, CornerRadius, GlassStyle, Gradient, GradientStop, ImageBrush};
+use blinc_core::{
+    Brush, Color, CornerRadius, GlassStyle, Gradient, GradientStop, ImageBrush, Shadow, Transform,
+};
 use taffy::Style;
 
 use crate::div::{Div, ElementBuilder, ElementTypeId};
@@ -155,9 +157,7 @@ pub struct DiffResult {
 #[derive(Clone, Debug)]
 pub enum ChildDiff {
     /// Child was unchanged (same hash, same position).
-    Unchanged {
-        index: usize,
-    },
+    Unchanged { index: usize },
 
     /// Child moved from one position to another (same hash).
     Moved {
@@ -174,16 +174,10 @@ pub enum ChildDiff {
     },
 
     /// New child was added.
-    Added {
-        index: usize,
-        hash: DivHash,
-    },
+    Added { index: usize, hash: DivHash },
 
     /// Old child was removed.
-    Removed {
-        index: usize,
-        hash: DivHash,
-    },
+    Removed { index: usize, hash: DivHash },
 }
 
 // =============================================================================
@@ -230,7 +224,10 @@ pub fn diff(old: &Div, new: &Div) -> DiffResult {
     // Quick path: if hashes match, only diff children
     if old_hash == new_hash {
         let child_diffs = diff_children(&old.children, &new.children);
-        if child_diffs.iter().any(|d| !matches!(d, ChildDiff::Unchanged { .. })) {
+        if child_diffs
+            .iter()
+            .any(|d| !matches!(d, ChildDiff::Unchanged { .. }))
+        {
             changes.children = true;
         }
 
@@ -249,7 +246,10 @@ pub fn diff(old: &Div, new: &Div) -> DiffResult {
 
     // Diff children
     let child_diffs = diff_children(&old.children, &new.children);
-    if child_diffs.iter().any(|d| !matches!(d, ChildDiff::Unchanged { .. })) {
+    if child_diffs
+        .iter()
+        .any(|d| !matches!(d, ChildDiff::Unchanged { .. }))
+    {
         changes.children = true;
     }
 
@@ -406,7 +406,10 @@ pub fn diff_elements(old: &dyn ElementBuilder, new: &dyn ElementBuilder) -> Diff
     // Quick path
     if old_hash == new_hash {
         let child_diffs = diff_children(old.children_builders(), new.children_builders());
-        if child_diffs.iter().any(|d| !matches!(d, ChildDiff::Unchanged { .. })) {
+        if child_diffs
+            .iter()
+            .any(|d| !matches!(d, ChildDiff::Unchanged { .. }))
+        {
             changes.children = true;
         }
         return DiffResult {
@@ -445,7 +448,10 @@ pub fn diff_elements(old: &dyn ElementBuilder, new: &dyn ElementBuilder) -> Diff
 
     // Diff children
     let child_diffs = diff_children(old.children_builders(), new.children_builders());
-    if child_diffs.iter().any(|d| !matches!(d, ChildDiff::Unchanged { .. })) {
+    if child_diffs
+        .iter()
+        .any(|d| !matches!(d, ChildDiff::Unchanged { .. }))
+    {
         changes.children = true;
     }
 
@@ -746,7 +752,13 @@ fn hash_gradient_stop(stop: &GradientStop, hasher: &mut impl Hasher) {
 
 fn hash_gradient(gradient: &Gradient, hasher: &mut impl Hasher) {
     match gradient {
-        Gradient::Linear { start, end, stops, space, spread } => {
+        Gradient::Linear {
+            start,
+            end,
+            stops,
+            space,
+            spread,
+        } => {
             0u8.hash(hasher);
             hash_f32(start.x, hasher);
             hash_f32(start.y, hasher);
@@ -759,7 +771,14 @@ fn hash_gradient(gradient: &Gradient, hasher: &mut impl Hasher) {
             std::mem::discriminant(space).hash(hasher);
             std::mem::discriminant(spread).hash(hasher);
         }
-        Gradient::Radial { center, radius, focal, stops, space, spread } => {
+        Gradient::Radial {
+            center,
+            radius,
+            focal,
+            stops,
+            space,
+            spread,
+        } => {
             1u8.hash(hasher);
             hash_f32(center.x, hasher);
             hash_f32(center.y, hasher);
@@ -779,7 +798,12 @@ fn hash_gradient(gradient: &Gradient, hasher: &mut impl Hasher) {
             std::mem::discriminant(space).hash(hasher);
             std::mem::discriminant(spread).hash(hasher);
         }
-        Gradient::Conic { center, start_angle, stops, space } => {
+        Gradient::Conic {
+            center,
+            start_angle,
+            stops,
+            space,
+        } => {
             2u8.hash(hasher);
             hash_f32(center.x, hasher);
             hash_f32(center.y, hasher);
@@ -897,7 +921,10 @@ fn hash_material(material: &Material, hasher: &mut impl Hasher) {
     }
 }
 
-fn hash_option_material_shadow(shadow: &Option<crate::element::MaterialShadow>, hasher: &mut impl Hasher) {
+fn hash_option_material_shadow(
+    shadow: &Option<crate::element::MaterialShadow>,
+    hasher: &mut impl Hasher,
+) {
     match shadow {
         Some(s) => {
             1u8.hash(hasher);
@@ -1104,15 +1131,17 @@ fn shadow_eq(a: &Option<Shadow>, b: &Option<Shadow>) -> bool {
 fn transform_eq(a: &Option<Transform>, b: &Option<Transform>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(Transform::Affine2D(a)), Some(Transform::Affine2D(b))) => {
-            a.elements
-                .iter()
-                .zip(b.elements.iter())
-                .all(|(x, y)| f32_eq(*x, *y))
-        }
-        (Some(Transform::Mat4(a)), Some(Transform::Mat4(b))) => {
-            a.cols.iter().flatten().zip(b.cols.iter().flatten()).all(|(x, y)| f32_eq(*x, *y))
-        }
+        (Some(Transform::Affine2D(a)), Some(Transform::Affine2D(b))) => a
+            .elements
+            .iter()
+            .zip(b.elements.iter())
+            .all(|(x, y)| f32_eq(*x, *y)),
+        (Some(Transform::Mat4(a)), Some(Transform::Mat4(b))) => a
+            .cols
+            .iter()
+            .flatten()
+            .zip(b.cols.iter().flatten())
+            .all(|(x, y)| f32_eq(*x, *y)),
         _ => false,
     }
 }
@@ -1166,9 +1195,7 @@ fn material_eq(a: &Option<Material>, b: &Option<Material>) -> bool {
                 && f32_eq(a.reflection, b.reflection)
         }
         (Some(Material::Wood(a)), Some(Material::Wood(b))) => {
-            color_eq(&a.color, &b.color)
-                && f32_eq(a.grain, b.grain)
-                && f32_eq(a.gloss, b.gloss)
+            color_eq(&a.color, &b.color) && f32_eq(a.grain, b.grain) && f32_eq(a.gloss, b.gloss)
         }
         (Some(Material::Solid(a)), Some(Material::Solid(b))) => {
             material_shadow_eq(&a.shadow, &b.shadow)
@@ -1177,7 +1204,10 @@ fn material_eq(a: &Option<Material>, b: &Option<Material>) -> bool {
     }
 }
 
-fn material_shadow_eq(a: &Option<crate::element::MaterialShadow>, b: &Option<crate::element::MaterialShadow>) -> bool {
+fn material_shadow_eq(
+    a: &Option<crate::element::MaterialShadow>,
+    b: &Option<crate::element::MaterialShadow>,
+) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(a), Some(b)) => {
@@ -1234,7 +1264,10 @@ mod tests {
         let hash1 = DivHash::compute(&div1);
         let hash2 = DivHash::compute(&div2);
 
-        assert_ne!(hash1, hash2, "Different properties should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "Different properties should produce different hashes"
+        );
     }
 
     #[test]
@@ -1270,7 +1303,10 @@ mod tests {
 
         let result = diff(&div1, &div2);
 
-        assert!(!result.changes.any(), "Identical divs should have no changes");
+        assert!(
+            !result.changes.any(),
+            "Identical divs should have no changes"
+        );
     }
 
     #[test]
@@ -1280,7 +1316,10 @@ mod tests {
 
         let result = diff(&div1, &div2);
 
-        assert!(result.changes.layout, "Width change should be detected as layout change");
+        assert!(
+            result.changes.layout,
+            "Width change should be detected as layout change"
+        );
     }
 
     #[test]
@@ -1290,6 +1329,9 @@ mod tests {
 
         let result = diff(&div1, &div2);
 
-        assert!(result.changes.visual, "Opacity change should be detected as visual change");
+        assert!(
+            result.changes.visual,
+            "Opacity change should be detected as visual change"
+        );
     }
 }

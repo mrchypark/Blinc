@@ -29,7 +29,9 @@ use std::sync::{
     Arc, Mutex,
 };
 
-use blinc_animation::{AnimatedTimeline, AnimatedValue, AnimationScheduler, SchedulerHandle, SpringConfig};
+use blinc_animation::{
+    AnimatedTimeline, AnimatedValue, AnimationScheduler, SchedulerHandle, SpringConfig,
+};
 use blinc_core::reactive::{Derived, ReactiveGraph, Signal};
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager, OverlayManagerExt};
@@ -709,11 +711,7 @@ impl WindowedContext {
     /// motion().translate_y(offset_y.clone()).child(content)
     /// ```
     #[track_caller]
-    pub fn use_animated_value(
-        &self,
-        initial: f32,
-        config: SpringConfig,
-    ) -> SharedAnimatedValue {
+    pub fn use_animated_value(&self, initial: f32, config: SpringConfig) -> SharedAnimatedValue {
         let location = std::panic::Location::caller();
         let key = format!(
             "{}:{}:{}",

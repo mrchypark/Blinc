@@ -248,7 +248,8 @@ fn toast_content() -> Div {
         .child(
             text("Action completed successfully!")
                 .size(14.0)
-                .color(Color::WHITE).v_center(),
+                .color(Color::WHITE)
+                .v_center(),
         )
 }
 

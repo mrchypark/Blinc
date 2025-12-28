@@ -455,7 +455,10 @@ impl RenderTree {
 
                     if child_children_count != new_children_count {
                         // This child's children changed - rebuild its children
-                        self.rebuild_children_in_place(child_node_id, child_builder.children_builders());
+                        self.rebuild_children_in_place(
+                            child_node_id,
+                            child_builder.children_builders(),
+                        );
                     } else {
                         // Recurse to find deeper changes
                         self.rebuild_changed_subtrees_boxed(child_builder.as_ref(), child_node_id);
@@ -466,7 +469,11 @@ impl RenderTree {
     }
 
     /// Rebuild subtrees for boxed element builder
-    fn rebuild_changed_subtrees_boxed(&mut self, element: &dyn ElementBuilder, node_id: LayoutNodeId) {
+    fn rebuild_changed_subtrees_boxed(
+        &mut self,
+        element: &dyn ElementBuilder,
+        node_id: LayoutNodeId,
+    ) {
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
 
@@ -483,7 +490,10 @@ impl RenderTree {
                     let new_children_count = child_builder.children_builders().len();
 
                     if child_children_count != new_children_count {
-                        self.rebuild_children_in_place(child_node_id, child_builder.children_builders());
+                        self.rebuild_children_in_place(
+                            child_node_id,
+                            child_builder.children_builders(),
+                        );
                     } else {
                         self.rebuild_changed_subtrees_boxed(child_builder.as_ref(), child_node_id);
                     }
@@ -495,7 +505,11 @@ impl RenderTree {
     /// Rebuild children of a node in place
     ///
     /// This removes old children and builds new ones from the provided element builders.
-    fn rebuild_children_in_place(&mut self, parent_id: LayoutNodeId, new_children: &[Box<dyn ElementBuilder>]) {
+    fn rebuild_children_in_place(
+        &mut self,
+        parent_id: LayoutNodeId,
+        new_children: &[Box<dyn ElementBuilder>],
+    ) {
         // Remove old children
         let old_children = self.layout_tree.children(parent_id);
         for child_id in &old_children {
@@ -512,7 +526,11 @@ impl RenderTree {
     }
 
     /// Analyze what categories of changes occurred between stored tree and new element
-    fn analyze_changes<E: ElementBuilder>(&self, element: &E, node_id: LayoutNodeId) -> ChangeCategory {
+    fn analyze_changes<E: ElementBuilder>(
+        &self,
+        element: &E,
+        node_id: LayoutNodeId,
+    ) -> ChangeCategory {
         let mut changes = ChangeCategory::none();
 
         // Get stored hash for this node
@@ -586,7 +604,11 @@ impl RenderTree {
     }
 
     /// Analyze changes for a boxed element builder
-    fn analyze_changes_boxed(&self, element: &dyn ElementBuilder, node_id: LayoutNodeId) -> ChangeCategory {
+    fn analyze_changes_boxed(
+        &self,
+        element: &dyn ElementBuilder,
+        node_id: LayoutNodeId,
+    ) -> ChangeCategory {
         let mut changes = ChangeCategory::none();
 
         let Some(&(stored_own_hash, stored_tree_hash)) = self.node_hashes.get(&node_id) else {
@@ -649,7 +671,11 @@ impl RenderTree {
     }
 
     /// Update render props in place without rebuilding the tree
-    fn update_render_props_in_place<E: ElementBuilder>(&mut self, element: &E, node_id: LayoutNodeId) {
+    fn update_render_props_in_place<E: ElementBuilder>(
+        &mut self,
+        element: &E,
+        node_id: LayoutNodeId,
+    ) {
         // Update this node's props
         if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
             let mut new_props = element.render_props();
@@ -714,14 +740,19 @@ impl RenderTree {
             // Rebuild children in place to fix the mismatch
             self.rebuild_children_in_place(node_id, child_builders);
         } else {
-            for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
+            for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter())
+            {
                 self.update_render_props_in_place_boxed(child_builder.as_ref(), child_node_id);
             }
         }
     }
 
     /// Update render props for a boxed element builder
-    fn update_render_props_in_place_boxed(&mut self, element: &dyn ElementBuilder, node_id: LayoutNodeId) {
+    fn update_render_props_in_place_boxed(
+        &mut self,
+        element: &dyn ElementBuilder,
+        node_id: LayoutNodeId,
+    ) {
         if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
             let mut new_props = element.render_props();
             new_props.node_id = Some(node_id);
@@ -783,7 +814,8 @@ impl RenderTree {
             // Rebuild children in place to fix the mismatch
             self.rebuild_children_in_place(node_id, child_builders);
         } else {
-            for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
+            for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter())
+            {
                 self.update_render_props_in_place_boxed(child_builder.as_ref(), child_node_id);
             }
         }
