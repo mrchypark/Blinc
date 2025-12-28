@@ -16,6 +16,10 @@ pub mod event_types {
     pub const POINTER_MOVE: EventType = 3;
     pub const POINTER_ENTER: EventType = 4;
     pub const POINTER_LEAVE: EventType = 5;
+    /// Drag event (mouse down + move)
+    pub const DRAG: EventType = 6;
+    /// Drag ended (mouse up after drag)
+    pub const DRAG_END: EventType = 7;
     pub const FOCUS: EventType = 10;
     pub const BLUR: EventType = 11;
     pub const KEY_DOWN: EventType = 20;

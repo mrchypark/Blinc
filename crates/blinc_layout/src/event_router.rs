@@ -75,6 +75,7 @@ pub type EventCallback = Box<dyn FnMut(LayoutNodeId, u32)>;
 /// - Currently pressed elements (for proper release targeting)
 /// - Focused element (for keyboard events)
 /// - Last scroll delta (for scroll event dispatch)
+/// - Drag state (for drag gesture detection)
 pub struct EventRouter {
     /// Current mouse position
     mouse_x: f32,
@@ -105,6 +106,15 @@ pub struct EventRouter {
     /// Last scroll delta (for passing to event handlers)
     scroll_delta_x: f32,
     scroll_delta_y: f32,
+
+    /// Drag state tracking
+    is_dragging: bool,
+    /// Start position of the drag
+    drag_start_x: f32,
+    drag_start_y: f32,
+    /// Delta from drag start
+    drag_delta_x: f32,
+    drag_delta_y: f32,
 }
 
 impl Default for EventRouter {
@@ -129,6 +139,11 @@ impl EventRouter {
             event_callback: None,
             scroll_delta_x: 0.0,
             scroll_delta_y: 0.0,
+            is_dragging: false,
+            drag_start_x: 0.0,
+            drag_start_y: 0.0,
+            drag_delta_x: 0.0,
+            drag_delta_y: 0.0,
         }
     }
 
@@ -232,6 +247,7 @@ impl EventRouter {
     /// Handle mouse move event
     ///
     /// Updates hover state and emits POINTER_ENTER/POINTER_LEAVE events.
+    /// Also emits DRAG events if a button is pressed (dragging).
     /// Returns the list of events that were emitted.
     pub fn on_mouse_move(&mut self, tree: &RenderTree, x: f32, y: f32) -> Vec<(LayoutNodeId, u32)> {
         self.mouse_x = x;
@@ -265,6 +281,35 @@ impl EventRouter {
 
         self.hovered = current_hovered;
 
+        // Drag detection: if we have a pressed target and moved, emit DRAG
+        if let Some(target) = self.pressed_target {
+            // Update drag delta
+            self.drag_delta_x = x - self.drag_start_x;
+            self.drag_delta_y = y - self.drag_start_y;
+
+            // Start dragging if we've moved more than a small threshold
+            const DRAG_THRESHOLD: f32 = 3.0;
+            if !self.is_dragging
+                && (self.drag_delta_x.abs() > DRAG_THRESHOLD
+                    || self.drag_delta_y.abs() > DRAG_THRESHOLD)
+            {
+                self.is_dragging = true;
+            }
+
+            // Emit DRAG event to the pressed target
+            if self.is_dragging {
+                self.emit_event(target, event_types::DRAG);
+                events.push((target, event_types::DRAG));
+
+                // Collect ancestors to avoid borrow conflict
+                let ancestors: Vec<_> = self.pressed_ancestors.iter().rev().skip(1).copied().collect();
+                for ancestor in ancestors {
+                    self.emit_event(ancestor, event_types::DRAG);
+                    events.push((ancestor, event_types::DRAG));
+                }
+            }
+        }
+
         events
     }
 
@@ -272,7 +317,7 @@ impl EventRouter {
     ///
     /// Emits POINTER_DOWN to the topmost hit element AND bubbles through ancestors.
     /// This allows parent elements to receive click events even when clicking on children.
-    /// Also sets focus to the clicked element.
+    /// Also sets focus to the clicked element and initializes drag tracking.
     pub fn on_mouse_down(
         &mut self,
         tree: &RenderTree,
@@ -282,6 +327,13 @@ impl EventRouter {
     ) -> Vec<(LayoutNodeId, u32)> {
         self.mouse_x = x;
         self.mouse_y = y;
+
+        // Initialize drag tracking
+        self.drag_start_x = x;
+        self.drag_start_y = y;
+        self.drag_delta_x = 0.0;
+        self.drag_delta_y = 0.0;
+        self.is_dragging = false;
 
         let mut events = Vec::new();
 
@@ -320,6 +372,7 @@ impl EventRouter {
     /// Handle mouse button release
     ///
     /// Emits POINTER_UP to the element where the press started AND bubbles through ancestors.
+    /// If dragging was in progress, also emits DRAG_END.
     /// (ensures proper button release even if cursor moved).
     pub fn on_mouse_up(
         &mut self,
@@ -333,8 +386,17 @@ impl EventRouter {
 
         let mut events = Vec::new();
 
+        // Check if we were dragging
+        let was_dragging = self.is_dragging;
+
         // Release goes to the element where press started
         if let Some(target) = self.pressed_target.take() {
+            // If we were dragging, emit DRAG_END before POINTER_UP
+            if was_dragging {
+                self.emit_event(target, event_types::DRAG_END);
+                events.push((target, event_types::DRAG_END));
+            }
+
             // Emit to the target first
             self.emit_event(target, event_types::POINTER_UP);
             events.push((target, event_types::POINTER_UP));
@@ -343,12 +405,21 @@ impl EventRouter {
             // ancestors is root to leaf, so reverse and skip the target node (last element)
             let ancestors = std::mem::take(&mut self.pressed_ancestors);
             for &ancestor in ancestors.iter().rev().skip(1) {
+                if was_dragging {
+                    self.emit_event(ancestor, event_types::DRAG_END);
+                    events.push((ancestor, event_types::DRAG_END));
+                }
                 self.emit_event(ancestor, event_types::POINTER_UP);
                 events.push((ancestor, event_types::POINTER_UP));
             }
         } else {
             self.pressed_ancestors.clear();
         }
+
+        // Reset drag state
+        self.is_dragging = false;
+        self.drag_delta_x = 0.0;
+        self.drag_delta_y = 0.0;
 
         events
     }

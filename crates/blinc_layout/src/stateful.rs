@@ -1187,6 +1187,15 @@ impl<S: StateTransitions> Stateful<S> {
         self
     }
 
+    /// Register a mouse move handler (builder pattern)
+    pub fn on_mouse_move<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = self.inner.swap().on_mouse_move(handler);
+        self
+    }
+
     /// Register a resize handler (builder pattern)
     pub fn on_resize<F>(mut self, handler: F) -> Self
     where
@@ -1490,6 +1499,14 @@ impl<S: StateTransitions> BoundStateful<S> {
         F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
     {
         self.transform_inner(|s| s.on_scroll(handler))
+    }
+
+    /// Register a mouse move handler (builder pattern)
+    pub fn on_mouse_move<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.transform_inner(|s| s.on_mouse_move(handler))
     }
 
     /// Register a resize handler (builder pattern)

@@ -60,6 +60,9 @@ pub struct EventContext {
     /// Scroll delta for SCROLL events (pixels scrolled)
     pub scroll_delta_x: f32,
     pub scroll_delta_y: f32,
+    /// Drag delta for DRAG/DRAG_END events (offset from drag start)
+    pub drag_delta_x: f32,
+    pub drag_delta_y: f32,
     /// Character for TEXT_INPUT events
     pub key_char: Option<char>,
     /// Key code for KEY_DOWN/KEY_UP events (platform-specific)
@@ -86,6 +89,8 @@ impl EventContext {
             local_y: 0.0,
             scroll_delta_x: 0.0,
             scroll_delta_y: 0.0,
+            drag_delta_x: 0.0,
+            drag_delta_y: 0.0,
             key_char: None,
             key_code: 0,
             shift: false,
@@ -113,6 +118,13 @@ impl EventContext {
     pub fn with_scroll_delta(mut self, dx: f32, dy: f32) -> Self {
         self.scroll_delta_x = dx;
         self.scroll_delta_y = dy;
+        self
+    }
+
+    /// Set drag delta (for DRAG/DRAG_END events)
+    pub fn with_drag_delta(mut self, dx: f32, dy: f32) -> Self {
+        self.drag_delta_x = dx;
+        self.drag_delta_y = dy;
         self
     }
 
@@ -312,6 +324,27 @@ impl EventHandlers {
         F: Fn(&EventContext) + 'static,
     {
         self.on(event_types::TEXT_INPUT, handler);
+    }
+
+    /// Register a drag handler (mouse down + move)
+    ///
+    /// Drag events are emitted when the mouse moves while a button is pressed.
+    /// Use `EventContext::drag_delta_x/y` to get the drag offset from the start.
+    pub fn on_drag<F>(&mut self, handler: F)
+    where
+        F: Fn(&EventContext) + 'static,
+    {
+        self.on(event_types::DRAG, handler);
+    }
+
+    /// Register a drag end handler (mouse up after dragging)
+    ///
+    /// Called when the mouse button is released after a drag operation.
+    pub fn on_drag_end<F>(&mut self, handler: F)
+    where
+        F: Fn(&EventContext) + 'static,
+    {
+        self.on(event_types::DRAG_END, handler);
     }
 }
 

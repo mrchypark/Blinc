@@ -236,6 +236,8 @@ pub struct RenderTree {
     scroll_offsets: HashMap<LayoutNodeId, (f32, f32)>,
     /// Scroll physics for scroll containers (keyed by node_id)
     scroll_physics: HashMap<LayoutNodeId, crate::scroll::SharedScrollPhysics>,
+    /// Motion bindings for continuous animations (keyed by node_id)
+    motion_bindings: HashMap<LayoutNodeId, crate::motion::MotionBindings>,
     /// Last tick time for scroll physics (in milliseconds)
     last_scroll_tick_ms: Option<u64>,
     /// DPI scale factor (physical / logical pixels)
@@ -266,6 +268,7 @@ impl RenderTree {
             node_states: HashMap::new(),
             scroll_offsets: HashMap::new(),
             scroll_physics: HashMap::new(),
+            motion_bindings: HashMap::new(),
             last_scroll_tick_ms: None,
             scale_factor: 1.0,
             animations: Weak::new(),
@@ -350,9 +353,22 @@ impl RenderTree {
             self.scroll_physics.insert(node_id, physics);
         }
 
+        // Store motion bindings if this element has continuous animations
+        if let Some(bindings) = element.motion_bindings() {
+            self.motion_bindings.insert(node_id, bindings);
+        }
+
         // Get child node IDs from the layout tree
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
+
+        // Log mismatch to help debug stateful/motion issues
+        if child_node_ids.len() != child_builders.len() && child_node_ids.len() > 0 {
+            tracing::warn!(
+                "collect_render_props: node {:?} has {} layout children but {} builder children (mismatch!)",
+                node_id, child_node_ids.len(), child_builders.len()
+            );
+        }
 
         // Match children by index (they were built in order)
         for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
@@ -438,6 +454,11 @@ impl RenderTree {
                 physics.lock().unwrap().set_scheduler(&scheduler);
             }
             self.scroll_physics.insert(node_id, physics);
+        }
+
+        // Store motion bindings if this element has continuous animations
+        if let Some(bindings) = element.motion_bindings() {
+            self.motion_bindings.insert(node_id, bindings);
         }
 
         // Get child node IDs from the layout tree
@@ -550,6 +571,11 @@ impl RenderTree {
                 physics.lock().unwrap().set_scheduler(&scheduler);
             }
             self.scroll_physics.insert(node_id, physics);
+        }
+
+        // Store motion bindings if this element has continuous animations
+        if let Some(bindings) = element.motion_bindings() {
+            self.motion_bindings.insert(node_id, bindings);
         }
 
         // Recursively process children (without motion - motion only applies to direct children)
@@ -1136,6 +1162,38 @@ impl RenderTree {
             .unwrap_or((0.0, 0.0))
     }
 
+    /// Get the motion translation for a node (if it has motion bindings)
+    ///
+    /// Returns the current translation transform from any bound AnimatedValue(s).
+    /// This is sampled every frame, enabling continuous smooth animations.
+    pub fn get_motion_transform(&self, node_id: LayoutNodeId) -> Option<Transform> {
+        self.motion_bindings.get(&node_id).and_then(|b| b.get_transform())
+    }
+
+    /// Get the motion scale for a node (if it has motion bindings)
+    ///
+    /// Returns (scale_x, scale_y) if scale bindings are present.
+    pub fn get_motion_scale(&self, node_id: LayoutNodeId) -> Option<(f32, f32)> {
+        self.motion_bindings.get(&node_id).and_then(|b| b.get_scale())
+    }
+
+    /// Get the motion rotation for a node (if it has motion bindings)
+    ///
+    /// Returns rotation in degrees if rotation binding is present.
+    pub fn get_motion_rotation(&self, node_id: LayoutNodeId) -> Option<f32> {
+        self.motion_bindings.get(&node_id).and_then(|b| b.get_rotation())
+    }
+
+    /// Get the motion opacity for a node (if it has motion bindings)
+    pub fn get_motion_opacity(&self, node_id: LayoutNodeId) -> Option<f32> {
+        self.motion_bindings.get(&node_id).and_then(|b| b.get_opacity())
+    }
+
+    /// Check if a node has motion bindings
+    pub fn has_motion_bindings(&self, node_id: LayoutNodeId) -> bool {
+        self.motion_bindings.contains_key(&node_id)
+    }
+
     /// Get the scroll direction for a node (if it's a scroll container)
     ///
     /// Returns None if the node is not a scroll container.
@@ -1479,7 +1537,7 @@ impl RenderTree {
         // Push transform for this node's position
         ctx.push_transform(Transform::translate(bounds.x, bounds.y));
 
-        // Apply element-specific transform if present
+        // Apply element-specific transform if present (static, set at build time)
         // Transforms are applied around the element's center (like CSS transform-origin: 50% 50%)
         let has_element_transform = render_node.props.transform.is_some();
         if let Some(ref transform) = render_node.props.transform {
@@ -1491,6 +1549,36 @@ impl RenderTree {
             let center_y = bounds.height / 2.0;
             ctx.push_transform(Transform::translate(center_x, center_y));
             ctx.push_transform(transform.clone());
+            ctx.push_transform(Transform::translate(-center_x, -center_y));
+        }
+
+        // Apply motion binding translation if present (dynamic, sampled every frame)
+        // Translation is NOT centered (moves element from its position)
+        let motion_transform = self.get_motion_transform(node);
+        let has_motion_transform = motion_transform.is_some();
+        if let Some(ref transform) = motion_transform {
+            ctx.push_transform(transform.clone());
+        }
+
+        // Apply motion binding scale if present (centered around element)
+        let motion_scale = self.get_motion_scale(node);
+        let has_motion_scale = motion_scale.is_some();
+        if let Some((sx, sy)) = motion_scale {
+            let center_x = bounds.width / 2.0;
+            let center_y = bounds.height / 2.0;
+            ctx.push_transform(Transform::translate(center_x, center_y));
+            ctx.push_transform(Transform::scale(sx, sy));
+            ctx.push_transform(Transform::translate(-center_x, -center_y));
+        }
+
+        // Apply motion binding rotation if present (centered around element)
+        let motion_rotation = self.get_motion_rotation(node);
+        let has_motion_rotation = motion_rotation.is_some();
+        if let Some(deg) = motion_rotation {
+            let center_x = bounds.width / 2.0;
+            let center_y = bounds.height / 2.0;
+            ctx.push_transform(Transform::translate(center_x, center_y));
+            ctx.push_transform(Transform::rotate(deg.to_radians()));
             ctx.push_transform(Transform::translate(-center_x, -center_y));
         }
 
@@ -1558,6 +1646,25 @@ impl RenderTree {
         // Pop clip if we pushed one
         if clips_content {
             ctx.pop_clip();
+        }
+
+        // Pop motion binding rotation (3 transforms for centering)
+        if has_motion_rotation {
+            ctx.pop_transform();
+            ctx.pop_transform();
+            ctx.pop_transform();
+        }
+
+        // Pop motion binding scale (3 transforms for centering)
+        if has_motion_scale {
+            ctx.pop_transform();
+            ctx.pop_transform();
+            ctx.pop_transform();
+        }
+
+        // Pop motion binding translation (1 transform)
+        if has_motion_transform {
+            ctx.pop_transform();
         }
 
         // Pop element-specific transforms if we pushed them (3 transforms for centering)
@@ -1680,11 +1787,17 @@ impl RenderTree {
             return;
         }
 
-        // Get motion values for this node (if any)
+        // Get motion values from RenderState (for entry/exit animations)
         let motion_values = render_state.get_motion_values(node);
 
-        // Calculate motion-adjusted opacity
-        let motion_opacity = motion_values.and_then(|m| m.opacity).unwrap_or(1.0);
+        // Get motion bindings from RenderTree (for continuous AnimatedValue animations)
+        let binding_transform = self.get_motion_transform(node);
+        let binding_opacity = self.get_motion_opacity(node);
+
+        // Calculate motion-adjusted opacity (combine both sources)
+        let motion_opacity = motion_values
+            .and_then(|m| m.opacity)
+            .unwrap_or_else(|| binding_opacity.unwrap_or(1.0));
 
         // Skip rendering if completely transparent
         if motion_opacity <= 0.001 {
@@ -1716,6 +1829,35 @@ impl RenderTree {
             let center_y = bounds.height / 2.0;
             ctx.push_transform(Transform::translate(center_x, center_y));
             ctx.push_transform(Transform::scale(sx, sy));
+            ctx.push_transform(Transform::translate(-center_x, -center_y));
+        }
+
+        // Apply motion binding transform if present (continuous AnimatedValue-driven animation)
+        // Translation is NOT centered (moves element from its position)
+        let has_binding_transform = binding_transform.is_some();
+        if let Some(ref transform) = binding_transform {
+            ctx.push_transform(transform.clone());
+        }
+
+        // Apply motion binding scale if present (centered around element)
+        let binding_scale = self.get_motion_scale(node);
+        let has_binding_scale = binding_scale.is_some();
+        if let Some((sx, sy)) = binding_scale {
+            let center_x = bounds.width / 2.0;
+            let center_y = bounds.height / 2.0;
+            ctx.push_transform(Transform::translate(center_x, center_y));
+            ctx.push_transform(Transform::scale(sx, sy));
+            ctx.push_transform(Transform::translate(-center_x, -center_y));
+        }
+
+        // Apply motion binding rotation if present (centered around element)
+        let binding_rotation = self.get_motion_rotation(node);
+        let has_binding_rotation = binding_rotation.is_some();
+        if let Some(deg) = binding_rotation {
+            let center_x = bounds.width / 2.0;
+            let center_y = bounds.height / 2.0;
+            ctx.push_transform(Transform::translate(center_x, center_y));
+            ctx.push_transform(Transform::rotate(deg.to_radians()));
             ctx.push_transform(Transform::translate(-center_x, -center_y));
         }
 
@@ -1841,7 +1983,26 @@ impl RenderTree {
             ctx.pop_transform();
         }
 
-        // Pop motion scale transforms
+        // Pop motion binding rotation (3 transforms for centering)
+        if has_binding_rotation {
+            ctx.pop_transform();
+            ctx.pop_transform();
+            ctx.pop_transform();
+        }
+
+        // Pop motion binding scale (3 transforms for centering)
+        if has_binding_scale {
+            ctx.pop_transform();
+            ctx.pop_transform();
+            ctx.pop_transform();
+        }
+
+        // Pop motion binding translation (1 transform)
+        if has_binding_transform {
+            ctx.pop_transform();
+        }
+
+        // Pop motion scale transforms (from RenderState motion)
         if has_motion_scale {
             ctx.pop_transform();
             ctx.pop_transform();
@@ -2342,7 +2503,9 @@ impl RenderTree {
         parent_offset: (f32, f32),
         inside_glass: bool,
     ) {
-        let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
+        // Get bounds with (0,0) to get pure layout position relative to parent
+        // parent_offset accumulates absolute position from ancestors + scroll + motion
+        let Some(bounds) = self.layout_tree.get_bounds(node, (0.0, 0.0)) else {
             return;
         };
 
@@ -2389,11 +2552,27 @@ impl RenderTree {
             }
         }
 
-        // Include scroll offset when calculating child positions
+        // Calculate absolute position for this node's children:
+        // - parent_offset: accumulated absolute position from ancestors (includes their scroll/motion)
+        // - bounds.x/y: this node's position relative to parent (from Taffy layout)
+        // - scroll_offset: this node's scroll offset (for scroll containers)
+        // - motion_offset: this node's motion transform translation (for animated elements)
         let scroll_offset = self.get_scroll_offset(node);
+
+        let motion_transform = self.get_motion_transform(node);
+        let motion_offset = motion_transform
+            .as_ref()
+            .map(|t| {
+                match t {
+                    Transform::Affine2D(a) => (a.elements[4], a.elements[5]),
+                    _ => (0.0, 0.0),
+                }
+            })
+            .unwrap_or((0.0, 0.0));
+
         let new_offset = (
-            parent_offset.0 + bounds.x + scroll_offset.0,
-            parent_offset.1 + bounds.y + scroll_offset.1,
+            parent_offset.0 + bounds.x + scroll_offset.0 + motion_offset.0,
+            parent_offset.1 + bounds.y + scroll_offset.1 + motion_offset.1,
         );
         for child_id in self.layout_tree.children(node) {
             self.render_text_recursive(renderer, child_id, new_offset, children_inside_glass);
@@ -2415,7 +2594,9 @@ impl RenderTree {
         parent_offset: (f32, f32),
         inside_glass: bool,
     ) {
-        let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
+        // Get bounds with (0,0) to get pure layout position relative to parent
+        // parent_offset accumulates absolute position from ancestors + scroll + motion
+        let Some(bounds) = self.layout_tree.get_bounds(node, (0.0, 0.0)) else {
             return;
         };
 
@@ -2456,11 +2637,25 @@ impl RenderTree {
             }
         }
 
-        // Include scroll offset when calculating child positions
+        // Calculate absolute position for this node's children:
+        // - parent_offset: accumulated absolute position from ancestors (includes their scroll/motion)
+        // - bounds.x/y: this node's position relative to parent (from Taffy layout)
+        // - scroll_offset: this node's scroll offset (for scroll containers)
+        // - motion_offset: this node's motion transform translation (for animated elements)
         let scroll_offset = self.get_scroll_offset(node);
+
+        let motion_offset = self.get_motion_transform(node)
+            .map(|t| {
+                match t {
+                    Transform::Affine2D(a) => (a.elements[4], a.elements[5]),
+                    _ => (0.0, 0.0),
+                }
+            })
+            .unwrap_or((0.0, 0.0));
+
         let new_offset = (
-            parent_offset.0 + bounds.x + scroll_offset.0,
-            parent_offset.1 + bounds.y + scroll_offset.1,
+            parent_offset.0 + bounds.x + scroll_offset.0 + motion_offset.0,
+            parent_offset.1 + bounds.y + scroll_offset.1 + motion_offset.1,
         );
         for child_id in self.layout_tree.children(node) {
             self.render_svg_recursive(renderer, child_id, new_offset, children_inside_glass);

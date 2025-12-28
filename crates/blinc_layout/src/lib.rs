@@ -72,8 +72,8 @@ pub use element::{
 
 // Builder API
 pub use div::{
-    div, Div, ElementBuilder, ElementTypeId, FontFamily, FontWeight, GenericFont, ImageRenderInfo,
-    TextAlign, TextVerticalAlign,
+    div, stack, Div, ElementBuilder, ElementTypeId, FontFamily, FontWeight, GenericFont, ImageRenderInfo,
+    Stack, TextAlign, TextVerticalAlign,
 };
 // Reference binding
 pub use div::{DivRef, ElementRef};
@@ -101,7 +101,8 @@ pub use animated::{AnimatedProperties, AnimationBuilder};
 
 // Motion container for entry/exit animations
 pub use motion::{
-    motion, ElementAnimation, Motion, SlideDirection, StaggerConfig, StaggerDirection,
+    motion, ElementAnimation, Motion, MotionBindings, SharedAnimatedValue, SlideDirection,
+    StaggerConfig, StaggerDirection,
 };
 
 // Text measurement
@@ -119,8 +120,8 @@ pub use text_selection::{
 /// Prelude module - import everything commonly needed
 pub mod prelude {
     pub use crate::div::{
-        div, Div, ElementBuilder, ElementTypeId, FontFamily, FontWeight, GenericFont,
-        ImageRenderInfo, TextAlign, TextVerticalAlign,
+        div, stack, Div, ElementBuilder, ElementTypeId, FontFamily, FontWeight, GenericFont,
+        ImageRenderInfo, Stack, TextAlign, TextVerticalAlign,
     };
     // Reference binding for external element access
     pub use crate::div::{DivRef, ElementRef};
@@ -249,7 +250,8 @@ pub mod prelude {
 
     // Motion container for entry/exit animations
     pub use crate::motion::{
-        motion, ElementAnimation, Motion, SlideDirection, StaggerConfig, StaggerDirection,
+        motion, ElementAnimation, Motion, MotionBindings, SharedAnimatedValue, SlideDirection,
+        StaggerConfig, StaggerDirection,
     };
 
     // Text selection for clipboard support

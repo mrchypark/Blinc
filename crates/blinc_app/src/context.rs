@@ -759,9 +759,20 @@ impl RenderContext {
             }
         }
 
-        // Include scroll offset when calculating child positions
+        // Include scroll offset and motion offset when calculating child positions
         let scroll_offset = tree.get_scroll_offset(node);
-        let new_offset = (abs_x + scroll_offset.0, abs_y + scroll_offset.1);
+        let motion_offset = tree.get_motion_transform(node)
+            .map(|t| {
+                match t {
+                    blinc_core::Transform::Affine2D(a) => (a.elements[4], a.elements[5]),
+                    _ => (0.0, 0.0),
+                }
+            })
+            .unwrap_or((0.0, 0.0));
+        let new_offset = (
+            abs_x + scroll_offset.0 + motion_offset.0,
+            abs_y + scroll_offset.1 + motion_offset.1,
+        );
         for child_id in tree.layout().children(node) {
             self.collect_elements_recursive(
                 tree,

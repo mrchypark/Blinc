@@ -1494,6 +1494,16 @@ impl Div {
         self
     }
 
+    /// Register a mouse move handler (pointer movement over this element)
+    pub fn on_mouse_move<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + 'static,
+    {
+        self.event_handlers
+            .on(blinc_core::events::event_types::POINTER_MOVE, handler);
+        self
+    }
+
     /// Register a text input handler (receives character input when focused)
     pub fn on_text_input<F>(mut self, handler: F) -> Self
     where
@@ -1821,6 +1831,14 @@ pub trait ElementBuilder {
     ) -> Option<crate::element::MotionAnimation> {
         None
     }
+
+    /// Get motion bindings for continuous animation
+    ///
+    /// If this element has bound animated values (e.g., translate_y, opacity),
+    /// they are returned here so the RenderTree can sample them each frame.
+    fn motion_bindings(&self) -> Option<crate::motion::MotionBindings> {
+        None
+    }
 }
 
 impl ElementBuilder for Div {
@@ -1872,6 +1890,341 @@ impl ElementBuilder for Div {
 /// Convenience function to create a new div
 pub fn div() -> Div {
     Div::new()
+}
+
+// ============================================================================
+// Stack - Children overlay at absolute positions
+// ============================================================================
+
+/// A stack container where all children are positioned absolutely and stack over each other.
+///
+/// Stack is a specialized Div that:
+/// - Sets position: relative on itself to establish a positioning context
+/// - Automatically sets position: absolute on all children
+/// - Children stack from bottom to top in document order (last child is on top)
+///
+/// This is perfect for overlays, layered UIs, and any case where you need
+/// elements to overlap without affecting each other's layout.
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_layout::prelude::*;
+///
+/// // Three layers stacked on top of each other
+/// stack()
+///     .w(200.0)
+///     .h(200.0)
+///     .child(
+///         div().w_full().h_full().bg(Color::RED) // Background layer
+///     )
+///     .child(
+///         div().w(100.0).h(100.0).bg(Color::GREEN) // Middle layer at top-left
+///     )
+///     .child(
+///         div()
+///             .absolute()
+///             .right(10.0)
+///             .bottom(10.0)
+///             .w(50.0)
+///             .h(50.0)
+///             .bg(Color::BLUE) // Top layer at bottom-right
+///     )
+/// ```
+pub struct Stack {
+    inner: Div,
+}
+
+impl Stack {
+    /// Create a new stack container
+    pub fn new() -> Self {
+        let mut inner = Div::new();
+        // Stack is a positioning context
+        inner.style.position = Position::Relative;
+        Self { inner }
+    }
+
+    /// Add a child element (will be absolutely positioned)
+    pub fn child(mut self, child: impl ElementBuilder + 'static) -> Self {
+        // Wrap child in an absolutely positioned container
+        let wrapper = StackChild { inner: Box::new(child) };
+        self.inner.children.push(Box::new(wrapper));
+        self
+    }
+
+    /// Add multiple children (each will be absolutely positioned)
+    pub fn children<I>(mut self, children: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: ElementBuilder + 'static,
+    {
+        for child in children {
+            let wrapper = StackChild { inner: Box::new(child) };
+            self.inner.children.push(Box::new(wrapper));
+        }
+        self
+    }
+}
+
+impl Default for Stack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Delegate all Div methods to inner
+impl Stack {
+    // =========================================================================
+    // Sizing
+    // =========================================================================
+
+    /// Set width in pixels
+    pub fn w(mut self, px: f32) -> Self {
+        self.inner = self.inner.w(px);
+        self
+    }
+
+    /// Set width to 100%
+    pub fn w_full(mut self) -> Self {
+        self.inner = self.inner.w_full();
+        self
+    }
+
+    /// Set height in pixels
+    pub fn h(mut self, px: f32) -> Self {
+        self.inner = self.inner.h(px);
+        self
+    }
+
+    /// Set height to 100%
+    pub fn h_full(mut self) -> Self {
+        self.inner = self.inner.h_full();
+        self
+    }
+
+    /// Set both width and height in pixels
+    pub fn size(mut self, w: f32, h: f32) -> Self {
+        self.inner = self.inner.size(w, h);
+        self
+    }
+
+    /// Set square size (width and height equal)
+    pub fn square(mut self, size: f32) -> Self {
+        self.inner = self.inner.square(size);
+        self
+    }
+
+    // =========================================================================
+    // Padding & Margin
+    // =========================================================================
+
+    /// Set padding on all sides (in 4px units)
+    pub fn p(mut self, units: f32) -> Self {
+        self.inner = self.inner.p(units);
+        self
+    }
+
+    /// Set padding in pixels
+    pub fn p_px(mut self, px: f32) -> Self {
+        self.inner = self.inner.p_px(px);
+        self
+    }
+
+    /// Set horizontal padding (in 4px units)
+    pub fn px(mut self, units: f32) -> Self {
+        self.inner = self.inner.px(units);
+        self
+    }
+
+    /// Set vertical padding (in 4px units)
+    pub fn py(mut self, units: f32) -> Self {
+        self.inner = self.inner.py(units);
+        self
+    }
+
+    /// Set margin on all sides (in 4px units)
+    pub fn m(mut self, units: f32) -> Self {
+        self.inner = self.inner.m(units);
+        self
+    }
+
+    /// Set margin in pixels
+    pub fn m_px(mut self, px: f32) -> Self {
+        self.inner = self.inner.m_px(px);
+        self
+    }
+
+    // =========================================================================
+    // Visual Properties
+    // =========================================================================
+
+    /// Set background color
+    pub fn bg(mut self, color: Color) -> Self {
+        self.inner = self.inner.bg(color);
+        self
+    }
+
+    /// Set background brush (for gradients)
+    pub fn background(mut self, brush: impl Into<Brush>) -> Self {
+        self.inner = self.inner.background(brush);
+        self
+    }
+
+    /// Set corner radius (all corners)
+    pub fn rounded(mut self, radius: f32) -> Self {
+        self.inner = self.inner.rounded(radius);
+        self
+    }
+
+    /// Set corner radius with full pill shape
+    pub fn rounded_full(mut self) -> Self {
+        self.inner = self.inner.rounded_full();
+        self
+    }
+
+    /// Apply a drop shadow
+    pub fn shadow(mut self, shadow: Shadow) -> Self {
+        self.inner = self.inner.shadow(shadow);
+        self
+    }
+
+    /// Apply a small drop shadow
+    pub fn shadow_sm(mut self) -> Self {
+        self.inner = self.inner.shadow_sm();
+        self
+    }
+
+    /// Apply a medium drop shadow
+    pub fn shadow_md(mut self) -> Self {
+        self.inner = self.inner.shadow_md();
+        self
+    }
+
+    /// Apply a large drop shadow
+    pub fn shadow_lg(mut self) -> Self {
+        self.inner = self.inner.shadow_lg();
+        self
+    }
+
+    /// Set opacity (0.0 = transparent, 1.0 = opaque)
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        self.inner = self.inner.opacity(opacity);
+        self
+    }
+
+    /// Apply a transform
+    pub fn transform(mut self, transform: Transform) -> Self {
+        self.inner = self.inner.transform(transform);
+        self
+    }
+
+    // =========================================================================
+    // Material System
+    // =========================================================================
+
+    /// Apply glass material with default settings
+    pub fn glass(mut self) -> Self {
+        self.inner = self.inner.glass();
+        self
+    }
+
+    // =========================================================================
+    // Overflow
+    // =========================================================================
+
+    /// Set overflow to hidden (clip content)
+    pub fn overflow_clip(mut self) -> Self {
+        self.inner = self.inner.overflow_clip();
+        self
+    }
+
+    /// Set overflow to visible
+    pub fn overflow_visible(mut self) -> Self {
+        self.inner = self.inner.overflow_visible();
+        self
+    }
+}
+
+impl ElementBuilder for Stack {
+    fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
+        self.inner.build(tree)
+    }
+
+    fn render_props(&self) -> RenderProps {
+        self.inner.render_props()
+    }
+
+    fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
+        self.inner.children_builders()
+    }
+
+    fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
+        // Delegate to inner Div's event_handlers
+        if self.inner.event_handlers.is_empty() {
+            None
+        } else {
+            Some(&self.inner.event_handlers)
+        }
+    }
+}
+
+/// Internal wrapper that makes a child absolutely positioned
+struct StackChild {
+    inner: Box<dyn ElementBuilder>,
+}
+
+impl ElementBuilder for StackChild {
+    fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
+        // Build the child first
+        let child_node = self.inner.build(tree);
+
+        // Create a wrapper node with absolute positioning
+        let mut style = Style::default();
+        style.position = Position::Absolute;
+        style.inset = Rect {
+            left: LengthPercentageAuto::Length(0.0),
+            right: LengthPercentageAuto::Auto,
+            top: LengthPercentageAuto::Length(0.0),
+            bottom: LengthPercentageAuto::Auto,
+        };
+        // Size to fit content
+        style.size.width = Dimension::Auto;
+        style.size.height = Dimension::Auto;
+
+        let wrapper = tree.create_node(style);
+        tree.add_child(wrapper, child_node);
+
+        wrapper
+    }
+
+    fn render_props(&self) -> RenderProps {
+        // Wrapper is transparent
+        RenderProps::default()
+    }
+
+    fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
+        // No direct access to the wrapped child's children from here
+        &[]
+    }
+}
+
+/// Create a stack container where children overlay each other
+///
+/// Stack is a positioning container where all children are absolutely positioned
+/// and stack on top of each other. The last child in document order appears on top.
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_layout::prelude::*;
+///
+/// stack()
+///     .w(200.0).h(200.0)
+///     .child(div().w_full().h_full().bg(Color::RED))  // Bottom layer
+///     .child(div().w(100.0).h(100.0).bg(Color::GREEN)) // Top layer
+/// ```
+pub fn stack() -> Stack {
+    Stack::new()
 }
 
 #[cfg(test)]

@@ -5,17 +5,20 @@
 //! - Staggered list animations with configurable delays
 //! - Different stagger directions (forward, reverse, from center)
 //! - Various animation presets (fade, scale, slide, bounce, pop)
+//! - Pull-to-refresh with FSM + AnimatedValue for smooth drag animation
 //!
 //! Note: Enter/exit animations require RenderTree integration (pending).
 //! This example showcases the API design and stagger delay calculations.
 //!
 //! Run with: cargo run -p blinc_app --example motion_demo --features windowed
 
-use blinc_animation::AnimationPreset;
+use blinc_animation::{AnimatedValue, AnimationPreset, SpringConfig};
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_core::Color;
-use blinc_layout::motion::{motion, StaggerConfig};
+use blinc_layout::motion::{motion, SharedAnimatedValue, StaggerConfig};
+use blinc_layout::widgets::scroll::Scroll;
+use std::sync::{Arc, Mutex};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -62,7 +65,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                 .child(single_element_demo())
                 .child(stagger_forward_demo())
                 .child(stagger_reverse_demo())
-                .child(stagger_center_demo()),
+                .child(stagger_center_demo())
+                .child(pull_to_refresh_demo(ctx)),
         )
         .child(api_showcase())
 }
@@ -123,6 +127,139 @@ fn stagger_center_demo() -> Div {
             .stagger(StaggerConfig::new(300, AnimationPreset::fade_in(800)).from_center())
             .children(items.iter().map(|item| list_item(item))),
     )
+}
+
+// ============================================================================
+// Pull-to-Refresh Demo: stateful() for drag + motion() for animation
+// ============================================================================
+
+/// FSM states for pull-to-refresh gesture
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+enum PullState {
+    #[default]
+    Idle,
+    Pulling,     // User is dragging down
+    Armed,       // Pulled past threshold, ready to refresh
+    Refreshing,  // Refresh in progress
+}
+
+impl blinc_layout::prelude::StateTransitions for PullState {
+    fn on_event(&self, event: u32) -> Option<Self> {
+        use blinc_core::events::event_types;
+        match (self, event) {
+            // Pointer events for state transitions
+            (PullState::Idle, event_types::POINTER_DOWN) => Some(PullState::Pulling),
+            (PullState::Pulling, event_types::POINTER_UP) => Some(PullState::Idle),
+            (PullState::Armed, event_types::POINTER_UP) => Some(PullState::Refreshing),
+            // Click in refreshing state resets to idle (simulates refresh complete)
+            (PullState::Refreshing, event_types::POINTER_UP) => Some(PullState::Idle),
+            _ => None,
+        }
+    }
+}
+
+/// Demo 5: Pull-to-refresh with stateful() + motion()
+///
+/// Architecture:
+/// - stateful() = styled Div container with FSM (handles pointer down/up for state)
+/// - motion() = animates the refresh icon using AnimatedValue bindings
+/// - State drives when mouse moves update the offset
+fn pull_to_refresh_demo(ctx: &WindowedContext) -> Div {
+    // AnimatedValue for Y offset - drives the motion() transform (thread-safe)
+    let offset_y: SharedAnimatedValue = Arc::new(Mutex::new(
+        AnimatedValue::new(ctx.animation_handle(), 0.0, SpringConfig::wobbly())
+    ));
+
+    // Track start Y position for drag calculation (thread-safe)
+    let drag_start_y = Arc::new(Mutex::new(0.0f32));
+
+    // Clones for closures
+    let offset_on_state = Arc::clone(&offset_y);
+    let offset_on_move = Arc::clone(&offset_y);
+    let drag_start_down = Arc::clone(&drag_start_y);
+    let drag_start_move = Arc::clone(&drag_start_y);
+
+    const MAX_PULL: f32 = 80.0;
+
+    // Get shared FSM state handle
+    let pull_state = ctx.use_state_for("pull_refresh", PullState::Idle);
+    let pull_state_move = pull_state.clone();
+
+    demo_card("Pull to Refresh", "stateful + motion")
+        .child(
+            // stateful() = container with FSM state transitions
+            stateful(pull_state)
+                .w(160.0)
+                .h(150.0)
+                .rounded(8.0)
+                .bg(Color::rgba(0.1, 0.1, 0.12, 1.0))
+                .flex_col()
+                .items_center()
+                .on_state(move |state, container| {
+                    // Update container color based on state
+                    let bg = match *state {
+                        PullState::Idle => Color::rgba(0.1, 0.1, 0.12, 1.0),
+                        PullState::Pulling => Color::rgba(0.12, 0.12, 0.16, 1.0),
+                        PullState::Armed => Color::rgba(0.1, 0.15, 0.12, 1.0),
+                        PullState::Refreshing => Color::rgba(0.1, 0.12, 0.18, 1.0),
+                    };
+                    container.merge(div().bg(bg));
+
+                    // When released (Idle or Refreshing), spring back to 0
+                    match *state {
+                        PullState::Idle => {
+                            offset_on_state.lock().unwrap().set_target(0.0);
+                        }
+                        PullState::Refreshing => {
+                            // Hold at refresh position briefly
+                            offset_on_state.lock().unwrap().set_target(30.0);
+                        }
+                        _ => {}
+                    }
+                })
+                // Capture start Y on mouse down
+                .on_mouse_down(move |ctx| {
+                    *drag_start_down.lock().unwrap() = ctx.mouse_y;
+                })
+                // Mouse move updates offset when in Pulling state
+                .on_mouse_move(move |ctx| {
+                    let state = pull_state_move.lock().unwrap().state;
+                    if state == PullState::Pulling || state == PullState::Armed {
+                        let start_y = *drag_start_move.lock().unwrap();
+                        let delta_y = (ctx.mouse_y - start_y).max(0.0).min(MAX_PULL);
+                        offset_on_move.lock().unwrap().set_immediate(delta_y);
+                    }
+                })
+                // Refresh icon animated by motion()
+                .child(
+                    motion()
+                        .translate_y(offset_y.clone())
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .w(24.0)
+                                .h(24.0)
+                                .rounded(12.0)
+                                .bg(Color::rgba(0.3, 0.6, 1.0, 0.8))
+                                .items_center()
+                                .justify_center()
+                                .child(text("↓").size(14.0).color(Color::WHITE))
+                        )
+                )
+                // Content area
+                .child(
+                    div()
+                        .w(120.0)
+                        .h(80.0)
+                        .mt(20.0)
+                        .bg(Color::rgba(0.2, 0.2, 0.25, 1.0))
+                        .rounded(8.0)
+                        .items_center()
+                        .justify_center()
+                        .child(text("Content").size(12.0).color(Color::rgba(0.6, 0.6, 0.7, 1.0)))
+                )
+        )
 }
 
 fn list_item(label: &str) -> Div {

@@ -1,29 +1,47 @@
-//! Motion container for entry/exit animations
+//! Motion container for animations
 //!
-//! A style-less container that applies animations to its children without
-//! adding visual styling of its own.
+//! A container that applies animations to its children. Supports:
+//! - Enter/exit animations (fade_in, scale_in, slide_in, etc.)
+//! - Staggered animations for lists
+//! - **Continuous animations** driven by `AnimatedValue` or `AnimatedTimeline`
 //!
-//! # Example
+//! # Example - Enter/Exit
 //!
 //! ```ignore
 //! use blinc_layout::prelude::*;
 //!
-//! // Single child with fade animation
 //! motion()
 //!     .fade_in(300)
 //!     .fade_out(200)
 //!     .child(my_content)
+//! ```
 //!
-//! // Stagger multiple children
+//! # Example - Continuous Animation with AnimatedValue
+//!
+//! ```ignore
+//! use blinc_layout::prelude::*;
+//! use blinc_animation::{AnimatedValue, SpringConfig};
+//!
+//! // Create animated value for Y translation
+//! let offset_y = Rc::new(RefCell::new(
+//!     AnimatedValue::new(ctx.animation_handle(), 0.0, SpringConfig::wobbly())
+//! ));
+//!
 //! motion()
-//!     .stagger(StaggerConfig::new(50, AnimationPreset::fade_in(300)))
-//!     .children(items.iter().map(|item| div().child(text(item))))
+//!     .translate_y(offset_y.clone())  // Bind to AnimatedValue
+//!     .child(my_content)
+//!
+//! // Later, in drag handler:
+//! offset_y.borrow_mut().set_target(100.0);  // Animates smoothly
 //! ```
 
 use crate::div::{ElementBuilder, ElementTypeId};
 use crate::element::{MotionAnimation, MotionKeyframe, RenderProps};
 use crate::tree::{LayoutNodeId, LayoutTree};
-use blinc_animation::{AnimationPreset, MultiKeyframeAnimation};
+use blinc_animation::{AnimatedValue, AnimationPreset, MultiKeyframeAnimation};
+use blinc_core::Transform;
+use std::cell::RefCell;
+use std::rc::Rc;
 use taffy::{Display, FlexDirection, Style};
 
 /// Animation configuration for element lifecycle
@@ -141,9 +159,95 @@ impl StaggerConfig {
     }
 }
 
-/// Motion container for enter/exit animations
+/// Shared animated value type for motion bindings (thread-safe)
+pub type SharedAnimatedValue = std::sync::Arc<std::sync::Mutex<AnimatedValue>>;
+
+/// Motion bindings for continuous animation driven by AnimatedValue
 ///
-/// Wraps child elements and applies entry/exit animations.
+/// This struct holds references to animated values that are sampled every frame
+/// during rendering, enabling smooth continuous animations.
+#[derive(Clone, Default)]
+pub struct MotionBindings {
+    /// Animated X translation
+    pub translate_x: Option<SharedAnimatedValue>,
+    /// Animated Y translation
+    pub translate_y: Option<SharedAnimatedValue>,
+    /// Animated uniform scale
+    pub scale: Option<SharedAnimatedValue>,
+    /// Animated X scale
+    pub scale_x: Option<SharedAnimatedValue>,
+    /// Animated Y scale
+    pub scale_y: Option<SharedAnimatedValue>,
+    /// Animated rotation (degrees)
+    pub rotation: Option<SharedAnimatedValue>,
+    /// Animated opacity
+    pub opacity: Option<SharedAnimatedValue>,
+}
+
+impl MotionBindings {
+    /// Check if any bindings are set
+    pub fn is_empty(&self) -> bool {
+        self.translate_x.is_none()
+            && self.translate_y.is_none()
+            && self.scale.is_none()
+            && self.scale_x.is_none()
+            && self.scale_y.is_none()
+            && self.rotation.is_none()
+            && self.opacity.is_none()
+    }
+
+    /// Get the current translation from animated values
+    ///
+    /// Returns a translation transform for the tx/ty bindings.
+    /// Scale and rotation should be queried separately for proper centered application.
+    pub fn get_transform(&self) -> Option<Transform> {
+        let tx = self.translate_x.as_ref().map(|v| v.lock().unwrap().get()).unwrap_or(0.0);
+        let ty = self.translate_y.as_ref().map(|v| v.lock().unwrap().get()).unwrap_or(0.0);
+
+        if tx.abs() > 0.001 || ty.abs() > 0.001 {
+            Some(Transform::translate(tx, ty))
+        } else {
+            None
+        }
+    }
+
+    /// Get the current scale values from animated bindings
+    ///
+    /// Returns (scale_x, scale_y) if any scale is bound.
+    /// The renderer should apply this centered around the element.
+    pub fn get_scale(&self) -> Option<(f32, f32)> {
+        let scale = self.scale.as_ref().map(|v| v.lock().unwrap().get());
+        let scale_x = self.scale_x.as_ref().map(|v| v.lock().unwrap().get());
+        let scale_y = self.scale_y.as_ref().map(|v| v.lock().unwrap().get());
+
+        if let Some(s) = scale {
+            Some((s, s))
+        } else if scale_x.is_some() || scale_y.is_some() {
+            Some((scale_x.unwrap_or(1.0), scale_y.unwrap_or(1.0)))
+        } else {
+            None
+        }
+    }
+
+    /// Get the current rotation from animated values (in degrees)
+    ///
+    /// The renderer should apply this centered around the element.
+    pub fn get_rotation(&self) -> Option<f32> {
+        self.rotation.as_ref().map(|v| v.lock().unwrap().get())
+    }
+
+    /// Get the current opacity from animated value
+    pub fn get_opacity(&self) -> Option<f32> {
+        self.opacity.as_ref().map(|v| v.lock().unwrap().get())
+    }
+}
+
+/// Motion container for animations
+///
+/// Wraps child elements and applies animations. Supports:
+/// - Entry/exit animations (one-time on mount/unmount)
+/// - Continuous animations driven by `AnimatedValue` bindings
+///
 /// The container itself is transparent but can have layout properties
 /// to control how children are arranged (flex direction, gap, etc.).
 pub struct Motion {
@@ -157,6 +261,25 @@ pub struct Motion {
     stagger_config: Option<StaggerConfig>,
     /// Layout style for the container
     style: Style,
+
+    // =========================================================================
+    // Continuous animation bindings (AnimatedValue driven)
+    // =========================================================================
+
+    /// Animated X translation
+    translate_x: Option<SharedAnimatedValue>,
+    /// Animated Y translation
+    translate_y: Option<SharedAnimatedValue>,
+    /// Animated uniform scale
+    scale: Option<SharedAnimatedValue>,
+    /// Animated X scale
+    scale_x: Option<SharedAnimatedValue>,
+    /// Animated Y scale
+    scale_y: Option<SharedAnimatedValue>,
+    /// Animated rotation (degrees)
+    rotation: Option<SharedAnimatedValue>,
+    /// Animated opacity
+    opacity: Option<SharedAnimatedValue>,
 }
 
 /// Create a motion container
@@ -171,6 +294,13 @@ pub fn motion() -> Motion {
             flex_direction: FlexDirection::Column,
             ..Style::default()
         },
+        translate_x: None,
+        translate_y: None,
+        scale: None,
+        scale_x: None,
+        scale_y: None,
+        rotation: None,
+        opacity: None,
     }
 }
 
@@ -274,6 +404,90 @@ impl Motion {
     /// Pop in (scale with overshoot)
     pub fn pop_in(self, duration_ms: u32) -> Self {
         self.enter_animation(AnimationPreset::pop_in(duration_ms))
+    }
+
+    // ========================================================================
+    // Continuous Animation Bindings (AnimatedValue driven)
+    // ========================================================================
+
+    /// Bind X translation to an AnimatedValue
+    ///
+    /// The motion element's X position will track this animated value.
+    pub fn translate_x(mut self, value: SharedAnimatedValue) -> Self {
+        self.translate_x = Some(value);
+        self
+    }
+
+    /// Bind Y translation to an AnimatedValue
+    ///
+    /// The motion element's Y position will track this animated value.
+    /// Perfect for pull-to-refresh, swipe gestures, etc.
+    pub fn translate_y(mut self, value: SharedAnimatedValue) -> Self {
+        self.translate_y = Some(value);
+        self
+    }
+
+    /// Bind uniform scale to an AnimatedValue
+    ///
+    /// Scales both X and Y uniformly.
+    pub fn scale(mut self, value: SharedAnimatedValue) -> Self {
+        self.scale = Some(value);
+        self
+    }
+
+    /// Bind X scale to an AnimatedValue
+    pub fn scale_x(mut self, value: SharedAnimatedValue) -> Self {
+        self.scale_x = Some(value);
+        self
+    }
+
+    /// Bind Y scale to an AnimatedValue
+    pub fn scale_y(mut self, value: SharedAnimatedValue) -> Self {
+        self.scale_y = Some(value);
+        self
+    }
+
+    /// Bind rotation to an AnimatedValue (in degrees)
+    pub fn rotate(mut self, value: SharedAnimatedValue) -> Self {
+        self.rotation = Some(value);
+        self
+    }
+
+    /// Bind opacity to an AnimatedValue (0.0 to 1.0)
+    pub fn opacity(mut self, value: SharedAnimatedValue) -> Self {
+        self.opacity = Some(value);
+        self
+    }
+
+    /// Check if any continuous animations are bound
+    pub fn has_animated_bindings(&self) -> bool {
+        self.translate_x.is_some()
+            || self.translate_y.is_some()
+            || self.scale.is_some()
+            || self.scale_x.is_some()
+            || self.scale_y.is_some()
+            || self.rotation.is_some()
+            || self.opacity.is_some()
+    }
+
+    /// Get the motion bindings for this element
+    ///
+    /// These bindings are stored in the RenderTree and sampled every frame
+    /// during rendering to apply continuous animations.
+    pub fn get_motion_bindings(&self) -> Option<MotionBindings> {
+        if !self.has_animated_bindings() {
+            return None;
+        }
+
+        Some(MotionBindings {
+            translate_x: self.translate_x.clone(),
+            translate_y: self.translate_y.clone(),
+            scale: self.scale.clone(),
+            scale_x: self.scale_x.clone(),
+            scale_y: self.scale_y.clone(),
+            rotation: self.rotation.clone(),
+            opacity: self.opacity.clone(),
+        })
     }
 
     // ========================================================================
@@ -426,7 +640,8 @@ impl ElementBuilder for Motion {
     }
 
     fn render_props(&self) -> RenderProps {
-        // Motion container is transparent - no visual properties
+        // Motion with animated bindings uses motion_bindings() instead of static props.
+        // Return default props - the actual transform/opacity will be sampled at render time.
         RenderProps::default()
     }
 
@@ -441,6 +656,10 @@ impl ElementBuilder for Motion {
 
     fn motion_animation_for_child(&self, child_index: usize) -> Option<MotionAnimation> {
         self.motion_animation_for_child(child_index)
+    }
+
+    fn motion_bindings(&self) -> Option<MotionBindings> {
+        self.get_motion_bindings()
     }
 }
 
