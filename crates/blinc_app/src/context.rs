@@ -144,34 +144,6 @@ impl RenderContext {
         // Collect text, SVG, and image elements
         let (texts, svgs, images) = self.collect_render_elements(tree);
 
-        // DEBUG: Uncomment to draw text element bounds for debugging layout issues
-        // #[cfg(debug_assertions)]
-        // {
-        //     use blinc_core::{Brush, Color, CornerRadius, DrawCommand, Stroke};
-        //     for text in &texts {
-        //         // Red rectangle: text element bounds from Taffy
-        //         bg_ctx.execute_command(&DrawCommand::StrokeRect {
-        //             rect: Rect::new(text.x, text.y, text.width, text.height),
-        //             corner_radius: CornerRadius::default(),
-        //             stroke: Stroke::new(1.0),
-        //             brush: Brush::Solid(Color::rgba(1.0, 0.0, 0.0, 0.8)),
-        //         });
-        //         // Blue dot: center point for vertical centering
-        //         let cx = text.x + text.width / 2.0;
-        //         let cy = text.y + text.height / 2.0;
-        //         bg_ctx.execute_command(&DrawCommand::FillRect {
-        //             rect: Rect::new(cx - 3.0, cy - 3.0, 6.0, 6.0),
-        //             corner_radius: CornerRadius::default(),
-        //             brush: Brush::Solid(Color::rgba(0.0, 0.0, 1.0, 0.9)),
-        //         });
-        //         // Green dot: left edge marker
-        //         bg_ctx.execute_command(&DrawCommand::FillRect {
-        //             rect: Rect::new(text.x - 2.0, cy - 2.0, 4.0, 4.0),
-        //             corner_radius: CornerRadius::default(),
-        //             brush: Brush::Solid(Color::rgba(0.0, 1.0, 0.0, 0.9)),
-        //         });
-        //     }
-        // }
 
         // Pre-load all images into cache before rendering
         self.preload_images(&images);
@@ -915,23 +887,28 @@ impl RenderContext {
 
             // Wrap if effective width is significantly smaller than measured width
             let needs_wrap = text.wrap && effective_width < text.measured_width - 2.0;
-            let wrap_width = if needs_wrap {
-                Some(effective_width)
-            } else {
-                None // No width constraint = no wrapping
-            };
+
+            // Always pass width for alignment - the layout engine needs max_width
+            // to calculate center/right alignment offsets
+            let wrap_width = Some(text.width);
 
             // Convert font family to GPU types
             let font_name = text.font_family.name.as_deref();
             let generic = to_gpu_generic_font(text.font_family.generic);
 
+            // Map vertical alignment to text anchor
+            let (anchor, y_pos) = match text.v_align {
+                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0),
+                TextVerticalAlign::Top => (TextAnchor::Top, text.y),
+            };
+
             if let Ok(glyphs) = self.text_ctx.prepare_text_with_font(
                 &text.content,
                 text.x,
-                text.y,
+                y_pos,
                 text.font_size,
                 color,
-                TextAnchor::Top,
+                anchor,
                 alignment,
                 wrap_width,
                 needs_wrap,
