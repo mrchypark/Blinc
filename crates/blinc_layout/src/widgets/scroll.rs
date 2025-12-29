@@ -1000,6 +1000,21 @@ impl Scroll {
         self
     }
 
+    pub fn border(mut self, width: f32, color: blinc_core::Color) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border(width, color);
+        self
+    }
+
+    pub fn border_color(mut self, color: blinc_core::Color) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border_color(color);
+        self
+    }
+
+    pub fn border_width(mut self, width: f32) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border_width(width);
+        self
+    }
+
     pub fn shadow(mut self, shadow: Shadow) -> Self {
         self.inner = std::mem::take(&mut self.inner).shadow(shadow);
         self

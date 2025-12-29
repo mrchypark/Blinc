@@ -740,6 +740,10 @@ pub struct RenderProps {
     pub background: Option<Brush>,
     /// Corner radius for rounded rectangles
     pub border_radius: CornerRadius,
+    /// Border color (None = no border)
+    pub border_color: Option<Color>,
+    /// Border width in pixels
+    pub border_width: f32,
     /// Which layer this element renders in
     pub layer: RenderLayer,
     /// Material applied to this element (glass, metallic, etc.)
@@ -766,6 +770,8 @@ impl Default for RenderProps {
         Self {
             background: None,
             border_radius: CornerRadius::default(),
+            border_color: None,
+            border_width: 0.0,
             layer: RenderLayer::default(),
             material: None,
             node_id: None,
@@ -877,6 +883,14 @@ impl RenderProps {
         // Override border_radius if non-zero
         if other.border_radius != CornerRadius::default() {
             self.border_radius = other.border_radius;
+        }
+        // Override border_color if set
+        if other.border_color.is_some() {
+            self.border_color = other.border_color;
+        }
+        // Override border_width if non-zero
+        if other.border_width > 0.0 {
+            self.border_width = other.border_width;
         }
         // Override layer if non-default
         if other.layer != RenderLayer::default() {

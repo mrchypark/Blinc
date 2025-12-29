@@ -466,17 +466,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Handle border
+    // Handle border with stable anti-aliasing
+    // The border is the ring between the outer shape edge and the inner edge (inset by border_width)
     let border_width = prim.border.x;
     if border_width > 0.0 {
+        // Distance to inner edge (positive inside the inner area)
         let inner_d = d + border_width;
-        let border_alpha = 1.0 - smoothstep(-aa_width, aa_width, inner_d);
 
-        // Border is the area between outer and inner edges
-        let in_border = fill_alpha - border_alpha;
+        // For thin borders, use a fixed aa_width to avoid fwidth instability.
+        // The fwidth approach causes jitter on scroll because screen-space derivatives
+        // change with subpixel position. A fixed 0.5-1.0 pixel aa provides stable edges.
+        let stable_aa = 0.5;
 
-        // Blend: background color inside, border color in border region
-        fill_color = mix(fill_color, prim.border_color, clamp(in_border / fill_alpha, 0.0, 1.0));
+        // Inner coverage using stable anti-aliasing (0 outside inner, 1 inside inner)
+        let inner_coverage = 1.0 - smoothstep(-stable_aa, stable_aa, inner_d);
+
+        // The border occupies the region between outer edge (d < 0) and inner edge (inner_d < 0).
+        // We want to blend the border color in this ring.
+        // border_blend = 1 when in the border ring, 0 when inside the inner area
+        // Using the stable inner edge prevents jitter
+        let border_blend = 1.0 - inner_coverage;
+
+        // Only apply border color where we're actually inside the shape (fill_alpha > 0)
+        // Use smoothstep clamping to avoid harsh transitions
+        fill_color = mix(fill_color, prim.border_color, border_blend * step(0.001, fill_alpha));
     }
 
     fill_color.a *= fill_alpha;

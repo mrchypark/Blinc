@@ -127,6 +127,7 @@ fn build_input_section(
 /// Build a labeled text input
 fn build_labeled_input(label: &str, state: &SharedTextInputState) -> impl ElementBuilder {
     div()
+    .w_full()
         .flex_col()
         .gap(4.0)
         .child(
@@ -135,7 +136,7 @@ fn build_labeled_input(label: &str, state: &SharedTextInputState) -> impl Elemen
                 .weight(FontWeight::Medium)
                 .color(Color::rgba(0.8, 0.8, 0.8, 1.0)),
         )
-        .child(text_input(state).w(280.0))
+        .child(text_input(state).text_size(12.0))
 }
 
 /// Display current input values

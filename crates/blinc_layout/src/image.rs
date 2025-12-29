@@ -569,6 +569,8 @@ impl ElementBuilder for Image {
         RenderProps {
             background: None,
             border_radius: blinc_core::CornerRadius::uniform(self.border_radius),
+            border_color: None,
+            border_width: 0.0,
             layer: self.render_layer,
             material: None,
             node_id: None,

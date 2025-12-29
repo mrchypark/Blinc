@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, Weak};
 use blinc_animation::AnimationScheduler;
 use indexmap::IndexMap;
 
-use blinc_core::{Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle, Rect, Transform};
+use blinc_core::{Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle, Rect, Stroke, Transform};
 use taffy::prelude::*;
 
 use crate::canvas::CanvasData;
@@ -2262,6 +2262,14 @@ impl RenderTree {
             }
         }
 
+        // Draw border if specified
+        if render_node.props.border_width > 0.0 {
+            if let Some(ref border_color) = render_node.props.border_color {
+                let stroke = Stroke::new(render_node.props.border_width);
+                ctx.stroke_rect(rect, radius, &stroke, Brush::Solid(*border_color));
+            }
+        }
+
         // Push clip if this element clips its children (e.g., scroll containers)
         // Clip to padding box (full bounds, excludes border but includes padding)
         // This matches CSS overflow:hidden behavior
@@ -2597,6 +2605,21 @@ impl RenderTree {
                 }
             }
 
+            // Draw border if specified
+            if render_node.props.border_width > 0.0 {
+                if let Some(ref border_color) = render_node.props.border_color {
+                    let stroke = Stroke::new(render_node.props.border_width);
+                    let brush = if motion_opacity < 1.0 {
+                        let mut color = *border_color;
+                        color.a *= motion_opacity;
+                        Brush::Solid(color)
+                    } else {
+                        Brush::Solid(*border_color)
+                    };
+                    ctx.stroke_rect(rect, radius, &stroke, brush);
+                }
+            }
+
             // Handle canvas elements
             if let ElementType::Canvas(canvas_data) = &render_node.element_type {
                 if let Some(render_fn) = &canvas_data.render_fn {
@@ -2855,6 +2878,14 @@ impl RenderTree {
                 }
             }
 
+            // Draw border if specified
+            if render_node.props.border_width > 0.0 {
+                if let Some(ref border_color) = render_node.props.border_color {
+                    let stroke = Stroke::new(render_node.props.border_width);
+                    ctx.stroke_rect(rect, radius, &stroke, Brush::Solid(*border_color));
+                }
+            }
+
             // Handle canvas element rendering
             if let ElementType::Canvas(canvas_data) = &render_node.element_type {
                 if let Some(render_fn) = &canvas_data.render_fn {
@@ -3087,6 +3118,14 @@ impl RenderTree {
                         // Draw regular background
                         if let Some(ref bg) = render_node.props.background {
                             ctx.fill_rect(rect, radius, bg.clone());
+                        }
+                    }
+
+                    // Draw border if specified
+                    if render_node.props.border_width > 0.0 {
+                        if let Some(ref border_color) = render_node.props.border_color {
+                            let stroke = Stroke::new(render_node.props.border_width);
+                            ctx.stroke_rect(rect, radius, &stroke, Brush::Solid(*border_color));
                         }
                     }
                 }

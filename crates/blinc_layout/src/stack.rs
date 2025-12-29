@@ -590,6 +590,28 @@ impl Stack {
         self
     }
 
+    // =========================================================================
+    // Border
+    // =========================================================================
+
+    /// Set border with color and width
+    pub fn border(mut self, width: f32, color: Color) -> Self {
+        self.inner = self.inner.border(width, color);
+        self
+    }
+
+    /// Set border color only
+    pub fn border_color(mut self, color: Color) -> Self {
+        self.inner = self.inner.border_color(color);
+        self
+    }
+
+    /// Set border width only
+    pub fn border_width(mut self, width: f32) -> Self {
+        self.inner = self.inner.border_width(width);
+        self
+    }
+
     /// Set render layer
     pub fn layer(mut self, layer: RenderLayer) -> Self {
         self.inner = self.inner.layer(layer);

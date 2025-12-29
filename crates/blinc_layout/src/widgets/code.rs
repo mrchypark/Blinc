@@ -891,6 +891,24 @@ impl Code {
         self
     }
 
+    /// Set border with color and width
+    pub fn border(mut self, width: f32, color: blinc_core::Color) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border(width, color);
+        self
+    }
+
+    /// Set border color only
+    pub fn border_color(mut self, color: blinc_core::Color) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border_color(color);
+        self
+    }
+
+    /// Set border width only
+    pub fn border_width(mut self, width: f32) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border_width(width);
+        self
+    }
+
     /// Set margin
     pub fn m(mut self, value: f32) -> Self {
         self.inner = std::mem::take(&mut self.inner).m(value);

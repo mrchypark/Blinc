@@ -19,9 +19,9 @@ use crate::stateful::{refresh_stateful, SharedState, StatefulInner, StateTransit
 use crate::text::text;
 use crate::tree::{LayoutNodeId, LayoutTree};
 use crate::widgets::cursor::{cursor_state, CursorAnimation, SharedCursorState};
-use crate::widgets::scroll::{scroll, Scroll, ScrollDirection, ScrollPhysics, SharedScrollPhysics};
+use crate::widgets::scroll::{Scroll, ScrollDirection, ScrollPhysics, SharedScrollPhysics};
 use crate::widgets::text_input::{
-    decrement_focus_count, elapsed_ms, increment_focus_count,
+    elapsed_ms, increment_focus_count,
     request_continuous_redraw_pub, set_focused_text_area,
 };
 
@@ -65,10 +65,14 @@ pub struct TextAreaConfig {
     pub placeholder_color: Color,
     /// Background color
     pub bg_color: Color,
+    /// Hovered background color
+    pub hover_bg_color: Color,
     /// Focused background color
     pub focused_bg_color: Color,
     /// Border color
     pub border_color: Color,
+    /// Hovered border color
+    pub hover_border_color: Color,
     /// Focused border color
     pub focused_border_color: Color,
     /// Border width
@@ -87,6 +91,10 @@ pub struct TextAreaConfig {
     pub disabled: bool,
     /// Maximum character count (0 = unlimited)
     pub max_length: usize,
+    /// Whether text wraps at container bounds (default: true)
+    /// When true, long lines wrap to the next visual line.
+    /// When false, content scrolls horizontally.
+    pub wrap: bool,
 }
 
 impl Default for TextAreaConfig {
@@ -103,10 +111,12 @@ impl Default for TextAreaConfig {
             text_color: Color::rgba(0.9, 0.9, 0.9, 1.0),
             placeholder_color: Color::rgba(0.5, 0.5, 0.5, 1.0),
             bg_color: Color::rgba(0.15, 0.15, 0.2, 1.0),
+            hover_bg_color: Color::rgba(0.18, 0.18, 0.23, 1.0),
             focused_bg_color: Color::rgba(0.18, 0.18, 0.25, 1.0),
             border_color: Color::rgba(0.3, 0.3, 0.35, 1.0),
+            hover_border_color: Color::rgba(0.4, 0.4, 0.45, 1.0),
             focused_border_color: Color::rgba(0.4, 0.6, 1.0, 1.0),
-            border_width: 1.0,
+            border_width: 1.5,
             corner_radius: 8.0,
             padding_x: 12.0,
             padding_y: 10.0,
@@ -114,6 +124,10 @@ impl Default for TextAreaConfig {
             selection_color: Color::rgba(0.4, 0.6, 1.0, 0.3),
             disabled: false,
             max_length: 0,
+            // Default to wrapping since we now have visual lines computed for proper
+            // cursor tracking. Visual lines are computed in the callback and used for
+            // both rendering and cursor positioning to ensure they match.
+            wrap: true,
         }
     }
 }
@@ -138,6 +152,21 @@ impl TextAreaConfig {
             self.height
         }
     }
+}
+
+/// A visual line segment - represents a portion of a logical line that fits on one visual line
+#[derive(Clone, Debug)]
+pub struct VisualLine {
+    /// Index of the logical line this visual line belongs to
+    pub logical_line: usize,
+    /// Start character index within the logical line
+    pub start_char: usize,
+    /// End character index within the logical line (exclusive)
+    pub end_char: usize,
+    /// The text content of this visual line (cached for rendering)
+    pub text: String,
+    /// Width of this visual line in pixels
+    pub width: f32,
 }
 
 /// TextArea widget state
@@ -168,8 +197,21 @@ pub struct TextAreaState {
     pub(crate) viewport_height: f32,
     /// Cached line height for scroll calculations
     pub(crate) line_height: f32,
+    /// Cached font size for scroll calculations with wrapping
+    pub(crate) font_size: f32,
+    /// Cached available width for text (for wrapping calculations)
+    pub(crate) available_width: f32,
+    /// Cached wrap enabled flag
+    pub(crate) wrap_enabled: bool,
+    /// Computed visual lines (recomputed when text or width changes)
+    /// Each VisualLine represents one rendered row of text
+    pub(crate) visual_lines: Vec<VisualLine>,
     /// Reference to the Stateful's shared state for triggering incremental updates
     pub(crate) stateful_state: Option<SharedState<TextFieldState>>,
+    /// Last clicked visual line index (set by line click handlers, read by main handler)
+    /// This is used to accurately determine which line was clicked when local_y
+    /// is relative to the clicked line element rather than the whole text area.
+    pub(crate) clicked_visual_line: Option<usize>,
 }
 
 impl std::fmt::Debug for TextAreaState {
@@ -203,7 +245,12 @@ impl Default for TextAreaState {
             scroll_physics: Arc::new(Mutex::new(ScrollPhysics::default())),
             viewport_height: 120.0, // Default height from TextAreaConfig
             line_height: 14.0 * 1.4, // Default font_size * line_height
+            font_size: 14.0,         // Default font size
+            available_width: 276.0,  // Default width minus padding/borders
+            wrap_enabled: true,      // Default to wrapping (visual lines handle cursor tracking)
+            visual_lines: Vec::new(), // Computed on first layout
             stateful_state: None,
+            clicked_visual_line: None, // Set by line click handlers
         }
     }
 }
@@ -468,7 +515,7 @@ impl TextAreaState {
         }
     }
 
-    /// Move cursor up
+    /// Move cursor up (handles visual lines for wrapped text)
     pub fn move_up(&mut self, select: bool) {
         if select && self.selection_start.is_none() {
             self.selection_start = Some(self.cursor);
@@ -476,14 +523,34 @@ impl TextAreaState {
             self.selection_start = None;
         }
 
-        if self.cursor.line > 0 {
-            self.cursor.line -= 1;
-            let line_len = self.lines[self.cursor.line].chars().count();
-            self.cursor.column = self.cursor.column.min(line_len);
+        // If we have visual lines, use them for navigation
+        if !self.visual_lines.is_empty() && self.wrap_enabled {
+            let current_visual_idx = self.visual_line_for_cursor();
+            if current_visual_idx > 0 {
+                // Move to the visual line above
+                let prev_visual_idx = current_visual_idx - 1;
+                let prev_vl = &self.visual_lines[prev_visual_idx];
+
+                // Calculate cursor x position to maintain horizontal position
+                let cursor_x = self.cursor_x_in_visual_line();
+
+                // Find the column in the previous visual line that best matches our x position
+                let column = self.find_column_at_x(prev_visual_idx, cursor_x);
+
+                self.cursor.line = prev_vl.logical_line;
+                self.cursor.column = column;
+            }
+        } else {
+            // Fallback: simple logical line navigation
+            if self.cursor.line > 0 {
+                self.cursor.line -= 1;
+                let line_len = self.lines[self.cursor.line].chars().count();
+                self.cursor.column = self.cursor.column.min(line_len);
+            }
         }
     }
 
-    /// Move cursor down
+    /// Move cursor down (handles visual lines for wrapped text)
     pub fn move_down(&mut self, select: bool) {
         if select && self.selection_start.is_none() {
             self.selection_start = Some(self.cursor);
@@ -491,11 +558,61 @@ impl TextAreaState {
             self.selection_start = None;
         }
 
-        if self.cursor.line < self.lines.len() - 1 {
-            self.cursor.line += 1;
-            let line_len = self.lines[self.cursor.line].chars().count();
-            self.cursor.column = self.cursor.column.min(line_len);
+        // If we have visual lines, use them for navigation
+        if !self.visual_lines.is_empty() && self.wrap_enabled {
+            let current_visual_idx = self.visual_line_for_cursor();
+            if current_visual_idx < self.visual_lines.len() - 1 {
+                // Move to the visual line below
+                let next_visual_idx = current_visual_idx + 1;
+                let next_vl = &self.visual_lines[next_visual_idx];
+
+                // Calculate cursor x position to maintain horizontal position
+                let cursor_x = self.cursor_x_in_visual_line();
+
+                // Find the column in the next visual line that best matches our x position
+                let column = self.find_column_at_x(next_visual_idx, cursor_x);
+
+                self.cursor.line = next_vl.logical_line;
+                self.cursor.column = column;
+            }
+        } else {
+            // Fallback: simple logical line navigation
+            if self.cursor.line < self.lines.len() - 1 {
+                self.cursor.line += 1;
+                let line_len = self.lines[self.cursor.line].chars().count();
+                self.cursor.column = self.cursor.column.min(line_len);
+            }
         }
+    }
+
+    /// Find the column in a visual line that best matches a given x position
+    fn find_column_at_x(&self, visual_line_idx: usize, target_x: f32) -> usize {
+        if visual_line_idx >= self.visual_lines.len() {
+            return 0;
+        }
+
+        let vl = &self.visual_lines[visual_line_idx];
+        if vl.text.is_empty() {
+            return vl.start_char;
+        }
+
+        let char_count = vl.text.chars().count();
+        let mut best_pos = 0;
+        let mut min_dist = f32::MAX;
+
+        // Find character position that best matches target_x
+        for i in 0..=char_count {
+            let prefix: String = vl.text.chars().take(i).collect();
+            let prefix_width = crate::text_measure::measure_text(&prefix, self.font_size).width;
+
+            let dist = (prefix_width - target_x).abs();
+            if dist < min_dist {
+                min_dist = dist;
+                best_pos = i;
+            }
+        }
+
+        vl.start_char + best_pos
     }
 
     /// Move to start of line
@@ -576,12 +693,296 @@ impl TextAreaState {
         })
     }
 
+    /// Calculate the number of visual lines a text line takes when wrapped
+    ///
+    /// Returns 1 for short lines, more for lines that wrap.
+    fn visual_lines_for_text(text: &str, font_size: f32, available_width: f32) -> usize {
+        if text.is_empty() || available_width <= 0.0 {
+            return 1;
+        }
+
+        let metrics = crate::text_measure::measure_text(text, font_size);
+        if metrics.width <= available_width {
+            return 1;
+        }
+
+        // Estimate number of lines by dividing total width by available width
+        // Add 1 because integer division rounds down
+        ((metrics.width / available_width).ceil() as usize).max(1)
+    }
+
+    /// Compute visual lines for all text content
+    ///
+    /// This creates a list of VisualLine entries that map logical lines to
+    /// visual lines, accounting for word wrapping. Each VisualLine contains:
+    /// - The logical line index it belongs to
+    /// - Start and end character indices within that logical line
+    /// - The actual text content and its measured width
+    ///
+    /// Call this whenever:
+    /// - Text content changes
+    /// - Available width changes (e.g., container resize)
+    /// - Font size changes
+    pub fn compute_visual_lines(&mut self) {
+        self.visual_lines.clear();
+
+        let font_size = self.font_size;
+        let available_width = self.available_width;
+        let wrap_enabled = self.wrap_enabled;
+
+        for (logical_line_idx, line_text) in self.lines.iter().enumerate() {
+            if line_text.is_empty() {
+                // Empty line still takes up one visual line
+                self.visual_lines.push(VisualLine {
+                    logical_line: logical_line_idx,
+                    start_char: 0,
+                    end_char: 0,
+                    text: String::new(),
+                    width: 0.0,
+                });
+                continue;
+            }
+
+            if !wrap_enabled || available_width <= 0.0 {
+                // No wrapping - entire logical line is one visual line
+                let width = crate::text_measure::measure_text(line_text, font_size).width;
+                self.visual_lines.push(VisualLine {
+                    logical_line: logical_line_idx,
+                    start_char: 0,
+                    end_char: line_text.chars().count(),
+                    text: line_text.clone(),
+                    width,
+                });
+                continue;
+            }
+
+            // Wrapping enabled - split line into visual lines
+            // Use word-based wrapping: try to break at word boundaries
+            let chars: Vec<char> = line_text.chars().collect();
+            let char_count = chars.len();
+            let mut start_char = 0;
+
+            while start_char < char_count {
+                // Find how many characters fit in available_width
+                let mut end_char = start_char;
+                let mut last_word_break = start_char;
+                let mut current_width = 0.0;
+
+                // Scan forward to find break point
+                while end_char < char_count {
+                    // Check width up to this character (inclusive)
+                    let test_end = end_char + 1;
+                    let test_text: String = chars[start_char..test_end].iter().collect();
+                    let test_width = crate::text_measure::measure_text(&test_text, font_size).width;
+
+                    if test_width > available_width && end_char > start_char {
+                        // This character would exceed width, break here
+                        break;
+                    }
+
+                    current_width = test_width;
+                    end_char = test_end;
+
+                    // Track word boundary (space character)
+                    if end_char < char_count && chars[end_char - 1].is_whitespace() {
+                        last_word_break = end_char;
+                    }
+                }
+
+                // If we found a word break, use it (unless it's at the start)
+                if last_word_break > start_char && end_char < char_count {
+                    end_char = last_word_break;
+                    let text: String = chars[start_char..end_char].iter().collect();
+                    current_width = crate::text_measure::measure_text(&text, font_size).width;
+                }
+
+                // Create visual line
+                let text: String = chars[start_char..end_char].iter().collect();
+                self.visual_lines.push(VisualLine {
+                    logical_line: logical_line_idx,
+                    start_char,
+                    end_char,
+                    text,
+                    width: current_width,
+                });
+
+                start_char = end_char;
+            }
+
+            // If line ended exactly at boundary, we should have at least one visual line
+            if self.visual_lines.last().map(|vl| vl.logical_line) != Some(logical_line_idx) {
+                self.visual_lines.push(VisualLine {
+                    logical_line: logical_line_idx,
+                    start_char: char_count,
+                    end_char: char_count,
+                    text: String::new(),
+                    width: 0.0,
+                });
+            }
+        }
+    }
+
+    /// Calculate cursor position from a known visual line index and x coordinate
+    ///
+    /// This is used when a line element's click handler has already determined
+    /// which visual line was clicked. The x coordinate is relative to the line element.
+    pub fn cursor_position_from_visual_line(&self, visual_line_idx: usize, x: f32) -> TextPosition {
+        if visual_line_idx >= self.visual_lines.len() {
+            return TextPosition::default();
+        }
+
+        let vl = &self.visual_lines[visual_line_idx];
+        let column = self.char_position_in_visual_line(visual_line_idx, x, self.font_size);
+
+        TextPosition::new(vl.logical_line, column)
+    }
+
+    /// Get the visual line index for a given cursor position
+    ///
+    /// Returns the index into visual_lines where the cursor is located.
+    pub fn visual_line_for_cursor(&self) -> usize {
+        let cursor_line = self.cursor.line;
+        let cursor_col = self.cursor.column;
+
+        for (idx, vl) in self.visual_lines.iter().enumerate() {
+            if vl.logical_line == cursor_line {
+                // Check if cursor is within this visual line's range
+                if cursor_col >= vl.start_char && cursor_col <= vl.end_char {
+                    return idx;
+                }
+                // If cursor is at the end of a wrapped line, it might be at start of next visual line
+                if cursor_col == vl.end_char {
+                    // Check if there's another visual line for same logical line
+                    if idx + 1 < self.visual_lines.len()
+                        && self.visual_lines[idx + 1].logical_line == cursor_line
+                        && self.visual_lines[idx + 1].start_char == cursor_col {
+                        return idx + 1;
+                    }
+                    return idx;
+                }
+            }
+        }
+
+        // Fallback: return last visual line
+        self.visual_lines.len().saturating_sub(1)
+    }
+
+    /// Get cursor X position within its visual line
+    ///
+    /// Returns the pixel offset from the left edge of the visual line to the cursor.
+    pub fn cursor_x_in_visual_line(&self) -> f32 {
+        let cursor_line = self.cursor.line;
+        let cursor_col = self.cursor.column;
+
+        // Find the visual line containing the cursor
+        for vl in &self.visual_lines {
+            if vl.logical_line == cursor_line
+                && cursor_col >= vl.start_char
+                && cursor_col <= vl.end_char {
+                // Measure text from start of visual line to cursor
+                let local_col = cursor_col - vl.start_char;
+                if local_col == 0 {
+                    return 0.0;
+                }
+                let text_before: String = vl.text.chars().take(local_col).collect();
+                return crate::text_measure::measure_text(&text_before, self.font_size).width;
+            }
+        }
+
+        0.0
+    }
+
+    /// Get cursor position (x, visual_y) using computed visual lines
+    ///
+    /// Returns (cursor_x, cursor_visual_y) for positioning the cursor element.
+    pub fn cursor_position_from_visual_lines(&self) -> (f32, f32) {
+        let visual_line_idx = self.visual_line_for_cursor();
+        let cursor_x = self.cursor_x_in_visual_line();
+        let cursor_visual_y = visual_line_idx as f32 * self.line_height;
+        (cursor_x, cursor_visual_y)
+    }
+
+    /// Get total visual line count
+    pub fn visual_line_count(&self) -> usize {
+        if self.visual_lines.is_empty() {
+            // Fallback when visual lines not computed yet
+            self.lines.len()
+        } else {
+            self.visual_lines.len()
+        }
+    }
+
+    /// Get content height based on visual lines
+    pub fn content_height_from_visual_lines(&self) -> f32 {
+        self.visual_line_count() as f32 * self.line_height
+    }
+
+    /// Calculate cursor Y position accounting for text wrapping
+    ///
+    /// Returns (cursor_y, content_height) where cursor_y is the visual Y position
+    /// of the cursor line, and content_height is the total visual height.
+    fn calculate_wrapped_positions(
+        &self,
+        font_size: f32,
+        line_height: f32,
+        available_width: f32,
+        wrap_enabled: bool,
+    ) -> (f32, f32) {
+        if !wrap_enabled || available_width <= 0.0 {
+            // No wrapping - simple calculation
+            let cursor_y = self.cursor.line as f32 * line_height;
+            let content_height = self.lines.len() as f32 * line_height;
+            return (cursor_y, content_height);
+        }
+
+        // With wrapping, count visual lines up to cursor line
+        let mut visual_line_count = 0usize;
+        let mut cursor_visual_y = 0.0f32;
+
+        for (idx, line) in self.lines.iter().enumerate() {
+            let line_visual_count = Self::visual_lines_for_text(line, font_size, available_width);
+
+            if idx < self.cursor.line {
+                visual_line_count += line_visual_count;
+            } else if idx == self.cursor.line {
+                cursor_visual_y = visual_line_count as f32 * line_height;
+                // For the cursor's line, we need to account for wrapped position
+                // within that line based on cursor column position
+                if line_visual_count > 1 && !line.is_empty() {
+                    let text_before: String = line.chars().take(self.cursor.column).collect();
+                    let prefix_width = crate::text_measure::measure_text(&text_before, font_size).width;
+                    let lines_into = (prefix_width / available_width).floor() as usize;
+                    cursor_visual_y += lines_into as f32 * line_height;
+                }
+                visual_line_count += line_visual_count;
+            } else {
+                visual_line_count += line_visual_count;
+            }
+        }
+
+        let content_height = visual_line_count as f32 * line_height;
+        (cursor_visual_y, content_height)
+    }
+
     /// Ensure the cursor is visible by adjusting scroll offset if needed
     ///
     /// This should be called after any cursor movement to auto-scroll
     /// when the cursor moves outside the visible area.
+    /// Uses cached wrap settings from the state.
     pub fn ensure_cursor_visible(&mut self, line_height: f32, viewport_height: f32) {
-        let cursor_y = self.cursor.line as f32 * line_height;
+        // Use visual lines for accurate cursor position if available
+        let (cursor_y, content_height) = if !self.visual_lines.is_empty() {
+            let (_, cursor_y) = self.cursor_position_from_visual_lines();
+            let content_height = self.content_height_from_visual_lines();
+            (cursor_y, content_height)
+        } else {
+            self.calculate_wrapped_positions(
+                self.font_size,
+                line_height,
+                self.available_width,
+                self.wrap_enabled,
+            )
+        };
         let cursor_bottom = cursor_y + line_height;
 
         // Get current scroll offset from physics (offset_y is negative when scrolled down)
@@ -600,7 +1001,6 @@ impl TextAreaState {
         }
 
         // Clamp scroll offset to valid range
-        let content_height = self.lines.len() as f32 * line_height;
         let max_scroll = (content_height - viewport_height).max(0.0);
         new_offset = new_offset.clamp(0.0, max_scroll);
 
@@ -611,6 +1011,104 @@ impl TextAreaState {
     /// Get current scroll offset (positive value, 0 = top)
     pub fn scroll_offset(&self) -> f32 {
         -self.scroll_physics.lock().unwrap().offset_y
+    }
+
+    /// Calculate cursor position from click coordinates
+    ///
+    /// Takes x/y coordinates relative to the text content area (after padding).
+    /// Returns the TextPosition (line, column) for the clicked location.
+    pub fn cursor_position_from_xy(&self, x: f32, y: f32) -> TextPosition {
+        if self.lines.is_empty() {
+            return TextPosition::default();
+        }
+
+        let line_height = self.line_height;
+        let font_size = self.font_size;
+        let scroll_offset = self.scroll_offset();
+
+        // Account for scroll offset - y is in viewport space
+        let text_y = y + scroll_offset;
+
+        // Find the visual line index that was clicked
+        let visual_line_idx = (text_y / line_height).floor().max(0.0) as usize;
+
+        // Use computed visual lines if available for accurate positioning
+        if !self.visual_lines.is_empty() {
+            // Clamp to valid range
+            let visual_line_idx = visual_line_idx.min(self.visual_lines.len().saturating_sub(1));
+            let vl = &self.visual_lines[visual_line_idx];
+
+            // Find character position within this visual line
+            let column = self.char_position_in_visual_line(visual_line_idx, x, font_size);
+
+            return TextPosition::new(vl.logical_line, column);
+        }
+
+        // Fallback: no visual lines computed
+        let logical_line = visual_line_idx.min(self.lines.len().saturating_sub(1));
+        let column = self.char_position_from_x(logical_line, x, font_size);
+        TextPosition::new(logical_line, column)
+    }
+
+    /// Find character position from x coordinate within a visual line
+    fn char_position_in_visual_line(&self, visual_line_idx: usize, x: f32, font_size: f32) -> usize {
+        if visual_line_idx >= self.visual_lines.len() {
+            return 0;
+        }
+
+        let vl = &self.visual_lines[visual_line_idx];
+        if vl.text.is_empty() {
+            return vl.start_char;
+        }
+
+        let char_count = vl.text.chars().count();
+        let mut best_pos = 0;
+        let mut min_dist = f32::MAX;
+
+        // Check position before each character and after the last within this visual line
+        for i in 0..=char_count {
+            let prefix: String = vl.text.chars().take(i).collect();
+            let prefix_width = crate::text_measure::measure_text(&prefix, font_size).width;
+
+            let dist = (prefix_width - x).abs();
+            if dist < min_dist {
+                min_dist = dist;
+                best_pos = i;
+            }
+        }
+
+        // Convert local position to absolute position within logical line
+        vl.start_char + best_pos
+    }
+
+    /// Find character position from x coordinate within a line
+    fn char_position_from_x(&self, line_index: usize, x: f32, font_size: f32) -> usize {
+        if line_index >= self.lines.len() {
+            return 0;
+        }
+
+        let line = &self.lines[line_index];
+        if line.is_empty() {
+            return 0;
+        }
+
+        let char_count = line.chars().count();
+        let mut best_pos = 0;
+        let mut min_dist = f32::MAX;
+
+        // Check position before each character and after the last
+        for i in 0..=char_count {
+            let prefix: String = line.chars().take(i).collect();
+            let prefix_width = crate::text_measure::measure_text(&prefix, font_size).width;
+
+            let dist = (prefix_width - x).abs();
+            if dist < min_dist {
+                min_dist = dist;
+                best_pos = i;
+            }
+        }
+
+        best_pos
     }
 }
 
@@ -681,6 +1179,7 @@ impl TextArea {
         let inner = Self::create_inner_with_handlers(
             Arc::clone(&shared_state),
             Arc::clone(state),
+            Arc::clone(&config),
         ).w(default_width).h(default_height);
 
         // Register callback immediately so it's available for incremental diff
@@ -689,6 +1188,7 @@ impl TextArea {
         {
             let config_for_callback = Arc::clone(&config);
             let data_for_callback = Arc::clone(state);
+            let shared_state_for_callback = Arc::clone(state);
             let mut shared = shared_state.lock().unwrap();
 
             shared.state_callback = Some(Arc::new(move |visual: &TextFieldState, container: &mut Div| {
@@ -701,11 +1201,46 @@ impl TextArea {
                 // Update cached scroll dimensions from config
                 let line_height = cfg.font_size * cfg.line_height;
                 let viewport_height = cfg.effective_height() - cfg.padding_y * 2.0 - cfg.border_width * 2.0;
+                let available_width = cfg.effective_width() - cfg.padding_x * 2.0 - cfg.border_width * 2.0;
                 data_guard.line_height = line_height;
                 data_guard.viewport_height = viewport_height;
+                data_guard.font_size = cfg.font_size;
+                data_guard.available_width = available_width;
+                data_guard.wrap_enabled = cfg.wrap;
 
-                let content = TextArea::build_content(*visual, &data_guard, &cfg);
-                container.merge(content);
+                // Recompute visual lines for proper cursor tracking with wrapped text
+                data_guard.compute_visual_lines();
+
+                // Determine colors based on visual state
+                let (bg, border) = match visual {
+                    TextFieldState::Focused | TextFieldState::FocusedHovered => {
+                        (cfg.focused_bg_color, cfg.focused_border_color)
+                    }
+                    TextFieldState::Hovered => (cfg.hover_bg_color, cfg.hover_border_color),
+                    TextFieldState::Disabled => (
+                        Color::rgba(0.12, 0.12, 0.15, 0.5),
+                        Color::rgba(0.25, 0.25, 0.3, 0.5),
+                    ),
+                    _ => (cfg.bg_color, cfg.border_color),
+                };
+
+                // Apply visual styling directly to the container (preserves fixed dimensions)
+                // Note: Don't use set_padding_x/set_padding_y - use explicit spacers like TextInput
+                // This ensures proper visual separation from rounded corners
+                // Note: Don't use set_overflow_clip() here - let the Scroll handle clipping
+                // The outer container just provides visual styling (bg, border, rounded)
+                container.set_bg(bg);
+                container.set_border(cfg.border_width, border);
+                container.set_rounded(cfg.corner_radius);
+
+                // Build content wrapper with explicit padding spacers (like TextInput)
+                let content = TextArea::build_content(
+                    *visual,
+                    &data_guard,
+                    &cfg,
+                    Arc::clone(&shared_state_for_callback),
+                );
+                container.set_child(content);
             }));
 
             shared.needs_visual_update = true;
@@ -731,21 +1266,37 @@ impl TextArea {
     fn create_inner_with_handlers(
         shared_state: SharedState<TextFieldState>,
         data: SharedTextAreaState,
+        config: Arc<Mutex<TextAreaConfig>>,
     ) -> Stateful<TextFieldState> {
         use blinc_core::events::event_types;
 
         let data_for_click = Arc::clone(&data);
         let data_for_text = Arc::clone(&data);
         let data_for_key = Arc::clone(&data);
+        let config_for_click = Arc::clone(&config);
         let shared_for_click = Arc::clone(&shared_state);
         let shared_for_text = Arc::clone(&shared_state);
         let shared_for_key = Arc::clone(&shared_state);
 
         Stateful::with_shared_state(shared_state)
-            // Handle mouse down to focus
-            .on_mouse_down(move |_ctx| {
+            // Handle mouse down to focus and position cursor
+            .on_mouse_down(move |ctx| {
                 // First, forcibly blur any previously focused text input/area
                 set_focused_text_area(&data_for_click);
+
+                // Get click position from context for cursor positioning
+                let click_x = ctx.local_x;
+                let click_y = ctx.local_y;
+
+                // Get config values for visual line computation
+                // Note: We DON'T use padding offsets here because local_x/local_y from the event
+                // are relative to the innermost hit element (the text content), not the outer container
+                let cfg = config_for_click.lock().unwrap();
+                let font_size = cfg.font_size;
+                let line_height = cfg.font_size * cfg.line_height;
+                let available_width = cfg.effective_width() - cfg.padding_x * 2.0 - cfg.border_width * 2.0;
+                let wrap_enabled = cfg.wrap;
+                drop(cfg);
 
                 let needs_refresh = {
                     let mut d = match data_for_click.lock() {
@@ -775,10 +1326,40 @@ impl TextArea {
                     let was_focused = d.visual.is_focused();
                     if !was_focused {
                         d.visual = TextFieldState::Focused;
-                        d.reset_cursor_blink();
                         increment_focus_count();
                         request_continuous_redraw_pub();
                     }
+
+                    // Update cached config values for visual line computation
+                    d.font_size = font_size;
+                    d.line_height = line_height;
+                    d.available_width = available_width;
+                    d.wrap_enabled = wrap_enabled;
+
+                    // Ensure visual lines are computed before positioning cursor
+                    // This is needed because click handler may run before the callback
+                    // that computes visual lines during rebuild
+                    if d.visual_lines.is_empty() || d.wrap_enabled {
+                        d.compute_visual_lines();
+                    }
+
+                    // Position cursor at click location
+                    // Use clicked_visual_line if set by a line element's click handler,
+                    // otherwise fall back to y-coordinate calculation
+                    let text_x = click_x.max(0.0);
+
+                    let new_pos = if let Some(visual_line_idx) = d.clicked_visual_line.take() {
+                        // Line element told us which visual line was clicked
+                        // Use that for accurate positioning
+                        d.cursor_position_from_visual_line(visual_line_idx, text_x)
+                    } else {
+                        // Fallback: try to compute from y coordinate
+                        let text_y = click_y.max(0.0);
+                        d.cursor_position_from_xy(text_x, text_y)
+                    };
+                    d.cursor = new_pos;
+                    d.selection_start = None; // Clear any selection
+                    d.reset_cursor_blink();
 
                     true // needs refresh
                 }; // Lock released here
@@ -803,6 +1384,8 @@ impl TextArea {
                     if let Some(c) = ctx.key_char {
                         d.insert(&c.to_string());
                         d.reset_cursor_blink();
+                        // Recompute visual lines after text change
+                        d.compute_visual_lines();
                         // Ensure cursor is visible after text insertion (use cached values)
                         let line_height = d.line_height;
                         let viewport_height = d.viewport_height;
@@ -837,19 +1420,23 @@ impl TextArea {
 
                     let mut cursor_changed = true;
                     let mut should_blur = false;
+                    let mut text_changed = false;
                     match ctx.key_code {
                         8 => {
                             // Backspace
                             d.delete_backward();
+                            text_changed = true;
                             tracing::debug!("TextArea backspace, value: {}", d.value());
                         }
                         127 => {
                             // Delete
                             d.delete_forward();
+                            text_changed = true;
                         }
                         13 => {
                             // Enter - insert newline
                             d.insert_newline();
+                            text_changed = true;
                             tracing::debug!("TextArea newline, lines: {}", d.line_count());
                         }
                         37 => {
@@ -886,6 +1473,11 @@ impl TextArea {
                         }
                     }
 
+                    // Recompute visual lines after text changes
+                    if text_changed {
+                        d.compute_visual_lines();
+                    }
+
                     if cursor_changed && !should_blur {
                         d.reset_cursor_blink();
                         // Ensure cursor is visible (auto-scroll if needed, use cached values)
@@ -909,26 +1501,16 @@ impl TextArea {
     }
 
     /// Build the content div based on current visual state and data
+    /// Returns a Div with explicit padding spacers (like TextInput) for proper
+    /// visual separation from rounded corners.
     fn build_content(
         visual: TextFieldState,
         data: &TextAreaState,
         config: &TextAreaConfig,
+        shared_state: SharedTextAreaState,
     ) -> Div {
-        // Visual state-based styling
-        let (bg, border) = match visual {
-            TextFieldState::Idle => (config.bg_color, config.border_color),
-            TextFieldState::Hovered => (
-                Color::rgba(0.18, 0.18, 0.23, 1.0),
-                Color::rgba(0.4, 0.4, 0.45, 1.0),
-            ),
-            TextFieldState::Focused | TextFieldState::FocusedHovered => {
-                (config.focused_bg_color, config.focused_border_color)
-            }
-            TextFieldState::Disabled => (
-                Color::rgba(0.12, 0.12, 0.15, 0.5),
-                Color::rgba(0.25, 0.25, 0.3, 0.5),
-            ),
-        };
+        // Note: Visual styling (bg, border, rounded) is now applied directly to the
+        // container in the callback via set_* methods, not here.
 
         let text_color = if data.is_empty() {
             config.placeholder_color
@@ -942,21 +1524,32 @@ impl TextArea {
         let is_focused = visual.is_focused();
         let cursor_color = config.cursor_color;
 
-        // Get cursor position
-        let cursor_line = data.cursor.line;
-        let cursor_col = data.cursor.column;
-
         // Cursor dimensions
         let cursor_height = config.font_size * 1.2;
         let line_height = config.font_size * config.line_height;
 
-        // Calculate cursor x position using text measurement
-        let cursor_x = if cursor_col > 0 && cursor_line < data.lines.len() {
-            let line_text = &data.lines[cursor_line];
-            let text_before: String = line_text.chars().take(cursor_col).collect();
-            crate::text_measure::measure_text(&text_before, config.font_size).width
+        // Calculate available width for text (for wrap calculations)
+        let text_area_width = config.effective_width()
+            - config.padding_x * 2.0
+            - config.border_width * 2.0;
+
+        // Use visual lines for cursor positioning (computed in callback before build_content)
+        // This provides accurate cursor tracking for wrapped text
+        let (cursor_x, cursor_visual_y) = if !data.visual_lines.is_empty() {
+            data.cursor_position_from_visual_lines()
         } else {
-            0.0
+            // Fallback: simple calculation when visual lines not yet computed
+            let cursor_line = data.cursor.line;
+            let cursor_col = data.cursor.column;
+            let cursor_x = if cursor_col > 0 && cursor_line < data.lines.len() {
+                let line_text = &data.lines[cursor_line];
+                let text_before: String = line_text.chars().take(cursor_col).collect();
+                crate::text_measure::measure_text(&text_before, config.font_size).width
+            } else {
+                0.0
+            };
+            let cursor_y = cursor_line as f32 * line_height;
+            (cursor_x, cursor_y)
         };
 
         // Clone the cursor state for the canvas callback
@@ -965,9 +1558,8 @@ impl TextArea {
         // Build cursor canvas element (if focused)
         // The cursor is positioned inside the scroll content so it scrolls with text
         let cursor_canvas_opt = if is_focused {
-            // Cursor top is based on line position plus vertical centering within line
-            let cursor_top = (cursor_line as f32 * line_height)
-                + (line_height - cursor_height) / 2.0;
+            // Cursor top is based on visual line position plus vertical centering within line
+            let cursor_top = cursor_visual_y + (line_height - cursor_height) / 2.0;
             let cursor_left = cursor_x;
 
             {
@@ -1024,6 +1616,8 @@ impl TextArea {
 
         // Build text content - left-aligned column of text lines
         // Use relative positioning to allow cursor absolute positioning within
+        // Note: Don't use w_full() here - each line has explicit width, and w_full would
+        // cause content to extend into the rounded corner areas of the outer container
         let mut text_content = div().flex_col().justify_start().items_start().relative();
 
         if data.is_empty() {
@@ -1034,8 +1628,9 @@ impl TextArea {
                 &config.placeholder
             };
 
+            // Placeholder always uses no_wrap for consistent appearance
             text_content = text_content.child(
-                div().h(line_height).flex_row().items_center().child(
+                div().h(line_height).flex_row().items_center().w(text_area_width).child(
                     text(placeholder)
                         .size(config.font_size)
                         .color(text_color)
@@ -1043,17 +1638,90 @@ impl TextArea {
                         .no_wrap(),
                 ),
             );
-        } else {
-            for (_line_idx, line) in data.lines.iter().enumerate() {
-                let line_text = if line.is_empty() { " " } else { line.as_str() };
+        } else if config.wrap && !data.visual_lines.is_empty() {
+            // Wrapping mode with computed visual lines
+            // Render each visual line segment for precise cursor alignment
+            // Each line has a click handler that stores its visual line index
+            for (visual_line_idx, vl) in data.visual_lines.iter().enumerate() {
+                let line_text = if vl.text.is_empty() { " " } else { vl.text.as_str() };
+                let state_for_line = Arc::clone(&shared_state);
+
+                // Each visual line has fixed height and a click handler
                 text_content = text_content.child(
-                    div().h(line_height).flex_row().items_center().child(
-                        text(line_text)
-                            .size(config.font_size)
-                            .color(text_color)
-                            .text_left()
-                            .no_wrap(),
-                    ),
+                    div()
+                        .h(line_height)
+                        .w(text_area_width)
+                        .flex_row()
+                        .items_center()
+                        .on_mouse_down(move |_ctx| {
+                            // Store which visual line was clicked so the main handler knows
+                            if let Ok(mut state) = state_for_line.lock() {
+                                state.clicked_visual_line = Some(visual_line_idx);
+                            }
+                        })
+                        .child(
+                            text(line_text)
+                                .size(config.font_size)
+                                .color(text_color)
+                                .text_left()
+                                .no_wrap(), // Visual lines are pre-wrapped, don't wrap again
+                        ),
+                );
+            }
+        } else if config.wrap {
+            // Wrapping mode fallback: use natural text wrapping
+            // This path is used when visual lines not yet computed
+            // In this mode, line_idx corresponds to logical line (visual line not computed)
+            for (line_idx, line) in data.lines.iter().enumerate() {
+                let line_text = if line.is_empty() { " " } else { line.as_str() };
+                let state_for_line = Arc::clone(&shared_state);
+
+                // Don't use fixed height - let it grow based on wrapped content
+                // Use min_h to ensure empty/short lines still have proper height
+                text_content = text_content.child(
+                    div()
+                        .min_h(line_height)
+                        .w(text_area_width)
+                        .on_mouse_down(move |_ctx| {
+                            // Store line index (logical line in fallback mode)
+                            if let Ok(mut state) = state_for_line.lock() {
+                                state.clicked_visual_line = Some(line_idx);
+                            }
+                        })
+                        .child(
+                            text(line_text)
+                                .size(config.font_size)
+                                .color(text_color)
+                                .text_left(),
+                                // No .no_wrap() - text wraps at container width
+                        ),
+                );
+            }
+        } else {
+            // No-wrap mode: each line stays on single line, horizontally scrollable
+            // In this mode, line_idx corresponds to both logical and visual line
+            for (line_idx, line) in data.lines.iter().enumerate() {
+                let line_text = if line.is_empty() { " " } else { line.as_str() };
+                let state_for_line = Arc::clone(&shared_state);
+
+                text_content = text_content.child(
+                    div()
+                        .h(line_height)
+                        .flex_row()
+                        .items_center()
+                        .on_mouse_down(move |_ctx| {
+                            // Store line index
+                            if let Ok(mut state) = state_for_line.lock() {
+                                state.clicked_visual_line = Some(line_idx);
+                            }
+                        })
+                        .child(
+                            text(line_text)
+                                .size(config.font_size)
+                                .color(text_color)
+                                .text_left()
+                                .no_wrap(),
+                        ),
                 );
             }
         }
@@ -1063,34 +1731,43 @@ impl TextArea {
             text_content = text_content.child(cursor);
         }
 
+        // Build wrapper with explicit padding spacers (like TextInput)
+        // This ensures proper visual separation from rounded corners
+        let padding_x = config.padding_x;
+        let padding_y = config.padding_y;
+
         // Wrap text content in scroll container with shared physics
         // This provides proper scroll handling and clipping
         // TextArea scroll doesn't use bounce animation - just hard stops at edges
+        // Note: Don't add rounded() to scroll - the outer container handles visual rounding
         let scrollable_content = Scroll::with_physics(Arc::clone(&data.scroll_physics))
             .direction(ScrollDirection::Vertical)
             .no_bounce()
-            .w_full()
-            .h_full()
+            .flex_grow() // Take remaining space
             .child(text_content);
 
-        let inner_content = div()
-            .w_full()
-            .h_full()
-            .bg(bg)
-            .rounded(config.corner_radius - 1.0)
-            .padding_y_px(config.padding_y)
-            .padding_x_px(config.padding_x)
-            .flex_col()
-            .justify_start()
-            .items_start()
-            .child(scrollable_content);
-
-        // Build outer container (border box)
+        // Main content wrapper - uses flex_grow to fill parent without overriding fixed dimensions
+        // Structure matches TextInput: outer styled container -> padding spacers -> clip container
         div()
-            .bg(border)
-            .rounded(config.corner_radius)
-            .p(config.border_width)
-            .child(inner_content)
+            .flex_col()
+            .flex_grow()
+            // Top padding spacer
+            .child(div().h(padding_y).w_full())
+            // Middle row with left/right padding and scroll content
+            .child(
+                div()
+                    .flex_row()
+                    .flex_grow()
+                    .w_full()
+                    // Left padding spacer
+                    .child(div().w(padding_x).h_full())
+                    // Scroll content in the middle (no rounded corners on scroll itself)
+                    .child(scrollable_content)
+                    // Right padding spacer
+                    .child(div().w(padding_x).h_full())
+            )
+            // Bottom padding spacer
+            .child(div().h(padding_y).w_full())
     }
 
     /// Set placeholder text
@@ -1182,6 +1859,20 @@ impl TextArea {
     pub fn max_length(mut self, max: usize) -> Self {
         self.config.lock().unwrap().max_length = max;
         self
+    }
+
+    /// Enable or disable text wrapping
+    ///
+    /// When wrapping is enabled (default), long lines wrap to the next visual line.
+    /// When disabled, text scrolls horizontally instead.
+    pub fn wrap(mut self, wrap: bool) -> Self {
+        self.config.lock().unwrap().wrap = wrap;
+        self
+    }
+
+    /// Disable text wrapping (alias for `.wrap(false)`)
+    pub fn no_wrap(self) -> Self {
+        self.wrap(false)
     }
 
     // =========================================================================
@@ -1343,6 +2034,21 @@ impl TextArea {
         self
     }
 
+    pub fn border(mut self, width: f32, color: blinc_core::Color) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border(width, color);
+        self
+    }
+
+    pub fn border_color(mut self, color: blinc_core::Color) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border_color(color);
+        self
+    }
+
+    pub fn border_width(mut self, width: f32) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border_width(width);
+        self
+    }
+
     pub fn shadow(mut self, shadow: blinc_core::Shadow) -> Self {
         self.inner = std::mem::take(&mut self.inner).shadow(shadow);
         self
@@ -1488,8 +2194,10 @@ impl TextArea {
 ///     .rounded(12.0)
 ///     .shadow_sm()
 /// ```
+/// Create a text area widget
+/// By default, width inherits from parent (w_full). Use .w() to set explicit width.
 pub fn text_area(state: &SharedTextAreaState) -> TextArea {
-    TextArea::new(state)
+    TextArea::new(state).w_full()
 }
 
 impl ElementBuilder for TextArea {

@@ -625,6 +625,86 @@ impl TextInputData {
         }
     }
 
+    /// Calculate cursor position from x coordinate (relative to text content area)
+    ///
+    /// This is used for click-to-position cursor functionality.
+    /// The x coordinate should be relative to the start of the text content (after padding).
+    pub fn cursor_position_from_x(&self, x: f32, font_size: f32) -> usize {
+        let display = self.display_text();
+        if display.is_empty() {
+            return 0;
+        }
+
+        // Account for scroll offset - the click x is in viewport space,
+        // so add scroll_offset to get position in text space
+        let text_x = x + self.scroll_offset_x;
+
+        // Binary search would be more efficient, but for typical text input lengths,
+        // linear search is fast enough
+        let char_count = display.chars().count();
+        let mut best_pos = 0;
+        let mut min_dist = f32::MAX;
+
+        // Check position before each character and after the last
+        for i in 0..=char_count {
+            let prefix: String = display.chars().take(i).collect();
+            let prefix_width = crate::text_measure::measure_text(&prefix, font_size).width;
+
+            let dist = (prefix_width - text_x).abs();
+            if dist < min_dist {
+                min_dist = dist;
+                best_pos = i;
+            }
+        }
+
+        best_pos
+    }
+
+    /// Ensure the cursor is visible by adjusting horizontal scroll offset.
+    /// This implements HTML-like behavior where text scrolls left when typing
+    /// extends beyond the visible width.
+    pub fn ensure_cursor_visible(&mut self, config: &TextInputConfig) {
+        // Calculate total text width
+        let display = self.display_text();
+        let total_text_width = if !display.is_empty() {
+            crate::text_measure::measure_text(&display, config.font_size).width
+        } else {
+            0.0
+        };
+
+        // Calculate cursor x position (where cursor is in the full text)
+        let cursor_x = if self.cursor > 0 && !display.is_empty() {
+            let text_before: String = display.chars().take(self.cursor).collect();
+            crate::text_measure::measure_text(&text_before, config.font_size).width
+        } else {
+            0.0
+        };
+
+        // Calculate available width for text (the visible viewport)
+        // Account for padding on both sides and border
+        let available_width = config.width - config.padding_x * 2.0 - config.border_width * 2.0;
+
+        // Simple approach: measure if text exceeds viewport
+        // If cursor is past the visible right edge, scroll to show cursor
+        let visible_right = self.scroll_offset_x + available_width;
+        let cursor_margin = 4.0; // Small margin so cursor isn't at the very edge
+
+        if cursor_x > visible_right - cursor_margin {
+            // Cursor is past the right edge - scroll right to show it
+            self.scroll_offset_x = cursor_x - available_width + cursor_margin;
+        } else if cursor_x < self.scroll_offset_x {
+            // Cursor is past the left edge - scroll left to show it
+            self.scroll_offset_x = cursor_x;
+        }
+
+        // Clamp: can't scroll past start, and don't scroll more than necessary
+        self.scroll_offset_x = self.scroll_offset_x.max(0.0);
+
+        // Also clamp max scroll so we don't scroll past the end of text
+        let max_scroll = (total_text_width - available_width + cursor_margin).max(0.0);
+        self.scroll_offset_x = self.scroll_offset_x.min(max_scroll);
+    }
+
 }
 
 /// Create a shared text input data
@@ -693,7 +773,7 @@ impl Default for TextInputConfig {
             cursor_color: Color::rgba(0.4, 0.6, 1.0, 1.0),
             selection_color: Color::rgba(0.3, 0.5, 0.9, 0.4),
             corner_radius: 8.0,
-            border_width: 0.5,
+            border_width: 1.5,
             padding_x: 12.0,
             placeholder: String::new(),
         }
@@ -740,6 +820,7 @@ impl TextInput {
         let inner = Self::create_inner_with_handlers(
             Arc::clone(&stateful_state),
             Arc::clone(&data),
+            Arc::clone(&config),
         );
 
         // Register callback immediately so it's available for incremental diff
@@ -755,7 +836,14 @@ impl TextInput {
                 let mut data_guard = data_for_callback.lock().unwrap();
 
                 // Update scroll offset to keep cursor visible
+                let old_scroll = data_guard.scroll_offset_x;
                 data_guard.ensure_cursor_visible(&cfg);
+                if data_guard.scroll_offset_x != old_scroll {
+                    tracing::info!(
+                        "TextInput scroll changed: {} -> {} (cursor={}, text_len={})",
+                        old_scroll, data_guard.scroll_offset_x, data_guard.cursor, data_guard.value.len()
+                    );
+                }
 
                 let content = TextInput::build_content(*visual, &data_guard, &cfg);
                 container.merge(content);
@@ -780,19 +868,21 @@ impl TextInput {
     fn create_inner_with_handlers(
         stateful_state: SharedState<TextFieldState>,
         data: SharedTextInputData,
+        config: Arc<Mutex<TextInputConfig>>,
     ) -> Stateful<TextFieldState> {
         use blinc_core::events::event_types;
 
         let data_for_click = Arc::clone(&data);
         let data_for_text = Arc::clone(&data);
         let data_for_key = Arc::clone(&data);
+        let config_for_click = Arc::clone(&config);
         let stateful_for_click = Arc::clone(&stateful_state);
         let stateful_for_text = Arc::clone(&stateful_state);
         let stateful_for_key = Arc::clone(&stateful_state);
 
         Stateful::with_shared_state(stateful_state)
-            // Handle mouse down to focus
-            .on_mouse_down(move |_ctx| {
+            // Handle mouse down to focus and position cursor
+            .on_mouse_down(move |ctx| {
                 let needs_refresh = {
                     let mut d = match data_for_click.lock() {
                         Ok(d) => d,
@@ -802,6 +892,13 @@ impl TextInput {
                     if d.disabled {
                         return;
                     }
+
+                    // Get config for cursor positioning
+                    // Note: We don't subtract padding/border because local_x from the event
+                    // is relative to the innermost hit element (the text content area)
+                    let cfg = config_for_click.lock().unwrap();
+                    let font_size = cfg.font_size;
+                    drop(cfg);
 
                     // Update FSM state
                     {
@@ -826,9 +923,13 @@ impl TextInput {
                         request_continuous_redraw();
                     }
 
-                    // Place cursor at end (TODO: proper click-to-position)
-                    d.cursor = d.value.chars().count();
+                    // Calculate cursor position from click x position
+                    // local_x is relative to the innermost hit element (text content area)
+                    let text_x = ctx.local_x.max(0.0);
+                    let cursor_pos = d.cursor_position_from_x(text_x, font_size);
+                    d.cursor = cursor_pos;
                     d.selection_start = None;
+                    d.reset_cursor_blink();
 
                     true // needs refresh
                 }; // Lock released here
@@ -957,6 +1058,7 @@ impl TextInput {
         let selection_color = config.selection_color;
         let cursor_pos = data.cursor;
         let cursor_height = config.font_size * 1.2;
+        let scroll_offset = data.scroll_offset_x;
 
         let selection_range: Option<(usize, usize)> = data.selection_start.map(|start| {
             if start < cursor_pos { (start, cursor_pos) } else { (cursor_pos, start) }
@@ -971,20 +1073,43 @@ impl TextInput {
             0.0
         };
 
-        // Build inner content
-        let mut inner_content = div()
-            .w_full()
-            .h_full()
+        // Calculate dimensions - use full width/height, border is drawn on top
+        let inner_height = config.height;
+        let clip_width = config.width - config.padding_x * 2.0;
+
+        // Build main container with background and proper border
+        // Note: Don't use .w_full().h_full() here - that would override the parent's
+        // fixed dimensions (set via .h()) through the merge() operation.
+        // Use .flex_grow() to fill parent without overriding fixed dimensions.
+        let mut main_content = div()
             .bg(bg)
+            .border(config.border_width, border)
             .rounded(config.corner_radius)
-            .padding_x_px(config.padding_x)
             .relative()
             .flex_row()
-            .justify_start()
-            .items_center()
+            .flex_grow() // Fill parent without overriding fixed dimensions
+            .items_center();
+
+        // Left padding spacer
+        main_content = main_content.child(div().w(config.padding_x).h(inner_height));
+
+        // Clip container - fixed dimensions, clips overflow
+        let mut clip_container = div()
+            .w(clip_width)
+            .h(inner_height)
+            .relative()
             .overflow_clip();
 
-        // Add text content
+        // Text wrapper with absolute positioning
+        // Using left() with negative scroll offset to scroll content
+        let mut text_wrapper = div()
+            .absolute()
+            .left(-scroll_offset)
+            .top(0.0)
+            .h(inner_height)
+            .flex_row()
+            .items_center();
+
         if !display.is_empty() {
             if let Some((sel_start, sel_end)) = selection_range {
                 let mut text_container = div().flex_row().items_center();
@@ -1012,24 +1137,29 @@ impl TextInput {
                     );
                 }
 
-                inner_content = inner_content.child(text_container);
+                text_wrapper = text_wrapper.child(text_container);
             } else {
-                inner_content = inner_content.child(
-                    text(&display).size(config.font_size).color(text_color).text_left().no_wrap().v_center(),
+                text_wrapper = text_wrapper.child(
+                    text(&display).size(config.font_size).color(text_color).text_left().no_wrap().v_center()
                 );
             }
         }
 
-        // Add cursor via canvas (AnimatedValue-driven, no rebuilds for blink)
+        // Add text wrapper to clip container
+        clip_container = clip_container.child(text_wrapper);
+
+        // Add cursor via canvas as a sibling to text_wrapper, also in clip_container
+        // The cursor position is adjusted for scroll offset since it's not inside text_wrapper
         if is_focused && selection_range.is_none() {
-            let cursor_left = config.padding_x + cursor_x;
-            let cursor_top = (config.height - config.border_width * 2.0 - cursor_height) / 2.0;
+            let cursor_left = cursor_x - scroll_offset;
+            // Calculate proper vertical margins to center cursor (inner_height already defined above)
+            let cursor_margin = (inner_height - cursor_height) / 2.0;
 
             {
                 if let Ok(mut cs) = cursor_state_for_canvas.lock() {
                     cs.visible = true;
                     cs.color = cursor_color;
-                    cs.x = cursor_x;
+                    cs.x = cursor_left;
                     cs.animation = CursorAnimation::SmoothFade;
                 }
             }
@@ -1044,6 +1174,7 @@ impl TextInput {
                     if opacity < 0.01 { return; }
 
                     let color = blinc_core::Color::rgba(cs.color.r, cs.color.g, cs.color.b, cs.color.a * opacity);
+                    // Draw cursor centered within the bounds
                     ctx.fill_rect(
                         blinc_core::Rect::new(0.0, 0.0, cs.width, bounds.height),
                         blinc_core::CornerRadius::default(),
@@ -1053,25 +1184,26 @@ impl TextInput {
             )
             .absolute()
             .left(cursor_left)
-            .top(cursor_top)
+            .top(cursor_margin)
             .w(2.0)
             .h(cursor_height);
 
-            inner_content = inner_content.child(cursor_canvas);
+            // Add cursor to clip_container (sibling to text_wrapper, doesn't scroll)
+            clip_container = clip_container.child(cursor_canvas);
         } else {
             if let Ok(mut cs) = cursor_state_for_canvas.lock() {
                 cs.visible = false;
             }
         }
 
-        // Outer container (border)
-        div()
-            .w_full()
-            .h_full()
-            .bg(border)
-            .rounded(config.corner_radius)
-            .p(config.border_width)
-            .child(inner_content)
+        // Add clip container to main content
+        main_content = main_content.child(clip_container);
+
+        // Right padding spacer
+        main_content = main_content.child(div().w(config.padding_x).h(inner_height));
+
+        // Return the main container with proper border
+        main_content
     }
 
     // Builder methods that forward to inner Stateful
@@ -1081,6 +1213,11 @@ impl TextInput {
             cfg.width = px;
         }
         self.inner = std::mem::take(&mut self.inner).w(px);
+        self
+    }
+
+    pub fn w_full(mut self) -> Self {
+        self.inner = std::mem::take(&mut self.inner).w_full();
         self
     }
 
@@ -1133,9 +1270,30 @@ impl TextInput {
         self
     }
 
+    /// Set the font size for the text input (default: 16.0)
+    pub fn text_size(self, size: f32) -> Self {
+        self.config.lock().unwrap().font_size = size;
+        self
+    }
+
     pub fn rounded(mut self, radius: f32) -> Self {
         self.config.lock().unwrap().corner_radius = radius;
         self.inner = std::mem::take(&mut self.inner).rounded(radius);
+        self
+    }
+
+    pub fn border(mut self, width: f32, color: blinc_core::Color) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border(width, color);
+        self
+    }
+
+    pub fn border_color(mut self, color: blinc_core::Color) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border_color(color);
+        self
+    }
+
+    pub fn border_width(mut self, width: f32) -> Self {
+        self.inner = std::mem::take(&mut self.inner).border_width(width);
         self
     }
 
@@ -1156,9 +1314,10 @@ impl TextInput {
 }
 
 /// Create a text input widget
+/// By default, width inherits from parent (w_full). Use .w() to set explicit width.
 pub fn text_input(data: &SharedTextInputData) -> TextInput {
     let config = TextInputConfig::default();
-    TextInput::new(Arc::clone(data)).w(config.width).h(config.height)
+    TextInput::new(Arc::clone(data)).w_full().h(config.height)
 }
 
 impl ElementBuilder for TextInput {

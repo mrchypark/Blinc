@@ -269,6 +269,21 @@ impl Button {
         self
     }
 
+    pub fn border(mut self, width: f32, color: Color) -> Self {
+        self.inner = self.inner.border(width, color);
+        self
+    }
+
+    pub fn border_color(mut self, color: Color) -> Self {
+        self.inner = self.inner.border_color(color);
+        self
+    }
+
+    pub fn border_width(mut self, width: f32) -> Self {
+        self.inner = self.inner.border_width(width);
+        self
+    }
+
     pub fn w(mut self, v: f32) -> Self {
         self.inner = self.inner.w(v);
         self

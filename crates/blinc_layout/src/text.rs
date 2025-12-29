@@ -436,6 +436,8 @@ impl ElementBuilder for Text {
         RenderProps {
             background: None,
             border_radius: Default::default(),
+            border_color: None,
+            border_width: 0.0,
             layer: self.render_layer,
             material: None,
             node_id: None,

@@ -314,6 +314,8 @@ pub struct Div {
     pub(crate) children: Vec<Box<dyn ElementBuilder>>,
     pub(crate) background: Option<Brush>,
     pub(crate) border_radius: CornerRadius,
+    pub(crate) border_color: Option<Color>,
+    pub(crate) border_width: f32,
     pub(crate) render_layer: RenderLayer,
     pub(crate) material: Option<Material>,
     pub(crate) shadow: Option<Shadow>,
@@ -336,6 +338,8 @@ impl Div {
             children: Vec::new(),
             background: None,
             border_radius: CornerRadius::default(),
+            border_color: None,
+            border_width: 0.0,
             render_layer: RenderLayer::default(),
             material: None,
             shadow: None,
@@ -407,6 +411,39 @@ impl Div {
         self.opacity = opacity;
     }
 
+    /// Set border with width and color without consuming self
+    #[inline]
+    pub fn set_border(&mut self, width: f32, color: Color) {
+        self.border_width = width;
+        self.border_color = Some(color);
+    }
+
+    /// Set overflow clip without consuming self
+    #[inline]
+    pub fn set_overflow_clip(&mut self, clip: bool) {
+        if clip {
+            self.style.overflow.x = taffy::Overflow::Hidden;
+            self.style.overflow.y = taffy::Overflow::Hidden;
+        } else {
+            self.style.overflow.x = taffy::Overflow::Visible;
+            self.style.overflow.y = taffy::Overflow::Visible;
+        }
+    }
+
+    /// Set horizontal padding without consuming self
+    #[inline]
+    pub fn set_padding_x(&mut self, px: f32) {
+        self.style.padding.left = taffy::LengthPercentage::Length(px);
+        self.style.padding.right = taffy::LengthPercentage::Length(px);
+    }
+
+    /// Set vertical padding without consuming self
+    #[inline]
+    pub fn set_padding_y(&mut self, px: f32) {
+        self.style.padding.top = taffy::LengthPercentage::Length(px);
+        self.style.padding.bottom = taffy::LengthPercentage::Length(px);
+    }
+
     /// Clear all children and add a single child
     #[inline]
     pub fn set_child(&mut self, child: impl ElementBuilder + 'static) {
@@ -445,6 +482,12 @@ impl Div {
         }
         if other.border_radius != default.border_radius {
             self.border_radius = other.border_radius;
+        }
+        if other.border_color.is_some() {
+            self.border_color = other.border_color;
+        }
+        if other.border_width != default.border_width {
+            self.border_width = other.border_width;
         }
         if other.render_layer != default.render_layer {
             self.render_layer = other.render_layer;
@@ -1206,6 +1249,29 @@ impl Div {
     }
 
     // =========================================================================
+    // Border
+    // =========================================================================
+
+    /// Set border with color and width
+    pub fn border(mut self, width: f32, color: Color) -> Self {
+        self.border_width = width;
+        self.border_color = Some(color);
+        self
+    }
+
+    /// Set border color only
+    pub fn border_color(mut self, color: Color) -> Self {
+        self.border_color = Some(color);
+        self
+    }
+
+    /// Set border width only
+    pub fn border_width(mut self, width: f32) -> Self {
+        self.border_width = width;
+        self
+    }
+
+    // =========================================================================
     // Layer (for rendering order)
     // =========================================================================
 
@@ -1933,6 +1999,8 @@ impl ElementBuilder for Div {
         RenderProps {
             background: self.background.clone(),
             border_radius: self.border_radius,
+            border_color: self.border_color,
+            border_width: self.border_width,
             layer: self.render_layer,
             material: self.material.clone(),
             node_id: None,

@@ -1063,6 +1063,11 @@ impl WindowedApp {
 
                             // Dispatch WINDOW_FOCUS or WINDOW_BLUR to the focused element
                             windowed_ctx.event_router.on_window_focus(focused);
+
+                            // When window loses focus, blur all text inputs/areas
+                            if !focused {
+                                blinc_layout::widgets::blur_all_text_inputs();
+                            }
                         }
                     }
 

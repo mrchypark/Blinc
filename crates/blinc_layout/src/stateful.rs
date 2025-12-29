@@ -947,7 +947,13 @@ impl<S: StateTransitions> Stateful<S> {
                     drop(guard);
                     (callback, state, nid, base)
                 }
-                _ => return,
+                (has_cb, has_nid) => {
+                    tracing::warn!(
+                        "refresh_props_internal: early return - has_callback={}, has_node_id={}",
+                        has_cb.is_some(), has_nid.is_some()
+                    );
+                    return;
+                }
             };
 
         // Create temp div, apply callback to get state-specific changes
@@ -963,9 +969,20 @@ impl<S: StateTransitions> Stateful<S> {
         queue_prop_update(cached_node_id, final_props);
 
         // Check if children were set - if so, queue a subtree rebuild
-        if !temp_div.children_builders().is_empty() {
+        let child_count = temp_div.children_builders().len();
+        if child_count > 0 {
+            tracing::debug!(
+                "refresh_props_internal: queuing subtree rebuild for node {:?} with {} children",
+                cached_node_id,
+                child_count
+            );
             // Queue the child for rebuild - the windowed app will process this
             queue_subtree_rebuild(cached_node_id, temp_div);
+        } else {
+            tracing::debug!(
+                "refresh_props_internal: no children to rebuild for node {:?}",
+                cached_node_id
+            );
         }
 
         // Request redraw
@@ -1238,6 +1255,24 @@ impl<S: StateTransitions> Stateful<S> {
     /// Set corner radius (builder pattern)
     pub fn rounded(self, radius: f32) -> Self {
         self.merge_into_inner(Div::new().rounded(radius));
+        self
+    }
+
+    /// Set border with color and width (builder pattern)
+    pub fn border(self, width: f32, color: blinc_core::Color) -> Self {
+        self.merge_into_inner(Div::new().border(width, color));
+        self
+    }
+
+    /// Set border color only (builder pattern)
+    pub fn border_color(self, color: blinc_core::Color) -> Self {
+        self.merge_into_inner(Div::new().border_color(color));
+        self
+    }
+
+    /// Set border width only (builder pattern)
+    pub fn border_width(self, width: f32) -> Self {
+        self.merge_into_inner(Div::new().border_width(width));
         self
     }
 
@@ -1640,6 +1675,21 @@ impl<S: StateTransitions> BoundStateful<S> {
     /// Set corner radius (builder pattern)
     pub fn rounded(self, radius: f32) -> Self {
         self.transform_inner(|s| s.rounded(radius))
+    }
+
+    /// Set border with color and width (builder pattern)
+    pub fn border(self, width: f32, color: blinc_core::Color) -> Self {
+        self.transform_inner(|s| s.border(width, color))
+    }
+
+    /// Set border color only (builder pattern)
+    pub fn border_color(self, color: blinc_core::Color) -> Self {
+        self.transform_inner(|s| s.border_color(color))
+    }
+
+    /// Set border width only (builder pattern)
+    pub fn border_width(self, width: f32) -> Self {
+        self.transform_inner(|s| s.border_width(width))
     }
 
     /// Set shadow (builder pattern)

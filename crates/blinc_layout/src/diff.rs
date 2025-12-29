@@ -563,6 +563,8 @@ pub fn reconcile(
 fn apply_visual_changes(old: &mut Div, new: &Div) {
     old.background = new.background.clone();
     old.border_radius = new.border_radius;
+    old.border_color = new.border_color;
+    old.border_width = new.border_width;
     old.render_layer = new.render_layer;
     old.material = new.material.clone();
     old.shadow = new.shadow;
@@ -603,6 +605,14 @@ fn hash_div_props(div: &Div, hasher: &mut impl Hasher) {
     hash_style(&div.style, hasher);
     hash_option_brush(&div.background, hasher);
     hash_corner_radius(&div.border_radius, hasher);
+    // Hash border properties
+    if let Some(color) = &div.border_color {
+        1u8.hash(hasher);
+        hash_color(color, hasher);
+    } else {
+        0u8.hash(hasher);
+    }
+    hash_f32(div.border_width, hasher);
     hash_render_layer(&div.render_layer, hasher);
     hash_option_material(&div.material, hasher);
     hash_option_shadow(&div.shadow, hasher);
@@ -681,6 +691,14 @@ fn hash_element_tree(element: &dyn ElementBuilder, hasher: &mut impl Hasher) {
 fn hash_render_props(props: &RenderProps, hasher: &mut impl Hasher) {
     hash_option_brush(&props.background, hasher);
     hash_corner_radius(&props.border_radius, hasher);
+    // Hash border properties
+    if let Some(color) = &props.border_color {
+        1u8.hash(hasher);
+        hash_color(color, hasher);
+    } else {
+        0u8.hash(hasher);
+    }
+    hash_f32(props.border_width, hasher);
     hash_render_layer(&props.layer, hasher);
     hash_option_material(&props.material, hasher);
     hash_option_shadow(&props.shadow, hasher);
