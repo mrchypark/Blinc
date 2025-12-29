@@ -4,6 +4,7 @@
 [![Tests](https://github.com/project-blinc/Blinc/actions/workflows/ci.yml/badge.svg?event=push)](https://github.com/project-blinc/Blinc/actions/workflows/ci.yml)
 [![Rust Version](https://img.shields.io/badge/rust-1.75%2B-blue.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
+[![Documentation](https://img.shields.io/badge/docs-book-blue.svg)](https://project-blinc.github.io/Blinc)
 
 ![Blinc UI](glass_music_player.png)
 
@@ -152,6 +153,7 @@ div()
 | **blinc_image** | Image loading and cross-platform assets |
 | **blinc_svg** | SVG parsing and rendering |
 | **blinc_animation** | Spring physics and keyframe animations |
+| **blinc_theme** | Design tokens, theming, light/dark mode |
 | **blinc_platform** | Cross-platform traits and asset loading |
 | **blinc_platform_desktop** | Desktop backend (winit) |
 | **blinc_platform_android** | Android backend (NDK) |
@@ -450,12 +452,12 @@ Easing::EaseOutBounce    // Bounce effect
 - Stagger animations for lists
 - Reactive signals and state machines
 - Desktop and Android platforms
+- Theming system with animated transitions
 
 ### In Progress
 
 - iOS platform completion
 - Widget library (Button, Checkbox, Toggle, etc.)
-- Theming system
 
 ### Future
 
@@ -463,6 +465,18 @@ Easing::EaseOutBounce    // Bounce effect
 - Hot reload during development
 - Developer tools (inspector, animation debugger)
 - IDE integration (VS Code extension, LSP)
+
+## Documentation
+
+For comprehensive documentation, tutorials, and API reference, visit the **[Blinc Book](https://project-blinc.github.io/Blinc)**.
+
+The book covers:
+
+- Getting started guide
+- Core concepts (elements, layout, styling, theming)
+- Animation system (springs, keyframes, motion containers)
+- Widget library
+- Architecture deep-dives
 
 ## License
 
