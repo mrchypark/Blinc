@@ -1618,14 +1618,16 @@ impl RenderTree {
             let (can_consume_x, can_consume_y) = self.can_consume_scroll(node_id, delta_x, delta_y);
 
             // Determine if this scroll handles each axis (based on direction)
-            let handles_x = direction.map_or(false, |d| {
+            // If no direction (custom scroll handler like TextArea), dispatch full delta
+            let has_scroll_physics = direction.is_some();
+            let handles_x = direction.map_or(true, |d| {
                 matches!(
                     d,
                     crate::scroll::ScrollDirection::Horizontal
                         | crate::scroll::ScrollDirection::Both
                 )
             });
-            let handles_y = direction.map_or(false, |d| {
+            let handles_y = direction.map_or(true, |d| {
                 matches!(
                     d,
                     crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both
@@ -1660,11 +1662,22 @@ impl RenderTree {
 
                 // Consume the delta for axes this scroll CAN consume (has room to scroll)
                 // This prevents bubbling to outer scrolls for that axis
-                if can_consume_x && handles_x {
-                    delta_x = 0.0;
-                }
-                if can_consume_y && handles_y {
-                    delta_y = 0.0;
+                // For custom scroll handlers (no physics), consume all dispatched delta
+                if has_scroll_physics {
+                    if can_consume_x && handles_x {
+                        delta_x = 0.0;
+                    }
+                    if can_consume_y && handles_y {
+                        delta_y = 0.0;
+                    }
+                } else {
+                    // Custom scroll handler - consume all delta (it handles its own bounds)
+                    if handles_x {
+                        delta_x = 0.0;
+                    }
+                    if handles_y {
+                        delta_y = 0.0;
+                    }
                 }
             }
         }

@@ -955,6 +955,17 @@ impl WindowedApp {
         scheduler.start_background();
         let animations: SharedAnimationScheduler = Arc::new(Mutex::new(scheduler));
 
+        // Set up continuous redraw callback for text widget cursor animation
+        // This bridges text widgets (which track focus) with the animation scheduler (which drives redraws)
+        {
+            let animations_for_callback = Arc::clone(&animations);
+            blinc_layout::widgets::set_continuous_redraw_callback(move |enabled| {
+                if let Ok(scheduler) = animations_for_callback.lock() {
+                    scheduler.set_continuous_redraw(enabled);
+                }
+            });
+        }
+
         // Render state: dynamic properties that update every frame without tree rebuild
         // This includes cursor blink, animated colors, hover states, etc.
         let mut render_state: Option<blinc_layout::RenderState> = None;
@@ -1162,7 +1173,13 @@ impl WindowedApp {
                                             // Block the click from reaching main UI
                                             // TODO: Route click events to overlay tree for modal content interaction
                                         } else {
-                                            router.on_mouse_down(tree, lx, ly, btn);
+                                            // Blur any focused text inputs BEFORE processing mouse down
+                                            // This mimics HTML behavior where clicking anywhere blurs inputs,
+                                            // and clicking on an input then re-focuses it via its own handler
+                                            blinc_layout::widgets::blur_all_text_inputs();
+
+                                            let _events = router.on_mouse_down(tree, lx, ly, btn);
+
                                             let (local_x, local_y) = router.last_hit_local();
                                             for event in pending_events.iter_mut() {
                                                 event.mouse_x = lx;

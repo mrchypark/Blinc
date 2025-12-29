@@ -8,7 +8,6 @@
 //! - Built-in styling that just works
 //! - Inherits ALL Div methods for full layout control via Deref
 
-use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
 use blinc_core::Color;
@@ -16,13 +15,14 @@ use blinc_core::Color;
 use crate::canvas::canvas;
 use crate::div::{div, Div, ElementBuilder};
 use crate::element::RenderProps;
-use crate::stateful::TextFieldState;
+use crate::stateful::{refresh_stateful, SharedState, StatefulInner, StateTransitions, Stateful, TextFieldState};
 use crate::text::text;
 use crate::tree::{LayoutNodeId, LayoutTree};
 use crate::widgets::cursor::{cursor_state, CursorAnimation, SharedCursorState};
+use crate::widgets::scroll::{scroll, Scroll, ScrollDirection, ScrollPhysics, SharedScrollPhysics};
 use crate::widgets::text_input::{
-    clear_focused_text_area, decrement_focus_count, elapsed_ms, increment_focus_count,
-    request_continuous_redraw_pub, request_rebuild, set_focused_text_area,
+    decrement_focus_count, elapsed_ms, increment_focus_count,
+    request_continuous_redraw_pub, set_focused_text_area,
 };
 
 /// Position in a multi-line text (line and column)
@@ -141,7 +141,7 @@ impl TextAreaConfig {
 }
 
 /// TextArea widget state
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TextAreaState {
     /// Lines of text
     pub lines: Vec<String>,
@@ -162,6 +162,30 @@ pub struct TextAreaState {
     pub cursor_blink_interval_ms: u64,
     /// Canvas-based cursor state for smooth animation
     pub cursor_state: SharedCursorState,
+    /// Shared scroll physics for vertical scrolling
+    pub(crate) scroll_physics: SharedScrollPhysics,
+    /// Cached viewport height for scroll calculations
+    pub(crate) viewport_height: f32,
+    /// Cached line height for scroll calculations
+    pub(crate) line_height: f32,
+    /// Reference to the Stateful's shared state for triggering incremental updates
+    pub(crate) stateful_state: Option<SharedState<TextFieldState>>,
+}
+
+impl std::fmt::Debug for TextAreaState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextAreaState")
+            .field("lines", &self.lines)
+            .field("cursor", &self.cursor)
+            .field("selection_start", &self.selection_start)
+            .field("visual", &self.visual)
+            .field("placeholder", &self.placeholder)
+            .field("disabled", &self.disabled)
+            .field("focus_time_ms", &self.focus_time_ms)
+            .field("cursor_blink_interval_ms", &self.cursor_blink_interval_ms)
+            // Skip stateful_state since StatefulInner doesn't implement Debug
+            .finish()
+    }
 }
 
 impl Default for TextAreaState {
@@ -176,6 +200,10 @@ impl Default for TextAreaState {
             focus_time_ms: 0,
             cursor_blink_interval_ms: 530, // Standard cursor blink rate (~530ms)
             cursor_state: cursor_state(),
+            scroll_physics: Arc::new(Mutex::new(ScrollPhysics::default())),
+            viewport_height: 120.0, // Default height from TextAreaConfig
+            line_height: 14.0 * 1.4, // Default font_size * line_height
+            stateful_state: None,
         }
     }
 }
@@ -264,8 +292,8 @@ impl TextAreaState {
     }
 
     /// Reset cursor blink (call when focus gained or cursor moved)
-    pub fn reset_cursor_blink(&mut self, current_time_ms: u64) {
-        self.focus_time_ms = current_time_ms;
+    pub fn reset_cursor_blink(&mut self) {
+        self.focus_time_ms = elapsed_ms();
         // Also reset the canvas cursor state for smooth animation
         if let Ok(mut cs) = self.cursor_state.lock() {
             cs.reset_blink();
@@ -547,6 +575,43 @@ impl TextAreaState {
             }
         })
     }
+
+    /// Ensure the cursor is visible by adjusting scroll offset if needed
+    ///
+    /// This should be called after any cursor movement to auto-scroll
+    /// when the cursor moves outside the visible area.
+    pub fn ensure_cursor_visible(&mut self, line_height: f32, viewport_height: f32) {
+        let cursor_y = self.cursor.line as f32 * line_height;
+        let cursor_bottom = cursor_y + line_height;
+
+        // Get current scroll offset from physics (offset_y is negative when scrolled down)
+        let mut physics = self.scroll_physics.lock().unwrap();
+        let current_offset = -physics.offset_y; // Convert to positive scroll offset
+
+        // If cursor is above visible area, scroll up
+        let mut new_offset = current_offset;
+        if cursor_y < current_offset {
+            new_offset = cursor_y;
+        }
+
+        // If cursor is below visible area, scroll down
+        if cursor_bottom > current_offset + viewport_height {
+            new_offset = cursor_bottom - viewport_height;
+        }
+
+        // Clamp scroll offset to valid range
+        let content_height = self.lines.len() as f32 * line_height;
+        let max_scroll = (content_height - viewport_height).max(0.0);
+        new_offset = new_offset.clamp(0.0, max_scroll);
+
+        // Update physics offset (negative for scroll physics convention)
+        physics.offset_y = -new_offset;
+    }
+
+    /// Get current scroll offset (positive value, 0 = top)
+    pub fn scroll_offset(&self) -> f32 {
+        -self.scroll_physics.lock().unwrap().offset_y
+    }
 }
 
 /// Convert character index to byte index
@@ -572,54 +637,285 @@ pub fn text_area_state_with_placeholder(placeholder: impl Into<String>) -> Share
 
 /// Ready-to-use text area element
 ///
-/// Inherits all Div methods via Deref, so you have full layout control.
+/// Uses FSM-driven state management via `Stateful<TextFieldState>` for visual states
+/// while maintaining separate text content state for editing.
 ///
 /// Usage: `text_area(&state).rows(4).w(400.0).rounded(12.0)`
 pub struct TextArea {
-    /// Inner div - ALL Div methods are available via Deref
-    inner: Div,
-    /// Text area state
+    /// Inner Stateful element for FSM-driven visual states
+    inner: Stateful<TextFieldState>,
+    /// Text area state (content, cursor, etc.)
     state: SharedTextAreaState,
     /// Text area configuration
-    config: TextAreaConfig,
-}
-
-// Deref to Div gives TextArea ALL Div methods for reading
-impl Deref for TextArea {
-    type Target = Div;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl DerefMut for TextArea {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
+    config: Arc<Mutex<TextAreaConfig>>,
 }
 
 impl TextArea {
     /// Create a new text area with shared state
     pub fn new(state: &SharedTextAreaState) -> Self {
-        let config = TextAreaConfig::default();
+        let config = Arc::new(Mutex::new(TextAreaConfig::default()));
+        let cfg = config.lock().unwrap();
+        let default_width = cfg.effective_width();
+        let default_height = cfg.effective_height();
+        drop(cfg);
 
-        // Build initial visual structure with default event handlers
-        let inner = Self::create_inner(&config, state);
+        // Get initial visual state and existing stateful_state from data
+        let (initial_visual, existing_stateful_state) = {
+            let d = state.lock().unwrap();
+            (d.visual, d.stateful_state.clone())
+        };
 
-        Self {
+        // Reuse existing stateful_state if available, otherwise create new one
+        // This ensures state persists across rebuilds (e.g., window resize)
+        let shared_state: SharedState<TextFieldState> = existing_stateful_state
+            .unwrap_or_else(|| {
+                let new_state = Arc::new(Mutex::new(StatefulInner::new(initial_visual)));
+                // Store reference in TextAreaState for triggering refreshes
+                if let Ok(mut d) = state.lock() {
+                    d.stateful_state = Some(Arc::clone(&new_state));
+                }
+                new_state
+            });
+
+        // Create inner Stateful with text area event handlers
+        let inner = Self::create_inner_with_handlers(
+            Arc::clone(&shared_state),
+            Arc::clone(state),
+        ).w(default_width).h(default_height);
+
+        // Register callback immediately so it's available for incremental diff
+        // The diff system calls children_builders() before build(), so the callback
+        // must be registered here, not in build()
+        {
+            let config_for_callback = Arc::clone(&config);
+            let data_for_callback = Arc::clone(state);
+            let mut shared = shared_state.lock().unwrap();
+
+            shared.state_callback = Some(Arc::new(move |visual: &TextFieldState, container: &mut Div| {
+                let cfg = config_for_callback.lock().unwrap().clone();
+                let mut data_guard = data_for_callback.lock().unwrap();
+
+                // Sync visual state to data so it matches the FSM
+                data_guard.visual = *visual;
+
+                // Update cached scroll dimensions from config
+                let line_height = cfg.font_size * cfg.line_height;
+                let viewport_height = cfg.effective_height() - cfg.padding_y * 2.0 - cfg.border_width * 2.0;
+                data_guard.line_height = line_height;
+                data_guard.viewport_height = viewport_height;
+
+                let content = TextArea::build_content(*visual, &data_guard, &cfg);
+                container.merge(content);
+            }));
+
+            shared.needs_visual_update = true;
+        }
+
+        // Ensure state handlers (hover/press) are registered immediately
+        // so they're available for incremental diff
+        inner.ensure_state_handlers_registered();
+
+        let textarea = Self {
             inner,
             state: Arc::clone(state),
             config,
-        }
+        };
+
+        // Initialize scroll dimensions from default config
+        textarea.update_scroll_dimensions();
+
+        textarea
     }
 
-    /// Create the inner Div with visual structure and default event handlers
-    fn create_inner(config: &TextAreaConfig, state: &SharedTextAreaState) -> Div {
-        let state_guard = state.lock().unwrap();
+    /// Create the inner Stateful element with all event handlers registered
+    fn create_inner_with_handlers(
+        shared_state: SharedState<TextFieldState>,
+        data: SharedTextAreaState,
+    ) -> Stateful<TextFieldState> {
+        use blinc_core::events::event_types;
 
+        let data_for_click = Arc::clone(&data);
+        let data_for_text = Arc::clone(&data);
+        let data_for_key = Arc::clone(&data);
+        let shared_for_click = Arc::clone(&shared_state);
+        let shared_for_text = Arc::clone(&shared_state);
+        let shared_for_key = Arc::clone(&shared_state);
+
+        Stateful::with_shared_state(shared_state)
+            // Handle mouse down to focus
+            .on_mouse_down(move |_ctx| {
+                // First, forcibly blur any previously focused text input/area
+                set_focused_text_area(&data_for_click);
+
+                let needs_refresh = {
+                    let mut d = match data_for_click.lock() {
+                        Ok(d) => d,
+                        Err(_) => return,
+                    };
+
+                    if d.disabled {
+                        return;
+                    }
+
+                    // Set focus via FSM transition
+                    {
+                        let mut shared = shared_for_click.lock().unwrap();
+                        if !shared.state.is_focused() {
+                            // Transition to focused state
+                            if let Some(new_state) = shared.state.on_event(event_types::POINTER_DOWN)
+                                .or_else(|| shared.state.on_event(event_types::FOCUS))
+                            {
+                                shared.state = new_state;
+                                shared.needs_visual_update = true;
+                            }
+                        }
+                    }
+
+                    // Update data state
+                    let was_focused = d.visual.is_focused();
+                    if !was_focused {
+                        d.visual = TextFieldState::Focused;
+                        d.reset_cursor_blink();
+                        increment_focus_count();
+                        request_continuous_redraw_pub();
+                    }
+
+                    true // needs refresh
+                }; // Lock released here
+
+                // Trigger incremental refresh AFTER releasing the data lock
+                if needs_refresh {
+                    refresh_stateful(&shared_for_click);
+                }
+            })
+            // Handle text input
+            .on_event(event_types::TEXT_INPUT, move |ctx| {
+                let needs_refresh = {
+                    let mut d = match data_for_text.lock() {
+                        Ok(d) => d,
+                        Err(_) => return,
+                    };
+
+                    if d.disabled || !d.visual.is_focused() {
+                        return;
+                    }
+
+                    if let Some(c) = ctx.key_char {
+                        d.insert(&c.to_string());
+                        d.reset_cursor_blink();
+                        // Ensure cursor is visible after text insertion (use cached values)
+                        let line_height = d.line_height;
+                        let viewport_height = d.viewport_height;
+                        d.ensure_cursor_visible(line_height, viewport_height);
+                        tracing::debug!(
+                            "TextArea received char: {:?}, value: {}",
+                            c,
+                            d.value()
+                        );
+                        true
+                    } else {
+                        false
+                    }
+                }; // Lock released here
+
+                // Trigger incremental refresh AFTER releasing the data lock
+                if needs_refresh {
+                    refresh_stateful(&shared_for_text);
+                }
+            })
+            // Handle key down for navigation and deletion
+            .on_key_down(move |ctx| {
+                let needs_refresh = {
+                    let mut d = match data_for_key.lock() {
+                        Ok(d) => d,
+                        Err(_) => return,
+                    };
+
+                    if d.disabled || !d.visual.is_focused() {
+                        return;
+                    }
+
+                    let mut cursor_changed = true;
+                    let mut should_blur = false;
+                    match ctx.key_code {
+                        8 => {
+                            // Backspace
+                            d.delete_backward();
+                            tracing::debug!("TextArea backspace, value: {}", d.value());
+                        }
+                        127 => {
+                            // Delete
+                            d.delete_forward();
+                        }
+                        13 => {
+                            // Enter - insert newline
+                            d.insert_newline();
+                            tracing::debug!("TextArea newline, lines: {}", d.line_count());
+                        }
+                        37 => {
+                            // Left arrow
+                            d.move_left(ctx.shift);
+                        }
+                        39 => {
+                            // Right arrow
+                            d.move_right(ctx.shift);
+                        }
+                        38 => {
+                            // Up arrow
+                            d.move_up(ctx.shift);
+                        }
+                        40 => {
+                            // Down arrow
+                            d.move_down(ctx.shift);
+                        }
+                        36 => {
+                            // Home
+                            d.move_to_line_start(ctx.shift);
+                        }
+                        35 => {
+                            // End
+                            d.move_to_line_end(ctx.shift);
+                        }
+                        27 => {
+                            // Escape - blur the textarea
+                            should_blur = true;
+                            cursor_changed = true;
+                        }
+                        _ => {
+                            cursor_changed = false;
+                        }
+                    }
+
+                    if cursor_changed && !should_blur {
+                        d.reset_cursor_blink();
+                        // Ensure cursor is visible (auto-scroll if needed, use cached values)
+                        let line_height = d.line_height;
+                        let viewport_height = d.viewport_height;
+                        d.ensure_cursor_visible(line_height, viewport_height);
+                    }
+
+                    (cursor_changed, should_blur)
+                }; // Lock released here
+
+                // Handle blur (Escape key)
+                if needs_refresh.1 {
+                    crate::widgets::text_input::blur_all_text_inputs();
+                } else if needs_refresh.0 {
+                    // Trigger incremental refresh AFTER releasing the data lock
+                    refresh_stateful(&shared_for_key);
+                }
+            })
+            // Note: Scroll events are handled by the scroll() widget inside build_content
+    }
+
+    /// Build the content div based on current visual state and data
+    fn build_content(
+        visual: TextFieldState,
+        data: &TextAreaState,
+        config: &TextAreaConfig,
+    ) -> Div {
         // Visual state-based styling
-        let (bg, border) = match state_guard.visual {
+        let (bg, border) = match visual {
             TextFieldState::Idle => (config.bg_color, config.border_color),
             TextFieldState::Hovered => (
                 Color::rgba(0.18, 0.18, 0.23, 1.0),
@@ -634,32 +930,29 @@ impl TextArea {
             ),
         };
 
-        let text_color = if state_guard.is_empty() {
+        let text_color = if data.is_empty() {
             config.placeholder_color
-        } else if state_guard.disabled {
+        } else if data.disabled {
             Color::rgba(0.4, 0.4, 0.4, 1.0)
         } else {
             config.text_color
         };
 
         // Check if cursor should be shown (focused state)
-        let is_focused = matches!(
-            state_guard.visual,
-            TextFieldState::Focused | TextFieldState::FocusedHovered
-        );
+        let is_focused = visual.is_focused();
         let cursor_color = config.cursor_color;
 
         // Get cursor position
-        let cursor_line = state_guard.cursor.line;
-        let cursor_col = state_guard.cursor.column;
+        let cursor_line = data.cursor.line;
+        let cursor_col = data.cursor.column;
 
         // Cursor dimensions
         let cursor_height = config.font_size * 1.2;
         let line_height = config.font_size * config.line_height;
 
         // Calculate cursor x position using text measurement
-        let cursor_x = if cursor_col > 0 && cursor_line < state_guard.lines.len() {
-            let line_text = &state_guard.lines[cursor_line];
+        let cursor_x = if cursor_col > 0 && cursor_line < data.lines.len() {
+            let line_text = &data.lines[cursor_line];
             let text_before: String = line_text.chars().take(cursor_col).collect();
             crate::text_measure::measure_text(&text_before, config.font_size).width
         } else {
@@ -667,71 +960,16 @@ impl TextArea {
         };
 
         // Clone the cursor state for the canvas callback
-        let cursor_state_for_canvas = Arc::clone(&state_guard.cursor_state);
+        let cursor_state_for_canvas = Arc::clone(&data.cursor_state);
 
-        // Build content - left-aligned column of text lines (cursor added separately)
-        let mut content = div().flex_col().justify_start().items_start();
-
-        if state_guard.is_empty() {
-            // Use state's placeholder if available, otherwise fall back to config
-            let placeholder = if !state_guard.placeholder.is_empty() {
-                &state_guard.placeholder
-            } else {
-                &config.placeholder
-            };
-
-            content = content.child(
-                div().h(line_height).flex_row().items_center().child(
-                    text(placeholder)
-                        .size(config.font_size)
-                        .color(text_color)
-                        .text_left()
-                        .no_wrap(),
-                ),
-            );
-        } else {
-            for (_line_idx, line) in state_guard.lines.iter().enumerate() {
-                let line_text = if line.is_empty() { " " } else { line.as_str() };
-                // Render all lines normally (cursor is added as overlay)
-                // Use no_wrap() to prevent text from wrapping within the line
-                content = content.child(
-                    div().h(line_height).flex_row().items_center().child(
-                        text(line_text)
-                            .size(config.font_size)
-                            .color(text_color)
-                            .text_left()
-                            .no_wrap(),
-                    ),
-                );
-            }
-        }
-
-        drop(state_guard);
-
-        let mut inner_content = div()
-            .w_full()
-            .h_full()
-            .bg(bg)
-            .rounded(config.corner_radius - 1.0)
-            .padding_y_px(config.padding_y) // Use raw pixels, not 4x units
-            .padding_x_px(config.padding_x) // Use raw pixels, not 4x units
-            .relative() // Enable absolute positioning for cursor overlay
-            .flex_col()
-            .justify_start() // Text starts from top
-            .items_start() // Text starts from left
-            .overflow_clip()
-            .child(content);
-
-        // Add cursor as a canvas-based overlay with smooth animation
-        // The canvas handles its own opacity animation without tree rebuilds
-        if is_focused {
-            // Calculate cursor position
-            let cursor_top = config.padding_y
-                + (cursor_line as f32 * line_height)
+        // Build cursor canvas element (if focused)
+        // The cursor is positioned inside the scroll content so it scrolls with text
+        let cursor_canvas_opt = if is_focused {
+            // Cursor top is based on line position plus vertical centering within line
+            let cursor_top = (cursor_line as f32 * line_height)
                 + (line_height - cursor_height) / 2.0;
-            let cursor_left = config.padding_x + cursor_x;
+            let cursor_left = cursor_x;
 
-            // Update cursor state for the canvas to read
             {
                 if let Ok(mut cs) = cursor_state_for_canvas.lock() {
                     cs.visible = true;
@@ -741,7 +979,6 @@ impl TextArea {
                 }
             }
 
-            // Create canvas-based cursor with smooth fade animation
             let cursor_state_clone = Arc::clone(&cursor_state_for_canvas);
             let cursor_canvas = canvas(
                 move |ctx: &mut dyn blinc_core::DrawContext,
@@ -777,232 +1014,161 @@ impl TextArea {
             .w(2.0)
             .h(cursor_height);
 
-            inner_content = inner_content.child(cursor_canvas);
+            Some(cursor_canvas)
         } else {
-            // Cursor not visible - update state
             if let Ok(mut cs) = cursor_state_for_canvas.lock() {
                 cs.visible = false;
             }
+            None
+        };
+
+        // Build text content - left-aligned column of text lines
+        // Use relative positioning to allow cursor absolute positioning within
+        let mut text_content = div().flex_col().justify_start().items_start().relative();
+
+        if data.is_empty() {
+            // Use state's placeholder if available, otherwise fall back to config
+            let placeholder = if !data.placeholder.is_empty() {
+                &data.placeholder
+            } else {
+                &config.placeholder
+            };
+
+            text_content = text_content.child(
+                div().h(line_height).flex_row().items_center().child(
+                    text(placeholder)
+                        .size(config.font_size)
+                        .color(text_color)
+                        .text_left()
+                        .no_wrap(),
+                ),
+            );
+        } else {
+            for (_line_idx, line) in data.lines.iter().enumerate() {
+                let line_text = if line.is_empty() { " " } else { line.as_str() };
+                text_content = text_content.child(
+                    div().h(line_height).flex_row().items_center().child(
+                        text(line_text)
+                            .size(config.font_size)
+                            .color(text_color)
+                            .text_left()
+                            .no_wrap(),
+                    ),
+                );
+            }
         }
 
-        // Build the outer container with size from config
-        // Use FSM transitions via StateTransitions::on_event
-        use crate::stateful::StateTransitions;
-        use blinc_core::events::event_types;
+        // Add cursor inside text_content so it scrolls with the text
+        if let Some(cursor) = cursor_canvas_opt {
+            text_content = text_content.child(cursor);
+        }
 
-        let state_for_click = Arc::clone(state);
-        let state_for_blur = Arc::clone(state);
-        let state_for_hover_enter = Arc::clone(state);
-        let state_for_hover_leave = Arc::clone(state);
-        let state_for_text_input = Arc::clone(state);
-        let state_for_key_down = Arc::clone(state);
+        // Wrap text content in scroll container with shared physics
+        // This provides proper scroll handling and clipping
+        // TextArea scroll doesn't use bounce animation - just hard stops at edges
+        let scrollable_content = Scroll::with_physics(Arc::clone(&data.scroll_physics))
+            .direction(ScrollDirection::Vertical)
+            .no_bounce()
+            .w_full()
+            .h_full()
+            .child(text_content);
 
+        let inner_content = div()
+            .w_full()
+            .h_full()
+            .bg(bg)
+            .rounded(config.corner_radius - 1.0)
+            .padding_y_px(config.padding_y)
+            .padding_x_px(config.padding_x)
+            .flex_col()
+            .justify_start()
+            .items_start()
+            .child(scrollable_content);
+
+        // Build outer container (border box)
         div()
-            .w(config.effective_width())
-            .h(config.effective_height())
             .bg(border)
             .rounded(config.corner_radius)
             .p(config.border_width)
             .child(inner_content)
-            // Wire up event handlers using FSM transitions
-            .on_mouse_down(move |_ctx| {
-                // First, forcibly blur any previously focused text input/area
-                // This must be done BEFORE we lock our own state to avoid deadlock
-                set_focused_text_area(&state_for_click);
-
-                if let Ok(mut s) = state_for_click.lock() {
-                    if !s.disabled {
-                        // Try POINTER_DOWN first (Hovered -> Focused)
-                        // Then try FOCUS as fallback (Idle -> Focused)
-                        let was_focused = s.visual.is_focused();
-                        let new_state = s
-                            .visual
-                            .on_event(event_types::POINTER_DOWN)
-                            .or_else(|| s.visual.on_event(event_types::FOCUS));
-                        if let Some(new_state) = new_state {
-                            s.visual = new_state;
-                            // Reset cursor blink on focus
-                            s.reset_cursor_blink(elapsed_ms());
-                            // Track focus globally (node-ID-independent)
-                            if !was_focused && new_state.is_focused() {
-                                increment_focus_count();
-                                request_continuous_redraw_pub();
-                            }
-                        }
-                    }
-                }
-                request_rebuild();
-            })
-            .on_blur(move |_ctx| {
-                if let Ok(mut s) = state_for_blur.lock() {
-                    if !s.disabled {
-                        // Use FSM: BLUR triggers Focused -> Idle
-                        let was_focused = s.visual.is_focused();
-                        if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
-                            s.visual = new_state;
-                            // Track focus globally (node-ID-independent)
-                            if was_focused && !new_state.is_focused() {
-                                decrement_focus_count();
-                            }
-                        }
-                    }
-                }
-                // Clear this as the focused area if it was
-                clear_focused_text_area(&state_for_blur);
-                request_rebuild();
-            })
-            .on_hover_enter(move |_ctx| {
-                if let Ok(mut s) = state_for_hover_enter.lock() {
-                    if !s.disabled {
-                        // Use FSM: POINTER_ENTER transitions hover states
-                        // Note: We don't request_rebuild() here to avoid scroll reset.
-                        // Hover visuals are updated at render time, not tree rebuild time.
-                        if let Some(new_state) = s.visual.on_event(event_types::POINTER_ENTER) {
-                            s.visual = new_state;
-                        }
-                    }
-                }
-            })
-            .on_hover_leave(move |_ctx| {
-                if let Ok(mut s) = state_for_hover_leave.lock() {
-                    if !s.disabled {
-                        // Use FSM: POINTER_LEAVE transitions hover states
-                        // Note: We don't request_rebuild() here to avoid scroll reset.
-                        // Hover visuals are updated at render time, not tree rebuild time.
-                        if let Some(new_state) = s.visual.on_event(event_types::POINTER_LEAVE) {
-                            s.visual = new_state;
-                        }
-                    }
-                }
-            })
-            // Handle text input (character entry)
-            .on_text_input(move |ctx| {
-                if let Ok(mut s) = state_for_text_input.lock() {
-                    if !s.disabled && s.visual.is_focused() {
-                        if let Some(c) = ctx.key_char {
-                            // Insert the character
-                            s.insert(&c.to_string());
-                            // Reset cursor blink to keep it visible while typing
-                            s.reset_cursor_blink(elapsed_ms());
-                            tracing::debug!(
-                                "TextArea received char: {:?}, value: {}",
-                                c,
-                                s.value()
-                            );
-                            request_rebuild();
-                        }
-                    }
-                }
-            })
-            // Handle special keys (backspace, arrows, enter, etc.)
-            .on_key_down(move |ctx| {
-                if let Ok(mut s) = state_for_key_down.lock() {
-                    if !s.disabled && s.visual.is_focused() {
-                        let mut cursor_changed = true;
-                        match ctx.key_code {
-                            8 => {
-                                // Backspace
-                                s.delete_backward();
-                                tracing::debug!("TextArea backspace, value: {}", s.value());
-                            }
-                            127 => {
-                                // Delete
-                                s.delete_forward();
-                            }
-                            13 => {
-                                // Enter - insert newline
-                                s.insert_newline();
-                                tracing::debug!("TextArea newline, lines: {}", s.line_count());
-                            }
-                            37 => {
-                                // Left arrow
-                                s.move_left(ctx.shift);
-                            }
-                            39 => {
-                                // Right arrow
-                                s.move_right(ctx.shift);
-                            }
-                            38 => {
-                                // Up arrow
-                                s.move_up(ctx.shift);
-                            }
-                            40 => {
-                                // Down arrow
-                                s.move_down(ctx.shift);
-                            }
-                            36 => {
-                                // Home
-                                s.move_to_line_start(ctx.shift);
-                            }
-                            35 => {
-                                // End
-                                s.move_to_line_end(ctx.shift);
-                            }
-                            _ => {
-                                cursor_changed = false;
-                            }
-                        }
-                        // Reset cursor blink to keep it visible during interaction
-                        if cursor_changed {
-                            s.reset_cursor_blink(elapsed_ms());
-                            request_rebuild();
-                        }
-                    }
-                }
-            })
-    }
-
-    /// Rebuild the inner visual with current config and state
-    fn rebuild_inner(&mut self) {
-        self.inner = Self::create_inner(&self.config, &self.state);
     }
 
     /// Set placeholder text
     pub fn placeholder(mut self, text: impl Into<String>) -> Self {
-        self.config.placeholder = text.into();
+        let placeholder = text.into();
+        self.config.lock().unwrap().placeholder = placeholder.clone();
         if let Ok(mut s) = self.state.lock() {
-            s.placeholder = self.config.placeholder.clone();
+            s.placeholder = placeholder;
         }
         self
     }
 
+    /// Update cached scroll dimensions from config
+    /// This must be called whenever config values that affect scroll calculation change
+    fn update_scroll_dimensions(&self) {
+        let cfg = self.config.lock().unwrap();
+        let line_height = cfg.font_size * cfg.line_height;
+        let viewport_height = cfg.effective_height() - cfg.padding_y * 2.0 - cfg.border_width * 2.0;
+        let viewport_width = cfg.effective_width() - cfg.padding_x * 2.0 - cfg.border_width * 2.0;
+        drop(cfg);
+
+        if let Ok(mut s) = self.state.lock() {
+            s.line_height = line_height;
+            s.viewport_height = viewport_height;
+            // Update scroll physics viewport dimensions
+            if let Ok(mut physics) = s.scroll_physics.lock() {
+                physics.viewport_height = viewport_height;
+                physics.viewport_width = viewport_width;
+            }
+        }
+    }
+
     /// Set number of visible rows (like HTML textarea rows attribute)
     pub fn rows(mut self, rows: usize) -> Self {
-        self.config.rows = Some(rows);
-        // Update inner height based on rows
-        let height = self.config.effective_height();
+        let height = {
+            let mut cfg = self.config.lock().unwrap();
+            cfg.rows = Some(rows);
+            cfg.effective_height()
+        };
         self.inner = std::mem::take(&mut self.inner).h(height);
+        self.update_scroll_dimensions();
         self
     }
 
     /// Set number of visible columns (like HTML textarea cols attribute)
     pub fn cols(mut self, cols: usize) -> Self {
-        self.config.cols = Some(cols);
-        // Update inner width based on cols
-        let width = self.config.effective_width();
+        let width = {
+            let mut cfg = self.config.lock().unwrap();
+            cfg.cols = Some(cols);
+            cfg.effective_width()
+        };
         self.inner = std::mem::take(&mut self.inner).w(width);
         self
     }
 
     /// Set both rows and cols
     pub fn text_size(mut self, rows: usize, cols: usize) -> Self {
-        self.config.rows = Some(rows);
-        self.config.cols = Some(cols);
-        let width = self.config.effective_width();
-        let height = self.config.effective_height();
+        let (width, height) = {
+            let mut cfg = self.config.lock().unwrap();
+            cfg.rows = Some(rows);
+            cfg.cols = Some(cols);
+            (cfg.effective_width(), cfg.effective_height())
+        };
         self.inner = std::mem::take(&mut self.inner).w(width).h(height);
+        self.update_scroll_dimensions();
         self
     }
 
     /// Set font size
     pub fn font_size(mut self, size: f32) -> Self {
-        self.config.font_size = size;
+        self.config.lock().unwrap().font_size = size;
+        self.update_scroll_dimensions();
         self
     }
 
     /// Set disabled state
     pub fn disabled(mut self, disabled: bool) -> Self {
-        self.config.disabled = disabled;
+        self.config.lock().unwrap().disabled = disabled;
         if let Ok(mut s) = self.state.lock() {
             s.disabled = disabled;
             if disabled {
@@ -1014,7 +1180,7 @@ impl TextArea {
 
     /// Set maximum length
     pub fn max_length(mut self, max: usize) -> Self {
-        self.config.max_length = max;
+        self.config.lock().unwrap().max_length = max;
         self
     }
 
@@ -1023,25 +1189,36 @@ impl TextArea {
     // =========================================================================
 
     pub fn w(mut self, px: f32) -> Self {
-        self.config.width = px;
-        self.config.cols = None;
+        {
+            let mut cfg = self.config.lock().unwrap();
+            cfg.width = px;
+            cfg.cols = None;
+        }
         self.inner = std::mem::take(&mut self.inner).w(px);
         self
     }
 
     pub fn h(mut self, px: f32) -> Self {
-        self.config.height = px;
-        self.config.rows = None;
+        {
+            let mut cfg = self.config.lock().unwrap();
+            cfg.height = px;
+            cfg.rows = None;
+        }
         self.inner = std::mem::take(&mut self.inner).h(px);
+        self.update_scroll_dimensions();
         self
     }
 
     pub fn size(mut self, w: f32, h: f32) -> Self {
-        self.config.width = w;
-        self.config.height = h;
-        self.config.cols = None;
-        self.config.rows = None;
+        {
+            let mut cfg = self.config.lock().unwrap();
+            cfg.width = w;
+            cfg.height = h;
+            cfg.cols = None;
+            cfg.rows = None;
+        }
         self.inner = std::mem::take(&mut self.inner).size(w, h);
+        self.update_scroll_dimensions();
         self
     }
 
@@ -1156,12 +1333,12 @@ impl TextArea {
     }
 
     pub fn bg(mut self, color: impl Into<blinc_core::Brush>) -> Self {
-        self.inner = std::mem::take(&mut self.inner).background(color);
+        self.inner = std::mem::take(&mut self.inner).bg(color);
         self
     }
 
     pub fn rounded(mut self, radius: f32) -> Self {
-        self.config.corner_radius = radius;
+        self.config.lock().unwrap().corner_radius = radius;
         self.inner = std::mem::take(&mut self.inner).rounded(radius);
         self
     }
@@ -1198,11 +1375,6 @@ impl TextArea {
 
     pub fn overflow_clip(mut self) -> Self {
         self.inner = std::mem::take(&mut self.inner).overflow_clip();
-        self
-    }
-
-    pub fn overflow_visible(mut self) -> Self {
-        self.inner = std::mem::take(&mut self.inner).overflow_visible();
         self
     }
 
@@ -1322,7 +1494,15 @@ pub fn text_area(state: &SharedTextAreaState) -> TextArea {
 
 impl ElementBuilder for TextArea {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        // Build inner div - preserves event handlers
+        // Set base render props for incremental updates
+        // Note: callback and handlers are registered in new() so they're available for incremental diff
+        {
+            let shared_state = self.inner.shared_state();
+            let mut shared = shared_state.lock().unwrap();
+            shared.base_render_props = Some(self.inner.inner_render_props());
+        }
+
+        // Build the inner Stateful
         self.inner.build(tree)
     }
 

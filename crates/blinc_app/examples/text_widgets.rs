@@ -99,7 +99,7 @@ fn build_input_section(
 ) -> impl ElementBuilder {
     div()
         .flex_col()
-        .gap(16.0)
+        .gap(4.0)
         .w_fit()
         // Section header
         .child(
@@ -111,7 +111,7 @@ fn build_input_section(
         // Description
         .child(
             text("text_input() provides a ready-to-use styled input.")
-                .size(20.0)
+                .size(16.0)
                 .color(Color::rgba(0.6, 0.6, 0.6, 1.0)),
         )
         // Username field
@@ -128,10 +128,10 @@ fn build_input_section(
 fn build_labeled_input(label: &str, state: &SharedTextInputState) -> impl ElementBuilder {
     div()
         .flex_col()
-        .gap(1.0)
+        .gap(4.0)
         .child(
             text(label)
-                .size(18.0)
+                .size(16.0)
                 .weight(FontWeight::Medium)
                 .color(Color::rgba(0.8, 0.8, 0.8, 1.0)),
         )
@@ -148,7 +148,8 @@ fn build_values_display(
 
     div()
         .flex_col()
-        .w(200.0)
+        .w_full()
+        .mt(10.0)
         .gap(8.0)
         .p(4.0)
         .bg(Color::rgba(0.15, 0.15, 0.2, 0.8))
@@ -209,6 +210,7 @@ fn build_form_section(ctx: &WindowedContext, message: &SharedTextAreaState) -> i
                 .p(16.0)
                 .flex_col()
                 .gap(10.0)
+                .justify_center()
                 // Form title
                 .child(
                     h4("Contact Form")
@@ -270,6 +272,7 @@ fn build_message_preview(message: &SharedTextAreaState) -> impl ElementBuilder {
     let msg_val = message.lock().unwrap().value();
 
     div()
+    .w_full()
         .flex_col()
         .gap(8.0)
         .p(16.0)

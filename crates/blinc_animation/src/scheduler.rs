@@ -79,6 +79,9 @@ pub struct AnimationScheduler {
     /// Flag set by background thread when animations need redraw
     /// The main thread should check and clear this to request window redraws
     needs_redraw: Arc<AtomicBool>,
+    /// Flag to request continuous redraws (e.g., for cursor blink)
+    /// When set, the background thread will keep signaling redraws
+    continuous_redraw: Arc<AtomicBool>,
     /// Background thread handle (if running)
     thread_handle: Option<JoinHandle<()>>,
     /// Optional callback to wake up the main thread
@@ -97,6 +100,7 @@ impl AnimationScheduler {
             })),
             stop_flag: Arc::new(AtomicBool::new(false)),
             needs_redraw: Arc::new(AtomicBool::new(false)),
+            continuous_redraw: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
             wake_callback: None,
         }
@@ -139,6 +143,7 @@ impl AnimationScheduler {
         let inner = Arc::clone(&self.inner);
         let stop_flag = Arc::clone(&self.stop_flag);
         let needs_redraw = Arc::clone(&self.needs_redraw);
+        let continuous_redraw = Arc::clone(&self.continuous_redraw);
         let wake_callback = self.wake_callback.clone();
 
         self.thread_handle = Some(thread::spawn(move || {
@@ -146,6 +151,9 @@ impl AnimationScheduler {
 
             while !stop_flag.load(Ordering::Relaxed) {
                 let start = Instant::now();
+
+                // Check if continuous redraw is requested (e.g., for cursor blink)
+                let wants_continuous = continuous_redraw.load(Ordering::Relaxed);
 
                 // Tick animations and check if any are active
                 let has_active = {
@@ -183,11 +191,18 @@ impl AnimationScheduler {
                 };
 
                 // Signal main thread that it needs to redraw
-                if has_active {
+                // Either from active animations OR continuous redraw request (cursor blink)
+                if has_active || wants_continuous {
                     needs_redraw.store(true, Ordering::Release);
 
                     // Wake up the event loop if a callback is set
                     if let Some(ref callback) = wake_callback {
+                        // Only log occasionally to avoid spam
+                        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+                        if count % 120 == 0 { // Log once per second at 120fps
+                            tracing::info!("Animation thread: waking event loop (continuous={}, active={})", wants_continuous, has_active);
+                        }
                         callback();
                     }
                 }
@@ -233,6 +248,23 @@ impl AnimationScheduler {
     /// main thread on its next event loop iteration.
     pub fn request_redraw(&self) {
         self.needs_redraw.store(true, Ordering::Release);
+    }
+
+    /// Enable continuous redraw mode
+    ///
+    /// When enabled, the background thread will continuously signal redraws
+    /// even without active animations. Use this for features like cursor blink
+    /// that need regular redraws without registering full animations.
+    ///
+    /// Call `set_continuous_redraw(false)` when no longer needed.
+    pub fn set_continuous_redraw(&self, enabled: bool) {
+        tracing::info!("AnimationScheduler: set_continuous_redraw({})", enabled);
+        self.continuous_redraw.store(enabled, Ordering::Release);
+    }
+
+    /// Check if continuous redraw mode is enabled
+    pub fn is_continuous_redraw(&self) -> bool {
+        self.continuous_redraw.load(Ordering::Relaxed)
     }
 
     /// Get a handle to this scheduler for passing to components
@@ -454,6 +486,7 @@ impl Clone for AnimationScheduler {
             inner: Arc::clone(&self.inner),
             stop_flag: Arc::clone(&self.stop_flag),
             needs_redraw: Arc::clone(&self.needs_redraw),
+            continuous_redraw: Arc::clone(&self.continuous_redraw),
             // Cloned scheduler doesn't own the background thread
             thread_handle: None,
             wake_callback: self.wake_callback.clone(),

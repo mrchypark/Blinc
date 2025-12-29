@@ -51,17 +51,21 @@ pub use checkbox::{
 
 // Re-export text input widget
 pub use text_input::{
+    // Blur function for click-outside handling
+    blur_all_text_inputs,
     // Cursor blink timing utilities
     elapsed_ms,
     has_focused_text_input,
     request_rebuild,
+    // Continuous redraw callback for animation scheduler integration
+    set_continuous_redraw_callback,
     take_needs_continuous_redraw,
     take_needs_rebuild,
     text_input,
     text_input_state,
     text_input_state_with_placeholder,
+    InputConstraints,
     InputType,
-    NumberConstraints,
     SharedTextInputState,
     TextInput,
     TextInputConfig,

@@ -607,6 +607,39 @@ pub(crate) fn refresh_stateful<S: StateTransitions>(shared: &SharedState<S>) {
 }
 
 impl<S: StateTransitions> Stateful<S> {
+    /// Ensure the state callback is invoked if pending.
+    ///
+    /// This is crucial for the incremental diff system which may call
+    /// `children_builders()` or `render_props()` BEFORE `build()` is called
+    /// on new element instances. Without this, the diff sees stale content
+    /// and incorrectly determines that children/props have changed.
+    fn ensure_callback_invoked(&self) {
+        let shared = self.shared_state.lock().unwrap();
+        let has_callback = shared.state_callback.is_some();
+        let needs_update = shared.needs_visual_update;
+        tracing::trace!(
+            "ensure_callback_invoked: has_callback={}, needs_update={}",
+            has_callback,
+            needs_update
+        );
+        if needs_update && has_callback {
+            let callback = Arc::clone(shared.state_callback.as_ref().unwrap());
+            let state_copy = shared.state;
+            drop(shared); // Release lock before calling callback
+
+            tracing::trace!("Invoking state callback for Stateful");
+            // Apply callback to populate children and props
+            callback(&state_copy, &mut *self.inner.borrow_mut());
+
+            // Mark as updated
+            self.shared_state.lock().unwrap().needs_visual_update = false;
+
+            // Log children count after callback
+            let children_count = self.inner.borrow().children.len();
+            tracing::trace!("After callback: {} children in inner Div", children_count);
+        }
+    }
+
     /// Create a new stateful element with initial state
     pub fn new(initial_state: S) -> Self {
         Self {
@@ -1820,23 +1853,8 @@ impl<S: StateTransitions + Default> ElementBuilder for BoundStateful<S> {
 
 impl<S: StateTransitions> ElementBuilder for Stateful<S> {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        // Check if we need to apply a pending callback (e.g., from Button's build())
-        {
-            let shared = self.shared_state.lock().unwrap();
-            let has_callback = shared.state_callback.is_some();
-            let needs_update = shared.needs_visual_update;
-            if needs_update && has_callback {
-                let callback = Arc::clone(shared.state_callback.as_ref().unwrap());
-                let state_copy = shared.state;
-                drop(shared); // Release lock before calling callback
-
-                // Apply callback to the inner div
-                callback(&state_copy, &mut *self.inner.borrow_mut());
-
-                // Mark as updated
-                self.shared_state.lock().unwrap().needs_visual_update = false;
-            }
-        }
+        // Ensure callback has been invoked to populate children
+        self.ensure_callback_invoked();
 
         // Extract children from inner Div to the cache for children_builders() to return
         // This is done by swapping them out, since we can't hold a reference across RefCell
@@ -1871,14 +1889,22 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
     }
 
     fn render_props(&self) -> RenderProps {
+        // Ensure callback is invoked if needed - the diff system may call render_props()
+        // before build() is called on the new element instance
+        self.ensure_callback_invoked();
         self.inner.borrow().render_props()
     }
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
-        // First check if cache is populated (after build)
-        // If not, return children from inner Div directly
-        // This is needed for incremental update analysis which calls children_builders()
-        // BEFORE build() is called on new element instances.
+        // Ensure callback is invoked if needed - this is crucial for the incremental
+        // diff system which calls children_builders() BEFORE build() is called.
+        // Without this, the diff sees empty children and incorrectly removes content.
+        self.ensure_callback_invoked();
+
+        // Now return children from inner Div
+        // SAFETY: We use a raw pointer to get a reference that outlives the RefCell borrow.
+        // This is safe as long as children_builders() is only called during the
+        // render phase when the Div is no longer being mutated.
         unsafe {
             let cache = self.children_cache.as_ptr();
             if !(*cache).is_empty() {
