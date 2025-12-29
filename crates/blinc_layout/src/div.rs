@@ -2036,6 +2036,15 @@ pub trait ElementBuilder {
     fn layout_bounds_storage(&self) -> Option<crate::renderer::LayoutBoundsStorage> {
         None
     }
+
+    /// Get layout bounds change callback for this element
+    ///
+    /// If this element needs to react when its layout bounds change (e.g., TextInput
+    /// needs to recalculate scroll when width changes), it returns a callback that
+    /// will be invoked when the bounds differ from the previous layout.
+    fn layout_bounds_callback(&self) -> Option<crate::renderer::LayoutBoundsCallback> {
+        None
+    }
 }
 
 impl ElementBuilder for Div {

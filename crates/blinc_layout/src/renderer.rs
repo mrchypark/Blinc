@@ -224,6 +224,17 @@ pub type NodeStateStorage = Arc<Mutex<dyn Any + Send>>;
 /// Storage for computed layout bounds (shared with ElementRef)
 pub type LayoutBoundsStorage = Arc<Mutex<Option<ElementBounds>>>;
 
+/// Callback type for layout bounds change notifications
+pub type LayoutBoundsCallback = Arc<dyn Fn(ElementBounds) + Send + Sync>;
+
+/// Entry for layout bounds storage with optional change callback
+pub struct LayoutBoundsEntry {
+    /// The shared storage for bounds
+    pub storage: LayoutBoundsStorage,
+    /// Optional callback when bounds change (width or height differ from previous)
+    pub on_change: Option<LayoutBoundsCallback>,
+}
+
 /// RenderTree - bridges layout computation and rendering
 pub struct RenderTree {
     /// The underlying layout tree
@@ -261,8 +272,8 @@ pub struct RenderTree {
     /// Maps node_id to (own_hash, tree_hash) - own excludes children, tree includes children
     node_hashes: HashMap<LayoutNodeId, (DivHash, DivHash)>,
     /// Layout bounds storages to update after layout computation
-    /// Maps node_id to shared storage that gets updated with computed bounds
-    layout_bounds_storages: HashMap<LayoutNodeId, LayoutBoundsStorage>,
+    /// Maps node_id to entry with shared storage and optional change callback
+    layout_bounds_storages: HashMap<LayoutNodeId, LayoutBoundsEntry>,
 }
 
 /// Result of an incremental update attempt
@@ -741,9 +752,7 @@ impl RenderTree {
         }
 
         // Register layout bounds storage if element wants bounds updates
-        if let Some(storage) = element.layout_bounds_storage() {
-            self.layout_bounds_storages.insert(node_id, storage);
-        }
+        self.register_element_bounds_storage(node_id, element);
 
         // Recursively update children
         let child_node_ids = self.layout_tree.children(node_id);
@@ -821,9 +830,7 @@ impl RenderTree {
         }
 
         // Register layout bounds storage if element wants bounds updates
-        if let Some(storage) = element.layout_bounds_storage() {
-            self.layout_bounds_storages.insert(node_id, storage);
-        }
+        self.register_element_bounds_storage(node_id, element);
 
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
@@ -911,16 +918,14 @@ impl RenderTree {
         }
 
         // Register layout bounds storage if element wants bounds updates
-        if let Some(storage) = element.layout_bounds_storage() {
-            self.layout_bounds_storages.insert(node_id, storage);
-        }
+        self.register_element_bounds_storage(node_id, element);
 
         // Get child node IDs from the layout tree
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
 
         // Log mismatch to help debug stateful/motion issues
-        if child_node_ids.len() != child_builders.len() && child_node_ids.len() > 0 {
+        if child_node_ids.len() != child_builders.len() && !child_node_ids.is_empty() {
             tracing::warn!(
                 "collect_render_props: node {:?} has {} layout children but {} builder children (mismatch!)",
                 node_id, child_node_ids.len(), child_builders.len()
@@ -1024,9 +1029,7 @@ impl RenderTree {
         }
 
         // Register layout bounds storage if element wants bounds updates
-        if let Some(storage) = element.layout_bounds_storage() {
-            self.layout_bounds_storages.insert(node_id, storage);
-        }
+        self.register_element_bounds_storage(node_id, element);
 
         // Get child node IDs from the layout tree
         let child_node_ids = self.layout_tree.children(node_id);
@@ -1161,9 +1164,7 @@ impl RenderTree {
         }
 
         // Register layout bounds storage if element wants bounds updates
-        if let Some(storage) = element.layout_bounds_storage() {
-            self.layout_bounds_storages.insert(node_id, storage);
-        }
+        self.register_element_bounds_storage(node_id, element);
 
         // Recursively process children (without motion - motion only applies to direct children)
         let child_node_ids = self.layout_tree.children(node_id);
@@ -1317,7 +1318,33 @@ impl RenderTree {
         node_id: LayoutNodeId,
         storage: LayoutBoundsStorage,
     ) {
-        self.layout_bounds_storages.insert(node_id, storage);
+        self.layout_bounds_storages.insert(
+            node_id,
+            LayoutBoundsEntry {
+                storage,
+                on_change: None,
+            },
+        );
+    }
+
+    /// Register a layout bounds storage with a change callback
+    ///
+    /// The callback is invoked when the computed bounds change (width or height differ).
+    /// This is useful for elements that need to react to layout changes, like TextInput
+    /// which needs to recalculate scroll offset when its width changes.
+    pub fn register_layout_bounds_storage_with_callback(
+        &mut self,
+        node_id: LayoutNodeId,
+        storage: LayoutBoundsStorage,
+        on_change: LayoutBoundsCallback,
+    ) {
+        self.layout_bounds_storages.insert(
+            node_id,
+            LayoutBoundsEntry {
+                storage,
+                on_change: Some(on_change),
+            },
+        );
     }
 
     /// Unregister a layout bounds storage
@@ -1325,12 +1352,53 @@ impl RenderTree {
         self.layout_bounds_storages.remove(&node_id);
     }
 
+    /// Register layout bounds storage from an element builder
+    ///
+    /// This helper checks both layout_bounds_storage() and layout_bounds_callback()
+    /// from the ElementBuilder trait and registers them together.
+    fn register_element_bounds_storage(
+        &mut self,
+        node_id: LayoutNodeId,
+        element: &dyn ElementBuilder,
+    ) {
+        if let Some(storage) = element.layout_bounds_storage() {
+            let callback = element.layout_bounds_callback();
+            self.layout_bounds_storages.insert(
+                node_id,
+                LayoutBoundsEntry {
+                    storage,
+                    on_change: callback,
+                },
+            );
+        }
+    }
+
     /// Update all registered layout bounds storages after layout computation
+    ///
+    /// When bounds change (width or height differ), the on_change callback is invoked.
     fn update_layout_bounds_storages(&self) {
-        for (&node_id, storage) in &self.layout_bounds_storages {
+        for (&node_id, entry) in &self.layout_bounds_storages {
             if let Some(bounds) = self.layout_tree.get_bounds(node_id, (0.0, 0.0)) {
-                if let Ok(mut guard) = storage.lock() {
+                let should_notify = if let Ok(mut guard) = entry.storage.lock() {
+                    // Check if bounds changed (compare width and height)
+                    let changed = match guard.as_ref() {
+                        Some(old_bounds) => {
+                            (old_bounds.width - bounds.width).abs() > 0.01
+                                || (old_bounds.height - bounds.height).abs() > 0.01
+                        }
+                        None => true, // First time getting bounds
+                    };
                     *guard = Some(bounds);
+                    changed
+                } else {
+                    false
+                };
+
+                // Invoke callback if bounds changed and callback exists
+                if should_notify {
+                    if let Some(ref callback) = entry.on_change {
+                        callback(bounds);
+                    }
                 }
             }
         }

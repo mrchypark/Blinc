@@ -961,12 +961,8 @@ impl TextInput {
                         return;
                     }
 
-                    // Get config for cursor positioning
-                    let cfg = config_for_click.lock().unwrap();
-                    let font_size = cfg.font_size;
-                    let padding_x = cfg.padding_x;
-                    let border_width = cfg.border_width;
-                    drop(cfg);
+                    // Get font size for cursor positioning
+                    let font_size = config_for_click.lock().unwrap().font_size;
 
                     // Update FSM state
                     {
@@ -1000,10 +996,11 @@ impl TextInput {
                     }
 
                     // Calculate cursor position from click x position
-                    // local_x is relative to the hit element bounds (the main container)
-                    // Subtract padding and border to get position relative to text content area
-                    // Note: Don't add scroll_offset_x here - cursor_position_from_x handles it internally
-                    let text_x = (ctx.local_x - padding_x - border_width).max(0.0);
+                    // local_x is relative to the hit element (text inside the wrapper).
+                    // Since the text element is positioned after padding/border via layout,
+                    // local_x is already in text-relative coordinates - use it directly.
+                    // cursor_position_from_x handles scroll offset internally.
+                    let text_x = ctx.local_x.max(0.0);
                     let cursor_pos = d.cursor_position_from_x(text_x, font_size);
                     d.cursor = cursor_pos;
                     d.selection_start = None;
@@ -1490,6 +1487,16 @@ impl ElementBuilder for TextInput {
         } else {
             None
         }
+    }
+
+    fn layout_bounds_callback(&self) -> Option<crate::renderer::LayoutBoundsCallback> {
+        // When layout bounds change, trigger a refresh so the TextInput can
+        // recalculate scroll offset with the new width
+        let stateful_state = Arc::clone(&self.stateful_state);
+        Some(Arc::new(move |_bounds| {
+            // Trigger a visual update so ensure_cursor_visible runs with new bounds
+            refresh_stateful(&stateful_state);
+        }))
     }
 }
 
