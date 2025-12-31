@@ -42,8 +42,8 @@ impl Default for BlockquoteConfig {
             border_color: theme.color(ColorToken::Border),
             border_width: 4.0,
             bg_color: theme.color(ColorToken::SurfaceOverlay),
-            padding: 16.0,
-            margin_y: 16.0,
+            padding: 4.0,
+            margin_y: 2.0,
         }
     }
 }
@@ -65,14 +65,12 @@ impl Blockquote {
 
     /// Create a blockquote with custom configuration
     pub fn with_config(config: BlockquoteConfig) -> Self {
-        // Simple container with left border color, using full border for now
-        // Visual approximation: border on all sides but styled to look like left border
         let inner = div()
             .flex_col()
             .w_full()
             .my(config.margin_y)
             .bg(config.bg_color)
-            .border(config.border_width, config.border_color)
+            .border_left(config.border_width, config.border_color)
             .p(config.padding);
 
         Self { inner }
