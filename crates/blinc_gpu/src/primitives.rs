@@ -296,7 +296,10 @@ impl GpuPrimitive {
     /// in the same pass as shapes, enabling proper z-ordering.
     ///
     /// The glyph's UV bounds are stored in `gradient_params` and the color in `color`.
+    /// For color emoji, flags[0] is 1.0 (stored in type_info[1]).
     pub fn from_glyph(glyph: &GpuGlyph) -> Self {
+        // Use type_info[1] to store is_color flag (1 = color emoji, 0 = grayscale)
+        let is_color_flag = if glyph.flags[0] > 0.5 { 1u32 } else { 0u32 };
         Self {
             bounds: glyph.bounds,
             corner_radius: [0.0; 4],
@@ -310,7 +313,7 @@ impl GpuPrimitive {
             clip_radius: [0.0; 4],
             // Store UV bounds (u_min, v_min, u_max, v_max) in gradient_params
             gradient_params: glyph.uv_bounds,
-            type_info: [PrimitiveType::Text as u32, 0, ClipType::None as u32, 0],
+            type_info: [PrimitiveType::Text as u32, is_color_flag, ClipType::None as u32, 0],
         }
     }
 
@@ -657,7 +660,7 @@ impl From<&blinc_layout::GlassPanel> for GpuGlassPrimitive {
 /// - uv_bounds: `vec4<f32>`    (16 bytes) - UV coordinates in atlas
 /// - color: `vec4<f32>`        (16 bytes) - text color
 /// - clip_bounds: `vec4<f32>`  (16 bytes) - clip region (x, y, width, height)
-/// Total: 64 bytes
+/// Total: 80 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuGlyph {
@@ -669,6 +672,9 @@ pub struct GpuGlyph {
     pub color: [f32; 4],
     /// Clip bounds (x, y, width, height) - set to large values for no clip
     pub clip_bounds: [f32; 4],
+    /// Flags: [is_color, unused, unused, unused]
+    /// is_color: 1.0 for color emoji (use color atlas), 0.0 for grayscale (use main atlas)
+    pub flags: [f32; 4],
 }
 
 impl Default for GpuGlyph {
@@ -679,6 +685,7 @@ impl Default for GpuGlyph {
             color: [0.0, 0.0, 0.0, 1.0],
             // Default: no clip (large bounds that won't clip anything)
             clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
+            flags: [0.0; 4], // Not a color glyph by default
         }
     }
 }

@@ -32,5 +32,8 @@ regex.workspace = true
 # Markdown parsing
 pulldown-cmark = "0.10"
 
+# HTML entity decoding
+html-escape = "0.2"
+
 # URL opening (for links)
 open = "5"

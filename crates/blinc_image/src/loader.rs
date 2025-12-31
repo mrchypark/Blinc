@@ -87,7 +87,42 @@ impl ImageData {
                     ))
                 }
             }
+
+            ImageSource::Emoji { emoji, size } => {
+                #[cfg(feature = "emoji")]
+                {
+                    Self::load_emoji(&emoji, size)
+                }
+                #[cfg(not(feature = "emoji"))]
+                {
+                    let _ = (emoji, size);
+                    Err(ImageError::Decode(
+                        "Emoji loading requires the 'emoji' feature".to_string(),
+                    ))
+                }
+            }
+
+            ImageSource::Rgba {
+                data,
+                width,
+                height,
+            } => Self::from_rgba(data, width, height),
         }
+    }
+
+    /// Load an emoji character as an image
+    ///
+    /// Uses the system emoji font to render the emoji as an RGBA image.
+    #[cfg(feature = "emoji")]
+    fn load_emoji(emoji: &str, size: f32) -> Result<Self> {
+        use blinc_text::EmojiRenderer;
+
+        let mut renderer = EmojiRenderer::new();
+        let sprite = renderer
+            .render_string(emoji, size)
+            .map_err(|e| ImageError::Decode(format!("Failed to render emoji: {:?}", e)))?;
+
+        Self::from_rgba(sprite.data, sprite.width, sprite.height)
     }
 
     /// Load an image from a path using the platform asset loader

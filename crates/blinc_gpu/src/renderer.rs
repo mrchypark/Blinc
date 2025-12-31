@@ -168,8 +168,10 @@ struct CachedGlassResources {
 struct CachedTextResources {
     /// Cached bind group (valid when atlas texture view hasn't changed)
     bind_group: wgpu::BindGroup,
-    /// Pointer to atlas view when bind group was created (for invalidation)
+    /// Pointer to grayscale atlas view when bind group was created (for invalidation)
     atlas_view_ptr: *const wgpu::TextureView,
+    /// Pointer to color atlas view when bind group was created (for invalidation)
+    color_atlas_view_ptr: *const wgpu::TextureView,
 }
 
 /// The GPU renderer using wgpu
@@ -606,6 +608,17 @@ impl GpuRenderer {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // Color glyph atlas texture (for emoji)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -2381,13 +2394,15 @@ impl GpuRenderer {
     /// # Arguments
     /// * `target` - The texture view to render to
     /// * `glyphs` - The glyph instances to render
-    /// * `atlas_view` - The glyph atlas texture view
-    /// * `atlas_sampler` - The sampler for the atlas
+    /// * `atlas_view` - The grayscale glyph atlas texture view
+    /// * `color_atlas_view` - The color (RGBA) glyph atlas texture view for emoji
+    /// * `atlas_sampler` - The sampler for the atlases
     pub fn render_text(
         &mut self,
         target: &wgpu::TextureView,
         glyphs: &[GpuGlyph],
         atlas_view: &wgpu::TextureView,
+        color_atlas_view: &wgpu::TextureView,
         atlas_sampler: &wgpu::Sampler,
     ) {
         if glyphs.is_empty() {
@@ -2407,10 +2422,14 @@ impl GpuRenderer {
             .write_buffer(&self.buffers.glyphs, 0, bytemuck::cast_slice(glyphs));
 
         // Check if we need to recreate the text bind group
-        // Invalidate if the atlas view pointer changed (texture was recreated)
+        // Invalidate if either atlas view pointer changed (texture was recreated)
         let atlas_view_ptr = atlas_view as *const wgpu::TextureView;
+        let color_atlas_view_ptr = color_atlas_view as *const wgpu::TextureView;
         let need_new_bind_group = match &self.cached_text {
-            Some(cached) => cached.atlas_view_ptr != atlas_view_ptr,
+            Some(cached) => {
+                cached.atlas_view_ptr != atlas_view_ptr
+                    || cached.color_atlas_view_ptr != color_atlas_view_ptr
+            }
             None => true,
         };
 
@@ -2435,11 +2454,16 @@ impl GpuRenderer {
                         binding: 3,
                         resource: wgpu::BindingResource::Sampler(atlas_sampler),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(color_atlas_view),
+                    },
                 ],
             });
             self.cached_text = Some(CachedTextResources {
                 bind_group,
                 atlas_view_ptr,
+                color_atlas_view_ptr,
             });
         }
 

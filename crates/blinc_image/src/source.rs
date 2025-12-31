@@ -20,6 +20,25 @@ pub enum ImageSource {
         data: Vec<u8>,
         format: Option<ImageFormat>,
     },
+
+    /// Load an emoji character as an image
+    /// Format: "emoji://😀" or "emoji://😀?size=64"
+    Emoji {
+        /// The emoji character or string
+        emoji: String,
+        /// Rendering size in pixels (default 64)
+        size: f32,
+    },
+
+    /// Pre-decoded RGBA image data (already in memory)
+    Rgba {
+        /// RGBA pixel data (4 bytes per pixel)
+        data: Vec<u8>,
+        /// Width in pixels
+        width: u32,
+        /// Height in pixels
+        height: u32,
+    },
 }
 
 impl ImageSource {
@@ -51,12 +70,39 @@ impl ImageSource {
         }
     }
 
+    /// Create an emoji source
+    ///
+    /// # Arguments
+    /// * `emoji` - The emoji character or string (e.g., "😀", "🇺🇸")
+    /// * `size` - Rendering size in pixels
+    pub fn emoji(emoji: impl Into<String>, size: f32) -> Self {
+        Self::Emoji {
+            emoji: emoji.into(),
+            size,
+        }
+    }
+
+    /// Create an RGBA source from pre-decoded pixel data
+    ///
+    /// # Arguments
+    /// * `data` - RGBA pixel data (4 bytes per pixel, in order)
+    /// * `width` - Width in pixels
+    /// * `height` - Height in pixels
+    pub fn rgba(data: Vec<u8>, width: u32, height: u32) -> Self {
+        Self::Rgba {
+            data,
+            width,
+            height,
+        }
+    }
+
     /// Parse a resource URI string into an ImageSource
     ///
     /// Supported formats:
     /// - `file:///path/to/image.png` - File path
     /// - `http://...` or `https://...` - URL
     /// - `data:image/png;base64,...` - Data URI with base64
+    /// - `emoji://😀` or `emoji://😀?size=64` - Emoji as image
     /// - `/path/to/image.png` - Treated as file path
     pub fn from_uri(uri: &str) -> Self {
         if uri.starts_with("data:") {
@@ -65,6 +111,29 @@ impl ImageSource {
         } else if uri.starts_with("http://") || uri.starts_with("https://") {
             // URL
             Self::Url(uri.to_string())
+        } else if uri.starts_with("emoji://") {
+            // Emoji URI: emoji://😀 or emoji://😀?size=64
+            let rest = uri.strip_prefix("emoji://").unwrap_or("");
+            let (emoji, size) = if let Some(idx) = rest.find('?') {
+                let emoji_part = &rest[..idx];
+                let query = &rest[idx + 1..];
+                // Parse size from query string (e.g., "size=64")
+                let size = query
+                    .split('&')
+                    .find_map(|param| {
+                        let mut parts = param.splitn(2, '=');
+                        if parts.next() == Some("size") {
+                            parts.next().and_then(|v| v.parse::<f32>().ok())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(64.0);
+                (emoji_part.to_string(), size)
+            } else {
+                (rest.to_string(), 64.0)
+            };
+            Self::Emoji { emoji, size }
         } else if uri.starts_with("file://") {
             // File URI
             let path = uri.strip_prefix("file://").unwrap_or(uri);

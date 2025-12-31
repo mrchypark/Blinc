@@ -26,6 +26,9 @@ swash = "0.1"
 unicode-bidi = { workspace = true }
 unicode-linebreak = { workspace = true }
 
+# HTML entity decoding
+html-escape = "0.2"
+
 # Utilities
 thiserror = { workspace = true }
 tracing = { workspace = true }

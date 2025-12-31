@@ -89,7 +89,7 @@ pub use div::{
 pub use stack::{stack, Stack};
 // Reference binding
 pub use div::{DivRef, ElementRef};
-pub use image::{image, img, Image, ImageFilter, ObjectFit, ObjectPosition};
+pub use image::{emoji, emoji_sized, image, img, Image, ImageFilter, ObjectFit, ObjectPosition};
 pub use svg::{svg, Svg};
 pub use text::{text, Text};
 
@@ -151,7 +151,7 @@ pub mod prelude {
     // Event routing
     pub use crate::event_router::{EventRouter, HitTestResult, MouseButton};
     // Image element
-    pub use crate::image::{image, img, Image, ImageFilter, ObjectFit, ObjectPosition};
+    pub use crate::image::{emoji, emoji_sized, image, img, Image, ImageFilter, ObjectFit, ObjectPosition};
     // Interactive state management
     pub use crate::interactive::{DirtyTracker, InteractiveContext, NodeState};
     // Unified element styling

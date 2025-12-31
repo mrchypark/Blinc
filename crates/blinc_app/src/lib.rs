@@ -44,6 +44,37 @@
 //! }
 //! ```
 
+/// Get the paths to system default fonts, in priority order.
+///
+/// Returns a list of font paths to try loading, with the best choice first.
+/// - macOS: San Francisco (SFNS.ttf) first, then Helvetica
+/// - Linux: DejaVu Sans
+/// - Windows: Segoe UI
+pub fn system_font_paths() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            "/System/Library/Fonts/SFNS.ttf",      // San Francisco - primary system font
+            "/System/Library/Fonts/Helvetica.ttc", // Fallback
+        ]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        &[
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        ]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        &["C:\\Windows\\Fonts\\segoeui.ttf"]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        &[]
+    }
+}
+
 mod app;
 mod context;
 mod error;

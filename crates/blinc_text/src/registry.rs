@@ -20,6 +20,10 @@ pub enum GenericFont {
     Serif,
     /// Sans-serif font
     SansSerif,
+    /// Emoji font (color emoji)
+    Emoji,
+    /// Symbol font (Unicode symbols, arrows, math, etc.)
+    Symbol,
 }
 
 /// Font registry that discovers and caches system fonts
@@ -56,9 +60,16 @@ impl FontRegistry {
             GenericFont::SansSerif,
             GenericFont::Serif,
             GenericFont::Monospace,
+            GenericFont::Emoji,
+            GenericFont::Symbol,
         ] {
             if let Err(e) = self.load_generic(generic) {
-                tracing::warn!("Failed to preload generic font {:?}: {:?}", generic, e);
+                // Emoji/Symbol fonts may not be available on all systems, don't warn
+                if generic != GenericFont::Emoji && generic != GenericFont::Symbol {
+                    tracing::warn!("Failed to preload generic font {:?}: {:?}", generic, e);
+                } else {
+                    tracing::debug!("{:?} font not available: {:?}", generic, e);
+                }
             }
         }
     }
@@ -157,6 +168,121 @@ impl FontRegistry {
         Ok(face)
     }
 
+    /// Load the system emoji font
+    ///
+    /// Tries platform-specific emoji fonts:
+    /// - macOS: Apple Color Emoji
+    /// - Windows: Segoe UI Emoji
+    /// - Linux: Noto Color Emoji, Noto Emoji, Twitter Color Emoji
+    fn load_emoji_font(&mut self) -> Result<Arc<FontFace>> {
+        let cache_key = "__generic_Emoji:w400:n".to_string();
+
+        // Check cache first
+        if let Some(cached) = self.faces.get(&cache_key) {
+            return cached.clone().ok_or_else(|| {
+                TextError::FontLoadError("Emoji font not found (cached)".to_string())
+            });
+        }
+
+        // Platform-specific emoji and symbol font names to try
+        // These fonts provide coverage for emoji and special Unicode symbols
+        let emoji_fonts = if cfg!(target_os = "macos") {
+            vec![
+                "Apple Color Emoji", // Color emoji
+                "Apple Symbols",     // Unicode symbols (arrows, math, etc.)
+            ]
+        } else if cfg!(target_os = "windows") {
+            vec![
+                "Segoe UI Emoji",  // Color emoji
+                "Segoe UI Symbol", // Unicode symbols
+                "Segoe UI",        // Additional symbol coverage
+            ]
+        } else {
+            // Linux and others
+            vec![
+                "Noto Color Emoji",   // Color emoji
+                "Noto Emoji",         // Monochrome emoji fallback
+                "Noto Sans Symbols",  // Unicode symbols
+                "Noto Sans Symbols2", // Additional symbols
+                "Twitter Color Emoji",
+                "EmojiOne Color",
+                "JoyPixels",
+                "DejaVu Sans", // Good Unicode coverage
+            ]
+        };
+
+        for font_name in emoji_fonts {
+            if let Ok(face) = self.load_font(font_name) {
+                // Cache it under the generic emoji key
+                self.faces.insert(cache_key.clone(), Some(Arc::clone(&face)));
+                tracing::debug!("Loaded emoji font: {}", font_name);
+                return Ok(face);
+            }
+        }
+
+        // No emoji font found
+        self.faces.insert(cache_key, None);
+        Err(TextError::FontLoadError(
+            "No emoji font found on system".to_string(),
+        ))
+    }
+
+    /// Load the system symbol font
+    ///
+    /// Tries platform-specific symbol fonts for Unicode symbols:
+    /// - macOS: Menlo (has dingbats like ✓✗), Apple Symbols
+    /// - Windows: Segoe UI Symbol
+    /// - Linux: Noto Sans Symbols, DejaVu Sans
+    fn load_symbol_font(&mut self) -> Result<Arc<FontFace>> {
+        let cache_key = "__generic_Symbol:w400:n".to_string();
+
+        // Check cache first
+        if let Some(cached) = self.faces.get(&cache_key) {
+            return cached.clone().ok_or_else(|| {
+                TextError::FontLoadError("Symbol font not found (cached)".to_string())
+            });
+        }
+
+        // Platform-specific symbol font names to try
+        // Priority: fonts with good dingbat/symbol coverage (✓, ✗, etc.) first
+        let symbol_fonts = if cfg!(target_os = "macos") {
+            vec![
+                "Menlo",            // Has ✓ ✗ ✔ ✖ and other dingbats
+                "Lucida Grande",    // Has ✓ and many symbols
+                "Apple Symbols",    // Unicode symbols (arrows, math, but NOT ✓✗)
+            ]
+        } else if cfg!(target_os = "windows") {
+            vec![
+                "Segoe UI Symbol", // Unicode symbols
+                "Segoe UI",        // Additional symbol coverage
+                "Arial Unicode MS",
+            ]
+        } else {
+            // Linux and others
+            vec![
+                "DejaVu Sans",        // Good Unicode coverage including dingbats
+                "Noto Sans Symbols",  // Unicode symbols
+                "Noto Sans Symbols2", // Additional symbols
+                "FreeSans",
+            ]
+        };
+
+        for font_name in symbol_fonts {
+            if let Ok(face) = self.load_font(font_name) {
+                // Cache it under the generic symbol key
+                self.faces.insert(cache_key.clone(), Some(Arc::clone(&face)));
+                tracing::debug!("Loaded symbol font: {}", font_name);
+                return Ok(face);
+            }
+        }
+
+        // No symbol font found
+        self.faces.insert(cache_key, None);
+        Err(TextError::FontLoadError(
+            "No symbol font found on system".to_string(),
+        ))
+    }
+
     /// Load a font face by fontdb ID
     fn load_face_by_id(&self, id: fontdb::ID) -> Result<FontFace> {
         // Get the face source info
@@ -213,11 +339,21 @@ impl FontRegistry {
         }
 
         // Map GenericFont to fontdb Family
+        // For Emoji and Symbol, we try platform-specific fonts by name
+        if generic == GenericFont::Emoji {
+            return self.load_emoji_font();
+        }
+        if generic == GenericFont::Symbol {
+            return self.load_symbol_font();
+        }
+
         let family = match generic {
             GenericFont::System => Family::SansSerif,
             GenericFont::Monospace => Family::Monospace,
             GenericFont::Serif => Family::Serif,
             GenericFont::SansSerif => Family::SansSerif,
+            GenericFont::Emoji => unreachable!(),  // Handled above
+            GenericFont::Symbol => unreachable!(), // Handled above
         };
 
         // Query fontdb with requested weight and style
@@ -391,6 +527,21 @@ impl FontRegistry {
             .or_else(|| self.get_cached_generic_with_style(GenericFont::SansSerif, weight, italic))
     }
 
+    /// Get the emoji font if available (cached)
+    ///
+    /// Returns the cached emoji font if it was successfully loaded during
+    /// initialization, or None if no emoji font is available.
+    pub fn get_emoji_font(&self) -> Option<Arc<FontFace>> {
+        self.get_cached_generic(GenericFont::Emoji)
+    }
+
+    /// Check if a character needs an emoji font
+    ///
+    /// Returns true for emoji characters that typically need a color emoji font.
+    pub fn needs_emoji_font(c: char) -> bool {
+        crate::emoji::is_emoji(c)
+    }
+
     /// List available font families on the system
     pub fn list_families(&self) -> Vec<String> {
         let mut families: Vec<String> = self
@@ -498,6 +649,93 @@ mod tests {
         if families.is_empty() {
             println!("No fonts found - likely minimal CI environment");
         }
+    }
+
+    #[test]
+    fn test_check_cross_glyph_coverage() {
+        let mut registry = FontRegistry::new();
+
+        // Test characters: check and cross marks
+        let test_chars = ['✓', '✗', '✔', '✖'];
+
+        println!("\n=== Testing glyph coverage for check/cross marks ===\n");
+
+        // Test common fonts
+        let fonts_to_test = [
+            "Arial", "Helvetica", "Helvetica Neue", "SF Pro", "SF Pro Text",
+            "Menlo", "Monaco", "Lucida Grande", "Times New Roman",
+            "Apple Symbols", "Apple Color Emoji",
+        ];
+
+        for font_name in fonts_to_test {
+            match registry.load_font(font_name) {
+                Ok(font) => {
+                    print!("{:20} ", font_name);
+                    for c in test_chars {
+                        let glyph_id = font.glyph_id(c);
+                        match glyph_id {
+                            Some(id) if id > 0 => print!("'{}':✓({}) ", c, id),
+                            _ => print!("'{}':✗     ", c),
+                        }
+                    }
+                    println!();
+                }
+                Err(_) => {
+                    println!("{:20} NOT AVAILABLE", font_name);
+                }
+            }
+        }
+
+        // Test generic fonts
+        println!("\n--- Generic Fonts ---");
+
+        if let Ok(font) = registry.load_generic(GenericFont::System) {
+            print!("{:20} ", format!("System ({})", font.family_name()));
+            for c in test_chars {
+                let glyph_id = font.glyph_id(c);
+                match glyph_id {
+                    Some(id) if id > 0 => print!("'{}':✓({}) ", c, id),
+                    _ => print!("'{}':✗     ", c),
+                }
+            }
+            println!();
+        }
+
+        if let Ok(font) = registry.load_generic(GenericFont::Symbol) {
+            print!("{:20} ", format!("Symbol ({})", font.family_name()));
+            for c in test_chars {
+                let glyph_id = font.glyph_id(c);
+                match glyph_id {
+                    Some(id) if id > 0 => print!("'{}':✓({}) ", c, id),
+                    _ => print!("'{}':✗     ", c),
+                }
+            }
+            println!();
+        }
+    }
+
+    #[test]
+    fn test_list_all_fonts_with_check() {
+        let mut registry = FontRegistry::new();
+        let families = registry.list_families();
+
+        println!("\n=== Fonts with ✓ (U+2713) glyph ===\n");
+
+        let mut fonts_with_check = Vec::new();
+        for family in &families {
+            if let Ok(font) = registry.load_font(family) {
+                if let Some(gid) = font.glyph_id('✓') {
+                    if gid > 0 {
+                        fonts_with_check.push((family.clone(), gid));
+                    }
+                }
+            }
+        }
+
+        for (name, gid) in &fonts_with_check {
+            println!("{}: glyph_id={}", name, gid);
+        }
+        println!("\nTotal fonts with ✓: {}", fonts_with_check.len());
     }
 
     #[test]

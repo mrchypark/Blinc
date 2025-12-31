@@ -110,10 +110,12 @@ fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
     let editor_state = markdown_state.clone();
     let preview_state_handle = markdown_state.clone();
 
+    let theme = ThemeState::get();
+
     div()
         .w(ctx.width)
         .h(ctx.height)
-        .bg(Color::rgba(0.08, 0.08, 0.12, 1.0))
+        .bg(theme.color(ColorToken::Background))
         .flex_col()
         .p(16.0)
         .gap(16.0)

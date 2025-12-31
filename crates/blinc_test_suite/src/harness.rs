@@ -519,10 +519,16 @@ impl TestHarness {
     /// Render text to a target texture
     pub fn render_text(&self, target: &wgpu::TextureView, glyphs: &[GpuGlyph]) {
         let text_ctx = self.text_ctx.borrow();
-        if let Some(atlas_view) = text_ctx.atlas_view() {
-            self.renderer
-                .borrow_mut()
-                .render_text(target, glyphs, atlas_view, text_ctx.sampler());
+        if let (Some(atlas_view), Some(color_atlas_view)) =
+            (text_ctx.atlas_view(), text_ctx.color_atlas_view())
+        {
+            self.renderer.borrow_mut().render_text(
+                target,
+                glyphs,
+                atlas_view,
+                color_atlas_view,
+                text_ctx.sampler(),
+            );
         }
     }
 

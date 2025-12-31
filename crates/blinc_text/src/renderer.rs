@@ -2,12 +2,17 @@
 //!
 //! High-level text rendering that combines font loading, shaping,
 //! rasterization, atlas management, and glyph instance generation.
+//!
+//! Supports automatic emoji font fallback - when the primary font doesn't
+//! have a glyph for an emoji character, the system emoji font is used.
 
-use crate::atlas::{GlyphAtlas, GlyphInfo};
+use crate::atlas::{ColorGlyphAtlas, GlyphAtlas, GlyphInfo};
+use crate::emoji::{is_emoji, is_variation_selector, is_zwj};
 use crate::font::FontFace;
-use crate::layout::{LayoutOptions, TextLayoutEngine};
+use crate::layout::{LayoutOptions, PositionedGlyph, TextLayoutEngine};
 use crate::rasterizer::GlyphRasterizer;
 use crate::registry::{FontRegistry, GenericFont};
+use crate::shaper::TextShaper;
 use crate::{Result, TextError};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -21,6 +26,8 @@ pub struct GlyphInstance {
     pub uv_bounds: [f32; 4],
     /// Text color (RGBA, 0.0-1.0)
     pub color: [f32; 4],
+    /// Whether this glyph is from the color atlas (emoji)
+    pub is_color: bool,
 }
 
 /// Result of preparing text for rendering
@@ -56,8 +63,10 @@ pub struct TextRenderer {
     /// Font registry for system font discovery and caching
     /// Can be shared with other components (like text measurement)
     font_registry: Arc<std::sync::Mutex<FontRegistry>>,
-    /// Glyph atlas
+    /// Glyph atlas (grayscale for regular text)
     atlas: GlyphAtlas,
+    /// Color glyph atlas (RGBA for color emoji)
+    color_atlas: ColorGlyphAtlas,
     /// Glyph rasterizer
     rasterizer: GlyphRasterizer,
     /// Text layout engine
@@ -65,6 +74,8 @@ pub struct TextRenderer {
     /// Cache key: (font_id, glyph_id, quantized_size) -> atlas info
     /// font_id is hash of font name or 0 for default
     glyph_cache: FxHashMap<(u32, u16, u16), GlyphInfo>,
+    /// Cache for color glyphs (emoji) - same key format
+    color_glyph_cache: FxHashMap<(u32, u16, u16), GlyphInfo>,
 }
 
 impl TextRenderer {
@@ -73,10 +84,12 @@ impl TextRenderer {
         Self {
             default_font: None,
             font_registry: Arc::new(std::sync::Mutex::new(FontRegistry::new())),
-            atlas: GlyphAtlas::default(), // Uses 512x512 for lower memory footprint
+            atlas: GlyphAtlas::default(),
+            color_atlas: ColorGlyphAtlas::default(),
             rasterizer: GlyphRasterizer::new(),
             layout_engine: TextLayoutEngine::new(),
             glyph_cache: FxHashMap::default(),
+            color_glyph_cache: FxHashMap::default(),
         }
     }
 
@@ -89,9 +102,11 @@ impl TextRenderer {
             default_font: None,
             font_registry: registry,
             atlas: GlyphAtlas::default(),
+            color_atlas: ColorGlyphAtlas::default(),
             rasterizer: GlyphRasterizer::new(),
             layout_engine: TextLayoutEngine::new(),
             glyph_cache: FxHashMap::default(),
+            color_glyph_cache: FxHashMap::default(),
         }
     }
 
@@ -101,9 +116,11 @@ impl TextRenderer {
             default_font: None,
             font_registry: Arc::new(std::sync::Mutex::new(FontRegistry::new())),
             atlas: GlyphAtlas::new(width, height),
+            color_atlas: ColorGlyphAtlas::default(),
             rasterizer: GlyphRasterizer::new(),
             layout_engine: TextLayoutEngine::new(),
             glyph_cache: FxHashMap::default(),
+            color_glyph_cache: FxHashMap::default(),
         }
     }
 
@@ -134,7 +151,7 @@ impl TextRenderer {
         Ok(())
     }
 
-    /// Get the glyph atlas
+    /// Get the glyph atlas (grayscale)
     pub fn atlas(&self) -> &GlyphAtlas {
         &self.atlas
     }
@@ -144,9 +161,24 @@ impl TextRenderer {
         &mut self.atlas
     }
 
+    /// Get the color glyph atlas (RGBA for emoji)
+    pub fn color_atlas(&self) -> &ColorGlyphAtlas {
+        &self.color_atlas
+    }
+
+    /// Get mutable color atlas
+    pub fn color_atlas_mut(&mut self) -> &mut ColorGlyphAtlas {
+        &mut self.color_atlas
+    }
+
     /// Check if atlas needs GPU upload
     pub fn atlas_is_dirty(&self) -> bool {
         self.atlas.is_dirty()
+    }
+
+    /// Check if color atlas needs GPU upload
+    pub fn color_atlas_is_dirty(&self) -> bool {
+        self.color_atlas.is_dirty()
     }
 
     /// Mark atlas as clean after GPU upload
@@ -154,14 +186,29 @@ impl TextRenderer {
         self.atlas.mark_clean();
     }
 
-    /// Get atlas pixel data for GPU upload
+    /// Mark color atlas as clean after GPU upload
+    pub fn mark_color_atlas_clean(&mut self) {
+        self.color_atlas.mark_clean();
+    }
+
+    /// Get atlas pixel data for GPU upload (grayscale)
     pub fn atlas_pixels(&self) -> &[u8] {
         self.atlas.pixels()
+    }
+
+    /// Get color atlas pixel data for GPU upload (RGBA)
+    pub fn color_atlas_pixels(&self) -> &[u8] {
+        self.color_atlas.pixels()
     }
 
     /// Get atlas dimensions
     pub fn atlas_dimensions(&self) -> (u32, u32) {
         self.atlas.dimensions()
+    }
+
+    /// Get color atlas dimensions
+    pub fn color_atlas_dimensions(&self) -> (u32, u32) {
+        self.color_atlas.dimensions()
     }
 
     /// Prepare text for rendering, rasterizing glyphs as needed
@@ -246,6 +293,17 @@ impl TextRenderer {
             )
         };
 
+        // Try to get emoji and symbol fonts for fallback (optional - may not exist)
+        let (emoji_font, symbol_font) = {
+            let mut registry = self.font_registry.lock().unwrap();
+            (
+                registry.load_generic(GenericFont::Emoji).ok(),
+                registry.load_generic(GenericFont::Symbol).ok(),
+            )
+        };
+        let emoji_font_id = self.font_id(None, GenericFont::Emoji);
+        let symbol_font_id = self.font_id(None, GenericFont::Symbol);
+
         // Layout the text
         let layout = self.layout_engine.layout(text, &font, font_size, options);
 
@@ -255,47 +313,201 @@ impl TextRenderer {
         // Convert to GPU glyph instances
         let mut glyphs = Vec::with_capacity(positioned_glyphs.len());
         let atlas_dims = self.atlas.dimensions();
+        let color_atlas_dims = self.color_atlas.dimensions();
 
-        // First pass: ensure all glyphs are in atlas
-        let mut glyph_infos: Vec<Option<GlyphInfo>> = Vec::with_capacity(positioned_glyphs.len());
-        for positioned in &positioned_glyphs {
+        // Track glyph info along with whether it's a color glyph
+        // (GlyphInfo, PositionedGlyph, is_color)
+        struct RasterizedGlyphData {
+            info: GlyphInfo,
+            positioned: PositionedGlyph,
+            is_color: bool,
+        }
+
+        let mut glyph_infos: Vec<Option<RasterizedGlyphData>> =
+            Vec::with_capacity(positioned_glyphs.len());
+
+        // Track advance correction when using fallback fonts
+        // This accumulates the difference between what the primary font gave us
+        // and what the fallback font's actual advance is
+        let mut x_offset: f32 = 0.0;
+
+        for (i, positioned) in positioned_glyphs.iter().enumerate() {
             if positioned.codepoint.is_whitespace() {
                 glyph_infos.push(None);
                 continue;
             }
 
+            // Skip invisible combining characters
+            // - Variation selectors (U+FE00-U+FE0F) modify the previous character's style
+            // - ZWJ (U+200D) joins emoji into sequences
+            // These are handled by the shaper but shouldn't render as visible glyphs
+            if is_variation_selector(positioned.codepoint) || is_zwj(positioned.codepoint) {
+                glyph_infos.push(None);
+                continue;
+            }
+
+            // Check if this is an emoji or if the primary font doesn't have this glyph
+            let is_emoji_char = is_emoji(positioned.codepoint);
+
+            // For emoji characters, check if we've already processed this exact codepoint
+            // at a previous position. This handles cases where HarfBuzz produces multiple
+            // glyphs for a single emoji sequence (e.g., ☀️ = sun + variation selector).
+            // The shaper may report both glyphs with the same codepoint due to cluster mapping.
+            if is_emoji_char {
+                // Check if the previous glyph was the same emoji codepoint
+                // If so, this is likely a duplicate from cluster mapping and should be skipped
+                if i > 0 {
+                    let prev = &positioned_glyphs[i - 1];
+                    if prev.codepoint == positioned.codepoint && is_emoji(prev.codepoint) {
+                        // Skip this duplicate emoji glyph
+                        glyph_infos.push(None);
+                        continue;
+                    }
+                }
+            }
+
+            let needs_fallback = is_emoji_char
+                || positioned.glyph_id == 0
+                || !font.has_glyph(positioned.codepoint);
+
+            if needs_fallback {
+                // Build fallback font chain: try emoji first (for emoji), then symbol (for Unicode symbols)
+                // For non-emoji characters, prefer symbol font to get text-colored glyphs
+                let fallback_fonts: Vec<(&Arc<FontFace>, u32, bool)> = if is_emoji_char {
+                    // Emoji: try emoji font first (color), then symbol (grayscale)
+                    [
+                        emoji_font.as_ref().map(|f| (f, emoji_font_id, true)),
+                        symbol_font.as_ref().map(|f| (f, symbol_font_id, false)),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect()
+                } else {
+                    // Non-emoji: try symbol font first (text-colored), then emoji (grayscale fallback)
+                    [
+                        symbol_font.as_ref().map(|f| (f, symbol_font_id, false)),
+                        emoji_font.as_ref().map(|f| (f, emoji_font_id, false)), // Use grayscale for emoji font fallback
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect()
+                };
+
+                let mut found_fallback = false;
+                for (fallback_font, fallback_font_id, use_color) in &fallback_fonts {
+                    if let Some(fallback_glyph_id) = fallback_font.glyph_id(positioned.codepoint) {
+                        if fallback_glyph_id != 0 {
+                            // Shape just this character with the fallback font to get correct metrics
+                            let shaper = TextShaper::new();
+                            let char_str: String = positioned.codepoint.to_string();
+                            let shaped = shaper.shape(&char_str, fallback_font, font_size);
+
+                            if let Some(shaped_glyph) = shaped.glyphs.first() {
+                                // Create a new positioned glyph with fallback font metrics
+                                // Apply the accumulated x_offset from previous fallback corrections
+                                let fallback_positioned = PositionedGlyph {
+                                    glyph_id: shaped_glyph.glyph_id,
+                                    codepoint: positioned.codepoint,
+                                    x: positioned.x + x_offset,
+                                    y: positioned.y,
+                                };
+
+                                // Use color rasterization for emoji font
+                                let (glyph_info, is_color) = if *use_color && is_emoji_char {
+                                    let info = self.rasterize_color_glyph_for_font(
+                                        fallback_font,
+                                        *fallback_font_id,
+                                        shaped_glyph.glyph_id,
+                                        font_size,
+                                    )?;
+                                    (info, true)
+                                } else {
+                                    let info = self.rasterize_glyph_for_font(
+                                        fallback_font,
+                                        *fallback_font_id,
+                                        shaped_glyph.glyph_id,
+                                        font_size,
+                                    )?;
+                                    (info, false)
+                                };
+
+                                // Calculate advance correction
+                                // The fallback font's advance tells us how much space this glyph needs
+                                let fallback_advance = glyph_info.advance as f32;
+
+                                // Calculate what advance the primary font thought this character had
+                                // by looking at the distance to the next glyph
+                                let primary_advance = if i + 1 < positioned_glyphs.len() {
+                                    positioned_glyphs[i + 1].x - positioned.x
+                                } else {
+                                    // Last character - use layout width
+                                    (layout.width - positioned.x).max(0.0)
+                                };
+
+                                // Accumulate the difference
+                                x_offset += fallback_advance - primary_advance;
+
+                                glyph_infos.push(Some(RasterizedGlyphData {
+                                    info: glyph_info,
+                                    positioned: fallback_positioned,
+                                    is_color,
+                                }));
+                                found_fallback = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if found_fallback {
+                    continue;
+                }
+            }
+
+            // Use primary font (apply accumulated x_offset)
             let glyph_info =
                 self.rasterize_glyph_for_font(&font, font_id, positioned.glyph_id, font_size)?;
-            glyph_infos.push(Some(glyph_info));
+            let mut adjusted_positioned = positioned.clone();
+            adjusted_positioned.x += x_offset;
+            glyph_infos.push(Some(RasterizedGlyphData {
+                info: glyph_info,
+                positioned: adjusted_positioned,
+                is_color: false,
+            }));
         }
 
         // Second pass: build glyph instances
-        for (positioned, glyph_info) in positioned_glyphs.iter().zip(glyph_infos.iter()) {
-            let glyph_info = match glyph_info {
-                Some(info) => *info,
+        for glyph_data in &glyph_infos {
+            let data = match glyph_data {
+                Some(d) => d,
                 None => continue,
             };
 
             // Skip glyphs with no bitmap (empty glyphs)
-            if glyph_info.region.width == 0 || glyph_info.region.height == 0 {
+            if data.info.region.width == 0 || data.info.region.height == 0 {
                 continue;
             }
 
             // Calculate screen position
             // positioned.x is the pen position from the shaper (includes advance)
             // bearing_x is the offset from pen position to the glyph's left edge
-            let x = positioned.x + glyph_info.bearing_x as f32;
-            let y = positioned.y - glyph_info.bearing_y as f32;
-            let w = glyph_info.region.width as f32;
-            let h = glyph_info.region.height as f32;
+            let x = data.positioned.x + data.info.bearing_x as f32;
+            let y = data.positioned.y - data.info.bearing_y as f32;
+            let w = data.info.region.width as f32;
+            let h = data.info.region.height as f32;
 
-            // Get UV coordinates
-            let uv = glyph_info.region.uv_bounds(atlas_dims.0, atlas_dims.1);
+            // Get UV coordinates from the appropriate atlas
+            let uv = if data.is_color {
+                data.info.region.uv_bounds(color_atlas_dims.0, color_atlas_dims.1)
+            } else {
+                data.info.region.uv_bounds(atlas_dims.0, atlas_dims.1)
+            };
 
             glyphs.push(GlyphInstance {
                 bounds: [x, y, w, h],
                 uv_bounds: uv,
                 color,
+                is_color: data.is_color,
             });
         }
 
@@ -364,6 +576,12 @@ impl TextRenderer {
                 continue;
             }
 
+            // Skip invisible combining characters
+            if is_variation_selector(positioned.codepoint) || is_zwj(positioned.codepoint) {
+                glyph_infos.push(None);
+                continue;
+            }
+
             let glyph_info =
                 self.rasterize_glyph_for_font(&font, font_id, positioned.glyph_id, font_size)?;
             glyph_infos.push(Some(glyph_info));
@@ -402,6 +620,7 @@ impl TextRenderer {
                 bounds: [x, y, w, h],
                 uv_bounds: uv,
                 color,
+                is_color: false,
             });
         }
 
@@ -575,6 +794,61 @@ impl TextRenderer {
         Ok(info)
     }
 
+    /// Rasterize a color glyph (emoji) for a specific font
+    fn rasterize_color_glyph_for_font(
+        &mut self,
+        font: &FontFace,
+        font_id: u32,
+        glyph_id: u16,
+        font_size: f32,
+    ) -> Result<GlyphInfo> {
+        // Quantize font size for cache key (0.5px granularity)
+        let size_key = (font_size * 2.0).round() as u16;
+        let cache_key = (font_id, glyph_id, size_key);
+
+        // Check color cache first
+        if let Some(info) = self.color_glyph_cache.get(&cache_key) {
+            return Ok(*info);
+        }
+
+        // Rasterize the glyph as color (RGBA)
+        let rasterized = self.rasterizer.rasterize_color(font, glyph_id, font_size)?;
+
+        // Handle empty glyphs
+        if rasterized.width == 0 || rasterized.height == 0 {
+            let info = GlyphInfo {
+                region: crate::atlas::AtlasRegion {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                },
+                bearing_x: rasterized.bearing_x,
+                bearing_y: rasterized.bearing_y,
+                advance: rasterized.advance,
+                font_size,
+            };
+            self.color_glyph_cache.insert(cache_key, info);
+            return Ok(info);
+        }
+
+        // Insert into color atlas
+        let info = self.color_atlas.insert_glyph(
+            font_id,
+            glyph_id,
+            font_size,
+            rasterized.width,
+            rasterized.height,
+            rasterized.bearing_x,
+            rasterized.bearing_y,
+            rasterized.advance,
+            &rasterized.bitmap,
+        )?;
+
+        self.color_glyph_cache.insert(cache_key, info);
+        Ok(info)
+    }
+
     /// Legacy method for backward compatibility - uses system font from registry
     #[allow(dead_code)]
     fn rasterize_glyph_if_needed(&mut self, glyph_id: u16, font_size: f32) -> Result<GlyphInfo> {
@@ -588,7 +862,9 @@ impl TextRenderer {
     /// Clear the glyph cache and atlas
     pub fn clear(&mut self) {
         self.atlas.clear();
+        self.color_atlas.clear();
         self.glyph_cache.clear();
+        self.color_glyph_cache.clear();
     }
 }
 

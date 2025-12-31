@@ -61,40 +61,14 @@ impl FontTextMeasurer {
 
     /// Load the system default font
     fn load_system_font(&mut self) {
-        #[cfg(target_os = "macos")]
-        {
-            let font_path = std::path::Path::new("/System/Library/Fonts/Helvetica.ttc");
-            if font_path.exists() {
-                if let Ok(data) = std::fs::read(font_path) {
-                    if let Ok(font) = FontFace::from_data(data) {
-                        *self.font.lock().unwrap() = Some(font);
-                    }
-                }
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            let font_paths = [
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            ];
-            for path in &font_paths {
+        for font_path in crate::system_font_paths() {
+            let path = std::path::Path::new(font_path);
+            if path.exists() {
                 if let Ok(data) = std::fs::read(path) {
                     if let Ok(font) = FontFace::from_data(data) {
                         *self.font.lock().unwrap() = Some(font);
                         break;
                     }
-                }
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let font_path = "C:\\Windows\\Fonts\\segoeui.ttf";
-            if let Ok(data) = std::fs::read(font_path) {
-                if let Ok(font) = FontFace::from_data(data) {
-                    *self.font.lock().unwrap() = Some(font);
                 }
             }
         }

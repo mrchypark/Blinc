@@ -399,9 +399,16 @@ impl RenderContext {
 
     /// Render text glyphs
     fn render_text(&mut self, target: &wgpu::TextureView, glyphs: &[GpuGlyph]) {
-        if let Some(atlas_view) = self.text_ctx.atlas_view() {
-            self.renderer
-                .render_text(target, glyphs, atlas_view, self.text_ctx.sampler());
+        if let (Some(atlas_view), Some(color_atlas_view)) =
+            (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
+        {
+            self.renderer.render_text(
+                target,
+                glyphs,
+                atlas_view,
+                color_atlas_view,
+                self.text_ctx.sampler(),
+            );
         }
     }
 
@@ -453,12 +460,14 @@ impl RenderContext {
                 continue;
             }
 
-            // Try to load the image
-            let image_data = match blinc_image::ImageData::load(blinc_image::ImageSource::File(
-                image.source.clone().into(),
-            )) {
+            // Try to load the image - use from_uri to handle emoji://, data:, and file paths
+            let source = blinc_image::ImageSource::from_uri(&image.source);
+            let image_data = match blinc_image::ImageData::load(source) {
                 Ok(data) => data,
-                Err(_) => continue, // Skip images that fail to load
+                Err(e) => {
+                    tracing::debug!("Failed to load image '{}': {:?}", image.source, e);
+                    continue; // Skip images that fail to load
+                }
             };
 
             // Create GPU texture

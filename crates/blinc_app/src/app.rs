@@ -84,36 +84,14 @@ impl BlincApp {
 
         let mut text_ctx = TextRenderingContext::new(device.clone(), queue.clone());
 
-        // Try to load a default system font
-        #[cfg(target_os = "macos")]
-        {
-            let font_path = std::path::Path::new("/System/Library/Fonts/Helvetica.ttc");
-            if font_path.exists() {
-                if let Ok(data) = std::fs::read(font_path) {
-                    let _ = text_ctx.load_font_data(data);
-                }
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            let font_paths = [
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            ];
-            for path in &font_paths {
+        // Load system default font
+        for font_path in crate::system_font_paths() {
+            let path = std::path::Path::new(font_path);
+            if path.exists() {
                 if let Ok(data) = std::fs::read(path) {
                     let _ = text_ctx.load_font_data(data);
                     break;
                 }
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let font_path = "C:\\Windows\\Fonts\\segoeui.ttf";
-            if let Ok(data) = std::fs::read(font_path) {
-                let _ = text_ctx.load_font_data(data);
             }
         }
 
@@ -336,36 +314,14 @@ impl BlincApp {
 
         let mut text_ctx = TextRenderingContext::new(device.clone(), queue.clone());
 
-        // Try to load a default system font
-        #[cfg(target_os = "macos")]
-        {
-            let font_path = std::path::Path::new("/System/Library/Fonts/Helvetica.ttc");
-            if font_path.exists() {
-                if let Ok(data) = std::fs::read(font_path) {
-                    let _ = text_ctx.load_font_data(data);
-                }
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            let font_paths = [
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            ];
-            for path in &font_paths {
+        // Load system default font
+        for font_path in crate::system_font_paths() {
+            let path = std::path::Path::new(font_path);
+            if path.exists() {
                 if let Ok(data) = std::fs::read(path) {
                     let _ = text_ctx.load_font_data(data);
                     break;
                 }
-            }
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let font_path = "C:\\Windows\\Fonts\\segoeui.ttf";
-            if let Ok(data) = std::fs::read(font_path) {
-                let _ = text_ctx.load_font_data(data);
             }
         }
 

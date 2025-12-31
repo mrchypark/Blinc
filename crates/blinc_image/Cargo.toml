@@ -25,7 +25,11 @@ tracing = "0.1"
 # Platform asset loading (optional)
 blinc_platform = { path = "../blinc_platform", optional = true }
 
+# Text rendering for emoji (optional)
+blinc_text = { path = "../blinc_text", optional = true }
+
 [features]
-default = ["platform"]
+default = ["platform", "emoji"]
 network = ["reqwest", "tokio"]
 platform = ["blinc_platform"]
+emoji = ["blinc_text"]

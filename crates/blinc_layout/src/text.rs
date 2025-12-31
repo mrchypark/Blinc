@@ -1,6 +1,8 @@
 //! Text element builder
 //!
-//! Provides a builder for text elements that participate in layout:
+//! Provides a builder for text elements that participate in layout.
+//! HTML entities are automatically decoded (e.g., `&amp;` becomes `&`).
+//!
 //! ```rust
 //! use blinc_layout::prelude::*;
 //! use blinc_core::Color;
@@ -8,9 +10,17 @@
 //! let label = text("Hello, World!")
 //!     .size(16.0)
 //!     .color(Color::WHITE);
+//!
+//! // HTML entities are decoded automatically
+//! let special = text("&copy; 2024 &mdash; All rights reserved");
+//! // Renders as: © 2024 — All rights reserved
+//!
+//! // Emoji work directly
+//! let emoji = text("Hello 😀 World 🎉");
 //! ```
 
 use blinc_core::{Color, Shadow, Transform};
+use html_escape::decode_html_entities;
 use taffy::prelude::*;
 
 use crate::div::{
@@ -66,9 +76,18 @@ pub struct Text {
 
 impl Text {
     /// Create a new text element
+    ///
+    /// HTML entities in the content are automatically decoded:
+    /// - Named entities: `&amp;`, `&nbsp;`, `&copy;`, etc.
+    /// - Decimal entities: `&#65;`, `&#8364;`, etc.
+    /// - Hexadecimal entities: `&#x41;`, `&#x20AC;`, etc.
     pub fn new(content: impl Into<String>) -> Self {
+        // Decode HTML entities (e.g., &amp; -> &, &copy; -> ©)
+        let raw_content = content.into();
+        let decoded_content = decode_html_entities(&raw_content).into_owned();
+
         let mut text = Self {
-            content: content.into(),
+            content: decoded_content,
             font_size: 14.0,
             color: Color::BLACK,
             align: TextAlign::default(),
@@ -630,5 +649,48 @@ mod tests {
         let _node = t.build(&mut tree);
 
         assert_eq!(tree.len(), 1);
+    }
+
+    #[test]
+    fn test_html_entity_decoding() {
+        // Named entities
+        let t = text("&amp;");
+        assert_eq!(t.content(), "&");
+
+        let t = text("&lt;div&gt;");
+        assert_eq!(t.content(), "<div>");
+
+        let t = text("&copy; 2024");
+        assert_eq!(t.content(), "© 2024");
+
+        // Decimal entities
+        let t = text("&#65;&#66;&#67;");
+        assert_eq!(t.content(), "ABC");
+
+        // Hexadecimal entities
+        let t = text("&#x41;&#x42;&#x43;");
+        assert_eq!(t.content(), "ABC");
+
+        // Mixed content
+        let t = text("Price: &euro;100 &mdash; Great deal!");
+        assert_eq!(t.content(), "Price: €100 — Great deal!");
+
+        // Emoji passthrough (not entities, just Unicode)
+        let t = text("Hello 😀 World");
+        assert_eq!(t.content(), "Hello 😀 World");
+
+        // Emoji via hex entity
+        let t = text("&#x1F600;");
+        assert_eq!(t.content(), "😀");
+    }
+
+    #[test]
+    fn test_plain_text_unchanged() {
+        // Plain text without entities should be unchanged
+        let t = text("Hello World");
+        assert_eq!(t.content(), "Hello World");
+
+        let t = text("No entities here @ all #123");
+        assert_eq!(t.content(), "No entities here @ all #123");
     }
 }

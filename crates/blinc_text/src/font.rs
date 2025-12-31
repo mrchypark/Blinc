@@ -237,6 +237,14 @@ impl FontFace {
             .map(|id| id.0)
     }
 
+    /// Check if the font has a glyph for a character
+    ///
+    /// Returns true if the font contains a glyph for the given character,
+    /// false if it would need to use the notdef glyph or a fallback font.
+    pub fn has_glyph(&self, c: char) -> bool {
+        self.glyph_id(c).map(|id| id != 0).unwrap_or(false)
+    }
+
     /// Get horizontal advance width for a glyph in font units
     pub fn glyph_advance(&self, glyph_id: u16) -> Option<u16> {
         self.as_ttf_face()

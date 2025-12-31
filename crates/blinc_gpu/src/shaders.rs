@@ -506,10 +506,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 "#;
 
 /// Shader for text rendering with SDF glyphs
+///
+/// Supports both grayscale text glyphs and color emoji:
+/// - Grayscale: samples R channel from glyph_atlas, multiplies with color
+/// - Color emoji: samples RGBA from color_atlas, uses texture color directly
 pub const TEXT_SHADER: &str = r#"
 // ============================================================================
 // Blinc SDF Text Shader
 // ============================================================================
+// Supports grayscale text and color emoji via separate atlases
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -517,6 +522,7 @@ struct VertexOutput {
     @location(1) color: vec4<f32>,
     @location(2) world_pos: vec2<f32>,
     @location(3) @interpolate(flat) clip_bounds: vec4<f32>,
+    @location(4) @interpolate(flat) is_color: f32,
 }
 
 struct TextUniforms {
@@ -533,12 +539,16 @@ struct GlyphInstance {
     color: vec4<f32>,
     // Clip bounds (x, y, width, height) - set to large values for no clip
     clip_bounds: vec4<f32>,
+    // Flags: [is_color, unused, unused, unused]
+    // is_color: 1.0 = color emoji (use color_atlas), 0.0 = grayscale (use glyph_atlas)
+    flags: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: TextUniforms;
 @group(0) @binding(1) var<storage, read> glyphs: array<GlyphInstance>;
 @group(0) @binding(2) var glyph_atlas: texture_2d<f32>;
 @group(0) @binding(3) var glyph_sampler: sampler;
+@group(0) @binding(4) var color_atlas: texture_2d<f32>;
 
 @vertex
 fn vs_main(
@@ -584,6 +594,7 @@ fn vs_main(
     out.color = glyph.color;
     out.world_pos = pos;
     out.clip_bounds = glyph.clip_bounds;
+    out.is_color = glyph.flags.x;
 
     return out;
 }
@@ -620,17 +631,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Sample coverage value from atlas (0.0 = background, 1.0 = inside glyph)
-    let coverage = textureSample(glyph_atlas, glyph_sampler, in.uv).r;
+    // Check if this is a color emoji glyph
+    if in.is_color > 0.5 {
+        // Color emoji: sample RGBA from color atlas, use texture color directly
+        let emoji_color = textureSample(color_atlas, glyph_sampler, in.uv);
+        // Apply clip alpha only - keep original emoji colors
+        return vec4<f32>(emoji_color.rgb, emoji_color.a * clip_alpha);
+    } else {
+        // Grayscale text: sample coverage from glyph atlas, apply tint color
+        let coverage = textureSample(glyph_atlas, glyph_sampler, in.uv).r;
 
-    // Use coverage directly with slight gamma correction for cleaner edges
-    // The rasterizer provides good coverage values - we just need to
-    // apply a subtle curve to sharpen without losing anti-aliasing
-    // pow(x, 0.7) brightens mid-tones, making strokes appear crisper
-    let aa_alpha = pow(coverage, 0.7);
+        // Use coverage directly with slight gamma correction for cleaner edges
+        // The rasterizer provides good coverage values - we just need to
+        // apply a subtle curve to sharpen without losing anti-aliasing
+        // pow(x, 0.7) brightens mid-tones, making strokes appear crisper
+        let aa_alpha = pow(coverage, 0.7);
 
-    // Apply both text alpha and clip alpha
-    return vec4<f32>(in.color.rgb, in.color.a * aa_alpha * clip_alpha);
+        // Apply both text alpha and clip alpha
+        return vec4<f32>(in.color.rgb, in.color.a * aa_alpha * clip_alpha);
+    }
 }
 "#;
 

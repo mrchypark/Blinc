@@ -2,6 +2,10 @@
 //!
 //! Manages a texture atlas for caching rendered glyphs. Uses a skyline/shelf
 //! packing algorithm for efficient space utilization.
+//!
+//! Provides two atlas types:
+//! - `GlyphAtlas`: Grayscale atlas for regular text glyphs
+//! - `ColorGlyphAtlas`: RGBA atlas for color emoji
 
 use crate::{Result, TextError};
 use rustc_hash::FxHashMap;
@@ -272,6 +276,213 @@ impl Default for GlyphAtlas {
 impl std::fmt::Debug for GlyphAtlas {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GlyphAtlas")
+            .field("dimensions", &(self.width, self.height))
+            .field("glyph_count", &self.glyphs.len())
+            .field(
+                "utilization",
+                &format!("{:.1}%", self.utilization() * 100.0),
+            )
+            .field("dirty", &self.dirty)
+            .finish()
+    }
+}
+
+/// Color glyph atlas for RGBA emoji
+///
+/// Similar to GlyphAtlas but stores RGBA pixel data (4 bytes per pixel)
+/// for color emoji and other color glyphs.
+pub struct ColorGlyphAtlas {
+    /// Atlas width in pixels
+    width: u32,
+    /// Atlas height in pixels
+    height: u32,
+    /// Pixel data (RGBA, 4 bytes per pixel)
+    pixels: Vec<u8>,
+    /// Cached glyph information
+    glyphs: FxHashMap<GlyphKey, GlyphInfo>,
+    /// Shelves for skyline packing
+    shelves: Vec<Shelf>,
+    /// Padding between glyphs
+    padding: u32,
+    /// Whether atlas data has been modified since last upload
+    dirty: bool,
+}
+
+impl ColorGlyphAtlas {
+    /// Create a new color glyph atlas
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            pixels: vec![0; (width * height * 4) as usize], // RGBA = 4 bytes per pixel
+            glyphs: FxHashMap::default(),
+            shelves: Vec::new(),
+            padding: 2,
+            dirty: true,
+        }
+    }
+
+    /// Get atlas dimensions
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Get raw pixel data (RGBA format)
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    /// Check if atlas has been modified
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Mark atlas as clean (after GPU upload)
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
+    }
+
+    /// Look up a cached glyph
+    pub fn get_glyph(&self, font_id: u32, glyph_id: u16, font_size: f32) -> Option<&GlyphInfo> {
+        let key = GlyphKey::new(font_id, glyph_id, font_size);
+        self.glyphs.get(&key)
+    }
+
+    /// Allocate space for a glyph using skyline packing
+    fn allocate(&mut self, width: u32, height: u32) -> Result<AtlasRegion> {
+        let padded_width = width + self.padding;
+        let padded_height = height + self.padding;
+
+        // Find best shelf (smallest height that fits)
+        let mut best_shelf = None;
+        let mut best_y = u32::MAX;
+
+        for (i, shelf) in self.shelves.iter().enumerate() {
+            if shelf.height >= padded_height && shelf.x + padded_width <= self.width {
+                if shelf.y < best_y {
+                    best_y = shelf.y;
+                    best_shelf = Some(i);
+                }
+            }
+        }
+
+        if let Some(shelf_idx) = best_shelf {
+            let shelf = &mut self.shelves[shelf_idx];
+            let region = AtlasRegion {
+                x: shelf.x,
+                y: shelf.y,
+                width,
+                height,
+            };
+            shelf.x += padded_width;
+            return Ok(region);
+        }
+
+        // Create new shelf
+        let new_y = self.shelves.last().map(|s| s.y + s.height).unwrap_or(0);
+
+        if new_y + padded_height > self.height {
+            return Err(TextError::AtlasFull);
+        }
+
+        let region = AtlasRegion {
+            x: 0,
+            y: new_y,
+            width,
+            height,
+        };
+
+        self.shelves.push(Shelf {
+            y: new_y,
+            height: padded_height,
+            x: padded_width,
+        });
+
+        Ok(region)
+    }
+
+    /// Insert a rasterized color glyph (RGBA) into the atlas
+    pub fn insert_glyph(
+        &mut self,
+        font_id: u32,
+        glyph_id: u16,
+        font_size: f32,
+        width: u32,
+        height: u32,
+        bearing_x: i16,
+        bearing_y: i16,
+        advance: u16,
+        bitmap: &[u8],
+    ) -> Result<GlyphInfo> {
+        let key = GlyphKey::new(font_id, glyph_id, font_size);
+
+        // Check if already cached
+        if let Some(info) = self.glyphs.get(&key) {
+            return Ok(*info);
+        }
+
+        // Allocate region
+        let region = self.allocate(width, height)?;
+
+        // Copy RGBA bitmap to atlas (4 bytes per pixel)
+        for y in 0..height {
+            let src_offset = (y * width * 4) as usize;
+            let dst_offset = ((region.y + y) * self.width * 4 + region.x * 4) as usize;
+            let row_bytes = (width * 4) as usize;
+
+            if src_offset + row_bytes <= bitmap.len()
+                && dst_offset + row_bytes <= self.pixels.len()
+            {
+                self.pixels[dst_offset..dst_offset + row_bytes]
+                    .copy_from_slice(&bitmap[src_offset..src_offset + row_bytes]);
+            }
+        }
+
+        let info = GlyphInfo {
+            region,
+            bearing_x,
+            bearing_y,
+            advance,
+            font_size,
+        };
+
+        self.glyphs.insert(key, info);
+        self.dirty = true;
+
+        Ok(info)
+    }
+
+    /// Clear all cached glyphs
+    pub fn clear(&mut self) {
+        self.glyphs.clear();
+        self.shelves.clear();
+        self.pixels.fill(0);
+        self.dirty = true;
+    }
+
+    /// Get number of cached glyphs
+    pub fn glyph_count(&self) -> usize {
+        self.glyphs.len()
+    }
+
+    /// Calculate atlas utilization (0.0 to 1.0)
+    pub fn utilization(&self) -> f32 {
+        let used_height = self.shelves.last().map(|s| s.y + s.height).unwrap_or(0);
+        used_height as f32 / self.height as f32
+    }
+}
+
+impl Default for ColorGlyphAtlas {
+    fn default() -> Self {
+        // Default to 512x512 atlas (1 MB for RGBA)
+        // Color emoji are typically larger so we use a smaller atlas
+        Self::new(512, 512)
+    }
+}
+
+impl std::fmt::Debug for ColorGlyphAtlas {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ColorGlyphAtlas")
             .field("dimensions", &(self.width, self.height))
             .field("glyph_count", &self.glyphs.len())
             .field(

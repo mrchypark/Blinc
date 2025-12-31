@@ -625,6 +625,38 @@ pub fn image(source: impl Into<String>) -> Image {
     Image::new(source)
 }
 
+/// Create an emoji image element
+///
+/// Renders an emoji character as an image using the system emoji font.
+/// This is useful for displaying emoji at arbitrary sizes with proper
+/// color rendering.
+///
+/// # Examples
+///
+/// ```ignore
+/// use blinc_layout::prelude::*;
+///
+/// // Basic emoji at default size (64px)
+/// let smile = emoji("😀");
+///
+/// // Custom size
+/// let big_rocket = emoji_sized("🚀", 128.0);
+/// ```
+pub fn emoji(emoji_char: impl Into<String>) -> Image {
+    let emoji_str = emoji_char.into();
+    Image::new(format!("emoji://{}", emoji_str)).size(64.0, 64.0)
+}
+
+/// Create an emoji image element with custom size
+///
+/// # Arguments
+/// * `emoji_char` - The emoji character or string (e.g., "😀", "🇺🇸")
+/// * `size` - The size in pixels (used for both width and height)
+pub fn emoji_sized(emoji_char: impl Into<String>, size: f32) -> Image {
+    let emoji_str = emoji_char.into();
+    Image::new(format!("emoji://{}?size={}", emoji_str, size)).size(size, size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

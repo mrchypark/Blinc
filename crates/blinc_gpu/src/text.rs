@@ -29,10 +29,14 @@ pub struct TextRenderingContext {
     device: Arc<wgpu::Device>,
     /// GPU queue for texture upload
     queue: Arc<wgpu::Queue>,
-    /// Glyph atlas texture (created on demand)
+    /// Glyph atlas texture (grayscale, created on demand)
     atlas_texture: Option<wgpu::Texture>,
     /// Glyph atlas texture view
     atlas_view: Option<wgpu::TextureView>,
+    /// Color glyph atlas texture (RGBA for emoji, created on demand)
+    color_atlas_texture: Option<wgpu::Texture>,
+    /// Color glyph atlas texture view
+    color_atlas_view: Option<wgpu::TextureView>,
     /// Sampler for the atlas
     sampler: wgpu::Sampler,
 }
@@ -53,12 +57,54 @@ impl TextRenderingContext {
             ..Default::default()
         });
 
+        // Create initial empty atlases (will be populated as glyphs are used)
+        let renderer = TextRenderer::new();
+
+        // Grayscale atlas for regular text
+        let (gray_width, gray_height) = renderer.atlas_dimensions();
+        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Glyph Atlas Texture"),
+            size: wgpu::Extent3d {
+                width: gray_width,
+                height: gray_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // RGBA color atlas for emoji
+        let (color_width, color_height) = renderer.color_atlas_dimensions();
+        let color_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Color Glyph Atlas Texture"),
+            size: wgpu::Extent3d {
+                width: color_width,
+                height: color_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let color_atlas_view =
+            color_atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         Self {
-            renderer: TextRenderer::new(),
+            renderer,
             device,
             queue,
-            atlas_texture: None,
-            atlas_view: None,
+            atlas_texture: Some(atlas_texture),
+            atlas_view: Some(atlas_view),
+            color_atlas_texture: Some(color_atlas_texture),
+            color_atlas_view: Some(color_atlas_view),
             sampler,
         }
     }
@@ -343,13 +389,19 @@ impl TextRenderingContext {
                 color: g.color,
                 // Default: no clip (will be set by caller if needed)
                 clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
+                // Set is_color flag for emoji glyphs
+                flags: [if g.is_color { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
             })
             .collect();
 
-        // Update atlas texture if dirty
+        // Update atlas textures if dirty
         if self.renderer.atlas_is_dirty() {
             self.update_atlas_texture();
             self.renderer.mark_atlas_clean();
+        }
+        if self.renderer.color_atlas_is_dirty() {
+            self.update_color_atlas_texture();
+            self.renderer.mark_color_atlas_clean();
         }
 
         Ok(glyphs)
@@ -414,12 +466,17 @@ impl TextRenderingContext {
                 uv_bounds: g.uv_bounds,
                 color: g.color,
                 clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
+                flags: [if g.is_color { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
             })
             .collect();
 
         if self.renderer.atlas_is_dirty() {
             self.update_atlas_texture();
             self.renderer.mark_atlas_clean();
+        }
+        if self.renderer.color_atlas_is_dirty() {
+            self.update_color_atlas_texture();
+            self.renderer.mark_color_atlas_clean();
         }
 
         Ok(glyphs)
@@ -477,6 +534,11 @@ impl TextRenderingContext {
     /// Get the atlas texture view (creates it if needed)
     pub fn atlas_view(&self) -> Option<&wgpu::TextureView> {
         self.atlas_view.as_ref()
+    }
+
+    /// Get the color atlas texture view (RGBA for emoji)
+    pub fn color_atlas_view(&self) -> Option<&wgpu::TextureView> {
+        self.color_atlas_view.as_ref()
     }
 
     /// Get the sampler
@@ -537,6 +599,62 @@ impl TextRenderingContext {
                 wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(width),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+
+    /// Update the GPU color atlas texture from the TextRenderer's color atlas
+    fn update_color_atlas_texture(&mut self) {
+        let (width, height) = self.renderer.color_atlas_dimensions();
+        let pixels = self.renderer.color_atlas_pixels();
+
+        // Create or recreate texture if size changed
+        let needs_create = match &self.color_atlas_texture {
+            Some(tex) => tex.width() != width || tex.height() != height,
+            None => true,
+        };
+
+        if needs_create {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Color Glyph Atlas Texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb, // RGBA for color emoji
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.color_atlas_texture = Some(texture);
+            self.color_atlas_view = Some(view);
+        }
+
+        // Upload pixel data (RGBA = 4 bytes per pixel)
+        if let Some(texture) = &self.color_atlas_texture {
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixels,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4), // 4 bytes per pixel for RGBA
                     rows_per_image: Some(height),
                 },
                 wgpu::Extent3d {

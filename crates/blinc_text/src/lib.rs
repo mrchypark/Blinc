@@ -8,6 +8,7 @@
 //! - Text layout engine (line breaking, alignment)
 
 pub mod atlas;
+pub mod emoji;
 pub mod font;
 pub mod layout;
 pub mod rasterizer;
@@ -15,13 +16,17 @@ pub mod registry;
 pub mod renderer;
 pub mod shaper;
 
-pub use atlas::{AtlasRegion, GlyphAtlas, GlyphInfo};
+pub use atlas::{AtlasRegion, ColorGlyphAtlas, GlyphAtlas, GlyphInfo};
+pub use emoji::{contains_emoji, is_emoji, EmojiRenderer, EmojiSprite};
 pub use font::{Font, FontFace, FontMetrics, FontStyle, FontWeight};
+
+// Re-export html-escape for entity decoding
+pub use html_escape::decode_html_entities;
 pub use layout::{
     LayoutOptions, LineBreakMode, PositionedGlyph, TextAlignment, TextAnchor, TextLayout,
     TextLayoutEngine,
 };
-pub use rasterizer::{GlyphRasterizer, RasterizedGlyph};
+pub use rasterizer::{GlyphFormat, GlyphRasterizer, RasterizedGlyph};
 pub use registry::{FontRegistry, GenericFont};
 pub use renderer::{ColorSpan, GlyphInstance, PreparedText, TextRenderer};
 pub use shaper::{ShapedGlyph, ShapedText, TextShaper};

@@ -14,6 +14,9 @@ use crate::widgets::{
 
 use super::config::MarkdownConfig;
 
+// Re-export for HTML entity decoding
+use html_escape::decode_html_entities;
+
 
 /// Markdown renderer that converts markdown text to blinc layout elements
 pub struct MarkdownRenderer {
@@ -499,9 +502,12 @@ impl<'a> RenderState<'a> {
 
     fn handle_text(&mut self, text: &str) {
         if self.in_code_block {
+            // Don't decode entities in code blocks - preserve literal text
             self.code_content.push_str(text);
         } else {
-            self.inline_text.push_str(text);
+            // Decode HTML entities (e.g., &amp; -> &, &nbsp; -> non-breaking space)
+            let decoded = decode_html_entities(text);
+            self.inline_text.push_str(&decoded);
         }
     }
 
