@@ -184,7 +184,7 @@ pub fn heading(level: u8, content: impl Into<String>) -> Text {
 /// div().child(b("Important")).child(text(" regular text"))
 /// ```
 pub fn b(content: impl Into<String>) -> Text {
-    text(content).bold().no_wrap()
+    text(content).bold().no_wrap().v_baseline()
 }
 
 /// Create bold text (alias for `b()`)
@@ -209,7 +209,7 @@ pub fn strong(content: impl Into<String>) -> Text {
 /// span("Some text").color(Color::BLUE)
 /// ```
 pub fn span(content: impl Into<String>) -> Text {
-    text(content).no_wrap()
+    text(content).no_wrap().v_baseline()
 }
 
 /// Create small text (12px, inline)
@@ -220,7 +220,7 @@ pub fn span(content: impl Into<String>) -> Text {
 /// small("Fine print").color(Color::GRAY)
 /// ```
 pub fn small(content: impl Into<String>) -> Text {
-    text(content).size(12.0).no_wrap()
+    text(content).size(12.0).no_wrap().v_baseline()
 }
 
 /// Create a label (14px, medium weight, inline)
@@ -237,7 +237,7 @@ pub fn small(content: impl Into<String>) -> Text {
 ///     .child(text_input(&state))
 /// ```
 pub fn label(content: impl Into<String>) -> Text {
-    text(content).size(14.0).medium().no_wrap()
+    text(content).size(14.0).medium().no_wrap().v_baseline()
 }
 
 /// Create muted/secondary text (inline)
@@ -254,6 +254,7 @@ pub fn muted(content: impl Into<String>) -> Text {
     text(content)
         .color(theme.color(ColorToken::TextSecondary))
         .no_wrap()
+        .v_baseline()
 }
 
 /// Create a paragraph text element (16px with line height 1.5)
@@ -284,12 +285,13 @@ pub fn caption(content: impl Into<String>) -> Text {
         .size(12.0)
         .color(theme.color(ColorToken::TextTertiary))
         .no_wrap()
+        .v_baseline()
 }
 
 /// Create code-styled inline text with monospace font
 ///
 /// Uses the monospace font family for code-like appearance.
-/// Color is inherited from context; override with `.color()` if needed.
+/// Uses theme-aware text color (TextPrimary).
 /// For full code blocks with syntax highlighting, use `code()`.
 ///
 /// # Example
@@ -302,7 +304,50 @@ pub fn caption(content: impl Into<String>) -> Text {
 ///     .child(text(" function"))
 /// ```
 pub fn inline_code(content: impl Into<String>) -> Text {
-    text(content).size(13.0).monospace().no_wrap()
+    let theme = ThemeState::get();
+    text(content)
+        .monospace()
+        .no_wrap()
+        .v_baseline()
+        .color(theme.color(ColorToken::TextPrimary))
+}
+
+// ============================================================================
+// Chained Text Helper
+// ============================================================================
+
+use crate::div::{div, Div};
+
+/// Create a container for chained inline text elements
+///
+/// This helper creates a flex row with baseline alignment for composing
+/// multiple text elements inline (e.g., mixing bold, italic, and regular text).
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_layout::prelude::*;
+///
+/// // Simple inline text composition
+/// chained_text([
+///     span("This is ").color(Color::WHITE),
+///     b("bold").color(Color::WHITE),
+///     span(" text.").color(Color::WHITE),
+/// ])
+///
+/// // Mixing different styles
+/// chained_text([
+///     span("Use the ").color(Color::WHITE),
+///     inline_code("div()"),
+///     span(" function.").color(Color::WHITE),
+/// ])
+/// ```
+pub fn chained_text<const N: usize>(elements: [Text; N]) -> Div {
+    let mut container = div().flex_row().items_start().items_baseline();
+    for element in elements {
+        container = container.child(element);
+    }
+    container
 }
 
 #[cfg(test)]
@@ -310,6 +355,14 @@ mod tests {
     use super::*;
     use crate::div::ElementBuilder;
     use crate::tree::LayoutTree;
+    use blinc_theme::ThemeState;
+
+    fn init_theme() {
+        let _ = ThemeState::try_get().unwrap_or_else(|| {
+            ThemeState::init_default();
+            ThemeState::get()
+        });
+    }
 
     #[test]
     fn test_headings() {
@@ -335,6 +388,7 @@ mod tests {
 
     #[test]
     fn test_inline_helpers() {
+        init_theme();
         let mut tree = LayoutTree::new();
 
         let _bold = b("Bold").build(&mut tree);

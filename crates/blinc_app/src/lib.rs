@@ -56,9 +56,9 @@ pub mod windowed;
 mod tests;
 
 pub use app::{BlincApp, BlincConfig};
-pub use context::RenderContext;
+pub use context::{DebugMode, RenderContext};
 pub use error::{BlincError, Result};
-pub use text_measurer::{init_text_measurer, FontTextMeasurer};
+pub use text_measurer::{init_text_measurer, init_text_measurer_with_registry, FontTextMeasurer};
 
 // Re-export layout API for convenience
 pub use blinc_layout::prelude::*;
@@ -73,9 +73,9 @@ pub use blinc_macros::BlincComponent;
 /// Prelude module - import everything commonly needed
 pub mod prelude {
     pub use crate::app::{BlincApp, BlincConfig};
-    pub use crate::context::RenderContext;
+    pub use crate::context::{DebugMode, RenderContext};
     pub use crate::error::{BlincError, Result};
-    pub use crate::text_measurer::init_text_measurer;
+    pub use crate::text_measurer::{init_text_measurer, init_text_measurer_with_registry};
 
     // Layout builders
     pub use blinc_layout::prelude::*;

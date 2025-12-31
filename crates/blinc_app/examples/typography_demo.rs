@@ -49,6 +49,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .gap(32.0)
                         .p(8.0)
                         .child(typography_section())
+                        .child(baseline_alignment_section())
                         .child(inline_text_section())
                         .child(font_family_section()),
                 ),
@@ -92,11 +93,86 @@ fn typography_section() -> Div {
                 .child(
                     div()
                         .flex_row()
+                        .items_baseline()
+                        .border(1.5, Color::from_hex(0x66B2FF))
                         .gap(16.0)
                         .child(heading(1, "Level 1").color(Color::from_hex(0x66B2FF)))
                         .child(heading(3, "Level 3").color(Color::from_hex(0x66B2FF)))
                         .child(heading(5, "Level 5").color(Color::from_hex(0x66B2FF))),
                 ),
+        )
+}
+
+/// Demonstrates baseline alignment with varying text sizes
+fn baseline_alignment_section() -> Div {
+    div()
+        .w_full()
+        .flex_col()
+        .gap(12.0)
+        .child(h2("Baseline Alignment").color(Color::WHITE))
+        .child(
+            div()
+                .bg(Color::rgba(0.12, 0.12, 0.15, 1.0))
+                .rounded(8.0)
+                .p(16.0)
+                .flex_col()
+                .gap(12.0)
+                // Row with varying text sizes - all using v_baseline()
+                .child(label("Texts with different sizes using .v_baseline():").color(Color::GRAY))
+                .child(
+                    div()
+                        .flex_row()
+                        .items_baseline()
+                        .gap(8.0)
+                        .border(1.0, Color::from_hex(0x4488FF))
+                    
+                        .child(text("32px").size(32.0).v_baseline().color(Color::WHITE))
+                        .child(text("24px").size(24.0).v_baseline().color(Color::from_hex(0x66B2FF)))
+                        .child(text("18px").size(18.0).v_baseline().color(Color::WHITE))
+                        .child(text("14px").size(14.0).v_baseline().color(Color::from_hex(0x66B2FF)))
+                        .child(text("12px").size(12.0).v_baseline().color(Color::WHITE)),
+                )
+                // Row with mixed fonts - same size
+                .child(label("Mixed fonts at same size (14px) with .v_baseline():").color(Color::GRAY))
+                .child(
+                    div()
+                        .flex_row()
+                        .items_baseline()
+                        .gap(8.0)
+                        .border(1.0, Color::from_hex(0x44FF88))
+                        
+                        .child(text("System font").v_baseline().color(Color::WHITE))
+                        .child(text("Monospace").monospace().v_baseline().color(Color::from_hex(0x98C379)))
+                        .child(text("Serif font").serif().v_baseline().color(Color::WHITE))
+                        .child(text("Sans-serif").sans_serif().v_baseline().color(Color::from_hex(0x98C379))),
+                )
+                // Row WITHOUT v_baseline for comparison
+                .child(label("Same texts WITHOUT .v_baseline() (default Top alignment):").color(Color::GRAY))
+                .child(
+                    div()
+                        .flex_row()
+                        .items_baseline()
+                        .gap(8.0)
+                        .border(1.0, Color::from_hex(0xFF4444))
+                       
+                        .child(text("32px").size(32.0).color(Color::WHITE))
+                        .child(text("24px").size(24.0).color(Color::from_hex(0xFF6666)))
+                        .child(text("18px").size(18.0).color(Color::WHITE))
+                        .child(text("14px").size(14.0).color(Color::from_hex(0xFF6666)))
+                        .child(text("12px").size(12.0).color(Color::WHITE)),
+                ) .child(label("Mixed fonts at same size (14px) without .v_baseline():").color(Color::GRAY))
+                .child(
+                    div()
+                        .flex_row()
+                        .items_baseline()
+                        .gap(8.0)
+                        .border(1.0, Color::from_hex(0x44FF88))
+
+                        .child(text("System font").color(Color::WHITE))
+                        .child(text("Monospace").monospace().color(Color::from_hex(0x98C379)))
+                        .child(text("Serif font").serif().color(Color::WHITE))
+                        .child(text("Sans-serif").sans_serif().color(Color::from_hex(0x98C379))),
+                )
         )
 }
 
@@ -119,17 +195,21 @@ fn inline_text_section() -> Div {
                 .child(
                     div()
                         .flex_row()
-                        .gap(8.0)
-                        .items_center()
+                        .gap(4.0)
+                        .items_baseline()
                         .child(label("b() / strong():").color(Color::GRAY))
-                        .child(b("This text is bold").color(Color::WHITE)),
+                        .child(chained_text([
+                            span("This is a").color(Color::WHITE),
+                            b(" bold").color(Color::WHITE),
+                            span(" statement.").color(Color::WHITE),
+                        ])),
                 )
                 // Muted text
                 .child(
                     div()
                         .flex_row()
-                        .gap(8.0)
-                        .items_center()
+                        .gap(4.0)
+                        .items_baseline()
                         .child(label("muted():").color(Color::GRAY))
                         .child(muted("This is secondary/muted text")),
                 )
@@ -137,8 +217,8 @@ fn inline_text_section() -> Div {
                 .child(
                     div()
                         .flex_row()
-                        .gap(8.0)
-                        .items_center()
+                        .gap(4.0)
+                        .items_baseline()
                         .child(label("small():").color(Color::GRAY))
                         .child(small("This is small text (12px)").color(Color::WHITE)),
                 )
@@ -146,8 +226,8 @@ fn inline_text_section() -> Div {
                 .child(
                     div()
                         .flex_row()
-                        .gap(8.0)
-                        .items_center()
+                        .gap(4.0)
+                        .items_baseline()
                         .child(label("label():").color(Color::GRAY))
                         .child(label("Form field label").color(Color::WHITE)),
                 )
@@ -155,8 +235,8 @@ fn inline_text_section() -> Div {
                 .child(
                     div()
                         .flex_row()
-                        .gap(8.0)
-                        .items_center()
+                        .gap(4.0)
+                        .items_baseline()
                         .child(label("caption():").color(Color::GRAY))
                         .child(caption("Figure 1: An image caption")),
                 )
@@ -166,6 +246,7 @@ fn inline_text_section() -> Div {
                         .flex_col()
                         .gap(4.0)
                         .w_full() // Allow text to wrap within container
+                        .items_baseline()
                         .child(label("p():").color(Color::GRAY))
                         .child(
                             p("This is a paragraph with optimal line height (1.5) for readability. Paragraphs are styled at 16px with comfortable spacing for body text.")
@@ -176,12 +257,13 @@ fn inline_text_section() -> Div {
                 .child(
                     div()
                         .flex_row()
-                        .gap(1.0)
-                        .items_center()
+                        .gap(4.0)
+                        .items_baseline()
                         .child(label("inline_code():").color(Color::GRAY))
-                        .child(span("Use ").color(Color::WHITE))
-                        .child(inline_code("div().flex_col()").color(Color::GRAY))
-                        .child(span(" for layouts").color(Color::WHITE)),
+                        .child(chained_text([
+                            span("Use ").color(Color::WHITE),
+                            inline_code("div().flex_col()").color(Color::GRAY),
+                            span(" for layouts").color(Color::WHITE)])),
                 ),
         )
 }
@@ -205,8 +287,8 @@ fn font_family_section() -> Div {
                 .child(
                     div()
                         .flex_row()
-                        .gap(8.0)
-                        .items_center()
+                        .gap(4.0)
+                        .items_baseline()
                         .child(label("System (default):").color(Color::GRAY))
                         .child(
                             text("The quick brown fox jumps over the lazy dog").color(Color::WHITE),
@@ -216,8 +298,8 @@ fn font_family_section() -> Div {
                 .child(
                     div()
                         .flex_row()
-                        .gap(8.0)
-                        .items_center()
+                        .gap(4.0)
+                        .items_baseline()
                         .child(label(".monospace():").color(Color::GRAY))
                         .child(
                             text("fn main() { println!(\"Hello\"); }")
@@ -229,8 +311,8 @@ fn font_family_section() -> Div {
                 .child(
                     div()
                         .flex_row()
-                        .gap(8.0)
-                        .items_center()
+                        .gap(4.0)
+                        .items_baseline()
                         .child(label(".serif():").color(Color::GRAY))
                         .child(
                             text("The quick brown fox jumps over the lazy dog")
@@ -242,8 +324,8 @@ fn font_family_section() -> Div {
                 .child(
                     div()
                         .flex_row()
-                        .gap(8.0)
-                        .items_center()
+                        .gap(4.0)
+                        .items_baseline()
                         .child(label(".sans_serif():").color(Color::GRAY))
                         .child(
                             text("The quick brown fox jumps over the lazy dog")

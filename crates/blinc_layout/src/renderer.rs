@@ -70,6 +70,8 @@ pub struct TextData {
     pub color: [f32; 4],
     pub align: crate::div::TextAlign,
     pub weight: crate::div::FontWeight,
+    /// Whether to use italic style
+    pub italic: bool,
     pub v_align: crate::div::TextVerticalAlign,
     /// Whether to wrap text at container bounds
     pub wrap: bool,
@@ -81,6 +83,8 @@ pub struct TextData {
     pub font_family: crate::div::FontFamily,
     /// Word spacing in pixels (0.0 = normal)
     pub word_spacing: f32,
+    /// Font ascender in pixels (distance from baseline to top)
+    pub ascender: f32,
 }
 
 /// A styled span within rich text
@@ -993,12 +997,14 @@ impl RenderTree {
                         color: info.color,
                         align: info.align,
                         weight: info.weight,
+                        italic: info.italic,
                         v_align: info.v_align,
                         wrap: info.wrap,
                         line_height: info.line_height,
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        ascender: info.ascender,
                     })
                 } else {
                     ElementType::Div
@@ -1128,12 +1134,14 @@ impl RenderTree {
                         color: info.color,
                         align: info.align,
                         weight: info.weight,
+                        italic: info.italic,
                         v_align: info.v_align,
                         wrap: info.wrap,
                         line_height: info.line_height,
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        ascender: info.ascender,
                     })
                 } else {
                     ElementType::Div
@@ -1226,12 +1234,14 @@ impl RenderTree {
                         color: info.color,
                         align: info.align,
                         weight: info.weight,
+                        italic: info.italic,
                         v_align: info.v_align,
                         wrap: info.wrap,
                         line_height: info.line_height,
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        ascender: info.ascender,
                     })
                 } else {
                     ElementType::Div
@@ -1281,12 +1291,14 @@ impl RenderTree {
                         color: info.color,
                         align: info.align,
                         weight: info.weight,
+                        italic: info.italic,
                         v_align: info.v_align,
                         wrap: info.wrap,
                         line_height: info.line_height,
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        ascender: info.ascender,
                     })
                 } else {
                     ElementType::Div

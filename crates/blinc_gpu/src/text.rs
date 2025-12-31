@@ -3,8 +3,8 @@
 //! This module provides integration between blinc_text's TextRenderer
 //! and the GPU rendering pipeline.
 
-use blinc_text::{ColorSpan, GenericFont, LayoutOptions, TextAlignment, TextAnchor, TextRenderer};
-use std::sync::Arc;
+use blinc_text::{ColorSpan, FontRegistry, GenericFont, LayoutOptions, TextAlignment, TextAnchor, TextRenderer};
+use std::sync::{Arc, Mutex};
 
 use crate::primitives::GpuGlyph;
 
@@ -72,6 +72,18 @@ impl TextRenderingContext {
     /// This ensures fonts are cached before render time.
     pub fn preload_fonts(&mut self, names: &[&str]) {
         self.renderer.preload_fonts(names);
+    }
+
+    /// Preload fonts with specific weights and styles
+    /// Each spec is (font_name, weight, italic)
+    /// Weight: 400 = normal, 700 = bold
+    pub fn preload_fonts_with_styles(&mut self, specs: &[(&str, u16, bool)]) {
+        self.renderer.preload_fonts_with_styles(specs);
+    }
+
+    /// Preload generic font variants with specific weights
+    pub fn preload_generic_styles(&mut self, generic: GenericFont, weights: &[u16], italic: bool) {
+        self.renderer.preload_generic_styles(generic, weights, italic);
     }
 
     /// Load the default font from data
@@ -215,6 +227,47 @@ impl TextRenderingContext {
         font_name: Option<&str>,
         generic: GenericFont,
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
+        self.prepare_text_with_style(
+            text, x, y, font_size, color, anchor, alignment, width, wrap, font_name, generic, 400,
+            false, None,
+        )
+    }
+
+    /// Prepare text with a specific font family, weight, and style
+    ///
+    /// # Arguments
+    /// * `text` - The text string to render
+    /// * `x` - X position
+    /// * `y` - Y position
+    /// * `font_size` - Font size in pixels
+    /// * `color` - RGBA color as [r, g, b, a] in 0.0-1.0 range
+    /// * `anchor` - Vertical anchor (Top, Center, Baseline)
+    /// * `alignment` - Horizontal alignment (Left, Center, Right)
+    /// * `width` - Optional width for alignment/wrapping
+    /// * `wrap` - Whether to wrap text at width boundary
+    /// * `font_name` - Optional font name (e.g., "Fira Code", "Inter")
+    /// * `generic` - Generic font category for fallback
+    /// * `weight` - Font weight (100-900, 400=normal, 700=bold)
+    /// * `italic` - Whether to use italic variant
+    /// * `layout_height` - Optional layout-assigned height for vertical centering
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_text_with_style(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [f32; 4],
+        anchor: TextAnchor,
+        alignment: TextAlignment,
+        width: Option<f32>,
+        wrap: bool,
+        font_name: Option<&str>,
+        generic: GenericFont,
+        weight: u16,
+        italic: bool,
+        layout_height: Option<f32>,
+    ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
         let mut options = LayoutOptions::default();
         options.anchor = anchor;
         options.alignment = alignment;
@@ -225,34 +278,40 @@ impl TextRenderingContext {
         if !wrap {
             options.line_break = blinc_text::LineBreakMode::None;
         }
-        let prepared = self
-            .renderer
-            .prepare_text_with_font(text, font_size, color, &options, font_name, generic)?;
+
+        let prepared = self.renderer.prepare_text_with_style(
+            text, font_size, color, &options, font_name, generic, weight, italic,
+        )?;
+
+        // Calculate glyph extent (the actual height of glyphs without leading)
+        let glyph_extent = prepared.ascender - prepared.descender;
 
         let y_offset = match anchor {
-            TextAnchor::Top => y,
+            TextAnchor::Top => {
+                // Center glyphs within the layout-assigned height (if provided).
+                // This ensures items_center() on parent works correctly - text is
+                // centered within its bounding box regardless of font metrics.
+                if let Some(lh) = layout_height {
+                    // Center glyphs within the actual layout height
+                    y + (lh - glyph_extent) / 2.0
+                } else {
+                    // No layout height provided - render glyphs at top without centering.
+                    // This is used for baseline alignment where we want the natural
+                    // baseline position (ascender from top) to determine alignment.
+                    y
+                }
+            }
             TextAnchor::Center => {
                 // Center text so the visual center of glyphs aligns with y.
-                //
-                // Text layout coordinates (from text top = 0):
-                // - baseline is at y = ascender
-                // - glyph tops are near y = 0
-                // - glyph bottoms extend to y = ascender - descender (descender < 0)
-                //
-                // The actual glyph extent is: ascender - descender
-                // (prepared.height includes line_gap which adds extra whitespace)
-                //
-                // Visual center of glyphs = glyph_extent / 2 from text top
-                // We want this center to align with user's y (center of bounding box).
-                //
-                // So: text_top + glyph_extent/2 = y
-                //     text_top = y - glyph_extent/2
-                let glyph_extent = prepared.ascender - prepared.descender;
+                // User provides y at the vertical center of the bounding box.
+                // We want glyph center to align with that.
                 y - glyph_extent / 2.0
             }
             TextAnchor::Baseline => {
-                // Baseline is at y = ascender from the top of the em box
-                // We want baseline at user's y, so offset = y - ascender
+                // Position text so its baseline aligns EXACTLY with user's y.
+                // The caller provides y as the desired baseline position.
+                // Baseline is at `ascender` from the top of the glyph bounding box.
+                // So glyph_top = y - ascender.
                 y - prepared.ascender
             }
         };
@@ -311,6 +370,7 @@ impl TextRenderingContext {
         anchor: TextAnchor,
         font_name: Option<&str>,
         generic: GenericFont,
+        layout_height: Option<f32>,
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
         let mut options = LayoutOptions::default();
         options.anchor = anchor;
@@ -326,13 +386,18 @@ impl TextRenderingContext {
             generic,
         )?;
 
+        // Calculate glyph extent (the actual height of glyphs without leading)
+        let glyph_extent = prepared.ascender - prepared.descender;
+
         let y_offset = match anchor {
-            TextAnchor::Top => y,
-            TextAnchor::Center => {
-                // Center text using actual glyph extent (without line_gap)
-                let glyph_extent = prepared.ascender - prepared.descender;
-                y - glyph_extent / 2.0
+            TextAnchor::Top => {
+                if let Some(lh) = layout_height {
+                    y + (lh - glyph_extent) / 2.0
+                } else {
+                    y // No centering for baseline alignment
+                }
             }
+            TextAnchor::Center => y - glyph_extent / 2.0,
             TextAnchor::Baseline => y - prepared.ascender,
         };
 
@@ -417,6 +482,14 @@ impl TextRenderingContext {
     /// Get the sampler
     pub fn sampler(&self) -> &wgpu::Sampler {
         &self.sampler
+    }
+
+    /// Get the shared font registry
+    ///
+    /// This can be used to share the font registry with other components
+    /// like text measurement, ensuring consistent font loading and metrics.
+    pub fn font_registry(&self) -> Arc<Mutex<FontRegistry>> {
+        self.renderer.font_registry()
     }
 
     /// Update the GPU atlas texture from the TextRenderer's atlas

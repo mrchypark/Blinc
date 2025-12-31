@@ -4,7 +4,7 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 
 use crate::div::{div, Div, ElementBuilder};
 use crate::image::img;
-use crate::styled_text::TextSpan;
+use crate::text::text;
 use crate::typography::{h1, h2, h3, h4, h5, h6, inline_code, p};
 use crate::widgets::{
     code, li, ol_start_with_config, ol_with_config, striped_tr, table, task_item,
@@ -99,6 +99,18 @@ struct InlineStyle {
     link_url: Option<String>,
 }
 
+/// A styled text segment with its content and styling
+#[derive(Clone, Debug)]
+struct StyledSegment {
+    text: String,
+    bold: bool,
+    italic: bool,
+    strikethrough: bool,
+    underline: bool,
+    color: blinc_core::Color,
+    link_url: Option<String>,
+}
+
 /// State during rendering
 struct RenderState<'a> {
     config: &'a MarkdownConfig,
@@ -106,12 +118,12 @@ struct RenderState<'a> {
     container: Div,
     /// Stack of elements being built (for nesting)
     stack: Vec<StackItem>,
-    /// Current inline text being accumulated
+    /// Current inline text being accumulated (for current style)
     inline_text: String,
     /// Current inline styles
     inline_style: InlineStyle,
-    /// Inline spans for styled text
-    inline_spans: Vec<TextSpan>,
+    /// Completed styled segments for the current paragraph
+    styled_segments: Vec<StyledSegment>,
     /// Current code block language
     code_language: Option<String>,
     /// Inside a code block
@@ -151,7 +163,7 @@ impl<'a> RenderState<'a> {
             stack: Vec::new(),
             inline_text: String::new(),
             inline_style: InlineStyle::default(),
-            inline_spans: Vec::new(),
+            styled_segments: Vec::new(),
             code_language: None,
             in_code_block: false,
             code_content: String::new(),
@@ -536,54 +548,84 @@ impl<'a> RenderState<'a> {
             return;
         }
 
-        let start = self.inline_spans.iter().map(|s| s.end).max().unwrap_or(0);
-        let end = start + self.inline_text.len();
+        // Determine color and underline based on whether this is a link
+        let (color, underline) = if self.inline_style.link_url.is_some() {
+            (self.config.link_color, true)
+        } else {
+            (self.config.text_color, false)
+        };
 
-        let mut span = TextSpan::colored(start, end, self.config.text_color);
-        span.bold = self.inline_style.bold;
-        span.italic = self.inline_style.italic;
-        span.strikethrough = self.inline_style.strikethrough;
+        // Create a styled segment with the current text and style
+        let segment = StyledSegment {
+            text: std::mem::take(&mut self.inline_text),
+            bold: self.inline_style.bold,
+            italic: self.inline_style.italic,
+            strikethrough: self.inline_style.strikethrough,
+            underline,
+            color,
+            link_url: self.inline_style.link_url.clone(),
+        };
 
-        if let Some(ref url) = self.inline_style.link_url {
-            span.color = self.config.link_color;
-            span.underline = true;
-            span.link_url = Some(url.clone());
-        }
-
-        self.inline_spans.push(span);
+        self.styled_segments.push(segment);
     }
 
     fn flush_paragraph(&mut self) {
-        let text_content = std::mem::take(&mut self.inline_text);
-        let spans = std::mem::take(&mut self.inline_spans);
+        // First flush any remaining inline text
+        self.flush_inline_text();
 
-        if text_content.is_empty() && spans.is_empty() {
+        let segments = std::mem::take(&mut self.styled_segments);
+
+        if segments.is_empty() {
             return;
         }
 
-        // For simple text without styling, use a simple paragraph
-        if spans.is_empty() {
-            let para = p(&text_content)
+        // Check if all segments have default styling (no bold, italic, links, etc.)
+        let all_plain = segments.iter().all(|s| {
+            !s.bold && !s.italic && !s.strikethrough && !s.underline && s.link_url.is_none()
+        });
+
+        if all_plain && segments.len() == 1 {
+            // Simple case: just use a paragraph
+            let para = p(&segments[0].text)
                 .size(self.config.body_size)
                 .color(self.config.text_color);
             self.add_to_current_context(para);
         } else {
-            // Build the full text from spans
-            // For now, just use plain text - styled text rendering would need more work
-            let para = p(&text_content)
-                .size(self.config.body_size)
-                .color(self.config.text_color);
-            self.add_to_current_context(para);
+            // Build a flex row with individual styled text elements
+            let mut row = div().flex_row().flex_wrap().items_baseline();
+
+            for segment in segments {
+                let mut txt = text(&segment.text)
+                    .size(self.config.body_size)
+                    .color(segment.color)
+                    .line_height(1.5);
+
+                if segment.bold {
+                    txt = txt.bold();
+                }
+
+                // Note: italic and underline/strikethrough would need Text to support these
+                // For now, we at least get the correct colors for links
+
+                row = row.child(txt);
+            }
+
+            self.add_to_current_context(row);
         }
     }
 
     fn flush_heading(&mut self, level: u8) {
-        let text_content = std::mem::take(&mut self.inline_text);
-        self.inline_spans.clear();
+        // Flush any remaining inline text first
+        self.flush_inline_text();
 
-        if text_content.is_empty() {
+        let segments = std::mem::take(&mut self.styled_segments);
+
+        if segments.is_empty() {
             return;
         }
+
+        // Combine all segment text for the heading
+        let text_content: String = segments.iter().map(|s| s.text.as_str()).collect();
 
         // Use config font sizes and apply text color
         let (heading, size) = match level {

@@ -238,10 +238,13 @@ impl TextLayoutEngine {
             }
         }
 
+        // Height is number of lines * line_height (minimum 1 line)
+        let height = (positioned_lines.len().max(1) as f32) * line_height;
+
         TextLayout {
             lines: positioned_lines,
             width: max_width_found,
-            height: y - ascender + line_height,
+            height,
         }
     }
 
@@ -680,6 +683,213 @@ mod tests {
         for (i, line) in lines.iter().enumerate() {
             let line_text: String = line.iter().map(|g| g.codepoint).collect();
             println!("Line {}: '{}'", i + 1, line_text);
+        }
+    }
+
+    /// Test that leading space width is correctly included in layout width.
+    /// Uses mock shaped text to verify create_line behavior.
+    fn test_leading_space_width_calculation() {
+        // Test that leading space contributes to the measured width
+        // This is crucial for inline text elements like " and text"
+        let options = LayoutOptions {
+            line_break: LineBreakMode::None,
+            ..Default::default()
+        };
+
+        let text_with_leading = " hello";
+        let text_without_leading = "hello";
+
+        let shaped_with = create_mock_shaped_text(text_with_leading);
+        let shaped_without = create_mock_shaped_text(text_without_leading);
+
+        // Calculate width manually using the same logic as create_line
+        fn calc_width(shaped: &ShapedText, options: &LayoutOptions) -> f32 {
+            let mut x = 0.0f32;
+            for glyph in &shaped.glyphs {
+                let advance = shaped.scale(glyph.x_advance) + options.letter_spacing;
+                x += advance;
+            }
+            x
+        }
+
+        let width_with = calc_width(&shaped_with, &options);
+        let width_without = calc_width(&shaped_without, &options);
+
+        println!("Width with leading space: {}", width_with);
+        println!("Width without leading space: {}", width_without);
+        println!("Difference: {}", width_with - width_without);
+
+        // The width with leading space should be larger
+        assert!(
+            width_with > width_without,
+            "Leading space should increase width: {} vs {}",
+            width_with,
+            width_without
+        );
+
+        // The difference should be approximately the space advance (~5px)
+        let expected_diff = 313.0 * 16.0 / 1000.0; // space advance scaled
+        let actual_diff = width_with - width_without;
+        assert!(
+            (actual_diff - expected_diff).abs() < 0.1,
+            "Difference should be ~{:.1}px, got {:.1}px",
+            expected_diff,
+            actual_diff
+        );
+    }
+
+    #[test]
+    fn test_leading_space_preserved() {
+        test_leading_space_width_calculation();
+    }
+
+    #[test]
+    fn test_trailing_space_preserved() {
+        // Test that trailing space contributes to the measured width
+        // This is crucial for inline text elements like "This is " before "bold"
+        let options = LayoutOptions {
+            line_break: LineBreakMode::None,
+            ..Default::default()
+        };
+
+        let text_with_trailing = "hello ";
+        let text_without_trailing = "hello";
+
+        let shaped_with = create_mock_shaped_text(text_with_trailing);
+        let shaped_without = create_mock_shaped_text(text_without_trailing);
+
+        // Calculate width manually using the same logic as create_line
+        fn calc_width(shaped: &ShapedText, options: &LayoutOptions) -> f32 {
+            let mut x = 0.0f32;
+            for glyph in &shaped.glyphs {
+                let advance = shaped.scale(glyph.x_advance) + options.letter_spacing;
+                x += advance;
+            }
+            x
+        }
+
+        let width_with = calc_width(&shaped_with, &options);
+        let width_without = calc_width(&shaped_without, &options);
+
+        println!("Width with trailing space: {}", width_with);
+        println!("Width without trailing space: {}", width_without);
+        println!("Difference: {}", width_with - width_without);
+
+        // The width with trailing space should be larger
+        assert!(
+            width_with > width_without,
+            "Trailing space should increase width: {} vs {}",
+            width_with,
+            width_without
+        );
+
+        // The difference should be approximately the space advance (~5px)
+        let expected_diff = 313.0 * 16.0 / 1000.0; // space advance scaled
+        let actual_diff = width_with - width_without;
+        assert!(
+            (actual_diff - expected_diff).abs() < 0.1,
+            "Difference should be ~{:.1}px, got {:.1}px",
+            expected_diff,
+            actual_diff
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_helvetica_trailing_space() {
+        // Test with actual Helvetica font to verify real-world behavior
+        use crate::font::FontFace;
+
+        let font_path = std::path::Path::new("/System/Library/Fonts/Helvetica.ttc");
+        let font = FontFace::from_file(font_path).expect("Failed to load Helvetica");
+
+        let engine = TextLayoutEngine::new();
+        let options = LayoutOptions {
+            line_break: LineBreakMode::None,
+            ..Default::default()
+        };
+
+        // Test trailing space (like "This is " before "bold")
+        let text_with_trailing = "This is ";
+        let text_without_trailing = "This is";
+
+        let layout_with = engine.layout(text_with_trailing, &font, 16.0, &options);
+        let layout_without = engine.layout(text_without_trailing, &font, 16.0, &options);
+
+        println!("Helvetica - Width with trailing space '{}': {}", text_with_trailing, layout_with.width);
+        println!("Helvetica - Width without trailing space '{}': {}", text_without_trailing, layout_without.width);
+        println!("Helvetica - Difference: {}", layout_with.width - layout_without.width);
+
+        // Width with trailing space MUST be larger
+        assert!(
+            layout_with.width > layout_without.width,
+            "FAIL: Trailing space not included in width! '{}' ({}) vs '{}' ({})",
+            text_with_trailing, layout_with.width,
+            text_without_trailing, layout_without.width
+        );
+
+        // Difference should be meaningful (space is typically ~1/4 to 1/3 of font size)
+        let diff = layout_with.width - layout_without.width;
+        assert!(
+            diff > 2.0, // At least 2 pixels for a 16px font
+            "Space advance too small: {} pixels",
+            diff
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_helvetica_leading_space() {
+        // Test with actual Helvetica font to verify leading space
+        use crate::font::FontFace;
+
+        let font_path = std::path::Path::new("/System/Library/Fonts/Helvetica.ttc");
+        let font = FontFace::from_file(font_path).expect("Failed to load Helvetica");
+
+        let engine = TextLayoutEngine::new();
+        let options = LayoutOptions {
+            line_break: LineBreakMode::None,
+            ..Default::default()
+        };
+
+        // Test leading space (like " and text" after "bold")
+        let text_with_leading = " and text";
+        let text_without_leading = "and text";
+
+        let layout_with = engine.layout(text_with_leading, &font, 16.0, &options);
+        let layout_without = engine.layout(text_without_leading, &font, 16.0, &options);
+
+        println!("Helvetica - Width with leading space '{}': {}", text_with_leading, layout_with.width);
+        println!("Helvetica - Width without leading space '{}': {}", text_without_leading, layout_without.width);
+        println!("Helvetica - Difference: {}", layout_with.width - layout_without.width);
+
+        // Width with leading space MUST be larger
+        assert!(
+            layout_with.width > layout_without.width,
+            "FAIL: Leading space not included in width! '{}' ({}) vs '{}' ({})",
+            text_with_leading, layout_with.width,
+            text_without_leading, layout_without.width
+        );
+
+        // Also verify glyph positions - first visible glyph should be offset
+        if !layout_with.lines.is_empty() {
+            let line = &layout_with.lines[0];
+            println!("Glyphs in ' and text':");
+            for (i, g) in line.glyphs.iter().enumerate() {
+                println!("  [{}] '{}' at x={}", i, g.codepoint, g.x);
+            }
+
+            // The 'a' glyph should NOT be at x=0 - it should be offset by space width
+            if line.glyphs.len() >= 2 {
+                let first_visible = line.glyphs.iter().find(|g| !g.codepoint.is_whitespace());
+                if let Some(glyph) = first_visible {
+                    assert!(
+                        glyph.x > 2.0,
+                        "First visible glyph '{}' should be offset by space, but is at x={}",
+                        glyph.codepoint, glyph.x
+                    );
+                }
+            }
         }
     }
 }

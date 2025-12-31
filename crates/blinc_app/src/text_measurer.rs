@@ -32,7 +32,7 @@ pub struct FontTextMeasurer {
 }
 
 impl FontTextMeasurer {
-    /// Create a new font text measurer
+    /// Create a new font text measurer with its own font registry
     pub fn new() -> Self {
         let mut measurer = Self {
             font: Arc::new(Mutex::new(None)),
@@ -40,6 +40,22 @@ impl FontTextMeasurer {
             layout_engine: Mutex::new(TextLayoutEngine::new()),
         };
         measurer.load_system_font();
+        measurer
+    }
+
+    /// Create a font text measurer with a shared font registry
+    ///
+    /// Use this to share the font registry with the text renderer,
+    /// ensuring consistent font loading and metrics between measurement
+    /// and rendering.
+    pub fn with_shared_registry(font_registry: Arc<Mutex<FontRegistry>>) -> Self {
+        let measurer = Self {
+            font: Arc::new(Mutex::new(None)),
+            font_registry,
+            layout_engine: Mutex::new(TextLayoutEngine::new()),
+        };
+        // Note: system font loading is skipped since the registry is shared
+        // and should already be initialized by the renderer
         measurer
     }
 
@@ -158,8 +174,14 @@ impl TextMeasurer for FontTextMeasurer {
         let generic_font = to_text_generic_font(options.generic_font);
 
         // Fast path: use cached fonts only (never load during measurement)
+        // Use weight and italic from options to get the correct font variant
         let registry = self.font_registry.lock().unwrap();
-        let font = match registry.get_for_render(options.font_name.as_deref(), generic_font) {
+        let font = match registry.get_for_render_with_style(
+            options.font_name.as_deref(),
+            generic_font,
+            options.font_weight,
+            options.italic,
+        ) {
             Some(f) => f,
             None => return Self::estimate_size(text, font_size, options),
         };
@@ -198,7 +220,26 @@ impl TextMeasurer for FontTextMeasurer {
 ///
 /// Call this at application startup to enable accurate text measurement.
 /// This should be called before any UI elements are created.
+///
+/// Note: For optimal text rendering, use `init_text_measurer_with_registry`
+/// to share the font registry with the text renderer.
 pub fn init_text_measurer() {
     let measurer = Arc::new(FontTextMeasurer::new());
+    blinc_layout::set_text_measurer(measurer);
+}
+
+/// Initialize the global text measurer with a shared font registry
+///
+/// This ensures the text measurer uses the same fonts as the renderer,
+/// providing accurate text measurement that matches rendered text exactly.
+///
+/// Call this after creating the BlincApp/TextRenderingContext:
+///
+/// ```ignore
+/// let (app, surface) = BlincApp::with_window(window, None)?;
+/// init_text_measurer_with_registry(app.font_registry());
+/// ```
+pub fn init_text_measurer_with_registry(font_registry: Arc<Mutex<FontRegistry>>) {
+    let measurer = Arc::new(FontTextMeasurer::with_shared_registry(font_registry));
     blinc_layout::set_text_measurer(measurer);
 }

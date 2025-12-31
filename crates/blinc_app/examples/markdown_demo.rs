@@ -262,8 +262,8 @@ fn build_preview_panel(
                 .border(1.0, Color::rgba(0.3, 0.3, 0.35, 1.0))
                 .overflow_clip()
                 .child(
-                    scroll().h_full().direction(ScrollDirection::Vertical).child(
-                        div().h_fit().w_full().p(20.0).child(
+                    scroll().w_full().h_full().direction(ScrollDirection::Vertical).child(
+                        div().h_fit().w_full().justify_center().p(20.0).child(
                             stateful(preview_state)
                                 .deps(&[change_signal_id])
                                 .on_state(move |_state, container| {

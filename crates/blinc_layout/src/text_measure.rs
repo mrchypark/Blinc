@@ -18,6 +18,10 @@ pub struct TextLayoutOptions {
     pub font_name: Option<String>,
     /// Generic font category
     pub generic_font: crate::div::GenericFont,
+    /// Font weight (100-900, 400 = normal, 700 = bold)
+    pub font_weight: u16,
+    /// Whether text is italic
+    pub italic: bool,
 }
 
 impl TextLayoutOptions {
@@ -30,6 +34,8 @@ impl TextLayoutOptions {
             max_width: None,
             font_name: None,
             generic_font: crate::div::GenericFont::System,
+            font_weight: 400,
+            italic: false,
         }
     }
 
@@ -72,6 +78,30 @@ impl TextLayoutOptions {
     /// Set monospace font
     pub fn monospace(mut self) -> Self {
         self.generic_font = crate::div::GenericFont::Monospace;
+        self
+    }
+
+    /// Set font weight (100-900, 400 = normal, 700 = bold)
+    pub fn with_weight(mut self, weight: u16) -> Self {
+        self.font_weight = weight;
+        self
+    }
+
+    /// Set bold weight (700)
+    pub fn bold(mut self) -> Self {
+        self.font_weight = 700;
+        self
+    }
+
+    /// Set italic style
+    pub fn with_italic(mut self, italic: bool) -> Self {
+        self.italic = italic;
+        self
+    }
+
+    /// Set italic style
+    pub fn italic(mut self) -> Self {
+        self.italic = true;
         self
     }
 }

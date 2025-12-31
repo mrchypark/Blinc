@@ -1507,6 +1507,12 @@ impl Div {
         self
     }
 
+    /// Add a boxed child element (for dynamic element types)
+    pub fn child_box(mut self, child: Box<dyn ElementBuilder>) -> Self {
+        self.children.push(child);
+        self
+    }
+
     /// Add multiple children
     pub fn children<I>(mut self, children: I) -> Self
     where
@@ -1793,12 +1799,17 @@ impl FontWeight {
 /// Vertical alignment for text within its bounding box
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextVerticalAlign {
-    /// Text is positioned at the top of its bounding box (default for multi-line text)
+    /// Text is positioned at the top of its bounding box (default for multi-line text).
+    /// Glyphs are centered within the line height for proper vertical centering.
     #[default]
     Top,
-    /// Text is optically centered within its bounding box (for single-line centered text)
-    /// Uses cap-height based centering for better visual appearance
+    /// Text is optically centered within its bounding box (for single-line centered text).
+    /// Uses cap-height based centering for better visual appearance.
     Center,
+    /// Text is positioned by its baseline. Use this for inline text that should
+    /// align by baseline with other text elements (e.g., mixing fonts in a paragraph).
+    /// The baseline position is at a standardized offset from the top of the bounding box.
+    Baseline,
 }
 
 /// Generic font category for fallback when a named font isn't available
@@ -1892,6 +1903,8 @@ pub struct TextRenderInfo {
     pub color: [f32; 4],
     pub align: TextAlign,
     pub weight: FontWeight,
+    /// Whether to use italic style
+    pub italic: bool,
     pub v_align: TextVerticalAlign,
     /// Whether to wrap text at container bounds (default: true for text())
     pub wrap: bool,
@@ -1904,6 +1917,9 @@ pub struct TextRenderInfo {
     pub font_family: FontFamily,
     /// Word spacing in pixels (0.0 = normal)
     pub word_spacing: f32,
+    /// Font ascender in pixels (distance from baseline to top)
+    /// Used for accurate baseline alignment across different fonts
+    pub ascender: f32,
 }
 
 /// SVG render data extracted from element

@@ -4,9 +4,9 @@
 
 use blinc_core::{Brush, Color, CornerRadius, DrawCommand, Rect, Stroke};
 use blinc_gpu::{
-    GenericFont as GpuGenericFont, GpuGlyph, GpuImage, GpuImageInstance, GpuPaintContext,
-    GpuRenderer, ImageRenderingContext, PrimitiveBatch, TextAlignment, TextAnchor,
-    TextRenderingContext,
+    FontRegistry, GenericFont as GpuGenericFont, GpuGlyph, GpuImage, GpuImageInstance,
+    GpuPaintContext, GpuPrimitive, GpuRenderer, ImageRenderingContext, PrimitiveBatch,
+    TextAlignment, TextAnchor, TextRenderingContext,
 };
 use blinc_layout::div::{FontFamily, FontWeight, GenericFont, TextAlign, TextVerticalAlign};
 use blinc_layout::prelude::*;
@@ -14,7 +14,7 @@ use blinc_layout::render_state::Overlay;
 use blinc_layout::renderer::ElementType;
 use blinc_svg::SvgDocument;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::error::Result;
 
@@ -52,6 +52,8 @@ struct TextElement {
     color: [f32; 4],
     align: TextAlign,
     weight: FontWeight,
+    /// Whether to use italic style
+    italic: bool,
     /// Vertical alignment within bounding box
     v_align: TextVerticalAlign,
     /// Clip bounds from parent scroll container (x, y, width, height)
@@ -70,6 +72,8 @@ struct TextElement {
     word_spacing: f32,
     /// Z-index for rendering order (higher = on top)
     z_index: u32,
+    /// Font ascender in pixels (distance from baseline to top)
+    ascender: f32,
 }
 
 /// Image element data for rendering
@@ -160,18 +164,23 @@ impl RenderContext {
                 TextAlign::Right => TextAlignment::Right,
             };
 
-            // Pass width for alignment (center/right) but wrapping is disabled by default
-            // in prepare_text_with_options (it uses LineBreakMode::None internally)
-            //
             // Vertical alignment:
             // - Center: Use TextAnchor::Center with y at vertical center of bounds.
             //   This ensures text appears visually centered (by cap-height) rather than
             //   mathematically centered by the full bounding box (which includes descenders).
-            // - Top: Use TextAnchor::Top with y at top of bounds. Used for multi-line text
-            //   like text areas where content flows from top.
-            let (anchor, y_pos) = match text.v_align {
-                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0),
-                TextVerticalAlign::Top => (TextAnchor::Top, text.y),
+            // - Top: Text is centered within its layout box (items_center works).
+            // - Baseline: Position text so baseline aligns at the font's actual baseline.
+            //   Using the actual ascender from font metrics ensures all fonts align by
+            //   their true baseline regardless of font family.
+            let (anchor, y_pos, use_layout_height) = match text.v_align {
+                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0, false),
+                TextVerticalAlign::Top => (TextAnchor::Top, text.y, true),
+                TextVerticalAlign::Baseline => {
+                    // Use the actual font ascender for baseline positioning.
+                    // This ensures each font aligns by its true baseline.
+                    let baseline_y = text.y + text.ascender;
+                    (TextAnchor::Baseline, baseline_y, false)
+                }
             };
 
             // Determine wrap width: use clip bounds if available (parent constraint),
@@ -190,8 +199,12 @@ impl RenderContext {
             // Convert font family to GPU types
             let font_name = text.font_family.name.as_deref();
             let generic = to_gpu_generic_font(text.font_family.generic);
+            let font_weight = text.weight.weight();
 
-            if let Ok(mut glyphs) = self.text_ctx.prepare_text_with_font(
+            // Only pass layout_height when we want centering within the box
+            let layout_height = if use_layout_height { Some(text.height) } else { None };
+
+            if let Ok(mut glyphs) = self.text_ctx.prepare_text_with_style(
                 &text.content,
                 text.x,
                 y_pos,
@@ -203,6 +216,9 @@ impl RenderContext {
                 text.wrap,
                 font_name,
                 generic,
+                font_weight,
+                text.italic,
+                layout_height,
             ) {
                 // Apply clip bounds to all glyphs if the text element has clip bounds
                 if let Some(clip) = text.clip_bounds {
@@ -366,6 +382,21 @@ impl RenderContext {
         if let Some(atlas_view) = self.text_ctx.atlas_view() {
             self.renderer
                 .render_text(target, glyphs, atlas_view, self.text_ctx.sampler());
+        }
+    }
+
+    /// Render debug visualization overlays for text elements
+    ///
+    /// When `BLINC_DEBUG=text` (or `1`, `all`, `true`) is set, this renders:
+    /// - Cyan: Text bounding box outline
+    /// - Magenta: Baseline position
+    /// - Green: Top of bounding box (ascender reference)
+    /// - Yellow: Bottom of bounding box (descender reference)
+    fn render_text_debug(&mut self, target: &wgpu::TextureView, texts: &[TextElement]) {
+        let debug_primitives = generate_text_debug_primitives(texts);
+        if !debug_primitives.is_empty() {
+            self.renderer
+                .render_primitives_overlay(target, &debug_primitives);
         }
     }
 
@@ -729,6 +760,7 @@ impl RenderContext {
                         color: text_data.color,
                         align: text_data.align,
                         weight: text_data.weight,
+                        italic: text_data.italic,
                         v_align: text_data.v_align,
                         clip_bounds: scaled_clip,
                         motion_opacity: effective_motion_opacity,
@@ -738,6 +770,7 @@ impl RenderContext {
                         font_family: text_data.font_family.clone(),
                         word_spacing: text_data.word_spacing,
                         z_index: *z_layer,
+                        ascender: text_data.ascender * scale,
                     });
                 }
                 ElementType::Svg(svg_data) => {
@@ -818,6 +851,14 @@ impl RenderContext {
     /// Get queue arc
     pub fn queue(&self) -> &Arc<wgpu::Queue> {
         &self.queue
+    }
+
+    /// Get the shared font registry
+    ///
+    /// This can be used to share fonts between text measurement and rendering,
+    /// ensuring consistent font loading and metrics.
+    pub fn font_registry(&self) -> Arc<Mutex<FontRegistry>> {
+        self.text_ctx.font_registry()
     }
 
     /// Get the texture format used by the renderer
@@ -928,14 +969,20 @@ impl RenderContext {
             // Convert font family to GPU types
             let font_name = text.font_family.name.as_deref();
             let generic = to_gpu_generic_font(text.font_family.generic);
+            let font_weight = text.weight.weight();
 
             // Map vertical alignment to text anchor
-            let (anchor, y_pos) = match text.v_align {
-                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0),
-                TextVerticalAlign::Top => (TextAnchor::Top, text.y),
+            let (anchor, y_pos, use_layout_height) = match text.v_align {
+                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0, false),
+                TextVerticalAlign::Top => (TextAnchor::Top, text.y, true),
+                TextVerticalAlign::Baseline => {
+                    let baseline_y = text.y + text.ascender;
+                    (TextAnchor::Baseline, baseline_y, false)
+                }
             };
+            let layout_height = if use_layout_height { Some(text.height) } else { None };
 
-            if let Ok(glyphs) = self.text_ctx.prepare_text_with_font(
+            if let Ok(glyphs) = self.text_ctx.prepare_text_with_style(
                 &text.content,
                 text.x,
                 y_pos,
@@ -947,6 +994,9 @@ impl RenderContext {
                 needs_wrap,
                 font_name,
                 generic,
+                font_weight,
+                text.italic,
+                layout_height,
             ) {
                 // Apply clip bounds if present
                 let mut glyphs = glyphs;
@@ -1079,6 +1129,12 @@ impl RenderContext {
         // Render overlays from RenderState
         self.render_overlays(render_state, width, height, target);
 
+        // Render debug visualization if enabled (BLINC_DEBUG=text)
+        let debug = DebugMode::from_env();
+        if debug.text {
+            self.render_text_debug(target, &texts);
+        }
+
         Ok(())
     }
 
@@ -1144,13 +1200,19 @@ impl RenderContext {
             let wrap_width = Some(text.width);
             let font_name = text.font_family.name.as_deref();
             let generic = to_gpu_generic_font(text.font_family.generic);
+            let font_weight = text.weight.weight();
 
-            let (anchor, y_pos) = match text.v_align {
-                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0),
-                TextVerticalAlign::Top => (TextAnchor::Top, text.y),
+            let (anchor, y_pos, use_layout_height) = match text.v_align {
+                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0, false),
+                TextVerticalAlign::Top => (TextAnchor::Top, text.y, true),
+                TextVerticalAlign::Baseline => {
+                    let baseline_y = text.y + text.ascender;
+                    (TextAnchor::Baseline, baseline_y, false)
+                }
             };
+            let layout_height = if use_layout_height { Some(text.height) } else { None };
 
-            if let Ok(glyphs) = self.text_ctx.prepare_text_with_font(
+            if let Ok(glyphs) = self.text_ctx.prepare_text_with_style(
                 &text.content,
                 text.x,
                 y_pos,
@@ -1162,6 +1224,9 @@ impl RenderContext {
                 needs_wrap,
                 font_name,
                 generic,
+                font_weight,
+                text.italic,
+                layout_height,
             ) {
                 let mut glyphs = glyphs;
                 if let Some(clip) = text.clip_bounds {
@@ -1314,4 +1379,85 @@ fn to_gpu_generic_font(generic: GenericFont) -> GpuGenericFont {
         GenericFont::Serif => GpuGenericFont::Serif,
         GenericFont::SansSerif => GpuGenericFont::SansSerif,
     }
+}
+
+/// Debug mode flags for visual debugging
+///
+/// Set environment variable `BLINC_DEBUG` to enable debug visualization:
+/// - `text` or `1`: Show text bounding boxes and baselines
+/// - `all`: Show all debug visualizations
+#[derive(Clone, Copy)]
+pub struct DebugMode {
+    /// Show text bounding boxes and baseline indicators
+    pub text: bool,
+}
+
+impl DebugMode {
+    /// Check environment variable and return debug mode configuration
+    pub fn from_env() -> Self {
+        let debug_text = std::env::var("BLINC_DEBUG")
+            .map(|v| {
+                let v = v.to_lowercase();
+                v == "1" || v == "text" || v == "all" || v == "true"
+            })
+            .unwrap_or(false);
+
+        Self { text: debug_text }
+    }
+
+    /// Check if any debug mode is enabled
+    pub fn any_enabled(&self) -> bool {
+        self.text
+    }
+}
+
+/// Generate debug primitives for text elements
+///
+/// Creates visual overlays showing:
+/// - Bounding box outline (cyan)
+/// - Baseline position (magenta line)
+/// - Ascender line (green, at top of bounding box)
+/// - Descender line (yellow, at bottom of bounding box)
+fn generate_text_debug_primitives(texts: &[TextElement]) -> Vec<GpuPrimitive> {
+    let mut primitives = Vec::new();
+
+    for text in texts {
+        // Determine the actual text width for debug visualization:
+        // - For non-wrapped text: use measured_width (actual rendered text width)
+        // - For wrapped text: use layout width (container constrains the text)
+        let debug_width = if text.wrap && text.measured_width > text.width {
+            // Text is wrapping - use container width
+            text.width
+        } else {
+            // Single line - use actual measured width (clamped to layout width)
+            text.measured_width.min(text.width)
+        };
+
+        // Bounding box outline (cyan, semi-transparent)
+        let bbox = GpuPrimitive::rect(text.x, text.y, debug_width, text.height)
+            .with_color(0.0, 0.0, 0.0, 0.0) // Transparent fill
+            .with_border(1.0, 0.0, 1.0, 1.0, 0.7); // Cyan border
+        primitives.push(bbox);
+
+        // Baseline indicator (magenta horizontal line)
+        // The baseline is at y + ascender
+        let baseline_y = text.y + text.ascender;
+        let baseline = GpuPrimitive::rect(text.x, baseline_y - 0.5, debug_width, 1.0)
+            .with_color(1.0, 0.0, 1.0, 0.6); // Magenta
+        primitives.push(baseline);
+
+        // Ascender line indicator (green, at top of text)
+        // For v_baseline texts, this shows where the ascender sits
+        let ascender_line = GpuPrimitive::rect(text.x, text.y - 0.5, debug_width, 1.0)
+            .with_color(0.0, 1.0, 0.0, 0.4); // Green, more transparent
+        primitives.push(ascender_line);
+
+        // Descender line (yellow, at bottom of bounding box)
+        let descender_y = text.y + text.height;
+        let descender_line = GpuPrimitive::rect(text.x, descender_y - 0.5, debug_width, 1.0)
+            .with_color(1.0, 1.0, 0.0, 0.4); // Yellow
+        primitives.push(descender_line);
+    }
+
+    primitives
 }

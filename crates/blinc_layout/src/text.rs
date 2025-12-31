@@ -34,6 +34,8 @@ pub struct Text {
     v_align: TextVerticalAlign,
     /// Font weight
     weight: FontWeight,
+    /// Whether to use italic style
+    italic: bool,
     /// Font family category
     font_family: FontFamily,
     /// Taffy style for layout
@@ -52,18 +54,21 @@ pub struct Text {
     measured_width: f32,
     /// Word spacing in pixels (0.0 = normal)
     word_spacing: f32,
+    /// Measured ascender from font metrics (distance from baseline to top)
+    ascender: f32,
 }
 
 impl Text {
     /// Create a new text element
     pub fn new(content: impl Into<String>) -> Self {
-        Self {
+        let mut text = Self {
             content: content.into(),
             font_size: 14.0,
             color: Color::BLACK,
             align: TextAlign::default(),
             v_align: TextVerticalAlign::default(),
             weight: FontWeight::default(),
+            italic: false,
             font_family: FontFamily::default(),
             style: Style::default(),
             render_layer: RenderLayer::default(),
@@ -73,7 +78,10 @@ impl Text {
             line_height: 1.2,    // standard line height
             measured_width: 0.0, // will be set by update_size_estimate
             word_spacing: 0.0,   // normal word spacing
-        }
+            ascender: 14.0 * 0.8, // will be set by update_size_estimate
+        };
+        text.update_size_estimate();
+        text
     }
 
     /// Set the font size
@@ -141,6 +149,20 @@ impl Text {
         self.v_align(TextVerticalAlign::Top)
     }
 
+    /// Position text by baseline for inline text alignment
+    ///
+    /// Use this for inline text elements that should align by baseline with
+    /// other text elements (e.g., mixing fonts in a paragraph).
+    /// This uses a standardized baseline position to ensure different fonts align.
+    /// Also sets line_height to 1.0 for tighter vertical bounds.
+    pub fn v_baseline(mut self) -> Self {
+        self.v_align = TextVerticalAlign::Baseline;
+        // Use line_height of 1.0 for baseline alignment to minimize extra vertical space
+        self.line_height = 1.0;
+        self.update_size_estimate();
+        self
+    }
+
     // =========================================================================
     // Font Weight
     // =========================================================================
@@ -194,6 +216,21 @@ impl Text {
     /// Set font weight to black (900)
     pub fn black(self) -> Self {
         self.weight(FontWeight::Black)
+    }
+
+    // =========================================================================
+    // Font Style (Italic)
+    // =========================================================================
+
+    /// Set italic style
+    pub fn italic(mut self) -> Self {
+        self.italic = true;
+        self
+    }
+
+    /// Check if text is italic
+    pub fn is_italic(&self) -> bool {
+        self.italic
     }
 
     // =========================================================================
@@ -296,12 +333,17 @@ impl Text {
         let mut options = crate::text_measure::TextLayoutOptions::new();
         options.font_name = self.font_family.name.clone();
         options.generic_font = self.font_family.generic;
+        options.font_weight = self.weight.weight();
+        options.italic = self.italic;
 
         let metrics =
             crate::text_measure::measure_text_with_options(&self.content, self.font_size, &options);
 
         // Store measured width for render-time comparison
         self.measured_width = metrics.width;
+
+        // Store actual ascender from font metrics for baseline alignment
+        self.ascender = metrics.ascender;
 
         // Text sizing for flex layouts:
         // Use measured width as basis, constrained by max_width: 100%
@@ -310,7 +352,13 @@ impl Text {
         // - Long text to wrap at parent boundary (max 100%)
         // - text_center() to center within text bounds
         self.style.size.width = Dimension::Length(metrics.width);
-        self.style.size.height = Dimension::Length(metrics.height);
+
+        // Use a standardized height based on font_size * line_height for layout purposes.
+        // This ensures all text at the same font size has consistent height regardless
+        // of font weight/style (regular vs bold fonts have different internal metrics).
+        // The actual rendering uses font metrics, but layout should be consistent.
+        let standardized_height = self.font_size * self.line_height;
+        self.style.size.height = Dimension::Length(standardized_height);
         self.style.max_size.width = Dimension::Percent(1.0);
 
         if !self.wrap {
@@ -465,12 +513,14 @@ impl ElementBuilder for Text {
             color: [self.color.r, self.color.g, self.color.b, self.color.a],
             align: self.align,
             weight: self.weight,
+            italic: self.italic,
             v_align: self.v_align,
             wrap: self.wrap,
             line_height: self.line_height,
             measured_width: self.measured_width,
             font_family: self.font_family.clone(),
             word_spacing: self.word_spacing,
+            ascender: self.ascender,
         })
     }
 

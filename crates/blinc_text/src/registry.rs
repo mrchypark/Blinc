@@ -63,42 +63,87 @@ impl FontRegistry {
         }
     }
 
-    /// Preload specific fonts by name (call at startup for fonts your app uses)
+    /// Preload specific fonts by name with all available variants
+    /// (call at startup for fonts your app uses)
+    ///
+    /// This discovers and loads all variants (bold, italic, etc.) of each font.
     pub fn preload_fonts(&mut self, names: &[&str]) {
         for name in names {
-            match self.load_font(name) {
-                Ok(_) => tracing::debug!("Preloaded font: {}", name),
-                Err(_) => tracing::debug!("Font not available: {}", name),
+            if self.has_font(name) {
+                self.preload_font_family(name);
+                tracing::debug!("Preloaded font family with all variants: {}", name);
+            } else {
+                tracing::debug!("Font not available: {}", name);
             }
         }
     }
 
     /// Load a font by name (e.g., "Fira Code", "Inter", "Arial")
     pub fn load_font(&mut self, name: &str) -> Result<Arc<FontFace>> {
+        self.load_font_with_style(name, 400, false)
+    }
+
+    /// Load a font by name with specific weight and italic style
+    ///
+    /// # Arguments
+    /// * `name` - Font family name (e.g., "Fira Code", "Inter")
+    /// * `weight` - Font weight (100-900, where 400 is normal, 700 is bold)
+    /// * `italic` - Whether to load italic variant
+    pub fn load_font_with_style(
+        &mut self,
+        name: &str,
+        weight: u16,
+        italic: bool,
+    ) -> Result<Arc<FontFace>> {
+        // Create cache key that includes weight and style
+        let cache_key = format!("{}:w{}:{}", name, weight, if italic { "i" } else { "n" });
+
         // Check cache first (includes failed lookups as None)
-        if let Some(cached) = self.faces.get(name) {
+        if let Some(cached) = self.faces.get(&cache_key) {
             return cached.clone().ok_or_else(|| {
-                TextError::FontLoadError(format!("Font '{}' not found (cached)", name))
+                TextError::FontLoadError(format!(
+                    "Font '{}' (weight={}, italic={}) not found (cached)",
+                    name, weight, italic
+                ))
             });
         }
 
-        // Query fontdb for the font by family name
-        // Request normal weight (400), normal style, normal stretch
+        // Query fontdb for the font by family name with requested weight/style
         let query = Query {
             families: &[Family::Name(name)],
-            weight: Weight::NORMAL,
-            style: Style::Normal,
+            weight: Weight(weight),
+            style: if italic { Style::Italic } else { Style::Normal },
             stretch: Stretch::Normal,
         };
 
         let id = match self.db.query(&query) {
             Some(id) => id,
             None => {
-                self.faces.insert(name.to_string(), None);
-                return Err(TextError::FontLoadError(format!(
-                    "Font '{}' not found",
-                    name
-                )));
+                // Try with Oblique if Italic wasn't found
+                if italic {
+                    let oblique_query = Query {
+                        families: &[Family::Name(name)],
+                        weight: Weight(weight),
+                        style: Style::Oblique,
+                        stretch: Stretch::Normal,
+                    };
+                    match self.db.query(&oblique_query) {
+                        Some(id) => id,
+                        None => {
+                            self.faces.insert(cache_key.clone(), None);
+                            return Err(TextError::FontLoadError(format!(
+                                "Font '{}' (weight={}, italic={}) not found",
+                                name, weight, italic
+                            )));
+                        }
+                    }
+                } else {
+                    self.faces.insert(cache_key.clone(), None);
+                    return Err(TextError::FontLoadError(format!(
+                        "Font '{}' (weight={}, italic={}) not found",
+                        name, weight, italic
+                    )));
+                }
             }
         };
 
@@ -107,7 +152,7 @@ impl FontRegistry {
         let face = Arc::new(face);
 
         // Cache it
-        self.faces.insert(name.to_string(), Some(Arc::clone(&face)));
+        self.faces.insert(cache_key, Some(Arc::clone(&face)));
 
         Ok(face)
     }
@@ -135,12 +180,35 @@ impl FontRegistry {
 
     /// Load a generic font category
     pub fn load_generic(&mut self, generic: GenericFont) -> Result<Arc<FontFace>> {
-        let cache_key = format!("__generic_{:?}", generic);
+        self.load_generic_with_style(generic, 400, false)
+    }
+
+    /// Load a generic font category with specific weight and italic style
+    ///
+    /// # Arguments
+    /// * `generic` - Generic font category (System, Monospace, Serif, SansSerif)
+    /// * `weight` - Font weight (100-900, where 400 is normal, 700 is bold)
+    /// * `italic` - Whether to load italic variant
+    pub fn load_generic_with_style(
+        &mut self,
+        generic: GenericFont,
+        weight: u16,
+        italic: bool,
+    ) -> Result<Arc<FontFace>> {
+        let cache_key = format!(
+            "__generic_{:?}:w{}:{}",
+            generic,
+            weight,
+            if italic { "i" } else { "n" }
+        );
 
         // Check cache first (includes failed lookups as None)
         if let Some(cached) = self.faces.get(&cache_key) {
             return cached.clone().ok_or_else(|| {
-                TextError::FontLoadError(format!("Generic font {:?} not found (cached)", generic))
+                TextError::FontLoadError(format!(
+                    "Generic font {:?} (weight={}, italic={}) not found (cached)",
+                    generic, weight, italic
+                ))
             });
         }
 
@@ -152,22 +220,42 @@ impl FontRegistry {
             GenericFont::SansSerif => Family::SansSerif,
         };
 
-        // Query fontdb
+        // Query fontdb with requested weight and style
         let query = Query {
             families: &[family],
-            weight: Weight::NORMAL,
-            style: Style::Normal,
+            weight: Weight(weight),
+            style: if italic { Style::Italic } else { Style::Normal },
             stretch: Stretch::Normal,
         };
 
         let id = match self.db.query(&query) {
             Some(id) => id,
             None => {
-                self.faces.insert(cache_key, None);
-                return Err(TextError::FontLoadError(format!(
-                    "Generic font {:?} not found",
-                    generic
-                )));
+                // Try with Oblique if Italic wasn't found
+                if italic {
+                    let oblique_query = Query {
+                        families: &[family],
+                        weight: Weight(weight),
+                        style: Style::Oblique,
+                        stretch: Stretch::Normal,
+                    };
+                    match self.db.query(&oblique_query) {
+                        Some(id) => id,
+                        None => {
+                            self.faces.insert(cache_key.clone(), None);
+                            return Err(TextError::FontLoadError(format!(
+                                "Generic font {:?} (weight={}, italic={}) not found",
+                                generic, weight, italic
+                            )));
+                        }
+                    }
+                } else {
+                    self.faces.insert(cache_key.clone(), None);
+                    return Err(TextError::FontLoadError(format!(
+                        "Generic font {:?} (weight={}, italic={}) not found",
+                        generic, weight, italic
+                    )));
+                }
             }
         };
 
@@ -186,40 +274,90 @@ impl FontRegistry {
         name: Option<&str>,
         generic: GenericFont,
     ) -> Result<Arc<FontFace>> {
+        self.load_with_fallback_styled(name, generic, 400, false)
+    }
+
+    /// Load a font with fallback to generic category, with specific weight and style
+    pub fn load_with_fallback_styled(
+        &mut self,
+        name: Option<&str>,
+        generic: GenericFont,
+        weight: u16,
+        italic: bool,
+    ) -> Result<Arc<FontFace>> {
         // Try named font first
         if let Some(name) = name {
             // Check if we've already tried this font (avoid repeated warnings)
-            let already_tried = self.faces.contains_key(name);
+            let cache_key = format!("{}:w{}:{}", name, weight, if italic { "i" } else { "n" });
+            let already_tried = self.faces.contains_key(&cache_key);
 
             tracing::trace!(
-                "load_with_fallback: name={}, already_tried={}, cache_size={}",
+                "load_with_fallback_styled: name={}, weight={}, italic={}, already_tried={}, cache_size={}",
                 name,
+                weight,
+                italic,
                 already_tried,
                 self.faces.len()
             );
 
-            if let Ok(face) = self.load_font(name) {
+            if let Ok(face) = self.load_font_with_style(name, weight, italic) {
                 return Ok(face);
             }
 
             // Only warn on the first failure for this font
             if !already_tried {
-                tracing::warn!("Font '{}' not found, falling back to {:?}", name, generic);
+                tracing::warn!(
+                    "Font '{}' (weight={}, italic={}) not found, falling back to {:?}",
+                    name,
+                    weight,
+                    italic,
+                    generic
+                );
             }
         }
 
-        // Fall back to generic
-        self.load_generic(generic)
+        // Fall back to generic with same style
+        self.load_generic_with_style(generic, weight, italic)
     }
 
     /// Get cached font by name (doesn't load - for use during render)
     pub fn get_cached(&self, name: &str) -> Option<Arc<FontFace>> {
-        self.faces.get(name).and_then(|opt| opt.clone())
+        // Legacy: check for normal weight/style first
+        let cache_key = format!("{}:w400:n", name);
+        self.faces.get(&cache_key).and_then(|opt| opt.clone())
+    }
+
+    /// Get cached font by name with specific weight and style
+    pub fn get_cached_with_style(
+        &self,
+        name: &str,
+        weight: u16,
+        italic: bool,
+    ) -> Option<Arc<FontFace>> {
+        let cache_key = format!("{}:w{}:{}", name, weight, if italic { "i" } else { "n" });
+        self.faces.get(&cache_key).and_then(|opt| opt.clone())
     }
 
     /// Get cached generic font (doesn't load - for use during render)
     pub fn get_cached_generic(&self, generic: GenericFont) -> Option<Arc<FontFace>> {
-        let cache_key = format!("__generic_{:?}", generic);
+        // Legacy: check for normal weight/style first
+        let cache_key = format!("__generic_{:?}:w400:n", generic);
+        self.faces.get(&cache_key).and_then(|opt| opt.clone())
+    }
+
+    /// Get cached generic font with specific weight and style
+    pub fn get_cached_generic_with_style(
+        &self,
+        generic: GenericFont,
+        weight: u16,
+        italic: bool,
+    ) -> Option<Arc<FontFace>> {
+        let cache_key = format!(
+            "__generic_{:?}:w{}:{}",
+            generic,
+            weight,
+            if italic { "i" } else { "n" }
+        );
         self.faces.get(&cache_key).and_then(|opt| opt.clone())
     }
 
@@ -230,16 +368,27 @@ impl FontRegistry {
         name: Option<&str>,
         generic: GenericFont,
     ) -> Option<Arc<FontFace>> {
+        self.get_for_render_with_style(name, generic, 400, false)
+    }
+
+    /// Fast font lookup for rendering with specific weight and style
+    pub fn get_for_render_with_style(
+        &self,
+        name: Option<&str>,
+        generic: GenericFont,
+        weight: u16,
+        italic: bool,
+    ) -> Option<Arc<FontFace>> {
         // Try named font from cache first
         if let Some(name) = name {
             // For named fonts, only return if we have that specific font cached
             // Return None to trigger loading if not found
-            return self.get_cached(name);
+            return self.get_cached_with_style(name, weight, italic);
         }
 
-        // For generic-only requests, use cached generic font
-        self.get_cached_generic(generic)
-            .or_else(|| self.get_cached_generic(GenericFont::SansSerif))
+        // For generic-only requests, use cached generic font with style
+        self.get_cached_generic_with_style(generic, weight, italic)
+            .or_else(|| self.get_cached_generic_with_style(GenericFont::SansSerif, weight, italic))
     }
 
     /// List available font families on the system
@@ -264,6 +413,46 @@ impl FontRegistry {
             stretch: Stretch::Normal,
         };
         self.db.query(&query).is_some()
+    }
+
+    /// Preload all variants (weights and styles) of a font family
+    ///
+    /// This discovers all available variants of the font using fontdb
+    /// and loads each one into the cache.
+    pub fn preload_font_family(&mut self, name: &str) {
+        // Find all faces that belong to this font family
+        let face_ids: Vec<_> = self
+            .db
+            .faces()
+            .filter(|face| {
+                face.families
+                    .iter()
+                    .any(|(family_name, _)| family_name == name)
+            })
+            .map(|face| (face.id, face.weight.0, face.style))
+            .collect();
+
+        // Load each variant
+        for (id, weight, style) in face_ids {
+            let italic = matches!(style, Style::Italic | Style::Oblique);
+            let cache_key = format!("{}:w{}:{}", name, weight, if italic { "i" } else { "n" });
+
+            // Skip if already cached
+            if self.faces.contains_key(&cache_key) {
+                continue;
+            }
+
+            // Load the face
+            match self.load_face_by_id(id) {
+                Ok(face) => {
+                    self.faces.insert(cache_key, Some(Arc::new(face)));
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load font variant {}: {:?}", cache_key, e);
+                    self.faces.insert(cache_key, None);
+                }
+            }
+        }
     }
 }
 

@@ -54,7 +54,8 @@ pub struct TextRenderer {
     /// Default font (legacy support)
     default_font: Option<FontFace>,
     /// Font registry for system font discovery and caching
-    font_registry: FontRegistry,
+    /// Can be shared with other components (like text measurement)
+    font_registry: Arc<std::sync::Mutex<FontRegistry>>,
     /// Glyph atlas
     atlas: GlyphAtlas,
     /// Glyph rasterizer
@@ -71,8 +72,23 @@ impl TextRenderer {
     pub fn new() -> Self {
         Self {
             default_font: None,
-            font_registry: FontRegistry::new(),
+            font_registry: Arc::new(std::sync::Mutex::new(FontRegistry::new())),
             atlas: GlyphAtlas::default(), // Uses 512x512 for lower memory footprint
+            rasterizer: GlyphRasterizer::new(),
+            layout_engine: TextLayoutEngine::new(),
+            glyph_cache: FxHashMap::default(),
+        }
+    }
+
+    /// Create a new text renderer with a shared font registry
+    ///
+    /// Use this to share fonts between text measurement and rendering,
+    /// ensuring consistent text layout.
+    pub fn with_shared_registry(registry: Arc<std::sync::Mutex<FontRegistry>>) -> Self {
+        Self {
+            default_font: None,
+            font_registry: registry,
+            atlas: GlyphAtlas::default(),
             rasterizer: GlyphRasterizer::new(),
             layout_engine: TextLayoutEngine::new(),
             glyph_cache: FxHashMap::default(),
@@ -83,12 +99,20 @@ impl TextRenderer {
     pub fn with_atlas_size(width: u32, height: u32) -> Self {
         Self {
             default_font: None,
-            font_registry: FontRegistry::new(),
+            font_registry: Arc::new(std::sync::Mutex::new(FontRegistry::new())),
             atlas: GlyphAtlas::new(width, height),
             rasterizer: GlyphRasterizer::new(),
             layout_engine: TextLayoutEngine::new(),
             glyph_cache: FxHashMap::default(),
         }
+    }
+
+    /// Get the shared font registry
+    ///
+    /// This can be used to share the registry with other components
+    /// like text measurement.
+    pub fn font_registry(&self) -> Arc<std::sync::Mutex<FontRegistry>> {
+        self.font_registry.clone()
     }
 
     /// Set the default font
@@ -148,7 +172,7 @@ impl TextRenderer {
         color: [f32; 4],
         options: &LayoutOptions,
     ) -> Result<PreparedText> {
-        self.prepare_text_internal(text, font_size, color, options, None, GenericFont::System)
+        self.prepare_text_internal(text, font_size, color, options, None, GenericFont::System, 400, false)
     }
 
     /// Prepare text for rendering with a specific font family
@@ -169,7 +193,32 @@ impl TextRenderer {
         font_name: Option<&str>,
         generic: GenericFont,
     ) -> Result<PreparedText> {
-        self.prepare_text_internal(text, font_size, color, options, font_name, generic)
+        self.prepare_text_internal(text, font_size, color, options, font_name, generic, 400, false)
+    }
+
+    /// Prepare text for rendering with a specific font family, weight, and style
+    ///
+    /// # Arguments
+    /// * `text` - The text to render
+    /// * `font_size` - Font size in pixels
+    /// * `color` - Text color (RGBA, 0.0-1.0)
+    /// * `options` - Layout options
+    /// * `font_name` - Optional font name (e.g., "Fira Code", "Inter")
+    /// * `generic` - Generic font fallback category
+    /// * `weight` - Font weight (100-900, where 400 is normal, 700 is bold)
+    /// * `italic` - Whether to use italic variant
+    pub fn prepare_text_with_style(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        color: [f32; 4],
+        options: &LayoutOptions,
+        font_name: Option<&str>,
+        generic: GenericFont,
+        weight: u16,
+        italic: bool,
+    ) -> Result<PreparedText> {
+        self.prepare_text_internal(text, font_size, color, options, font_name, generic, weight, italic)
     }
 
     /// Internal method for preparing text with optional font family
@@ -181,10 +230,12 @@ impl TextRenderer {
         options: &LayoutOptions,
         font_name: Option<&str>,
         generic: GenericFont,
+        weight: u16,
+        italic: bool,
     ) -> Result<PreparedText> {
         // Resolve the font to use
-        let font = self.resolve_font(font_name, generic)?;
-        let font_id = self.font_id(font_name, generic);
+        let font = self.resolve_font_with_style(font_name, generic, weight, italic)?;
+        let font_id = self.font_id_with_style(font_name, generic, weight, italic);
 
         // Get font metrics for the PreparedText result
         let (ascender, descender) = {
@@ -365,42 +416,107 @@ impl TextRenderer {
 
     /// Resolve font by name or generic category, with fallback to default
     /// Uses only cached fonts - fonts should be preloaded at app startup
-    fn resolve_font(&self, font_name: Option<&str>, generic: GenericFont) -> Result<Arc<FontFace>> {
-        // Use cache-only lookup - fonts should be preloaded at startup
-        if let Some(font) = self.font_registry.get_for_render(font_name, generic) {
+    fn resolve_font(&mut self, font_name: Option<&str>, generic: GenericFont) -> Result<Arc<FontFace>> {
+        self.resolve_font_with_style(font_name, generic, 400, false)
+    }
+
+    /// Resolve font by name or generic category with specific weight and style
+    /// Loads fonts on demand if not cached
+    fn resolve_font_with_style(
+        &mut self,
+        font_name: Option<&str>,
+        generic: GenericFont,
+        weight: u16,
+        italic: bool,
+    ) -> Result<Arc<FontFace>> {
+        let mut registry = self.font_registry.lock().unwrap();
+
+        // First try cache lookup
+        if let Some(font) =
+            registry.get_for_render_with_style(font_name, generic, weight, italic)
+        {
             return Ok(font);
         }
 
-        // If named font not found, fall back to generic (which should always be cached)
-        if font_name.is_some() {
-            if let Some(font) = self.font_registry.get_cached_generic(generic) {
-                return Ok(font);
-            }
-            // Ultimate fallback to SansSerif
-            if let Some(font) = self
-                .font_registry
-                .get_cached_generic(GenericFont::SansSerif)
-            {
+        // Try loading the font with style on demand
+        if let Some(name) = font_name {
+            if let Ok(font) = registry.load_font_with_style(name, weight, italic) {
                 return Ok(font);
             }
         }
 
+        // Try loading generic font with style
+        if let Ok(font) = registry.load_generic_with_style(generic, weight, italic) {
+            return Ok(font);
+        }
+
+        // If styled font not found, fall back to normal style
+        if weight != 400 || italic {
+            if let Some(font) =
+                registry.get_for_render_with_style(font_name, generic, 400, false)
+            {
+                return Ok(font);
+            }
+            // Try loading normal style
+            if let Ok(font) = registry.load_generic_with_style(generic, 400, false) {
+                return Ok(font);
+            }
+        }
+
+        // Ultimate fallback to SansSerif normal
+        if let Some(font) = registry.get_cached_generic(GenericFont::SansSerif) {
+            return Ok(font);
+        }
+        if let Ok(font) = registry.load_generic(GenericFont::SansSerif) {
+            return Ok(font);
+        }
+
         Err(TextError::FontLoadError(
-            "No fonts available - fonts should be preloaded at startup".to_string(),
+            "No fonts available".to_string(),
         ))
     }
 
     /// Preload fonts that your app uses (call at startup)
     pub fn preload_fonts(&mut self, names: &[&str]) {
-        self.font_registry.preload_fonts(names);
+        let mut registry = self.font_registry.lock().unwrap();
+        registry.preload_fonts(names);
+    }
+
+    /// Preload fonts with specific weights and styles
+    pub fn preload_fonts_with_styles(&mut self, specs: &[(&str, u16, bool)]) {
+        let mut registry = self.font_registry.lock().unwrap();
+        for (name, weight, italic) in specs {
+            let _ = registry.load_font_with_style(name, *weight, *italic);
+        }
+    }
+
+    /// Preload generic font variants (weights and italic)
+    pub fn preload_generic_styles(&mut self, generic: GenericFont, weights: &[u16], italic: bool) {
+        let mut registry = self.font_registry.lock().unwrap();
+        for weight in weights {
+            let _ = registry.load_generic_with_style(generic, *weight, italic);
+        }
     }
 
     /// Generate a unique font ID for cache keys
     fn font_id(&self, font_name: Option<&str>, generic: GenericFont) -> u32 {
+        self.font_id_with_style(font_name, generic, 400, false)
+    }
+
+    /// Generate a unique font ID for cache keys with style
+    fn font_id_with_style(
+        &self,
+        font_name: Option<&str>,
+        generic: GenericFont,
+        weight: u16,
+        italic: bool,
+    ) -> u32 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         font_name.hash(&mut hasher);
         generic.hash(&mut hasher);
+        weight.hash(&mut hasher);
+        italic.hash(&mut hasher);
         hasher.finish() as u32
     }
 
@@ -462,7 +578,10 @@ impl TextRenderer {
     /// Legacy method for backward compatibility - uses system font from registry
     #[allow(dead_code)]
     fn rasterize_glyph_if_needed(&mut self, glyph_id: u16, font_size: f32) -> Result<GlyphInfo> {
-        let font = self.font_registry.load_generic(GenericFont::SansSerif)?;
+        let font = {
+            let mut registry = self.font_registry.lock().unwrap();
+            registry.load_generic(GenericFont::SansSerif)?
+        };
         self.rasterize_glyph_for_font(&font, 0, glyph_id, font_size)
     }
 
