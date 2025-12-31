@@ -1,15 +1,24 @@
 //! Link widget for clickable text
 //!
 //! A styled text element that acts as a hyperlink with hover states,
-//! equivalent to `<a>` in HTML.
+//! equivalent to `<a>` in HTML. Links are underlined by default.
 //!
 //! # Example
 //!
 //! ```ignore
 //! use blinc_layout::prelude::*;
 //!
+//! // Default link with underline
 //! link("Click here", "https://example.com")
-//!     .on_click(|url| open_url(url))
+//!     .on_click(|url, ctx| open_url(url))
+//!
+//! // Link without underline
+//! link("No underline", "https://example.com")
+//!     .no_underline()
+//!
+//! // Link with underline only on hover
+//! link("Hover to see underline", "https://example.com")
+//!     .underline_on_hover()
 //! ```
 
 use std::ops::{Deref, DerefMut};
@@ -118,6 +127,12 @@ impl Link {
         self
     }
 
+    /// Remove underline decoration (convenience for `.underline(false)`)
+    pub fn no_underline(mut self) -> Self {
+        self.config.underline = false;
+        self
+    }
+
     /// Show underline only on hover
     pub fn underline_on_hover(mut self) -> Self {
         self.config.underline = true;
@@ -149,9 +164,14 @@ impl ElementBuilder for Link {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         // Build with text styling
         // Note: Hover state visual changes would need Stateful for efficient updates
-        let text_element = text(&self.label)
+        let mut text_element = text(&self.label)
             .size(self.config.font_size)
             .color(self.config.text_color);
+
+        // Apply underline if enabled (and not hover-only mode)
+        if self.config.underline && !self.config.underline_on_hover_only {
+            text_element = text_element.underline();
+        }
 
         let mut inner = div().child(text_element);
 

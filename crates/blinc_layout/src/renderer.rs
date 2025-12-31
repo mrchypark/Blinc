@@ -85,6 +85,10 @@ pub struct TextData {
     pub word_spacing: f32,
     /// Font ascender in pixels (distance from baseline to top)
     pub ascender: f32,
+    /// Whether text has strikethrough decoration
+    pub strikethrough: bool,
+    /// Whether text has underline decoration
+    pub underline: bool,
 }
 
 /// A styled span within rich text
@@ -1005,6 +1009,8 @@ impl RenderTree {
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
                         ascender: info.ascender,
+                        strikethrough: info.strikethrough,
+                        underline: info.underline,
                     })
                 } else {
                     ElementType::Div
@@ -1142,6 +1148,8 @@ impl RenderTree {
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
                         ascender: info.ascender,
+                        strikethrough: info.strikethrough,
+                        underline: info.underline,
                     })
                 } else {
                     ElementType::Div
@@ -1242,6 +1250,8 @@ impl RenderTree {
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
                         ascender: info.ascender,
+                        strikethrough: info.strikethrough,
+                        underline: info.underline,
                     })
                 } else {
                     ElementType::Div
@@ -1299,6 +1309,8 @@ impl RenderTree {
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
                         ascender: info.ascender,
+                        strikethrough: info.strikethrough,
+                        underline: info.underline,
                     })
                 } else {
                     ElementType::Div

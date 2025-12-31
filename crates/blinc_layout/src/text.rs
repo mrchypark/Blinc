@@ -56,6 +56,10 @@ pub struct Text {
     word_spacing: f32,
     /// Measured ascender from font metrics (distance from baseline to top)
     ascender: f32,
+    /// Whether text has strikethrough decoration
+    strikethrough: bool,
+    /// Whether text has underline decoration
+    underline: bool,
 }
 
 impl Text {
@@ -79,6 +83,8 @@ impl Text {
             measured_width: 0.0, // will be set by update_size_estimate
             word_spacing: 0.0,   // normal word spacing
             ascender: 14.0 * 0.8, // will be set by update_size_estimate
+            strikethrough: false,
+            underline: false,
         };
         text.update_size_estimate();
         text
@@ -231,6 +237,28 @@ impl Text {
     /// Check if text is italic
     pub fn is_italic(&self) -> bool {
         self.italic
+    }
+
+    /// Set strikethrough decoration
+    pub fn strikethrough(mut self) -> Self {
+        self.strikethrough = true;
+        self
+    }
+
+    /// Check if text has strikethrough decoration
+    pub fn is_strikethrough(&self) -> bool {
+        self.strikethrough
+    }
+
+    /// Set underline decoration
+    pub fn underline(mut self) -> Self {
+        self.underline = true;
+        self
+    }
+
+    /// Check if text has underline decoration
+    pub fn is_underline(&self) -> bool {
+        self.underline
     }
 
     // =========================================================================
@@ -522,6 +550,8 @@ impl ElementBuilder for Text {
             font_family: self.font_family.clone(),
             word_spacing: self.word_spacing,
             ascender: self.ascender,
+            strikethrough: self.strikethrough,
+            underline: self.underline,
         })
     }
 

@@ -74,6 +74,10 @@ struct TextElement {
     z_index: u32,
     /// Font ascender in pixels (distance from baseline to top)
     ascender: f32,
+    /// Whether text has strikethrough decoration
+    strikethrough: bool,
+    /// Whether text has underline decoration
+    underline: bool,
 }
 
 /// Image element data for rendering
@@ -295,6 +299,14 @@ impl RenderContext {
             if !all_glyphs.is_empty() {
                 self.render_text(target, &all_glyphs);
             }
+
+            // Step 8: Render text decorations (strikethrough, underline)
+            let decorations_by_layer = generate_text_decoration_primitives_by_layer(&texts);
+            for primitives in decorations_by_layer.values() {
+                if !primitives.is_empty() {
+                    self.renderer.render_primitives_overlay(target, primitives);
+                }
+            }
         } else {
             // Simple path (no glass):
             // Background uses SDF rendering (no MSAA needed)
@@ -321,6 +333,14 @@ impl RenderContext {
             // Render text
             if !all_glyphs.is_empty() {
                 self.render_text(target, &all_glyphs);
+            }
+
+            // Render text decorations (strikethrough, underline)
+            let decorations_by_layer = generate_text_decoration_primitives_by_layer(&texts);
+            for primitives in decorations_by_layer.values() {
+                if !primitives.is_empty() {
+                    self.renderer.render_primitives_overlay(target, primitives);
+                }
             }
         }
 
@@ -382,6 +402,20 @@ impl RenderContext {
         if let Some(atlas_view) = self.text_ctx.atlas_view() {
             self.renderer
                 .render_text(target, glyphs, atlas_view, self.text_ctx.sampler());
+        }
+    }
+
+    /// Render text decorations for a specific z-layer
+    fn render_text_decorations_for_layer(
+        &mut self,
+        target: &wgpu::TextureView,
+        decorations_by_layer: &std::collections::HashMap<u32, Vec<GpuPrimitive>>,
+        z_layer: u32,
+    ) {
+        if let Some(primitives) = decorations_by_layer.get(&z_layer) {
+            if !primitives.is_empty() {
+                self.renderer.render_primitives_overlay(target, primitives);
+            }
         }
     }
 
@@ -771,6 +805,8 @@ impl RenderContext {
                         word_spacing: text_data.word_spacing,
                         z_index: *z_layer,
                         ascender: text_data.ascender * scale,
+                        strikethrough: text_data.strikethrough,
+                        underline: text_data.underline,
                     });
                 }
                 ElementType::Svg(svg_data) => {
@@ -1059,11 +1095,23 @@ impl RenderContext {
             if !all_glyphs.is_empty() {
                 self.render_text(target, &all_glyphs);
             }
+
+            // Render text decorations for glass path (all layers)
+            let decorations_by_layer = generate_text_decoration_primitives_by_layer(&texts);
+            for primitives in decorations_by_layer.values() {
+                if !primitives.is_empty() {
+                    self.renderer.render_primitives_overlay(target, primitives);
+                }
+            }
         } else {
             // Simple path (no glass)
+            // Pre-generate text decorations grouped by layer for interleaved rendering
+            let decorations_by_layer = generate_text_decoration_primitives_by_layer(&texts);
+
             let max_z = batch.max_z_layer();
             let max_text_z = glyphs_by_layer.keys().cloned().max().unwrap_or(0);
-            let max_layer = max_z.max(max_text_z);
+            let max_decoration_z = decorations_by_layer.keys().cloned().max().unwrap_or(0);
+            let max_layer = max_z.max(max_text_z).max(max_decoration_z);
 
             if max_layer > 0 {
                 // Interleaved z-layer rendering for proper Stack z-ordering
@@ -1082,12 +1130,13 @@ impl RenderContext {
                         .render_with_clear(target, &empty_batch, [0.0, 0.0, 0.0, 1.0]);
                 }
 
-                // Render z=0 text
+                // Render z=0 text and decorations
                 if let Some(glyphs) = glyphs_by_layer.get(&0) {
                     if !glyphs.is_empty() {
                         self.render_text(target, glyphs);
                     }
                 }
+                self.render_text_decorations_for_layer(target, &decorations_by_layer, 0);
 
                 // Render subsequent layers interleaved
                 for z in 1..=max_layer {
@@ -1104,6 +1153,9 @@ impl RenderContext {
                             self.render_text(target, glyphs);
                         }
                     }
+
+                    // Render text decorations for this layer
+                    self.render_text_decorations_for_layer(target, &decorations_by_layer, z);
                 }
 
                 // Images render on top (existing behavior)
@@ -1120,6 +1172,9 @@ impl RenderContext {
                 if !all_glyphs.is_empty() {
                     self.render_text(target, &all_glyphs);
                 }
+
+                // Render text decorations (flat path - no z-layers)
+                self.render_text_decorations_for_layer(target, &decorations_by_layer, 0);
             }
         }
 
@@ -1409,6 +1464,114 @@ impl DebugMode {
     pub fn any_enabled(&self) -> bool {
         self.text
     }
+}
+
+/// Generate text decoration primitives (strikethrough and underline) grouped by z-layer
+///
+/// Creates decoration lines for text elements that have:
+/// - strikethrough: horizontal line through the middle of the text
+/// - underline: horizontal line below the text baseline
+///
+/// Returns a HashMap of z_index -> primitives for interleaved rendering with text
+fn generate_text_decoration_primitives_by_layer(
+    texts: &[TextElement],
+) -> std::collections::HashMap<u32, Vec<GpuPrimitive>> {
+    let mut primitives_by_layer: std::collections::HashMap<u32, Vec<GpuPrimitive>> =
+        std::collections::HashMap::new();
+
+    for text in texts {
+        if !text.strikethrough && !text.underline {
+            continue;
+        }
+
+        // Calculate text width for decorations
+        let decoration_width = if text.wrap && text.measured_width > text.width {
+            text.width
+        } else {
+            text.measured_width.min(text.width)
+        };
+
+        // Skip if there's no meaningful width
+        if decoration_width <= 0.0 {
+            continue;
+        }
+
+        // Line thickness scales with font size (roughly 1/14th of font size, minimum 1px)
+        let line_thickness = (text.font_size / 14.0).max(1.0).min(3.0);
+
+        let layer_primitives = primitives_by_layer.entry(text.z_index).or_default();
+
+        // Calculate the actual baseline Y position based on vertical alignment
+        // This must match the text rendering logic to position decorations correctly
+        //
+        // glyph_extent = ascender - descender (where descender is negative)
+        // Typical descender is about -20% of ascender, so glyph_extent ≈ ascender * 1.2
+        let descender_approx = -text.ascender * 0.2;
+        let glyph_extent = text.ascender - descender_approx;
+
+        let baseline_y = match text.v_align {
+            TextVerticalAlign::Center => {
+                // GPU: y_pos = text.y + text.height / 2.0, then y_offset = y_pos - glyph_extent / 2.0
+                // Glyph top is at: text.y + text.height/2 - glyph_extent/2
+                // Baseline is at: glyph_top + ascender
+                let glyph_top = text.y + text.height / 2.0 - glyph_extent / 2.0;
+                glyph_top + text.ascender
+            }
+            TextVerticalAlign::Top => {
+                // GPU: y_pos = text.y, y_offset = y + (layout_height - glyph_extent) / 2.0
+                // Glyph top is at: text.y + (text.height - glyph_extent) / 2.0
+                // Baseline is at: glyph_top + ascender
+                let glyph_top = text.y + (text.height - glyph_extent) / 2.0;
+                glyph_top + text.ascender
+            }
+            TextVerticalAlign::Baseline => {
+                // GPU: y_pos = text.y + ascender, y_offset = y_pos - ascender = text.y
+                // Glyph top is at: text.y
+                // Baseline is at: text.y + ascender
+                text.y + text.ascender
+            }
+        };
+
+        // Strikethrough: draw line through the center of lowercase letters (x-height center)
+        if text.strikethrough {
+            // x-height is typically ~50% of ascender, center of x-height is ~25% above baseline
+            let strikethrough_y = baseline_y - text.ascender * 0.35;
+            let mut strike_rect = GpuPrimitive::rect(
+                text.x,
+                strikethrough_y - line_thickness / 2.0,
+                decoration_width,
+                line_thickness,
+            )
+            .with_color(text.color[0], text.color[1], text.color[2], text.color[3]);
+
+            // Apply clip bounds from text element if present
+            if let Some(clip) = text.clip_bounds {
+                strike_rect = strike_rect.with_clip_rect(clip[0], clip[1], clip[2], clip[3]);
+            }
+            layer_primitives.push(strike_rect);
+        }
+
+        // Underline: draw line just below the baseline (at text bottom)
+        if text.underline {
+            // Underline position: just below baseline, snapping to text bottom
+            let underline_y = baseline_y + text.ascender * 0.05;
+            let mut underline_rect = GpuPrimitive::rect(
+                text.x,
+                underline_y - line_thickness / 2.0,
+                decoration_width,
+                line_thickness,
+            )
+            .with_color(text.color[0], text.color[1], text.color[2], text.color[3]);
+
+            // Apply clip bounds from text element if present
+            if let Some(clip) = text.clip_bounds {
+                underline_rect = underline_rect.with_clip_rect(clip[0], clip[1], clip[2], clip[3]);
+            }
+            layer_primitives.push(underline_rect);
+        }
+    }
+
+    primitives_by_layer
 }
 
 /// Generate debug primitives for text elements

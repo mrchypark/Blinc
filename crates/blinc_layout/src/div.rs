@@ -1967,6 +1967,10 @@ pub struct TextRenderInfo {
     /// Font ascender in pixels (distance from baseline to top)
     /// Used for accurate baseline alignment across different fonts
     pub ascender: f32,
+    /// Whether text has strikethrough decoration
+    pub strikethrough: bool,
+    /// Whether text has underline decoration
+    pub underline: bool,
 }
 
 /// SVG render data extracted from element

@@ -102,6 +102,7 @@ struct InlineStyle {
 
 /// A styled text segment with its content and styling
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // Fields reserved for future link/decoration support
 struct StyledSegment {
     text: String,
     bold: bool,
@@ -511,10 +512,11 @@ impl<'a> RenderState<'a> {
         // Build inline code manually with matching size to body text for proper alignment
         // We need to set size BEFORE no_wrap() to ensure correct measurement
         let code_elem = text(code_text)
-            .size(self.config.body_size) // Match body text size for baseline alignment
+            .size(self.config.body_size+2.0) // Match body text size for baseline alignment
             .monospace()
             .color(self.config.code_text)
-            .line_height(1.5)
+            .line_height(1.0)
+            .v_baseline()
             .no_wrap(); // Measurement happens here with correct size
 
         self.inline_elements.push(Box::new(code_elem));
@@ -611,9 +613,15 @@ impl<'a> RenderState<'a> {
             if segment.italic {
                 txt = txt.italic();
             }
+            if segment.strikethrough {
+                txt = txt.strikethrough();
+            }
+            if segment.underline {
+                txt = txt.underline();
+            }
 
             // Call no_wrap() last to trigger final measurement with correct styles
-            txt = txt.no_wrap();
+            txt = txt.v_baseline().no_wrap();
 
             self.inline_elements.push(Box::new(txt));
         }

@@ -49,6 +49,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .gap(32.0)
                         .p(8.0)
                         .child(typography_section())
+                        .child(text_decorations_section())
                         .child(blockquote_section())
                         .child(baseline_alignment_section())
                         .child(inline_text_section())
@@ -100,6 +101,66 @@ fn typography_section() -> Div {
                         .child(heading(1, "Level 1").color(Color::from_hex(0x66B2FF)))
                         .child(heading(3, "Level 3").color(Color::from_hex(0x66B2FF)))
                         .child(heading(5, "Level 5").color(Color::from_hex(0x66B2FF))),
+                ),
+        )
+}
+
+/// Demonstrates text decorations (strikethrough and underline)
+fn text_decorations_section() -> Div {
+    div()
+        .w_full()
+        .flex_col()
+        .gap(4.0)
+        .child(h2("Text Decorations").color(Color::WHITE))
+        .child(
+            div()
+                .bg(Color::rgba(0.12, 0.12, 0.15, 1.0))
+                .rounded(8.0)
+                .p(16.0)
+                .flex_col()
+                .gap(4.0)
+                // Strikethrough
+                .child(label(".strikethrough():").color(Color::GRAY))
+                .child(
+                    div()
+                        .flex_row()
+                        .gap(16.0)
+                        .items_baseline()
+                        .child(text("Regular text").color(Color::WHITE))
+                        .child(text("Strikethrough text").strikethrough().color(Color::WHITE))
+                        .child(text("More regular").color(Color::WHITE)),
+                )
+                // Underline
+                .child(label(".underline():").color(Color::GRAY))
+                .child(
+                    div()
+                        .flex_row()
+                        .gap(16.0)
+                        .items_baseline()
+                        .child(text("Regular text").color(Color::WHITE))
+                        .child(text("Underlined text").underline().color(Color::from_hex(0x66B2FF)))
+                        .child(text("More regular").color(Color::WHITE)),
+                )
+                // Both decorations
+                .child(label("Combined decorations:").color(Color::GRAY))
+                .child(
+                    div()
+                        .flex_row()
+                        .gap(16.0)
+                        .items_baseline()
+                        .child(text("Both decorations").strikethrough().underline().italic().color(Color::from_hex(0xFF6666))),
+                )
+                // Different sizes
+                .child(label("Different font sizes:").color(Color::GRAY))
+                .child(
+                    div()
+                        .flex_row()
+                        .gap(16.0)
+                        .items_baseline()
+                        .child(text("12px").size(12.0).strikethrough().color(Color::WHITE))
+                        .child(text("16px").size(16.0).strikethrough().color(Color::WHITE))
+                        .child(text("24px").size(24.0).strikethrough().color(Color::WHITE))
+                        .child(text("32px").size(32.0).strikethrough().color(Color::WHITE)),
                 ),
         )
 }
