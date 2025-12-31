@@ -60,8 +60,8 @@ pub mod markdown;
 
 // Core types
 pub use element::{
-    DynRenderProps, ElementBounds, MotionAnimation, MotionKeyframe, RenderLayer, RenderProps,
-    ResolvedRenderProps,
+    BorderSide, BorderSides, DynRenderProps, ElementBounds, MotionAnimation, MotionKeyframe,
+    RenderLayer, RenderProps, ResolvedRenderProps,
 };
 
 // Diff and reconciliation
@@ -293,8 +293,8 @@ pub mod prelude {
 
     // Typography helpers (h1-h6, b, span, etc.)
     pub use crate::typography::{
-        b, caption, h1, h2, h3, h4, h5, h6, heading, inline_code, label, muted, p, small, span,
-        strong,
+        b, caption, chained_text, h1, h2, h3, h4, h5, h6, heading, inline_code, label, muted, p,
+        small, span, strong,
     };
 
     // Table elements

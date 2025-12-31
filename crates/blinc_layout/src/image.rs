@@ -571,6 +571,7 @@ impl ElementBuilder for Image {
             border_radius: blinc_core::CornerRadius::uniform(self.border_radius),
             border_color: None,
             border_width: 0.0,
+            border_sides: Default::default(),
             layer: self.render_layer,
             material: None,
             node_id: None,

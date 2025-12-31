@@ -369,6 +369,7 @@ pub struct Div {
     pub(crate) border_radius: CornerRadius,
     pub(crate) border_color: Option<Color>,
     pub(crate) border_width: f32,
+    pub(crate) border_sides: crate::element::BorderSides,
     pub(crate) render_layer: RenderLayer,
     pub(crate) material: Option<Material>,
     pub(crate) shadow: Option<Shadow>,
@@ -393,6 +394,7 @@ impl Div {
             border_radius: CornerRadius::default(),
             border_color: None,
             border_width: 0.0,
+            border_sides: crate::element::BorderSides::default(),
             render_layer: RenderLayer::default(),
             material: None,
             shadow: None,
@@ -1324,6 +1326,51 @@ impl Div {
         self
     }
 
+    /// Set left border only (useful for blockquotes)
+    ///
+    /// # Example
+    /// ```ignore
+    /// div().border_left(4.0, Color::BLUE).pl(16.0)
+    /// ```
+    pub fn border_left(mut self, width: f32, color: Color) -> Self {
+        self.border_sides.left = Some(crate::element::BorderSide::new(width, color));
+        self
+    }
+
+    /// Set right border only
+    pub fn border_right(mut self, width: f32, color: Color) -> Self {
+        self.border_sides.right = Some(crate::element::BorderSide::new(width, color));
+        self
+    }
+
+    /// Set top border only
+    pub fn border_top(mut self, width: f32, color: Color) -> Self {
+        self.border_sides.top = Some(crate::element::BorderSide::new(width, color));
+        self
+    }
+
+    /// Set bottom border only
+    pub fn border_bottom(mut self, width: f32, color: Color) -> Self {
+        self.border_sides.bottom = Some(crate::element::BorderSide::new(width, color));
+        self
+    }
+
+    /// Set horizontal borders (left and right)
+    pub fn border_x(mut self, width: f32, color: Color) -> Self {
+        let side = crate::element::BorderSide::new(width, color);
+        self.border_sides.left = Some(side);
+        self.border_sides.right = Some(side);
+        self
+    }
+
+    /// Set vertical borders (top and bottom)
+    pub fn border_y(mut self, width: f32, color: Color) -> Self {
+        let side = crate::element::BorderSide::new(width, color);
+        self.border_sides.top = Some(side);
+        self.border_sides.bottom = Some(side);
+        self
+    }
+
     // =========================================================================
     // Layer (for rendering order)
     // =========================================================================
@@ -2087,6 +2134,7 @@ impl ElementBuilder for Div {
             border_radius: self.border_radius,
             border_color: self.border_color,
             border_width: self.border_width,
+            border_sides: self.border_sides,
             layer: self.render_layer,
             material: self.material.clone(),
             node_id: None,

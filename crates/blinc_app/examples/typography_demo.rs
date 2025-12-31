@@ -49,6 +49,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .gap(32.0)
                         .p(8.0)
                         .child(typography_section())
+                        .child(blockquote_section())
                         .child(baseline_alignment_section())
                         .child(inline_text_section())
                         .child(font_family_section()),
@@ -99,6 +100,74 @@ fn typography_section() -> Div {
                         .child(heading(1, "Level 1").color(Color::from_hex(0x66B2FF)))
                         .child(heading(3, "Level 3").color(Color::from_hex(0x66B2FF)))
                         .child(heading(5, "Level 5").color(Color::from_hex(0x66B2FF))),
+                ),
+        )
+}
+
+/// Demonstrates blockquote-style borders
+fn blockquote_section() -> Div {
+    div()
+        .w_full()
+        .flex_col()
+        .gap(12.0)
+        .child(h2("Blockquote Borders").color(Color::WHITE))
+        .child(
+            div()
+                .bg(Color::rgba(0.12, 0.12, 0.15, 1.0))
+                .rounded(8.0)
+                .p(16.0)
+                .flex_col()
+                .gap(16.0)
+                // Left border only (blockquote style)
+                .child(label(".border_left():").color(Color::GRAY))
+                .child(
+                    div()
+                        .border_left(4.0, Color::from_hex(0x66B2FF))
+                        .bg(Color::rgba(0.15, 0.15, 0.2, 1.0))
+                        .p(12.0)
+                        .child(
+                            p("This is a blockquote with a left border. It uses border_left() to achieve the classic blockquote appearance.")
+                                .color(Color::from_hex(0xCCCCCC)),
+                        ),
+                )
+                // All individual borders
+                .child(label(".border_left/right/top/bottom():").color(Color::GRAY))
+                .child(
+                    div()
+                        .border_left(3.0, Color::from_hex(0xFF6666))
+                        .border_right(3.0, Color::from_hex(0x66FF66))
+                        .border_top(3.0, Color::from_hex(0x6666FF))
+                        .border_bottom(3.0, Color::from_hex(0xFFFF66))
+                        .bg(Color::rgba(0.15, 0.15, 0.2, 1.0))
+                        .p(12.0)
+                        .child(
+                            p("Each border side can have different colors and widths.")
+                                .color(Color::WHITE),
+                        ),
+                )
+                // Horizontal borders only
+                .child(label(".border_y():").color(Color::GRAY))
+                .child(
+                    div()
+                        .border_y(2.0, Color::from_hex(0x66B2FF))
+                        .bg(Color::rgba(0.15, 0.15, 0.2, 1.0))
+                        .p(12.0)
+                        .child(
+                            p("Top and bottom borders using border_y()")
+                                .color(Color::WHITE),
+                        ),
+                )
+                // Vertical borders only
+                .child(label(".border_x():").color(Color::GRAY))
+                .child(
+                    div()
+                        .border_x(2.0, Color::from_hex(0x66FF99))
+                        .bg(Color::rgba(0.15, 0.15, 0.2, 1.0))
+                        .p(12.0)
+                        .child(
+                            p("Left and right borders using border_x()")
+                                .color(Color::WHITE),
+                        ),
                 ),
         )
 }

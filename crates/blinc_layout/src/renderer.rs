@@ -2463,8 +2463,47 @@ impl RenderTree {
             }
         }
 
-        // Draw border if specified
-        if render_node.props.border_width > 0.0 {
+        // Draw borders
+        // Individual border sides take precedence over uniform border
+        if render_node.props.border_sides.has_any() {
+            // Draw individual border sides as filled rectangles
+            let sides = &render_node.props.border_sides;
+
+            // Left border
+            if let Some(ref border) = sides.left {
+                if border.is_visible() {
+                    let border_rect = Rect::new(0.0, 0.0, border.width, rect.height());
+                    ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                }
+            }
+
+            // Right border
+            if let Some(ref border) = sides.right {
+                if border.is_visible() {
+                    let border_rect =
+                        Rect::new(rect.width() - border.width, 0.0, border.width, rect.height());
+                    ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                }
+            }
+
+            // Top border
+            if let Some(ref border) = sides.top {
+                if border.is_visible() {
+                    let border_rect = Rect::new(0.0, 0.0, rect.width(), border.width);
+                    ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                }
+            }
+
+            // Bottom border
+            if let Some(ref border) = sides.bottom {
+                if border.is_visible() {
+                    let border_rect =
+                        Rect::new(0.0, rect.height() - border.width, rect.width(), border.width);
+                    ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                }
+            }
+        } else if render_node.props.border_width > 0.0 {
+            // Fall back to uniform border
             if let Some(ref border_color) = render_node.props.border_color {
                 let stroke = Stroke::new(render_node.props.border_width);
                 ctx.stroke_rect(rect, radius, &stroke, Brush::Solid(*border_color));
@@ -2806,8 +2845,70 @@ impl RenderTree {
                 }
             }
 
-            // Draw border if specified
-            if render_node.props.border_width > 0.0 {
+            // Draw borders
+            // Individual border sides take precedence over uniform border
+            if render_node.props.border_sides.has_any() {
+                let sides = &render_node.props.border_sides;
+
+                // Helper to apply motion opacity
+                let apply_motion = |color: Color| -> Color {
+                    if motion_opacity < 1.0 {
+                        Color::rgba(color.r, color.g, color.b, color.a * motion_opacity)
+                    } else {
+                        color
+                    }
+                };
+
+                // Left border
+                if let Some(ref border) = sides.left {
+                    if border.is_visible() {
+                        let border_rect = Rect::new(0.0, 0.0, border.width, rect.height());
+                        ctx.fill_rect(
+                            border_rect,
+                            CornerRadius::default(),
+                            Brush::Solid(apply_motion(border.color)),
+                        );
+                    }
+                }
+
+                // Right border
+                if let Some(ref border) = sides.right {
+                    if border.is_visible() {
+                        let border_rect =
+                            Rect::new(rect.width() - border.width, 0.0, border.width, rect.height());
+                        ctx.fill_rect(
+                            border_rect,
+                            CornerRadius::default(),
+                            Brush::Solid(apply_motion(border.color)),
+                        );
+                    }
+                }
+
+                // Top border
+                if let Some(ref border) = sides.top {
+                    if border.is_visible() {
+                        let border_rect = Rect::new(0.0, 0.0, rect.width(), border.width);
+                        ctx.fill_rect(
+                            border_rect,
+                            CornerRadius::default(),
+                            Brush::Solid(apply_motion(border.color)),
+                        );
+                    }
+                }
+
+                // Bottom border
+                if let Some(ref border) = sides.bottom {
+                    if border.is_visible() {
+                        let border_rect =
+                            Rect::new(0.0, rect.height() - border.width, rect.width(), border.width);
+                        ctx.fill_rect(
+                            border_rect,
+                            CornerRadius::default(),
+                            Brush::Solid(apply_motion(border.color)),
+                        );
+                    }
+                }
+            } else if render_node.props.border_width > 0.0 {
                 if let Some(ref border_color) = render_node.props.border_color {
                     let stroke = Stroke::new(render_node.props.border_width);
                     let brush = if motion_opacity < 1.0 {
@@ -3079,8 +3180,37 @@ impl RenderTree {
                 }
             }
 
-            // Draw border if specified
-            if render_node.props.border_width > 0.0 {
+            // Draw borders
+            if render_node.props.border_sides.has_any() {
+                let sides = &render_node.props.border_sides;
+
+                if let Some(ref border) = sides.left {
+                    if border.is_visible() {
+                        let border_rect = Rect::new(0.0, 0.0, border.width, rect.height());
+                        ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                    }
+                }
+                if let Some(ref border) = sides.right {
+                    if border.is_visible() {
+                        let border_rect =
+                            Rect::new(rect.width() - border.width, 0.0, border.width, rect.height());
+                        ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                    }
+                }
+                if let Some(ref border) = sides.top {
+                    if border.is_visible() {
+                        let border_rect = Rect::new(0.0, 0.0, rect.width(), border.width);
+                        ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                    }
+                }
+                if let Some(ref border) = sides.bottom {
+                    if border.is_visible() {
+                        let border_rect =
+                            Rect::new(0.0, rect.height() - border.width, rect.width(), border.width);
+                        ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                    }
+                }
+            } else if render_node.props.border_width > 0.0 {
                 if let Some(ref border_color) = render_node.props.border_color {
                     let stroke = Stroke::new(render_node.props.border_width);
                     ctx.stroke_rect(rect, radius, &stroke, Brush::Solid(*border_color));
@@ -3322,8 +3452,61 @@ impl RenderTree {
                         }
                     }
 
-                    // Draw border if specified
-                    if render_node.props.border_width > 0.0 {
+                    // Draw borders
+                    if render_node.props.border_sides.has_any() {
+                        let sides = &render_node.props.border_sides;
+
+                        if let Some(ref border) = sides.left {
+                            if border.is_visible() {
+                                let border_rect = Rect::new(0.0, 0.0, border.width, rect.height());
+                                ctx.fill_rect(
+                                    border_rect,
+                                    CornerRadius::default(),
+                                    Brush::Solid(border.color),
+                                );
+                            }
+                        }
+                        if let Some(ref border) = sides.right {
+                            if border.is_visible() {
+                                let border_rect = Rect::new(
+                                    rect.width() - border.width,
+                                    0.0,
+                                    border.width,
+                                    rect.height(),
+                                );
+                                ctx.fill_rect(
+                                    border_rect,
+                                    CornerRadius::default(),
+                                    Brush::Solid(border.color),
+                                );
+                            }
+                        }
+                        if let Some(ref border) = sides.top {
+                            if border.is_visible() {
+                                let border_rect = Rect::new(0.0, 0.0, rect.width(), border.width);
+                                ctx.fill_rect(
+                                    border_rect,
+                                    CornerRadius::default(),
+                                    Brush::Solid(border.color),
+                                );
+                            }
+                        }
+                        if let Some(ref border) = sides.bottom {
+                            if border.is_visible() {
+                                let border_rect = Rect::new(
+                                    0.0,
+                                    rect.height() - border.width,
+                                    rect.width(),
+                                    border.width,
+                                );
+                                ctx.fill_rect(
+                                    border_rect,
+                                    CornerRadius::default(),
+                                    Brush::Solid(border.color),
+                                );
+                            }
+                        }
+                    } else if render_node.props.border_width > 0.0 {
                         if let Some(ref border_color) = render_node.props.border_color {
                             let stroke = Stroke::new(render_node.props.border_width);
                             ctx.stroke_rect(rect, radius, &stroke, Brush::Solid(*border_color));

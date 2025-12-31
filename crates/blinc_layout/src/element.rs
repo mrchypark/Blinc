@@ -733,6 +733,58 @@ impl MotionAnimation {
     }
 }
 
+/// Individual border side configuration
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BorderSide {
+    /// Width in pixels (0 = no border)
+    pub width: f32,
+    /// Border color
+    pub color: Color,
+}
+
+impl BorderSide {
+    /// Create a new border side
+    pub fn new(width: f32, color: Color) -> Self {
+        Self { width, color }
+    }
+
+    /// Check if this border side is visible
+    pub fn is_visible(&self) -> bool {
+        self.width > 0.0 && self.color.a > 0.0
+    }
+}
+
+/// Per-side border configuration for CSS-like border control
+///
+/// Allows setting borders independently for each side (top, right, bottom, left).
+/// This is useful for blockquotes (left border only), dividers, etc.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BorderSides {
+    /// Top border
+    pub top: Option<BorderSide>,
+    /// Right border
+    pub right: Option<BorderSide>,
+    /// Bottom border
+    pub bottom: Option<BorderSide>,
+    /// Left border
+    pub left: Option<BorderSide>,
+}
+
+impl BorderSides {
+    /// Create empty border sides (no borders)
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Check if any border side is set
+    pub fn has_any(&self) -> bool {
+        self.top.as_ref().is_some_and(|b| b.is_visible())
+            || self.right.as_ref().is_some_and(|b| b.is_visible())
+            || self.bottom.as_ref().is_some_and(|b| b.is_visible())
+            || self.left.as_ref().is_some_and(|b| b.is_visible())
+    }
+}
+
 /// Visual properties for rendering an element
 #[derive(Clone)]
 pub struct RenderProps {
@@ -740,10 +792,12 @@ pub struct RenderProps {
     pub background: Option<Brush>,
     /// Corner radius for rounded rectangles
     pub border_radius: CornerRadius,
-    /// Border color (None = no border)
+    /// Border color (None = no border) - used for uniform borders
     pub border_color: Option<Color>,
-    /// Border width in pixels
+    /// Border width in pixels - used for uniform borders
     pub border_width: f32,
+    /// Per-side borders (takes precedence over uniform border if set)
+    pub border_sides: BorderSides,
     /// Which layer this element renders in
     pub layer: RenderLayer,
     /// Material applied to this element (glass, metallic, etc.)
@@ -772,6 +826,7 @@ impl Default for RenderProps {
             border_radius: CornerRadius::default(),
             border_color: None,
             border_width: 0.0,
+            border_sides: BorderSides::default(),
             layer: RenderLayer::default(),
             material: None,
             node_id: None,
