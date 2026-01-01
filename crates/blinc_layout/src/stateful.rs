@@ -2370,13 +2370,14 @@ mod tests {
     #[test]
     fn test_unit_state_ignores_all_events() {
         // Unit type () as a dummy state for stateful elements
-        let elem: Stateful<()> = Stateful::new(())
-            .w(100.0)
-            .h(40.0)
-            .bg(Color::BLUE)
-            .on_state(|_state, div| {
-                div.set_bg(Color::RED);
-            });
+        let elem: Stateful<()> =
+            Stateful::new(())
+                .w(100.0)
+                .h(40.0)
+                .bg(Color::BLUE)
+                .on_state(|_state, div| {
+                    div.set_bg(Color::RED);
+                });
 
         // State should always be ()
         assert_eq!(elem.state(), ());
