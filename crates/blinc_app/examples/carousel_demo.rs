@@ -150,7 +150,7 @@ fn build_carousel(
                         .direction(ScrollDirection::Horizontal)
                         .w(VIEWPORT_WIDTH)
                         .h(CARD_HEIGHT + 20.0)
-                        .items_center()
+                        .items_start()
                         .child(
                             // Cards container - STATIC, no stateful needed
                             div()
@@ -158,7 +158,7 @@ fn build_carousel(
                                 .gap(CARD_GAP)
                                 // Padding to center first and last cards
                                 .px((VIEWPORT_WIDTH - CARD_WIDTH) / 2.0)
-                                .items_center()
+                                .items_start()
                                 .children(
                                     cards
                                         .iter()

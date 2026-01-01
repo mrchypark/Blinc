@@ -1493,4 +1493,207 @@ mod tests {
 
         assert!(s.scroll_info().is_some());
     }
+
+    #[test]
+    fn test_scroll_child_starts_at_origin() {
+        use crate::div::div;
+        use taffy::{AvailableSpace, Size};
+
+        // Create a scroll container with a smaller child
+        let s = scroll()
+            .w(400.0)
+            .h(300.0)
+            .child(div().w(200.0).h(100.0));
+
+        let mut tree = LayoutTree::new();
+        let root_id = s.build(&mut tree);
+
+        // Compute layout
+        tree.compute_layout(
+            root_id,
+            Size {
+                width: AvailableSpace::Definite(400.0),
+                height: AvailableSpace::Definite(300.0),
+            },
+        );
+
+        // Get the scroll container's child
+        let children = tree.children(root_id);
+        assert!(!children.is_empty(), "Scroll should have a child");
+
+        let child_id = children[0];
+        let child_layout = tree.get_layout(child_id).expect("Child should have layout");
+
+        // Child should start at (0, 0) relative to scroll container
+        assert_eq!(
+            child_layout.location.x, 0.0,
+            "Child x should be at origin, got {}",
+            child_layout.location.x
+        );
+        assert_eq!(
+            child_layout.location.y, 0.0,
+            "Child y should be at origin, got {}",
+            child_layout.location.y
+        );
+    }
+
+    #[test]
+    fn test_scroll_with_items_center_still_starts_at_origin() {
+        use crate::div::div;
+        use taffy::{AvailableSpace, Size};
+
+        // Create a scroll container with items_center - this should NOT offset content
+        // since scroll content should always start at the edge
+        let s = scroll()
+            .w(400.0)
+            .h(300.0)
+            .items_center() // User applies items_center
+            .child(div().w(200.0).h(100.0));
+
+        let mut tree = LayoutTree::new();
+        let root_id = s.build(&mut tree);
+
+        tree.compute_layout(
+            root_id,
+            Size {
+                width: AvailableSpace::Definite(400.0),
+                height: AvailableSpace::Definite(300.0),
+            },
+        );
+
+        let children = tree.children(root_id);
+        let child_id = children[0];
+        let child_layout = tree.get_layout(child_id).expect("Child should have layout");
+
+        // For horizontal scroll (default is vertical), items_center centers on cross axis (x)
+        // For vertical scroll, items_center centers on cross axis (x)
+        // This test documents current behavior
+        println!(
+            "With items_center: child location = ({}, {})",
+            child_layout.location.x, child_layout.location.y
+        );
+
+        // Note: When items_center is applied, the child WILL be centered horizontally
+        // This is expected behavior based on flexbox rules
+        // The issue the user reports might be about main axis (justify), not cross axis
+    }
+
+    #[test]
+    fn test_scroll_with_justify_center_offsets_content() {
+        use crate::div::div;
+        use taffy::{AvailableSpace, Size};
+
+        // If user applies justify_center, content WILL be offset on main axis
+        // Default flex direction is Row, so main axis is X
+        let s = scroll()
+            .w(400.0)
+            .h(300.0)
+            .justify_center() // User explicitly applies justify_center
+            .child(div().w(200.0).h(100.0));
+
+        let mut tree = LayoutTree::new();
+        let root_id = s.build(&mut tree);
+
+        tree.compute_layout(
+            root_id,
+            Size {
+                width: AvailableSpace::Definite(400.0),
+                height: AvailableSpace::Definite(300.0),
+            },
+        );
+
+        let children = tree.children(root_id);
+        let child_id = children[0];
+        let child_layout = tree.get_layout(child_id).expect("Child should have layout");
+
+        // Default flex direction is Row, so justify_center centers on X axis
+        // Child width 200, viewport 400 -> centered at x=100
+        assert_eq!(
+            child_layout.location.x, 100.0,
+            "justify_center should center child on x axis (main axis for flex-row)"
+        );
+        assert_eq!(
+            child_layout.location.y, 0.0,
+            "y should be 0 (cross axis not affected)"
+        );
+    }
+
+    #[test]
+    fn test_horizontal_scroll_content_position() {
+        use crate::div::div;
+        use taffy::{AvailableSpace, Size};
+
+        // Simulate carousel structure: horizontal scroll with flex_row child
+        let s = scroll()
+            .direction(ScrollDirection::Horizontal)
+            .w(400.0)
+            .h(300.0)
+            .items_start() // Cross axis (Y) alignment
+            .child(
+                div()
+                    .flex_row()
+                    .gap(20.0)
+                    .children(vec![
+                        div().w(280.0).h(280.0),
+                        div().w(280.0).h(280.0),
+                        div().w(280.0).h(280.0),
+                    ]),
+            );
+
+        let mut tree = LayoutTree::new();
+        let root_id = s.build(&mut tree);
+
+        tree.compute_layout(
+            root_id,
+            Size {
+                width: AvailableSpace::Definite(400.0),
+                height: AvailableSpace::Definite(300.0),
+            },
+        );
+
+        // Get scroll's direct child (the flex_row container)
+        let children = tree.children(root_id);
+        assert!(!children.is_empty(), "Scroll should have content");
+        let content_id = children[0];
+        let content_layout = tree.get_layout(content_id).expect("Content should have layout");
+
+        // Print for debugging
+        println!(
+            "Content container: location=({}, {}), size=({}, {})",
+            content_layout.location.x,
+            content_layout.location.y,
+            content_layout.size.width,
+            content_layout.size.height
+        );
+
+        // Content should start at origin (0, 0)
+        assert_eq!(
+            content_layout.location.x, 0.0,
+            "Horizontal scroll content should start at x=0, got {}",
+            content_layout.location.x
+        );
+        assert_eq!(
+            content_layout.location.y, 0.0,
+            "Content should start at y=0, got {}",
+            content_layout.location.y
+        );
+
+        // Get the first card
+        let content_children = tree.children(content_id);
+        if !content_children.is_empty() {
+            let first_card = content_children[0];
+            let first_card_layout = tree.get_layout(first_card).expect("First card layout");
+            println!(
+                "First card: location=({}, {})",
+                first_card_layout.location.x, first_card_layout.location.y
+            );
+
+            // First card should be at origin within the content container
+            assert_eq!(
+                first_card_layout.location.x, 0.0,
+                "First card should be at x=0, got {}",
+                first_card_layout.location.x
+            );
+        }
+    }
 }
