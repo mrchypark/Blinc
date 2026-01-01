@@ -33,6 +33,7 @@
 - [Scroll Containers](./widgets/scroll.md)
 - [Canvas Drawing](./widgets/canvas.md)
 - [Images & SVG](./widgets/media.md)
+- [Markdown Rendering](./widgets/markdown.md)
 
 # Advanced
 

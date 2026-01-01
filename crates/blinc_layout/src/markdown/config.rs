@@ -88,12 +88,12 @@ impl Default for MarkdownConfig {
             // Spacing
             paragraph_spacing: 16.0,
             heading_spacing: 24.0,
-            list_indent: 24.0,
+            list_indent: 0.0,
             list_item_spacing: 4.0,
             blockquote_padding: 16.0,
             code_padding: 12.0,
-            list_marker_width: 20.0,
-            list_marker_gap: 6.0,
+            list_marker_width: 12.0,
+            list_marker_gap: 4.0,
         }
     }
 }
@@ -132,11 +132,11 @@ impl MarkdownConfig {
             // Tight spacing
             paragraph_spacing: 6.0,
             heading_spacing: 8.0,
-            list_indent: 16.0,
-            list_item_spacing: 2.0,
+            list_indent: 0.0,
+            list_item_spacing: 4.0,
             blockquote_padding: 8.0,
             code_padding: 8.0,
-            list_marker_width: 16.0,
+            list_marker_width: 12.0,
             list_marker_gap: 4.0,
         }
     }

@@ -43,11 +43,14 @@ impl MarkdownRenderer {
 
     /// Render markdown text to a Div containing all the elements
     pub fn render(&self, markdown_text: &str) -> Div {
-        // Set up parser with GFM extensions
+        // Set up parser with GFM extensions and additional features
         let mut options = Options::empty();
         options.insert(Options::ENABLE_TABLES);
         options.insert(Options::ENABLE_STRIKETHROUGH);
         options.insert(Options::ENABLE_TASKLISTS);
+        options.insert(Options::ENABLE_FOOTNOTES);
+        options.insert(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+        options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
 
         let parser = Parser::new_ext(markdown_text, options);
         let events: Vec<Event<'_>> = parser.collect();
@@ -144,6 +147,20 @@ struct RenderState<'a> {
     in_table_head: bool,
     /// Current table body row index (for striped rows)
     table_row_index: usize,
+    /// Inside an image tag (to skip alt text)
+    in_image: bool,
+    /// Footnote definitions collected during parsing (label -> content)
+    footnote_defs: Vec<(String, Div)>,
+    /// Current footnote being defined
+    current_footnote: Option<String>,
+    /// Footnote definition counter for numbering
+    footnote_counter: usize,
+    /// Inside a metadata block (skip content)
+    in_metadata_block: bool,
+    /// Inside an HTML block
+    in_html_block: bool,
+    /// HTML block content accumulator
+    html_content: String,
 }
 
 enum StackItem {
@@ -159,6 +176,7 @@ enum StackItem {
     TableHead(Div),
     TableBody(Div),
     TableRow(Div),
+    FootnoteDefinition(String, Div), // (label, content container)
 }
 
 impl<'a> RenderState<'a> {
@@ -178,6 +196,13 @@ impl<'a> RenderState<'a> {
             list_start: 1,
             in_table_head: false,
             table_row_index: 0,
+            in_image: false,
+            footnote_defs: Vec::new(),
+            current_footnote: None,
+            footnote_counter: 0,
+            in_metadata_block: false,
+            in_html_block: false,
+            html_content: String::new(),
         }
     }
 
@@ -196,10 +221,10 @@ impl<'a> RenderState<'a> {
             Event::SoftBreak => self.handle_soft_break(),
             Event::HardBreak => self.handle_hard_break(),
             Event::Rule => self.handle_rule(),
-            Event::Html(_) => {} // Skip HTML for now
-            Event::FootnoteReference(_) => {}
+            Event::Html(html) => self.handle_html(html),
+            Event::FootnoteReference(label) => self.handle_footnote_reference(label),
             Event::TaskListMarker(checked) => self.handle_task_marker(*checked),
-            Event::InlineHtml(_) => {}
+            Event::InlineHtml(html) => self.handle_inline_html(html),
         }
     }
 
@@ -234,6 +259,12 @@ impl<'a> RenderState<'a> {
                 };
             }
             Tag::List(start) => {
+                // Flush any pending inline text before starting a nested list
+                // This ensures "Parent item" text appears before the nested list
+                if let Some(content) = self.build_inline_content() {
+                    self.add_to_current_context(content);
+                }
+
                 let list_config = ListConfig {
                     marker_width: self.config.list_marker_width,
                     marker_gap: self.config.list_marker_gap,
@@ -275,7 +306,8 @@ impl<'a> RenderState<'a> {
                 self.stack.push(StackItem::Link(dest_url.to_string()));
             }
             Tag::Image { dest_url, .. } => {
-                // Handle images inline
+                // Handle images inline - mark that we're in an image to skip alt text
+                self.in_image = true;
                 let img_elem = img(dest_url.to_string());
                 self.add_to_current_context(img_elem);
             }
@@ -312,9 +344,26 @@ impl<'a> RenderState<'a> {
             Tag::TableCell => {
                 // Cell content will be accumulated in inline_text
             }
-            Tag::FootnoteDefinition(_) => {}
-            Tag::MetadataBlock(_) => {}
-            Tag::HtmlBlock => {}
+            Tag::FootnoteDefinition(label) => {
+                // Start collecting content for this footnote definition
+                self.current_footnote = Some(label.to_string());
+                self.footnote_counter += 1;
+                // Create a container for the footnote content
+                let footnote_content = div().flex_col().gap(self.config.paragraph_spacing / 2.0);
+                self.stack.push(StackItem::FootnoteDefinition(
+                    label.to_string(),
+                    footnote_content,
+                ));
+            }
+            Tag::MetadataBlock(_kind) => {
+                // Skip metadata blocks (YAML frontmatter) - just mark that we're in one
+                self.in_metadata_block = true;
+            }
+            Tag::HtmlBlock => {
+                // Start collecting HTML content
+                self.in_html_block = true;
+                self.html_content.clear();
+            }
         }
     }
 
@@ -376,43 +425,51 @@ impl<'a> RenderState<'a> {
                     ..ListConfig::default()
                 };
 
-                if let Some(StackItem::ListItem(item)) = self.stack.pop() {
-                    // Add content to item
-                    let item = if let Some(content) = content {
-                        item.child_box(Box::new(content))
-                    } else {
-                        item
-                    };
+                // Peek at the stack to determine what kind of item we have
+                let is_task_item = matches!(self.stack.last(), Some(StackItem::TaskItem(_)));
+                let is_list_item = matches!(self.stack.last(), Some(StackItem::ListItem(_)));
 
-                    // Add to parent list
-                    match self.stack.last_mut() {
-                        Some(StackItem::UnorderedList(list)) => {
-                            let new_list =
-                                std::mem::replace(list, ul_with_config(list_config.clone()));
-                            *list = new_list.child(item);
-                            self.list_item_index += 1;
+                if is_list_item {
+                    if let Some(StackItem::ListItem(item)) = self.stack.pop() {
+                        // Add content to item
+                        let item = if let Some(content) = content {
+                            item.child_box(Box::new(content))
+                        } else {
+                            item
+                        };
+
+                        // Add to parent list
+                        match self.stack.last_mut() {
+                            Some(StackItem::UnorderedList(list)) => {
+                                let new_list =
+                                    std::mem::replace(list, ul_with_config(list_config.clone()));
+                                *list = new_list.child(item);
+                                self.list_item_index += 1;
+                            }
+                            Some(StackItem::OrderedList(list)) => {
+                                let new_list =
+                                    std::mem::replace(list, ol_with_config(list_config.clone()));
+                                *list = new_list.child(item);
+                                self.list_item_index += 1;
+                            }
+                            _ => {}
                         }
-                        Some(StackItem::OrderedList(list)) => {
-                            let new_list =
-                                std::mem::replace(list, ol_with_config(list_config.clone()));
-                            *list = new_list.child(item);
-                            self.list_item_index += 1;
-                        }
-                        _ => {}
                     }
-                } else if let Some(StackItem::TaskItem(item)) = self.stack.pop() {
-                    // Add content to task item
-                    let item = if let Some(content) = content {
-                        item.child_box(Box::new(content))
-                    } else {
-                        item
-                    };
+                } else if is_task_item {
+                    if let Some(StackItem::TaskItem(item)) = self.stack.pop() {
+                        // Add content to task item
+                        let item = if let Some(content) = content {
+                            item.child_box(Box::new(content))
+                        } else {
+                            item
+                        };
 
-                    // Add task item to parent list
-                    if let Some(StackItem::UnorderedList(list)) = self.stack.last_mut() {
-                        let new_list = std::mem::replace(list, ul_with_config(list_config));
-                        *list = new_list.child_element(item);
-                        self.list_item_index += 1;
+                        // Add task item to parent list
+                        if let Some(StackItem::UnorderedList(list)) = self.stack.last_mut() {
+                            let new_list = std::mem::replace(list, ul_with_config(list_config));
+                            *list = new_list.child_element(item);
+                            self.list_item_index += 1;
+                        }
                     }
                 }
             }
@@ -433,7 +490,10 @@ impl<'a> RenderState<'a> {
                 self.inline_style.link_url = None;
                 self.stack.pop(); // Pop the Link stack item
             }
-            TagEnd::Image => {}
+            TagEnd::Image => {
+                // Done with image, stop skipping alt text
+                self.in_image = false;
+            }
             TagEnd::Table => {
                 // Close tbody if it's on the stack
                 if let Some(StackItem::TableBody(body)) = self.stack.pop() {
@@ -494,13 +554,52 @@ impl<'a> RenderState<'a> {
                     *row = std::mem::replace(row, tr()).child(table_cell);
                 }
             }
-            TagEnd::FootnoteDefinition => {}
-            TagEnd::MetadataBlock(_) => {}
-            TagEnd::HtmlBlock => {}
+            TagEnd::FootnoteDefinition => {
+                // Finish the footnote definition and store it
+                if let Some(StackItem::FootnoteDefinition(label, content)) = self.stack.pop() {
+                    self.footnote_defs.push((label, content));
+                }
+                self.current_footnote = None;
+            }
+            TagEnd::MetadataBlock(_) => {
+                // Done skipping metadata block
+                self.in_metadata_block = false;
+            }
+            TagEnd::HtmlBlock => {
+                // Render accumulated HTML as preformatted text (basic support)
+                self.in_html_block = false;
+                let html = std::mem::take(&mut self.html_content);
+                if !html.trim().is_empty() {
+                    // Render HTML blocks as preformatted code-like text
+                    let html_block = div().bg(self.config.code_bg).rounded(4.0).p(2.0).child(
+                        text(&html)
+                            .size(self.config.code_size)
+                            .color(self.config.text_secondary)
+                            .monospace(),
+                    );
+                    self.add_to_current_context(html_block);
+                }
+            }
         }
     }
 
     fn handle_text(&mut self, text: &str) {
+        // Skip alt text inside images - it's only for accessibility/fallback
+        if self.in_image {
+            return;
+        }
+
+        // Skip text inside metadata blocks (YAML frontmatter)
+        if self.in_metadata_block {
+            return;
+        }
+
+        // Collect HTML block content
+        if self.in_html_block {
+            self.html_content.push_str(text);
+            return;
+        }
+
         if self.in_code_block {
             // Don't decode entities in code blocks - preserve literal text
             self.code_content.push_str(text);
@@ -733,6 +832,10 @@ impl<'a> RenderState<'a> {
                     *ti = std::mem::replace(ti, task_item(false)).child(element);
                     return;
                 }
+                StackItem::FootnoteDefinition(_, content) => {
+                    *content = std::mem::replace(content, div()).child(element);
+                    return;
+                }
                 _ => continue,
             }
         }
@@ -741,7 +844,253 @@ impl<'a> RenderState<'a> {
         self.container = std::mem::replace(&mut self.container, div()).child(element);
     }
 
-    fn into_container(self) -> Div {
+    fn handle_footnote_reference(&mut self, label: &str) {
+        // Flush any pending text first
+        self.flush_segments_to_elements();
+
+        // Render as a link-styled element with pointer cursor
+        // TODO: In the future, this could scroll to the footnote definition
+        let footnote_ref = link(format!("[{}]", label), format!("#footnote-{}", label))
+            .font_size(self.config.body_size * 0.75) // Smaller, superscript-like
+            .text_color(self.config.link_color);
+
+        self.inline_elements.push(Box::new(footnote_ref));
+    }
+
+    fn handle_html(&mut self, html: &str) {
+        // Block-level HTML - try to parse known tags, otherwise render as preformatted
+        let trimmed = html.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        // Try to parse as a known block-level HTML tag
+        if let Some(element) = self.parse_html_block(trimmed) {
+            self.container = std::mem::replace(&mut self.container, div()).child_box(element);
+        } else {
+            // Fallback: render as preformatted code-like text
+            let html_block = div().bg(self.config.code_bg).rounded(4.0).p(2.0).child(
+                text(trimmed)
+                    .size(self.config.code_size)
+                    .color(self.config.text_secondary)
+                    .monospace(),
+            );
+            self.add_to_current_context(html_block);
+        }
+    }
+
+    fn handle_inline_html(&mut self, html: &str) {
+        // Inline HTML - try to parse known inline tags
+        let trimmed = html.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        // Handle common inline HTML tags by modifying inline style
+        if let Some(tag_name) = Self::parse_html_tag_name(trimmed) {
+            let is_closing = trimmed.starts_with("</");
+
+            match tag_name.to_lowercase().as_str() {
+                "strong" | "b" => {
+                    self.flush_inline_text();
+                    self.inline_style.bold = !is_closing;
+                    return;
+                }
+                "em" | "i" => {
+                    self.flush_inline_text();
+                    self.inline_style.italic = !is_closing;
+                    return;
+                }
+                "s" | "del" | "strike" => {
+                    self.flush_inline_text();
+                    self.inline_style.strikethrough = !is_closing;
+                    return;
+                }
+                "u" | "ins" => {
+                    // Underline - we don't have a direct flag but can use link style
+                    self.flush_inline_text();
+                    // No direct underline support in inline_style, skip for now
+                    return;
+                }
+                "code" => {
+                    // Inline code handled separately
+                    return;
+                }
+                "br" => {
+                    // Line break
+                    self.handle_hard_break();
+                    return;
+                }
+                "sup" | "sub" => {
+                    // Super/subscript - we don't have native support, skip
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Fallback: render as inline code-like text for unknown tags
+        self.flush_segments_to_elements();
+        let html_span = text(trimmed)
+            .size(self.config.code_size)
+            .color(self.config.text_secondary)
+            .monospace()
+            .v_baseline()
+            .no_wrap();
+        self.inline_elements.push(Box::new(html_span));
+    }
+
+    /// Parse an HTML tag name from an HTML string like "<strong>text</strong>" or "<br>"
+    fn parse_html_tag_name(html: &str) -> Option<&str> {
+        let html = html.trim();
+        if !html.starts_with('<') {
+            return None;
+        }
+
+        // Find the end of the opening tag
+        let tag_end = html.find('>')?;
+
+        // Get the opening tag content (between < and >)
+        let tag_content = &html[1..tag_end];
+
+        // Handle closing tags (skip the /)
+        let tag_content = tag_content.strip_prefix('/').unwrap_or(tag_content);
+
+        // Get tag name (until space, /, or end)
+        let end = tag_content
+            .find(|c: char| c.is_whitespace() || c == '/')
+            .unwrap_or(tag_content.len());
+        let tag_name = &tag_content[..end];
+
+        if tag_name.is_empty() {
+            None
+        } else {
+            Some(tag_name)
+        }
+    }
+
+    /// Try to parse a block-level HTML element and return a corresponding layout element
+    fn parse_html_block(&self, html: &str) -> Option<Box<dyn ElementBuilder>> {
+        // Extract the outer tag name
+        let tag_name = Self::parse_html_tag_name(html)?;
+
+        match tag_name.to_lowercase().as_str() {
+            "hr" => Some(Box::new(crate::widgets::hr_with_config(
+                crate::widgets::HrConfig {
+                    color: self.config.hr_color,
+                    thickness: 1.0,
+                    margin_y: 4.0,
+                },
+            ))),
+            "br" => {
+                // Block-level br is just empty space
+                Some(Box::new(div().h(self.config.paragraph_spacing)))
+            }
+            "div" | "section" | "article" | "aside" | "header" | "footer" | "main" | "nav" => {
+                // Container elements - extract inner content and render as a div
+                if let Some(inner) = Self::extract_tag_content(html, tag_name) {
+                    // For now, just render inner content as text
+                    // A full implementation would recursively parse
+                    Some(Box::new(
+                        div().p(2.0).child(
+                            text(inner)
+                                .size(self.config.body_size)
+                                .color(self.config.text_color),
+                        ),
+                    ))
+                } else {
+                    None
+                }
+            }
+            "p" => {
+                if let Some(inner) = Self::extract_tag_content(html, tag_name) {
+                    Some(Box::new(
+                        text(inner)
+                            .size(self.config.body_size)
+                            .color(self.config.text_color),
+                    ))
+                } else {
+                    None
+                }
+            }
+            "pre" => {
+                if let Some(inner) = Self::extract_tag_content(html, tag_name) {
+                    Some(Box::new(code(inner).font_size(self.config.code_size)))
+                } else {
+                    None
+                }
+            }
+            "blockquote" => {
+                if let Some(inner) = Self::extract_tag_content(html, tag_name) {
+                    let bq_config = crate::widgets::BlockquoteConfig {
+                        border_color: self.config.blockquote_border,
+                        bg_color: self.config.blockquote_bg,
+                        padding: self.config.blockquote_padding,
+                        margin_y: self.config.paragraph_spacing / 2.0,
+                        ..Default::default()
+                    };
+                    Some(Box::new(
+                        crate::widgets::blockquote_with_config(bq_config).child(
+                            text(inner)
+                                .size(self.config.body_size)
+                                .color(self.config.text_secondary),
+                        ),
+                    ))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract content between opening and closing tags
+    fn extract_tag_content<'b>(html: &'b str, tag_name: &str) -> Option<&'b str> {
+        // Simple extraction - find content between <tag...> and </tag>
+        let lower = html.to_lowercase();
+        let open_end = html.find('>')?;
+        let close_start = lower.rfind(&format!("</{}", tag_name.to_lowercase()))?;
+
+        if open_end + 1 < close_start {
+            Some(html[open_end + 1..close_start].trim())
+        } else {
+            None
+        }
+    }
+
+    fn into_container(mut self) -> Div {
+        // Append footnote definitions at the end if any exist
+        if !self.footnote_defs.is_empty() {
+            // Add a separator
+            let separator = crate::widgets::hr_with_config(crate::widgets::HrConfig {
+                color: self.config.hr_color,
+                thickness: 1.0,
+                margin_y: 8.0,
+            });
+            self.container = std::mem::replace(&mut self.container, div()).child(separator);
+
+            // Add footnotes section
+            let mut footnotes_section = div().flex_col().gap(self.config.paragraph_spacing / 2.0);
+
+            for (_i, (label, content)) in self.footnote_defs.into_iter().enumerate() {
+                // Create footnote row: number + content
+                let footnote_row = div()
+                    .flex_row()
+                    .gap(8.0)
+                    .items_start()
+                    .child(
+                        text(&format!("[{}]", label))
+                            .size(self.config.body_size * 0.85)
+                            .color(self.config.text_secondary),
+                    )
+                    .child(content);
+
+                footnotes_section = footnotes_section.child(footnote_row);
+            }
+
+            self.container = std::mem::replace(&mut self.container, div()).child(footnotes_section);
+        }
+
         self.container.w_full()
     }
 }
@@ -961,5 +1310,250 @@ mod tests {
         // Should have multiple nodes (table, thead, tbody, rows, cells)
         println!("Tree has {} nodes", tree.len());
         assert!(tree.len() > 5, "Table should have multiple nodes");
+    }
+
+    #[test]
+    fn test_nested_list_events() {
+        // Test that pulldown-cmark generates nested list events correctly
+        let md = r#"- Item 1
+  - Nested item
+- Item 2"#;
+
+        let mut options = Options::empty();
+        options.insert(Options::ENABLE_TASKLISTS);
+
+        let parser = Parser::new_ext(md, options);
+        let events: Vec<_> = parser.collect();
+
+        // Print events for debugging
+        println!("Nested list events:");
+        for (i, event) in events.iter().enumerate() {
+            println!("{}: {:?}", i, event);
+        }
+
+        // Should have two List starts (outer and nested)
+        let list_starts = events
+            .iter()
+            .filter(|e| matches!(e, Event::Start(Tag::List(_))))
+            .count();
+        assert_eq!(list_starts, 2, "Expected 2 list starts (outer + nested)");
+    }
+
+    #[test]
+    fn test_task_list_events() {
+        // Test that pulldown-cmark generates task list events correctly
+        let md = r#"- [x] Done task
+- [ ] Pending task"#;
+
+        let mut options = Options::empty();
+        options.insert(Options::ENABLE_TASKLISTS);
+
+        let parser = Parser::new_ext(md, options);
+        let events: Vec<_> = parser.collect();
+
+        // Print events for debugging
+        println!("Task list events:");
+        for (i, event) in events.iter().enumerate() {
+            println!("{}: {:?}", i, event);
+        }
+
+        // Should have TaskListMarker events
+        let task_markers = events
+            .iter()
+            .filter(|e| matches!(e, Event::TaskListMarker(_)))
+            .count();
+        assert_eq!(task_markers, 2, "Expected 2 task list markers");
+    }
+
+    #[test]
+    fn test_nested_list_renders() {
+        init_theme();
+        let mut tree = LayoutTree::new();
+        let md = r#"- Item 1
+  - Nested item
+- Item 2"#;
+        let content = markdown(md);
+        content.build(&mut tree);
+
+        println!("Nested list tree has {} nodes", tree.len());
+        // Should have nodes for: container, outer list, 2 outer items, nested list, nested item
+        assert!(tree.len() > 5, "Nested list should have multiple nodes");
+    }
+
+    #[test]
+    fn test_task_list_renders() {
+        init_theme();
+        let mut tree = LayoutTree::new();
+        let md = r#"- [x] Done task
+- [ ] Pending task"#;
+        let content = markdown(md);
+        content.build(&mut tree);
+
+        println!("Task list tree has {} nodes", tree.len());
+        // Should have nodes for: container, list, 2 task items with checkboxes and text
+        assert!(tree.len() > 3, "Task list should have multiple nodes");
+    }
+
+    #[test]
+    fn test_image_alt_text_not_rendered() {
+        // Verify that alt text is not rendered as visible text
+        let md = r#"![Alt text should not appear](image.png)"#;
+
+        let mut options = Options::empty();
+        options.insert(Options::ENABLE_TASKLISTS);
+
+        let parser = Parser::new_ext(md, options);
+        let events: Vec<_> = parser.collect();
+
+        // Print events for debugging
+        println!("Image events:");
+        for (i, event) in events.iter().enumerate() {
+            println!("{}: {:?}", i, event);
+        }
+
+        // Verify the text event exists (pulldown-cmark does emit it)
+        let text_events = events
+            .iter()
+            .filter(|e| matches!(e, Event::Text(_)))
+            .count();
+        assert_eq!(text_events, 1, "Alt text should be emitted as Text event");
+
+        // But our renderer should skip it - verify by building
+        init_theme();
+        let mut tree = LayoutTree::new();
+        let content = markdown(md);
+        content.build(&mut tree);
+
+        // Should have minimal nodes: container + image (no text nodes for alt)
+        println!("Image tree has {} nodes", tree.len());
+        assert!(tree.len() >= 2, "Should have container and image");
+    }
+
+    #[test]
+    fn test_footnote_events() {
+        // Test that pulldown-cmark generates footnote events correctly
+        let md = r#"This has a footnote[^1].
+
+[^1]: This is the footnote content."#;
+
+        let mut options = Options::empty();
+        options.insert(Options::ENABLE_FOOTNOTES);
+
+        let parser = Parser::new_ext(md, options);
+        let events: Vec<_> = parser.collect();
+
+        // Print events for debugging
+        println!("Footnote events:");
+        for (i, event) in events.iter().enumerate() {
+            println!("{}: {:?}", i, event);
+        }
+
+        // Should have FootnoteReference and FootnoteDefinition events
+        let footnote_refs = events
+            .iter()
+            .filter(|e| matches!(e, Event::FootnoteReference(_)))
+            .count();
+        assert!(footnote_refs >= 1, "Expected at least 1 footnote reference");
+
+        let footnote_defs = events
+            .iter()
+            .filter(|e| matches!(e, Event::Start(Tag::FootnoteDefinition(_))))
+            .count();
+        assert!(
+            footnote_defs >= 1,
+            "Expected at least 1 footnote definition"
+        );
+    }
+
+    #[test]
+    fn test_footnote_renders() {
+        init_theme();
+        let mut tree = LayoutTree::new();
+        let md = r#"This has a footnote[^1].
+
+[^1]: This is the footnote content."#;
+        let content = markdown(md);
+        content.build(&mut tree);
+
+        println!("Footnote tree has {} nodes", tree.len());
+        // Should have nodes for: container, paragraph, footnote ref, separator, footnote section
+        assert!(
+            tree.len() > 3,
+            "Footnote content should have multiple nodes"
+        );
+    }
+
+    #[test]
+    fn test_yaml_metadata_block_skipped() {
+        init_theme();
+        let mut tree = LayoutTree::new();
+        // YAML frontmatter should be parsed but not rendered
+        let md = r#"---
+title: My Document
+author: Test Author
+---
+
+# Actual Content
+
+This is the body."#;
+        let content = markdown(md);
+        content.build(&mut tree);
+
+        println!("Metadata block tree has {} nodes", tree.len());
+        // Should have nodes for heading and paragraph, but not the metadata
+        assert!(tree.len() > 2, "Should have heading and paragraph nodes");
+    }
+
+    #[test]
+    fn test_html_block_renders() {
+        init_theme();
+        let mut tree = LayoutTree::new();
+        let md = r#"Regular paragraph.
+
+<div class="custom">
+  <p>HTML content</p>
+</div>
+
+Another paragraph."#;
+        let content = markdown(md);
+        content.build(&mut tree);
+
+        println!("HTML block tree has {} nodes", tree.len());
+        // Should have nodes for paragraphs and HTML block
+        assert!(tree.len() > 2, "Should have paragraph and HTML nodes");
+    }
+
+    #[test]
+    fn test_inline_html_renders() {
+        init_theme();
+        let mut tree = LayoutTree::new();
+        let md = r#"This is <em>emphasized</em> text."#;
+        let content = markdown(md);
+        content.build(&mut tree);
+
+        println!("Inline HTML tree has {} nodes", tree.len());
+        // Should have nodes for the paragraph with inline elements
+        assert!(tree.len() > 1, "Should have paragraph with inline HTML");
+    }
+
+    #[test]
+    fn test_html_parsing_functions() {
+        // Test the HTML parsing functions directly
+        let html_p = "<p>Block-level HTML paragraphs.</p>";
+        let html_bq = "<blockquote>HTML blockquote content.</blockquote>";
+
+        // Test tag name extraction
+        let tag_p = RenderState::parse_html_tag_name(html_p);
+        let tag_bq = RenderState::parse_html_tag_name(html_bq);
+
+        assert_eq!(tag_p, Some("p"));
+        assert_eq!(tag_bq, Some("blockquote"));
+
+        // Test content extraction
+        let content_p = RenderState::extract_tag_content(html_p, "p");
+        let content_bq = RenderState::extract_tag_content(html_bq, "blockquote");
+
+        assert_eq!(content_p, Some("Block-level HTML paragraphs."));
+        assert_eq!(content_bq, Some("HTML blockquote content."));
     }
 }

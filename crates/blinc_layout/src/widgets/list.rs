@@ -35,6 +35,7 @@ use blinc_theme::{ColorToken, ThemeState};
 
 use crate::div::{div, Div, ElementBuilder};
 use crate::element::RenderProps;
+use crate::svg::svg;
 use crate::text::text;
 use crate::tree::{LayoutNodeId, LayoutTree};
 
@@ -402,7 +403,8 @@ impl ListItem {
     pub fn new() -> Self {
         let config = ListConfig::default();
         let inner = div().flex_row().items_start().gap(config.marker_gap);
-        let content = div().flex_col().flex_1();
+        // Content has a small gap for spacing between text and nested lists
+        let content = div().flex_col().flex_1().gap(4.0);
 
         Self {
             inner,
@@ -521,23 +523,54 @@ impl TaskListItem {
 
     /// Create a new task list item with custom config
     pub fn with_config(checked: bool, config: ListConfig) -> Self {
-        // Build checkbox element
-        let checkbox_str = if checked { "☑" } else { "☐" };
-        let checkbox_element = text(checkbox_str)
-            .size(config.marker_font_size)
-            .color(config.marker_color);
+        // Checkbox size based on font size (slightly smaller than font for visual balance)
+        let checkbox_size = config.marker_font_size;
+        let border_width = 1.5;
 
-        let checkbox_div = div()
+        // Build checkbox using div for the box and SVG for the checkmark
+        let checkbox_box = if checked {
+            // Checkmark SVG path (simple checkmark that fits in a square viewBox)
+            let checkmark_svg = r#"<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 8L6.5 11.5L13 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>"#;
+
+            div()
+                .w(checkbox_size)
+                .h(checkbox_size)
+                .flex_shrink_0()
+                .bg(config.marker_color)
+                .rounded(2.0)
+                .items_center()
+                .justify_center()
+                .child(
+                    svg(checkmark_svg)
+                        .size(checkbox_size - 4.0, checkbox_size - 4.0)
+                        .tint(Color::WHITE),
+                )
+        } else {
+            // Empty checkbox - just a bordered div
+            div()
+                .w(checkbox_size)
+                .h(checkbox_size)
+                .flex_shrink_0()
+                .rounded(2.0)
+                .border(border_width, config.marker_color)
+        };
+
+        // Container with consistent width for alignment
+        let checkbox_container = div()
             .w(config.marker_width)
             .flex_shrink_0()
-            .child(checkbox_element);
+            .items_center()
+            .justify_center()
+            .child(checkbox_box);
 
         // Start with just the checkbox - content will be added via child()
         let inner = div()
             .flex_row()
             .items_start()
             .gap(config.marker_gap)
-            .child(checkbox_div);
+            .child(checkbox_container);
 
         Self {
             inner,

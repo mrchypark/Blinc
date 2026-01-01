@@ -48,6 +48,14 @@ Unordered list:
 - Second item
 - Third item
 
+Nested list:
+- Parent item 1
+  - Child item A
+  - Child item B
+    - Grandchild item
+- Parent item 2
+  - Child item C
+
 Ordered list:
 1. Step one
 2. Step two
@@ -57,8 +65,8 @@ Ordered list:
 
 - [x] Implement markdown parser
 - [x] Create preview component
+- [x] Support images
 - [ ] Add syntax highlighting
-- [ ] Support images
 
 ### Code Blocks
 
@@ -81,6 +89,12 @@ fn main() {
 
 [Visit GitHub](https://github.com)
 
+### Images
+
+Here's a local image from the assets folder:
+
+![Sample Image](crates/blinc_app/examples/assets/original-c4197a5bf25a4356aa2bac6f82073eb2.webp)
+
 ### Tables
 
 | Feature | Status |
@@ -88,6 +102,24 @@ fn main() {
 | Headings | Done |
 | Lists | Done |
 | Code | Done |
+| Images | Done |
+
+### Footnotes
+
+Blinc supports footnotes[^1] for adding references and notes[^2].
+
+[^1]: Footnotes appear at the bottom of the rendered content.
+[^2]: You can have multiple footnotes with different labels.
+
+### Inline HTML
+
+You can use <strong>HTML tags</strong> for <em>styling</em> inline.
+
+Line breaks work too:<br>This is on a new line.
+
+<p>Block-level HTML paragraphs are also supported.</p>
+
+<blockquote>HTML blockquotes render with proper styling.</blockquote>
 
 ---
 
