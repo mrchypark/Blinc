@@ -54,7 +54,7 @@ pub fn system_font_paths() -> &'static [&'static str] {
     #[cfg(target_os = "macos")]
     {
         &[
-            "/System/Library/Fonts/SFNS.ttf",      // San Francisco - primary system font
+            "/System/Library/Fonts/SFNS.ttf", // San Francisco - primary system font
             "/System/Library/Fonts/Helvetica.ttc", // Fallback
         ]
     }

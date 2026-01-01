@@ -243,16 +243,18 @@ impl EmojiRenderer {
         };
 
         // Get glyph ID for this emoji
-        let glyph_id = emoji_font.glyph_id(emoji).ok_or_else(|| {
-            TextError::GlyphNotFound(emoji)
-        })?;
+        let glyph_id = emoji_font
+            .glyph_id(emoji)
+            .ok_or_else(|| TextError::GlyphNotFound(emoji))?;
 
         if glyph_id == 0 {
             return Err(TextError::GlyphNotFound(emoji));
         }
 
         // Rasterize as color
-        let rasterized = self.rasterizer.rasterize_color(&emoji_font, glyph_id, size)?;
+        let rasterized = self
+            .rasterizer
+            .rasterize_color(&emoji_font, glyph_id, size)?;
 
         if rasterized.width == 0 || rasterized.height == 0 {
             return Err(TextError::GlyphNotFound(emoji));
@@ -279,16 +281,22 @@ impl EmojiRenderer {
         let shaped = self.shaper.shape(emoji_str, &emoji_font, size);
 
         if shaped.glyphs.is_empty() {
-            return Err(TextError::GlyphNotFound(emoji_str.chars().next().unwrap_or(' ')));
+            return Err(TextError::GlyphNotFound(
+                emoji_str.chars().next().unwrap_or(' '),
+            ));
         }
 
         // For now, just render the first glyph
         // TODO: Handle multi-glyph emoji sequences properly
         let glyph = &shaped.glyphs[0];
-        let rasterized = self.rasterizer.rasterize_color(&emoji_font, glyph.glyph_id, size)?;
+        let rasterized = self
+            .rasterizer
+            .rasterize_color(&emoji_font, glyph.glyph_id, size)?;
 
         if rasterized.width == 0 || rasterized.height == 0 {
-            return Err(TextError::GlyphNotFound(emoji_str.chars().next().unwrap_or(' ')));
+            return Err(TextError::GlyphNotFound(
+                emoji_str.chars().next().unwrap_or(' '),
+            ));
         }
 
         Ok(EmojiSprite {

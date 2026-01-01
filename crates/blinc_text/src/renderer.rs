@@ -99,7 +99,9 @@ impl TextRenderer {
             rasterizer: GlyphRasterizer::new(),
             layout_engine: TextLayoutEngine::new(),
             glyph_cache: LruCache::new(NonZeroUsize::new(GLYPH_CACHE_CAPACITY).unwrap()),
-            color_glyph_cache: LruCache::new(NonZeroUsize::new(COLOR_GLYPH_CACHE_CAPACITY).unwrap()),
+            color_glyph_cache: LruCache::new(
+                NonZeroUsize::new(COLOR_GLYPH_CACHE_CAPACITY).unwrap(),
+            ),
         }
     }
 
@@ -116,7 +118,9 @@ impl TextRenderer {
             rasterizer: GlyphRasterizer::new(),
             layout_engine: TextLayoutEngine::new(),
             glyph_cache: LruCache::new(NonZeroUsize::new(GLYPH_CACHE_CAPACITY).unwrap()),
-            color_glyph_cache: LruCache::new(NonZeroUsize::new(COLOR_GLYPH_CACHE_CAPACITY).unwrap()),
+            color_glyph_cache: LruCache::new(
+                NonZeroUsize::new(COLOR_GLYPH_CACHE_CAPACITY).unwrap(),
+            ),
         }
     }
 
@@ -132,7 +136,9 @@ impl TextRenderer {
             rasterizer: GlyphRasterizer::new(),
             layout_engine: TextLayoutEngine::new(),
             glyph_cache: LruCache::new(NonZeroUsize::new(GLYPH_CACHE_CAPACITY).unwrap()),
-            color_glyph_cache: LruCache::new(NonZeroUsize::new(COLOR_GLYPH_CACHE_CAPACITY).unwrap()),
+            color_glyph_cache: LruCache::new(
+                NonZeroUsize::new(COLOR_GLYPH_CACHE_CAPACITY).unwrap(),
+            ),
         }
     }
 
@@ -231,7 +237,16 @@ impl TextRenderer {
         color: [f32; 4],
         options: &LayoutOptions,
     ) -> Result<PreparedText> {
-        self.prepare_text_internal(text, font_size, color, options, None, GenericFont::System, 400, false)
+        self.prepare_text_internal(
+            text,
+            font_size,
+            color,
+            options,
+            None,
+            GenericFont::System,
+            400,
+            false,
+        )
     }
 
     /// Prepare text for rendering with a specific font family
@@ -252,7 +267,9 @@ impl TextRenderer {
         font_name: Option<&str>,
         generic: GenericFont,
     ) -> Result<PreparedText> {
-        self.prepare_text_internal(text, font_size, color, options, font_name, generic, 400, false)
+        self.prepare_text_internal(
+            text, font_size, color, options, font_name, generic, 400, false,
+        )
     }
 
     /// Prepare text for rendering with a specific font family, weight, and style
@@ -277,7 +294,9 @@ impl TextRenderer {
         weight: u16,
         italic: bool,
     ) -> Result<PreparedText> {
-        self.prepare_text_internal(text, font_size, color, options, font_name, generic, weight, italic)
+        self.prepare_text_internal(
+            text, font_size, color, options, font_name, generic, weight, italic,
+        )
     }
 
     /// Internal method for preparing text with optional font family
@@ -381,7 +400,8 @@ impl TextRenderer {
             // Check if fallback is needed:
             // - Primary font doesn't have this glyph (glyph_id == 0 or has_glyph returns false)
             // - For emoji, always try emoji font to get color rendering (even if primary has glyph)
-            let primary_has_glyph = positioned.glyph_id != 0 && font.has_glyph(positioned.codepoint);
+            let primary_has_glyph =
+                positioned.glyph_id != 0 && font.has_glyph(positioned.codepoint);
             let needs_fallback = !primary_has_glyph || is_emoji_char;
 
             if needs_fallback {
@@ -416,12 +436,10 @@ impl TextRenderer {
                     .collect()
                 } else {
                     // Non-emoji: only use symbol font (don't load emoji font for non-emoji characters)
-                    [
-                        symbol_font.as_ref().map(|f| (f, symbol_font_id, false)),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect()
+                    [symbol_font.as_ref().map(|f| (f, symbol_font_id, false))]
+                        .into_iter()
+                        .flatten()
+                        .collect()
                 };
 
                 let mut found_fallback = false;
@@ -531,7 +549,9 @@ impl TextRenderer {
 
             // Get UV coordinates from the appropriate atlas
             let uv = if data.is_color {
-                data.info.region.uv_bounds(color_atlas_dims.0, color_atlas_dims.1)
+                data.info
+                    .region
+                    .uv_bounds(color_atlas_dims.0, color_atlas_dims.1)
             } else {
                 data.info.region.uv_bounds(atlas_dims.0, atlas_dims.1)
             };
@@ -668,7 +688,11 @@ impl TextRenderer {
 
     /// Resolve font by name or generic category, with fallback to default
     /// Uses only cached fonts - fonts should be preloaded at app startup
-    fn resolve_font(&mut self, font_name: Option<&str>, generic: GenericFont) -> Result<Arc<FontFace>> {
+    fn resolve_font(
+        &mut self,
+        font_name: Option<&str>,
+        generic: GenericFont,
+    ) -> Result<Arc<FontFace>> {
         self.resolve_font_with_style(font_name, generic, 400, false)
     }
 
@@ -684,9 +708,7 @@ impl TextRenderer {
         let mut registry = self.font_registry.lock().unwrap();
 
         // First try cache lookup
-        if let Some(font) =
-            registry.get_for_render_with_style(font_name, generic, weight, italic)
-        {
+        if let Some(font) = registry.get_for_render_with_style(font_name, generic, weight, italic) {
             return Ok(font);
         }
 
@@ -704,9 +726,7 @@ impl TextRenderer {
 
         // If styled font not found, fall back to normal style
         if weight != 400 || italic {
-            if let Some(font) =
-                registry.get_for_render_with_style(font_name, generic, 400, false)
-            {
+            if let Some(font) = registry.get_for_render_with_style(font_name, generic, 400, false) {
                 return Ok(font);
             }
             // Try loading normal style
@@ -723,9 +743,7 @@ impl TextRenderer {
             return Ok(font);
         }
 
-        Err(TextError::FontLoadError(
-            "No fonts available".to_string(),
-        ))
+        Err(TextError::FontLoadError("No fonts available".to_string()))
     }
 
     /// Preload fonts that your app uses (call at startup)

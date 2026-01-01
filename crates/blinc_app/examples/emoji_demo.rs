@@ -49,10 +49,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .color(Color::WHITE)
                         .text_center(),
                 )
-                .child(
-                    muted("Testing HTML entity decoding and emoji rendering")
-                        .text_center(),
-                )
+                .child(muted("Testing HTML entity decoding and emoji rendering").text_center())
                 // Sections
                 .child(html_entities_section())
                 .child(emoji_section())
@@ -274,7 +271,10 @@ fn currency_section() -> Div {
 /// Section showing punctuation and quotes
 fn punctuation_section() -> Div {
     section_card("Punctuation & Quotes", "Quotation marks and dashes")
-        .child(entity_row("&ldquo;Hello&rdquo;", "Left/right double quotes"))
+        .child(entity_row(
+            "&ldquo;Hello&rdquo;",
+            "Left/right double quotes",
+        ))
         .child(entity_row("&lsquo;Hi&rsquo;", "Left/right single quotes"))
         .child(entity_row("&laquo;Bonjour&raquo;", "Guillemets"))
         .child(entity_row("&ndash;", "En dash"))
@@ -292,7 +292,11 @@ fn greek_letters_section() -> Div {
                 .flex_row()
                 .flex_wrap()
                 .gap(4.0)
-                .child(text("Uppercase:").size(14.0).color(Color::rgba(0.6, 0.6, 0.6, 1.0)))
+                .child(
+                    text("Uppercase:")
+                        .size(14.0)
+                        .color(Color::rgba(0.6, 0.6, 0.6, 1.0)),
+                )
                 .child(
                     text("&Alpha; &Beta; &Gamma; &Delta; &Epsilon; &Zeta; &Eta; &Theta;")
                         .size(18.0)
@@ -304,7 +308,11 @@ fn greek_letters_section() -> Div {
                 .flex_row()
                 .flex_wrap()
                 .gap(4.0)
-                .child(text("Lowercase:").size(14.0).color(Color::rgba(0.6, 0.6, 0.6, 1.0)))
+                .child(
+                    text("Lowercase:")
+                        .size(14.0)
+                        .color(Color::rgba(0.6, 0.6, 0.6, 1.0)),
+                )
                 .child(
                     text("&alpha; &beta; &gamma; &delta; &epsilon; &zeta; &eta; &theta;")
                         .size(18.0)
@@ -316,7 +324,11 @@ fn greek_letters_section() -> Div {
                 .flex_row()
                 .flex_wrap()
                 .gap(4.0)
-                .child(text("More:").size(14.0).color(Color::rgba(0.6, 0.6, 0.6, 1.0)))
+                .child(
+                    text("More:")
+                        .size(14.0)
+                        .color(Color::rgba(0.6, 0.6, 0.6, 1.0)),
+                )
                 .child(
                     text("&pi; &sigma; &omega; &lambda; &mu; &phi; &psi; &chi;")
                         .size(18.0)

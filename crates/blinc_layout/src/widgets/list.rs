@@ -303,7 +303,11 @@ impl OrderedList {
     /// Add a list item
     pub fn child(mut self, item: ListItem) -> Self {
         // Set the marker and index on the item with our config
-        let item = item.with_marker_and_config(self.marker, Some(self.start + self.item_count - 1), &self.config);
+        let item = item.with_marker_and_config(
+            self.marker,
+            Some(self.start + self.item_count - 1),
+            &self.config,
+        );
         self.inner = self.inner.child(item);
         self.item_count += 1;
         self
@@ -427,7 +431,12 @@ impl ListItem {
     }
 
     /// Set marker, index and config (called by parent list)
-    fn with_marker_and_config(mut self, marker: ListMarker, index: Option<usize>, config: &ListConfig) -> Self {
+    fn with_marker_and_config(
+        mut self,
+        marker: ListMarker,
+        index: Option<usize>,
+        config: &ListConfig,
+    ) -> Self {
         self.marker = Some(marker);
         self.index = index;
 
@@ -660,9 +669,7 @@ mod tests {
     fn test_unordered_list() {
         init_theme();
         let mut tree = LayoutTree::new();
-        let list = ul()
-            .child(li().child(div()))
-            .child(li().child(div()));
+        let list = ul().child(li().child(div())).child(li().child(div()));
         list.build(&mut tree);
         assert!(tree.len() > 0);
     }
@@ -671,9 +678,7 @@ mod tests {
     fn test_ordered_list() {
         init_theme();
         let mut tree = LayoutTree::new();
-        let list = ol()
-            .child(li().child(div()))
-            .child(li().child(div()));
+        let list = ol().child(li().child(div())).child(li().child(div()));
         list.build(&mut tree);
         assert!(tree.len() > 0);
     }

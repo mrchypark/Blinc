@@ -127,7 +127,11 @@ fn text_decorations_section() -> Div {
                         .gap(16.0)
                         .items_baseline()
                         .child(text("Regular text").color(Color::WHITE))
-                        .child(text("Strikethrough text").strikethrough().color(Color::WHITE))
+                        .child(
+                            text("Strikethrough text")
+                                .strikethrough()
+                                .color(Color::WHITE),
+                        )
                         .child(text("More regular").color(Color::WHITE)),
                 )
                 // Underline
@@ -138,17 +142,23 @@ fn text_decorations_section() -> Div {
                         .gap(16.0)
                         .items_baseline()
                         .child(text("Regular text").color(Color::WHITE))
-                        .child(text("Underlined text").underline().color(Color::from_hex(0x66B2FF)))
+                        .child(
+                            text("Underlined text")
+                                .underline()
+                                .color(Color::from_hex(0x66B2FF)),
+                        )
                         .child(text("More regular").color(Color::WHITE)),
                 )
                 // Both decorations
                 .child(label("Combined decorations:").color(Color::GRAY))
                 .child(
-                    div()
-                        .flex_row()
-                        .gap(16.0)
-                        .items_baseline()
-                        .child(text("Both decorations").strikethrough().underline().italic().color(Color::from_hex(0xFF6666))),
+                    div().flex_row().gap(16.0).items_baseline().child(
+                        text("Both decorations")
+                            .strikethrough()
+                            .underline()
+                            .italic()
+                            .color(Color::from_hex(0xFF6666)),
+                    ),
                 )
                 // Different sizes
                 .child(label("Different font sizes:").color(Color::GRAY))
@@ -255,54 +265,87 @@ fn baseline_alignment_section() -> Div {
                         .items_baseline()
                         .gap(8.0)
                         .border(1.0, Color::from_hex(0x4488FF))
-                    
                         .child(text("32px").size(32.0).v_baseline().color(Color::WHITE))
-                        .child(text("24px").size(24.0).v_baseline().color(Color::from_hex(0x66B2FF)))
+                        .child(
+                            text("24px")
+                                .size(24.0)
+                                .v_baseline()
+                                .color(Color::from_hex(0x66B2FF)),
+                        )
                         .child(text("18px").size(18.0).v_baseline().color(Color::WHITE))
-                        .child(text("14px").size(14.0).v_baseline().color(Color::from_hex(0x66B2FF)))
+                        .child(
+                            text("14px")
+                                .size(14.0)
+                                .v_baseline()
+                                .color(Color::from_hex(0x66B2FF)),
+                        )
                         .child(text("12px").size(12.0).v_baseline().color(Color::WHITE)),
                 )
                 // Row with mixed fonts - same size
-                .child(label("Mixed fonts at same size (14px) with .v_baseline():").color(Color::GRAY))
+                .child(
+                    label("Mixed fonts at same size (14px) with .v_baseline():").color(Color::GRAY),
+                )
                 .child(
                     div()
                         .flex_row()
                         .items_baseline()
                         .gap(8.0)
                         .border(1.0, Color::from_hex(0x44FF88))
-                        
                         .child(text("System font").v_baseline().color(Color::WHITE))
-                        .child(text("Monospace").monospace().v_baseline().color(Color::from_hex(0x98C379)))
+                        .child(
+                            text("Monospace")
+                                .monospace()
+                                .v_baseline()
+                                .color(Color::from_hex(0x98C379)),
+                        )
                         .child(text("Serif font").serif().v_baseline().color(Color::WHITE))
-                        .child(text("Sans-serif").sans_serif().v_baseline().color(Color::from_hex(0x98C379))),
+                        .child(
+                            text("Sans-serif")
+                                .sans_serif()
+                                .v_baseline()
+                                .color(Color::from_hex(0x98C379)),
+                        ),
                 )
                 // Row WITHOUT v_baseline for comparison
-                .child(label("Same texts WITHOUT .v_baseline() (default Top alignment):").color(Color::GRAY))
+                .child(
+                    label("Same texts WITHOUT .v_baseline() (default Top alignment):")
+                        .color(Color::GRAY),
+                )
                 .child(
                     div()
                         .flex_row()
                         .items_baseline()
                         .gap(8.0)
                         .border(1.0, Color::from_hex(0xFF4444))
-                       
                         .child(text("32px").size(32.0).color(Color::WHITE))
                         .child(text("24px").size(24.0).color(Color::from_hex(0xFF6666)))
                         .child(text("18px").size(18.0).color(Color::WHITE))
                         .child(text("14px").size(14.0).color(Color::from_hex(0xFF6666)))
                         .child(text("12px").size(12.0).color(Color::WHITE)),
-                ) .child(label("Mixed fonts at same size (14px) without .v_baseline():").color(Color::GRAY))
+                )
+                .child(
+                    label("Mixed fonts at same size (14px) without .v_baseline():")
+                        .color(Color::GRAY),
+                )
                 .child(
                     div()
                         .flex_row()
                         .items_baseline()
                         .gap(8.0)
                         .border(1.0, Color::from_hex(0x44FF88))
-
                         .child(text("System font").color(Color::WHITE))
-                        .child(text("Monospace").monospace().color(Color::from_hex(0x98C379)))
+                        .child(
+                            text("Monospace")
+                                .monospace()
+                                .color(Color::from_hex(0x98C379)),
+                        )
                         .child(text("Serif font").serif().color(Color::WHITE))
-                        .child(text("Sans-serif").sans_serif().color(Color::from_hex(0x98C379))),
-                )
+                        .child(
+                            text("Sans-serif")
+                                .sans_serif()
+                                .color(Color::from_hex(0x98C379)),
+                        ),
+                ),
         )
 }
 

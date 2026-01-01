@@ -296,7 +296,7 @@ impl GpuPrimitive {
     /// in the same pass as shapes, enabling proper z-ordering.
     ///
     /// The glyph's UV bounds are stored in `gradient_params` and the color in `color`.
-    /// For color emoji, flags[0] is 1.0 (stored in type_info[1]).
+    /// For color emoji, `flags[0]` is 1.0 (stored in `type_info[1]`).
     pub fn from_glyph(glyph: &GpuGlyph) -> Self {
         // Use type_info[1] to store is_color flag (1 = color emoji, 0 = grayscale)
         let is_color_flag = if glyph.flags[0] > 0.5 { 1u32 } else { 0u32 };
@@ -313,7 +313,12 @@ impl GpuPrimitive {
             clip_radius: [0.0; 4],
             // Store UV bounds (u_min, v_min, u_max, v_max) in gradient_params
             gradient_params: glyph.uv_bounds,
-            type_info: [PrimitiveType::Text as u32, is_color_flag, ClipType::None as u32, 0],
+            type_info: [
+                PrimitiveType::Text as u32,
+                is_color_flag,
+                ClipType::None as u32,
+                0,
+            ],
         }
     }
 

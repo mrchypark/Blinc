@@ -17,7 +17,6 @@ use super::config::MarkdownConfig;
 // Re-export for HTML entity decoding
 use html_escape::decode_html_entities;
 
-
 /// Markdown renderer that converts markdown text to blinc layout elements
 pub struct MarkdownRenderer {
     config: MarkdownConfig,
@@ -245,9 +244,10 @@ impl<'a> RenderState<'a> {
                 if let Some(start_num) = start {
                     self.list_start = *start_num as usize;
                     self.list_item_index = 0;
-                    self.stack.push(StackItem::OrderedList(
-                        ol_start_with_config(self.list_start, list_config),
-                    ));
+                    self.stack.push(StackItem::OrderedList(ol_start_with_config(
+                        self.list_start,
+                        list_config,
+                    )));
                 } else {
                     self.list_item_index = 0;
                     self.stack
@@ -518,7 +518,7 @@ impl<'a> RenderState<'a> {
         // Build inline code manually with matching size to body text for proper alignment
         // We need to set size BEFORE no_wrap() to ensure correct measurement
         let code_elem = text(code_text)
-            .size(self.config.body_size+2.0) // Match body text size for baseline alignment
+            .size(self.config.body_size + 2.0) // Match body text size for baseline alignment
             .monospace()
             .color(self.config.code_text)
             .line_height(1.0)
@@ -563,8 +563,10 @@ impl<'a> RenderState<'a> {
                 indent: self.config.list_indent,
                 ..ListConfig::default()
             };
-            self.stack
-                .push(StackItem::TaskItem(task_item_with_config(checked, list_config)));
+            self.stack.push(StackItem::TaskItem(task_item_with_config(
+                checked,
+                list_config,
+            )));
         }
     }
 
@@ -747,8 +749,8 @@ impl<'a> RenderState<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blinc_theme::ThemeState;
     use crate::tree::LayoutTree;
+    use blinc_theme::ThemeState;
 
     fn init_theme() {
         let _ = ThemeState::try_get().unwrap_or_else(|| {
@@ -819,7 +821,10 @@ mod tests {
             println!("  inline_text: '{}'", renderer.inline_text);
             println!("  styled_segments: {}", renderer.styled_segments.len());
             for (j, seg) in renderer.styled_segments.iter().enumerate() {
-                println!("    {}: '{}' (bold={}, italic={})", j, seg.text, seg.bold, seg.italic);
+                println!(
+                    "    {}: '{}' (bold={}, italic={})",
+                    j, seg.text, seg.bold, seg.italic
+                );
             }
             println!("  inline_elements: {}", renderer.inline_elements.len());
         }
@@ -855,7 +860,10 @@ mod tests {
             println!("  inline_text: '{}'", renderer.inline_text);
             println!("  styled_segments: {}", renderer.styled_segments.len());
             for (j, seg) in renderer.styled_segments.iter().enumerate() {
-                println!("    {}: '{}' (bold={}, italic={})", j, seg.text, seg.bold, seg.italic);
+                println!(
+                    "    {}: '{}' (bold={}, italic={})",
+                    j, seg.text, seg.bold, seg.italic
+                );
             }
             println!("  inline_elements: {}", renderer.inline_elements.len());
         }
@@ -924,7 +932,9 @@ mod tests {
         }
 
         // Verify we get TableHead events
-        let has_table_head = events.iter().any(|e| matches!(e, Event::Start(Tag::TableHead)));
+        let has_table_head = events
+            .iter()
+            .any(|e| matches!(e, Event::Start(Tag::TableHead)));
         assert!(has_table_head, "Expected TableHead event");
 
         // Verify we get header text

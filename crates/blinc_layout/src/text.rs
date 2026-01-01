@@ -99,10 +99,10 @@ impl Text {
             render_layer: RenderLayer::default(),
             shadow: None,
             transform: None,
-            wrap: true,          // wrap by default
-            line_height: 1.2,    // standard line height
-            measured_width: 0.0, // will be set by update_size_estimate
-            word_spacing: 0.0,   // normal word spacing
+            wrap: true,           // wrap by default
+            line_height: 1.2,     // standard line height
+            measured_width: 0.0,  // will be set by update_size_estimate
+            word_spacing: 0.0,    // normal word spacing
             ascender: 14.0 * 0.8, // will be set by update_size_estimate
             strikethrough: false,
             underline: false,

@@ -44,7 +44,11 @@ impl std::fmt::Debug for FontData {
         match self {
             FontData::Owned(data) => write!(f, "FontData::Owned({} bytes)", data.len()),
             FontData::Shared(data) => {
-                write!(f, "FontData::Shared({} bytes)", data.as_ref().as_ref().len())
+                write!(
+                    f,
+                    "FontData::Shared({} bytes)",
+                    data.as_ref().as_ref().len()
+                )
             }
         }
     }

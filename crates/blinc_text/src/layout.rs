@@ -816,16 +816,27 @@ mod tests {
         let layout_with = engine.layout(text_with_trailing, &font, 16.0, &options);
         let layout_without = engine.layout(text_without_trailing, &font, 16.0, &options);
 
-        println!("Helvetica - Width with trailing space '{}': {}", text_with_trailing, layout_with.width);
-        println!("Helvetica - Width without trailing space '{}': {}", text_without_trailing, layout_without.width);
-        println!("Helvetica - Difference: {}", layout_with.width - layout_without.width);
+        println!(
+            "Helvetica - Width with trailing space '{}': {}",
+            text_with_trailing, layout_with.width
+        );
+        println!(
+            "Helvetica - Width without trailing space '{}': {}",
+            text_without_trailing, layout_without.width
+        );
+        println!(
+            "Helvetica - Difference: {}",
+            layout_with.width - layout_without.width
+        );
 
         // Width with trailing space MUST be larger
         assert!(
             layout_with.width > layout_without.width,
             "FAIL: Trailing space not included in width! '{}' ({}) vs '{}' ({})",
-            text_with_trailing, layout_with.width,
-            text_without_trailing, layout_without.width
+            text_with_trailing,
+            layout_with.width,
+            text_without_trailing,
+            layout_without.width
         );
 
         // Difference should be meaningful (space is typically ~1/4 to 1/3 of font size)
@@ -859,16 +870,27 @@ mod tests {
         let layout_with = engine.layout(text_with_leading, &font, 16.0, &options);
         let layout_without = engine.layout(text_without_leading, &font, 16.0, &options);
 
-        println!("Helvetica - Width with leading space '{}': {}", text_with_leading, layout_with.width);
-        println!("Helvetica - Width without leading space '{}': {}", text_without_leading, layout_without.width);
-        println!("Helvetica - Difference: {}", layout_with.width - layout_without.width);
+        println!(
+            "Helvetica - Width with leading space '{}': {}",
+            text_with_leading, layout_with.width
+        );
+        println!(
+            "Helvetica - Width without leading space '{}': {}",
+            text_without_leading, layout_without.width
+        );
+        println!(
+            "Helvetica - Difference: {}",
+            layout_with.width - layout_without.width
+        );
 
         // Width with leading space MUST be larger
         assert!(
             layout_with.width > layout_without.width,
             "FAIL: Leading space not included in width! '{}' ({}) vs '{}' ({})",
-            text_with_leading, layout_with.width,
-            text_without_leading, layout_without.width
+            text_with_leading,
+            layout_with.width,
+            text_without_leading,
+            layout_without.width
         );
 
         // Also verify glyph positions - first visible glyph should be offset
@@ -886,7 +908,8 @@ mod tests {
                     assert!(
                         glyph.x > 2.0,
                         "First visible glyph '{}' should be offset by space, but is at x={}",
-                        glyph.codepoint, glyph.x
+                        glyph.codepoint,
+                        glyph.x
                     );
                 }
             }

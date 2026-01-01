@@ -123,9 +123,12 @@ fn build_direction_toggle(ctx: &WindowedContext, _current: ScrollDirection) -> i
 
                     // Merge changes into the div
                     container.merge(
-                        div()
-                            .bg(bg)
-                            .child(text(label).weight(FontWeight::SemiBold).color(Color::WHITE).no_wrap()),
+                        div().bg(bg).child(
+                            text(label)
+                                .weight(FontWeight::SemiBold)
+                                .color(Color::WHITE)
+                                .no_wrap(),
+                        ),
                     );
                 })
                 .on_click(move |_| {

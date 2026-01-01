@@ -207,17 +207,15 @@ impl GlyphRasterizer {
                     })
                 }
             }
-            None => {
-                Ok(RasterizedGlyph {
-                    bitmap: Vec::new(),
-                    width: 0,
-                    height: 0,
-                    bearing_x: 0,
-                    bearing_y: 0,
-                    advance: advance.round() as u16,
-                    format: GlyphFormat::Rgba,
-                })
-            }
+            None => Ok(RasterizedGlyph {
+                bitmap: Vec::new(),
+                width: 0,
+                height: 0,
+                bearing_x: 0,
+                bearing_y: 0,
+                advance: advance.round() as u16,
+                format: GlyphFormat::Rgba,
+            }),
         }
     }
 }

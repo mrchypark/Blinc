@@ -112,14 +112,12 @@ img("photo.jpg")
 // With gradient placeholder using Brush
 img("photo.jpg")
     .lazy()
-    .placeholder_brush(Brush::linear_gradient(
+    .placeholder_brush(Brush::Gradient(Gradient::linear(
         Point::new(0.0, 0.0),
         Point::new(1.0, 1.0),
-        vec![
-            GradientStop::new(0.0, Color::rgba(0.1, 0.1, 0.15, 1.0)),
-            GradientStop::new(1.0, Color::rgba(0.2, 0.2, 0.25, 1.0)),
-        ],
-    ))
+        Color::rgba(0.4, 0.6, 1.0, 1.0),
+        Color::rgba(0.6, 0.4, 1.0, 1.0),
+    )))
     .w(300.0)
     .h(200.0)
 

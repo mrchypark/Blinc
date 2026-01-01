@@ -430,8 +430,7 @@ impl ColorGlyphAtlas {
             let dst_offset = ((region.y + y) * self.width * 4 + region.x * 4) as usize;
             let row_bytes = (width * 4) as usize;
 
-            if src_offset + row_bytes <= bitmap.len()
-                && dst_offset + row_bytes <= self.pixels.len()
+            if src_offset + row_bytes <= bitmap.len() && dst_offset + row_bytes <= self.pixels.len()
             {
                 self.pixels[dst_offset..dst_offset + row_bytes]
                     .copy_from_slice(&bitmap[src_offset..src_offset + row_bytes]);

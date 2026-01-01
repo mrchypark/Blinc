@@ -190,7 +190,9 @@ impl RenderContext {
             //   Using the actual ascender from font metrics ensures all fonts align by
             //   their true baseline regardless of font family.
             let (anchor, y_pos, use_layout_height) = match text.v_align {
-                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0, false),
+                TextVerticalAlign::Center => {
+                    (TextAnchor::Center, text.y + text.height / 2.0, false)
+                }
                 TextVerticalAlign::Top => (TextAnchor::Top, text.y, true),
                 TextVerticalAlign::Baseline => {
                     // Use the actual font ascender for baseline positioning.
@@ -219,7 +221,11 @@ impl RenderContext {
             let font_weight = text.weight.weight();
 
             // Only pass layout_height when we want centering within the box
-            let layout_height = if use_layout_height { Some(text.height) } else { None };
+            let layout_height = if use_layout_height {
+                Some(text.height)
+            } else {
+                None
+            };
 
             if let Ok(mut glyphs) = self.text_ctx.prepare_text_with_style(
                 &text.content,
@@ -470,7 +476,12 @@ impl RenderContext {
     ///
     /// Images with lazy loading strategy are only loaded when visible in the viewport.
     /// A buffer zone extends the viewport to preload images that are about to become visible.
-    fn preload_images(&mut self, images: &[ImageElement], viewport_width: f32, viewport_height: f32) {
+    fn preload_images(
+        &mut self,
+        images: &[ImageElement],
+        viewport_width: f32,
+        viewport_height: f32,
+    ) {
         // Buffer zone: load images that are within 100px of becoming visible
         const VISIBILITY_BUFFER: f32 = 100.0;
 
@@ -572,12 +583,7 @@ impl RenderContext {
                     // Create a simple rectangle for the placeholder
                     let mut ctx = GpuPaintContext::new(viewport_width, viewport_height);
 
-                    let rect = blinc_core::Rect::new(
-                        image.x,
-                        image.y,
-                        image.width,
-                        image.height,
-                    );
+                    let rect = blinc_core::Rect::new(image.x, image.y, image.width, image.height);
 
                     ctx.fill_rounded_rect(
                         rect,
@@ -1144,14 +1150,20 @@ impl RenderContext {
 
             // Map vertical alignment to text anchor
             let (anchor, y_pos, use_layout_height) = match text.v_align {
-                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0, false),
+                TextVerticalAlign::Center => {
+                    (TextAnchor::Center, text.y + text.height / 2.0, false)
+                }
                 TextVerticalAlign::Top => (TextAnchor::Top, text.y, true),
                 TextVerticalAlign::Baseline => {
                     let baseline_y = text.y + text.ascender;
                     (TextAnchor::Baseline, baseline_y, false)
                 }
             };
-            let layout_height = if use_layout_height { Some(text.height) } else { None };
+            let layout_height = if use_layout_height {
+                Some(text.height)
+            } else {
+                None
+            };
 
             if let Ok(glyphs) = self.text_ctx.prepare_text_with_style(
                 &text.content,
@@ -1400,14 +1412,20 @@ impl RenderContext {
             let font_weight = text.weight.weight();
 
             let (anchor, y_pos, use_layout_height) = match text.v_align {
-                TextVerticalAlign::Center => (TextAnchor::Center, text.y + text.height / 2.0, false),
+                TextVerticalAlign::Center => {
+                    (TextAnchor::Center, text.y + text.height / 2.0, false)
+                }
                 TextVerticalAlign::Top => (TextAnchor::Top, text.y, true),
                 TextVerticalAlign::Baseline => {
                     let baseline_y = text.y + text.ascender;
                     (TextAnchor::Baseline, baseline_y, false)
                 }
             };
-            let layout_height = if use_layout_height { Some(text.height) } else { None };
+            let layout_height = if use_layout_height {
+                Some(text.height)
+            } else {
+                None
+            };
 
             if let Ok(glyphs) = self.text_ctx.prepare_text_with_style(
                 &text.content,

@@ -2503,16 +2503,28 @@ impl RenderTree {
             if let Some(ref border) = sides.left {
                 if border.is_visible() {
                     let border_rect = Rect::new(0.0, 0.0, border.width, rect.height());
-                    ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(border.color),
+                    );
                 }
             }
 
             // Right border
             if let Some(ref border) = sides.right {
                 if border.is_visible() {
-                    let border_rect =
-                        Rect::new(rect.width() - border.width, 0.0, border.width, rect.height());
-                    ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                    let border_rect = Rect::new(
+                        rect.width() - border.width,
+                        0.0,
+                        border.width,
+                        rect.height(),
+                    );
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(border.color),
+                    );
                 }
             }
 
@@ -2520,16 +2532,28 @@ impl RenderTree {
             if let Some(ref border) = sides.top {
                 if border.is_visible() {
                     let border_rect = Rect::new(0.0, 0.0, rect.width(), border.width);
-                    ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(border.color),
+                    );
                 }
             }
 
             // Bottom border
             if let Some(ref border) = sides.bottom {
                 if border.is_visible() {
-                    let border_rect =
-                        Rect::new(0.0, rect.height() - border.width, rect.width(), border.width);
-                    ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                    let border_rect = Rect::new(
+                        0.0,
+                        rect.height() - border.width,
+                        rect.width(),
+                        border.width,
+                    );
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(border.color),
+                    );
                 }
             }
         } else if render_node.props.border_width > 0.0 {
@@ -2904,8 +2928,12 @@ impl RenderTree {
                 // Right border
                 if let Some(ref border) = sides.right {
                     if border.is_visible() {
-                        let border_rect =
-                            Rect::new(rect.width() - border.width, 0.0, border.width, rect.height());
+                        let border_rect = Rect::new(
+                            rect.width() - border.width,
+                            0.0,
+                            border.width,
+                            rect.height(),
+                        );
                         ctx.fill_rect(
                             border_rect,
                             CornerRadius::default(),
@@ -2929,8 +2957,12 @@ impl RenderTree {
                 // Bottom border
                 if let Some(ref border) = sides.bottom {
                     if border.is_visible() {
-                        let border_rect =
-                            Rect::new(0.0, rect.height() - border.width, rect.width(), border.width);
+                        let border_rect = Rect::new(
+                            0.0,
+                            rect.height() - border.width,
+                            rect.width(),
+                            border.width,
+                        );
                         ctx.fill_rect(
                             border_rect,
                             CornerRadius::default(),
@@ -3217,27 +3249,51 @@ impl RenderTree {
                 if let Some(ref border) = sides.left {
                     if border.is_visible() {
                         let border_rect = Rect::new(0.0, 0.0, border.width, rect.height());
-                        ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                        ctx.fill_rect(
+                            border_rect,
+                            CornerRadius::default(),
+                            Brush::Solid(border.color),
+                        );
                     }
                 }
                 if let Some(ref border) = sides.right {
                     if border.is_visible() {
-                        let border_rect =
-                            Rect::new(rect.width() - border.width, 0.0, border.width, rect.height());
-                        ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                        let border_rect = Rect::new(
+                            rect.width() - border.width,
+                            0.0,
+                            border.width,
+                            rect.height(),
+                        );
+                        ctx.fill_rect(
+                            border_rect,
+                            CornerRadius::default(),
+                            Brush::Solid(border.color),
+                        );
                     }
                 }
                 if let Some(ref border) = sides.top {
                     if border.is_visible() {
                         let border_rect = Rect::new(0.0, 0.0, rect.width(), border.width);
-                        ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                        ctx.fill_rect(
+                            border_rect,
+                            CornerRadius::default(),
+                            Brush::Solid(border.color),
+                        );
                     }
                 }
                 if let Some(ref border) = sides.bottom {
                     if border.is_visible() {
-                        let border_rect =
-                            Rect::new(0.0, rect.height() - border.width, rect.width(), border.width);
-                        ctx.fill_rect(border_rect, CornerRadius::default(), Brush::Solid(border.color));
+                        let border_rect = Rect::new(
+                            0.0,
+                            rect.height() - border.width,
+                            rect.width(),
+                            border.width,
+                        );
+                        ctx.fill_rect(
+                            border_rect,
+                            CornerRadius::default(),
+                            Brush::Solid(border.color),
+                        );
                     }
                 }
             } else if render_node.props.border_width > 0.0 {
@@ -3328,9 +3384,7 @@ impl RenderTree {
     ///
     /// Returns the cursor style if set on this node, None if not set.
     pub fn get_cursor(&self, node: LayoutNodeId) -> Option<crate::element::CursorStyle> {
-        self.render_nodes
-            .get(&node)
-            .and_then(|n| n.props.cursor)
+        self.render_nodes.get(&node).and_then(|n| n.props.cursor)
     }
 
     /// Get the cursor style for the topmost hovered element at a point

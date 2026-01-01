@@ -3,7 +3,9 @@
 //! This module provides integration between blinc_text's TextRenderer
 //! and the GPU rendering pipeline.
 
-use blinc_text::{ColorSpan, FontRegistry, GenericFont, LayoutOptions, TextAlignment, TextAnchor, TextRenderer};
+use blinc_text::{
+    ColorSpan, FontRegistry, GenericFont, LayoutOptions, TextAlignment, TextAnchor, TextRenderer,
+};
 use std::sync::{Arc, Mutex};
 
 use crate::primitives::GpuGlyph;
@@ -129,7 +131,8 @@ impl TextRenderingContext {
 
     /// Preload generic font variants with specific weights
     pub fn preload_generic_styles(&mut self, generic: GenericFont, weights: &[u16], italic: bool) {
-        self.renderer.preload_generic_styles(generic, weights, italic);
+        self.renderer
+            .preload_generic_styles(generic, weights, italic);
     }
 
     /// Load the default font from data

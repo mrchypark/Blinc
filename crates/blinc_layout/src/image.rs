@@ -963,9 +963,7 @@ mod tests {
 
     #[test]
     fn test_placeholder_image() {
-        let i = img("large.jpg")
-            .lazy()
-            .placeholder_image("thumbnail.jpg");
+        let i = img("large.jpg").lazy().placeholder_image("thumbnail.jpg");
 
         let info = i.image_render_info().unwrap();
         assert_eq!(info.placeholder_type, 2); // Image

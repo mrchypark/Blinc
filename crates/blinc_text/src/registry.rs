@@ -40,12 +40,12 @@ pub enum GenericFont {
 #[cfg(target_os = "macos")]
 const KNOWN_FONT_PATHS: &[&str] = &[
     // System UI fonts
-    "/System/Library/Fonts/SFNS.ttf",                    // SF Pro (System)
-    "/System/Library/Fonts/SFNSMono.ttf",                // SF Mono
-    "/System/Library/Fonts/Helvetica.ttc",               // Helvetica
-    "/System/Library/Fonts/Times.ttc",                   // Times (Serif)
-    "/System/Library/Fonts/Menlo.ttc",                   // Menlo (Monospace with symbols)
-    "/System/Library/Fonts/Monaco.ttf",                  // Monaco (Monospace)
+    "/System/Library/Fonts/SFNS.ttf",      // SF Pro (System)
+    "/System/Library/Fonts/SFNSMono.ttf",  // SF Mono
+    "/System/Library/Fonts/Helvetica.ttc", // Helvetica
+    "/System/Library/Fonts/Times.ttc",     // Times (Serif)
+    "/System/Library/Fonts/Menlo.ttc",     // Menlo (Monospace with symbols)
+    "/System/Library/Fonts/Monaco.ttf",    // Monaco (Monospace)
     // Common user fonts
     "/Library/Fonts/Arial.ttf",
     "/Library/Fonts/Georgia.ttf",
@@ -53,11 +53,11 @@ const KNOWN_FONT_PATHS: &[&str] = &[
 
 #[cfg(target_os = "windows")]
 const KNOWN_FONT_PATHS: &[&str] = &[
-    "C:\\Windows\\Fonts\\segoeui.ttf",    // Segoe UI (System)
-    "C:\\Windows\\Fonts\\consola.ttf",    // Consolas (Monospace)
-    "C:\\Windows\\Fonts\\arial.ttf",      // Arial (Sans-serif)
-    "C:\\Windows\\Fonts\\times.ttf",      // Times New Roman (Serif)
-    "C:\\Windows\\Fonts\\cour.ttf",       // Courier New (Monospace)
+    "C:\\Windows\\Fonts\\segoeui.ttf", // Segoe UI (System)
+    "C:\\Windows\\Fonts\\consola.ttf", // Consolas (Monospace)
+    "C:\\Windows\\Fonts\\arial.ttf",   // Arial (Sans-serif)
+    "C:\\Windows\\Fonts\\times.ttf",   // Times New Roman (Serif)
+    "C:\\Windows\\Fonts\\cour.ttf",    // Courier New (Monospace)
 ];
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -264,7 +264,12 @@ impl FontRegistry {
     }
 
     /// Find a generic font ID by family, weight, and italic style
-    fn find_generic_font_id(&self, family: Family, weight: u16, italic: bool) -> Option<fontdb::ID> {
+    fn find_generic_font_id(
+        &self,
+        family: Family,
+        weight: u16,
+        italic: bool,
+    ) -> Option<fontdb::ID> {
         let query = Query {
             families: &[family],
             weight: Weight(weight),
@@ -338,7 +343,8 @@ impl FontRegistry {
         for font_name in emoji_fonts {
             if let Ok(face) = self.load_font(font_name) {
                 // Cache it under the generic emoji key
-                self.faces.insert(cache_key.clone(), Some(Arc::clone(&face)));
+                self.faces
+                    .insert(cache_key.clone(), Some(Arc::clone(&face)));
                 tracing::debug!("Loaded emoji font: {}", font_name);
                 return Ok(face);
             }
@@ -371,9 +377,9 @@ impl FontRegistry {
         // Priority: fonts with good dingbat/symbol coverage (✓, ✗, etc.) first
         let symbol_fonts = if cfg!(target_os = "macos") {
             vec![
-                "Menlo",            // Has ✓ ✗ ✔ ✖ and other dingbats
-                "Lucida Grande",    // Has ✓ and many symbols
-                "Apple Symbols",    // Unicode symbols (arrows, math, but NOT ✓✗)
+                "Menlo",         // Has ✓ ✗ ✔ ✖ and other dingbats
+                "Lucida Grande", // Has ✓ and many symbols
+                "Apple Symbols", // Unicode symbols (arrows, math, but NOT ✓✗)
             ]
         } else if cfg!(target_os = "windows") {
             vec![
@@ -394,7 +400,8 @@ impl FontRegistry {
         for font_name in symbol_fonts {
             if let Ok(face) = self.load_font(font_name) {
                 // Cache it under the generic symbol key
-                self.faces.insert(cache_key.clone(), Some(Arc::clone(&face)));
+                self.faces
+                    .insert(cache_key.clone(), Some(Arc::clone(&face)));
                 tracing::debug!("Loaded symbol font: {}", font_name);
                 return Ok(face);
             }
@@ -419,9 +426,7 @@ impl FontRegistry {
         //
         // Note: make_shared_face_data is only available when fontdb has "fs" and "memmap" features,
         // which are enabled by default. If they're disabled, this will fail to compile.
-        if let Some((shared_data, face_index)) =
-            unsafe { self.db.make_shared_face_data(id) }
-        {
+        if let Some((shared_data, face_index)) = unsafe { self.db.make_shared_face_data(id) } {
             let font_data = FontData::from_mapped(shared_data);
             return FontFace::from_font_data(font_data, face_index);
         }
@@ -506,7 +511,7 @@ impl FontRegistry {
             GenericFont::Monospace => Family::Monospace,
             GenericFont::Serif => Family::Serif,
             GenericFont::SansSerif => Family::SansSerif,
-            GenericFont::Emoji => unreachable!(),  // Handled above
+            GenericFont::Emoji => unreachable!(), // Handled above
             GenericFont::Symbol => unreachable!(), // Handled above
         };
 
@@ -826,9 +831,17 @@ mod tests {
 
         // Test common fonts
         let fonts_to_test = [
-            "Arial", "Helvetica", "Helvetica Neue", "SF Pro", "SF Pro Text",
-            "Menlo", "Monaco", "Lucida Grande", "Times New Roman",
-            "Apple Symbols", "Apple Color Emoji",
+            "Arial",
+            "Helvetica",
+            "Helvetica Neue",
+            "SF Pro",
+            "SF Pro Text",
+            "Menlo",
+            "Monaco",
+            "Lucida Grande",
+            "Times New Roman",
+            "Apple Symbols",
+            "Apple Color Emoji",
         ];
 
         for font_name in fonts_to_test {
