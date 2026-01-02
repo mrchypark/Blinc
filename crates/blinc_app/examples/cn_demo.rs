@@ -5,7 +5,7 @@
 //! Run with: cargo run -p blinc_app --example cn_demo --features windowed
 
 use std::os::unix::thread;
-use std::thread::{Thread, sleep};
+use std::thread::{sleep, Thread};
 use std::time::Duration;
 
 use blinc_animation::SpringConfig;
@@ -504,7 +504,6 @@ fn progress_section(ctx: &WindowedContext, _scroll_ref: &ScrollRef) -> impl Elem
     }
 
     let is_reset = ctx.use_state_keyed("is_reset", || false);
-    let button_state = ctx.use_state_for("progress_reset_button", ButtonState::Idle);
 
     // Clone for reset button
     let progress_for_reset = animated_progress.clone();
@@ -553,8 +552,7 @@ fn progress_section(ctx: &WindowedContext, _scroll_ref: &ScrollRef) -> impl Elem
                     .child(cn::label("Animated Progress (auto-animates to 75%)"))
                     .child(cn::progress_animated(animated_progress).w(PROGRESS_WIDTH))
                     .child(
-                        stateful(button_state)
-                            .deps(&[is_reset.signal_id()])
+                        div()
                             .w(PROGRESS_WIDTH)
                             .justify_center()
                             .p(8.0)
