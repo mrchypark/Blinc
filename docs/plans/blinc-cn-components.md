@@ -27,7 +27,7 @@ These are fundamental components used throughout any application.
 | **Card** | div, text | ✅ Done |
 | **Separator** | div | ✅ Done |
 | **Skeleton** | div with animation | ✅ Done |
-| **Spinner** | div with animation | ✅ Done |
+| **Spinner** | canvas, AnimatedTimeline | ✅ Done |
 | **Alert** | div, text, icon | ✅ Done |
 
 ### 2. Form Components (Priority: High)
@@ -36,15 +36,15 @@ Form inputs and controls.
 
 | Component | Primitives Used | Status |
 |-----------|-----------------|--------|
-| **Input** | text_input | Planned |
+| **Input** | text_input | ✅ Done |
+| **Label** | text | ✅ Done |
 | **Textarea** | text_area | Planned |
-| **Checkbox** | Stateful, div, svg | Planned |
+| **Checkbox** | Stateful, div, svg | ✅ Done |
 | **Radio Group** | Stateful, div | Planned |
 | **Switch** | Stateful, motion | Planned |
 | **Slider** | Stateful, div | Planned |
 | **Select** | scroll, text, overlay | Planned |
 | **Combobox** | text_input, scroll, overlay | Planned |
-| **Label** | text | Planned |
 | **Form** | div, validation | Planned |
 | **Field** | div, label, input, error | Planned |
 
@@ -484,9 +484,23 @@ crates/blinc_cn/
 3. Accessibility tests (future)
 4. Example demos for each component
 
-## Next Steps
+## Progress Summary
 
-1. Implement Badge component
-2. Implement Card component
-3. Implement Separator component
-4. Create example demo showcasing components
+### Completed
+
+- **Phase 1 (Core)**: All 7 components done (Button, Badge, Card, Separator, Skeleton, Spinner, Alert)
+- **Phase 2 (Form)**: Input, Label, and Checkbox done with full theme integration and customization
+
+### Current: Phase 2 - Form Components
+
+Next components to implement:
+
+1. **Switch** - Toggle switch with motion animation
+2. **Textarea** - Multi-line text input (wraps text_area primitive)
+
+### Notes
+
+- Spinner uses canvas-based animation with AnimatedTimeline for smooth 60fps rotation
+- Input supports full color customization (border, bg, text, placeholder, cursor, selection)
+- Checkbox uses State<bool> from context with signal-based reactivity and SVG checkmark
+- All components use theme tokens from blinc_theme

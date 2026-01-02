@@ -45,14 +45,34 @@ pub use components::*;
 
 /// Convenience module for accessing components with `cn::` prefix
 pub mod cn {
+    pub use crate::components::alert::{alert, alert_box};
+    pub use crate::components::badge::badge;
     pub use crate::components::button::button;
-    // More components will be added here
+    pub use crate::components::card::{card, card_footer, card_header};
+    pub use crate::components::checkbox::checkbox;
+    pub use crate::components::input::input;
+    pub use crate::components::label::label;
+    pub use crate::components::separator::separator;
+    pub use crate::components::skeleton::{skeleton, skeleton_circle};
+    pub use crate::components::spinner::spinner;
 }
 
 /// Prelude for convenient imports
 pub mod prelude {
     pub use crate::cn;
+    // Components
+    pub use crate::components::alert::{alert, alert_box, Alert, AlertBox, AlertVariant};
+    pub use crate::components::badge::{badge, Badge, BadgeVariant};
     pub use crate::components::button::{button, Button, ButtonSize, ButtonVariant};
+    pub use crate::components::card::{card, card_footer, card_header, Card, CardFooter, CardHeader};
+    pub use crate::components::checkbox::{checkbox, Checkbox, CheckboxSize};
+    pub use crate::components::input::{input, Input, InputBgColors, InputBorderColors, InputSize};
+    pub use crate::components::label::{label, Label, LabelSize};
+    pub use crate::components::separator::{separator, Separator, SeparatorOrientation};
+    pub use crate::components::skeleton::{skeleton, skeleton_circle, Skeleton};
+    pub use crate::components::spinner::{spinner, Spinner, SpinnerSize};
+    // Re-export State for checkbox usage
+    pub use blinc_core::State;
     // Re-export commonly needed theme types
     pub use blinc_theme::{ColorToken, RadiusToken, ShadowToken, SpacingToken, ThemeState};
 }
