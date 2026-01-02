@@ -123,7 +123,7 @@ impl Badge {
         // For now, this creates a new badge with variant
         let theme = ThemeState::get();
         let bg = variant.background(&theme);
-        let fg = variant.foreground(&theme);
+        let _fg = variant.foreground(&theme); // TODO: Apply to text children
         let border = variant.border(&theme);
 
         let mut badge = self.inner.bg(bg);

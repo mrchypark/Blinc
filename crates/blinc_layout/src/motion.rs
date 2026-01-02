@@ -40,8 +40,6 @@ use crate::element::{MotionAnimation, MotionKeyframe, RenderProps};
 use crate::tree::{LayoutNodeId, LayoutTree};
 use blinc_animation::{AnimatedValue, AnimationPreset, MultiKeyframeAnimation};
 use blinc_core::Transform;
-use std::cell::RefCell;
-use std::rc::Rc;
 use taffy::{Display, FlexDirection, Style};
 
 /// Animation configuration for element lifecycle
@@ -162,6 +160,18 @@ impl StaggerConfig {
 /// Shared animated value type for motion bindings (thread-safe)
 pub type SharedAnimatedValue = std::sync::Arc<std::sync::Mutex<AnimatedValue>>;
 
+/// Timeline rotation binding for continuous spinning animations
+///
+/// Used for spinners and other continuously rotating elements that use
+/// timeline-based animation instead of spring physics.
+#[derive(Clone)]
+pub struct TimelineRotation {
+    /// The timeline containing the rotation animation
+    pub timeline: blinc_animation::SharedAnimatedTimeline,
+    /// The entry ID for the rotation value in the timeline
+    pub entry_id: blinc_animation::TimelineEntryId,
+}
+
 /// Motion bindings for continuous animation driven by AnimatedValue
 ///
 /// This struct holds references to animated values that are sampled every frame
@@ -178,8 +188,10 @@ pub struct MotionBindings {
     pub scale_x: Option<SharedAnimatedValue>,
     /// Animated Y scale
     pub scale_y: Option<SharedAnimatedValue>,
-    /// Animated rotation (degrees)
+    /// Animated rotation (degrees) - spring-based
     pub rotation: Option<SharedAnimatedValue>,
+    /// Animated rotation (degrees) - timeline-based for continuous spin
+    pub rotation_timeline: Option<TimelineRotation>,
     /// Animated opacity
     pub opacity: Option<SharedAnimatedValue>,
 }
@@ -193,6 +205,7 @@ impl MotionBindings {
             && self.scale_x.is_none()
             && self.scale_y.is_none()
             && self.rotation.is_none()
+            && self.rotation_timeline.is_none()
             && self.opacity.is_none()
     }
 
@@ -240,7 +253,15 @@ impl MotionBindings {
     /// Get the current rotation from animated values (in degrees)
     ///
     /// The renderer should apply this centered around the element.
+    /// Checks timeline-based rotation first, then spring-based.
     pub fn get_rotation(&self) -> Option<f32> {
+        // Timeline rotation takes precedence (for continuous spinning)
+        if let Some(ref tl_rot) = self.rotation_timeline {
+            if let Ok(timeline) = tl_rot.timeline.lock() {
+                return timeline.get(tl_rot.entry_id);
+            }
+        }
+        // Fall back to spring-based rotation
         self.rotation.as_ref().map(|v| v.lock().unwrap().get())
     }
 
@@ -283,8 +304,10 @@ pub struct Motion {
     scale_x: Option<SharedAnimatedValue>,
     /// Animated Y scale
     scale_y: Option<SharedAnimatedValue>,
-    /// Animated rotation (degrees)
+    /// Animated rotation (degrees) - spring-based
     rotation: Option<SharedAnimatedValue>,
+    /// Animated rotation (degrees) - timeline-based for continuous spin
+    rotation_timeline: Option<TimelineRotation>,
     /// Animated opacity
     opacity: Option<SharedAnimatedValue>,
 }
@@ -307,6 +330,7 @@ pub fn motion() -> Motion {
         scale_x: None,
         scale_y: None,
         rotation: None,
+        rotation_timeline: None,
         opacity: None,
     }
 }
@@ -460,6 +484,34 @@ impl Motion {
         self
     }
 
+    /// Bind rotation to a timeline for continuous spinning (in degrees)
+    ///
+    /// Use this for spinners and other continuously rotating elements.
+    /// The timeline should be configured with infinite looping.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let timeline = ctx.use_animated_timeline();
+    /// let entry_id = timeline.lock().unwrap().configure(|t| {
+    ///     let id = t.add(0, 1000, 0.0, 360.0);
+    ///     t.set_loop(-1);
+    ///     t.start();
+    ///     id
+    /// });
+    /// motion()
+    ///     .rotate_timeline(timeline, entry_id)
+    ///     .child(spinner_visual)
+    /// ```
+    pub fn rotate_timeline(
+        mut self,
+        timeline: blinc_animation::SharedAnimatedTimeline,
+        entry_id: blinc_animation::TimelineEntryId,
+    ) -> Self {
+        self.rotation_timeline = Some(TimelineRotation { timeline, entry_id });
+        self
+    }
+
     /// Bind opacity to an AnimatedValue (0.0 to 1.0)
     pub fn opacity(mut self, value: SharedAnimatedValue) -> Self {
         self.opacity = Some(value);
@@ -474,6 +526,7 @@ impl Motion {
             || self.scale_x.is_some()
             || self.scale_y.is_some()
             || self.rotation.is_some()
+            || self.rotation_timeline.is_some()
             || self.opacity.is_some()
     }
 
@@ -493,6 +546,7 @@ impl Motion {
             scale_x: self.scale_x.clone(),
             scale_y: self.scale_y.clone(),
             rotation: self.rotation.clone(),
+            rotation_timeline: self.rotation_timeline.clone(),
             opacity: self.opacity.clone(),
         })
     }

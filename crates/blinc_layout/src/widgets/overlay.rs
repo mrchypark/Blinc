@@ -40,7 +40,6 @@ use blinc_core::Color;
 use indexmap::IndexMap;
 
 use crate::div::{div, Div};
-use crate::motion::motion;
 use crate::renderer::RenderTree;
 use crate::stack::stack;
 use crate::stateful::StateTransitions;
