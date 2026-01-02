@@ -1,15 +1,18 @@
 //! Element registry for O(1) ID-based lookups
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
+use crate::element::ElementBounds;
 use crate::tree::LayoutNodeId;
+
+/// Callback type for on_ready notifications registered via query API
+pub type OnReadyCallback = Arc<dyn Fn(ElementBounds) + Send + Sync>;
 
 /// Registry mapping string IDs to layout node IDs
 ///
 /// This provides O(1) lookup of elements by their string ID.
 /// The registry is cleared and rebuilt on each render cycle.
-#[derive(Debug, Default)]
 pub struct ElementRegistry {
     /// String ID → LayoutNodeId mapping
     ids: RwLock<HashMap<String, LayoutNodeId>>,
@@ -17,12 +20,46 @@ pub struct ElementRegistry {
     reverse: RwLock<HashMap<LayoutNodeId, String>>,
     /// Parent relationships for tree traversal
     parents: RwLock<HashMap<LayoutNodeId, LayoutNodeId>>,
+    /// Pending on_ready callbacks registered via ElementHandle.on_ready()
+    /// These are picked up by the RenderTree and moved to its callback storage
+    pending_on_ready: Mutex<Vec<(LayoutNodeId, OnReadyCallback)>>,
+}
+
+impl std::fmt::Debug for ElementRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ElementRegistry")
+            .field("ids", &self.ids)
+            .field("reverse", &self.reverse)
+            .field("parents", &self.parents)
+            .field(
+                "pending_on_ready",
+                &format!(
+                    "{} pending",
+                    self.pending_on_ready
+                        .lock()
+                        .map(|v| v.len())
+                        .unwrap_or(0)
+                ),
+            )
+            .finish()
+    }
+}
+
+impl Default for ElementRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ElementRegistry {
     /// Create a new empty registry
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            ids: RwLock::new(HashMap::new()),
+            reverse: RwLock::new(HashMap::new()),
+            parents: RwLock::new(HashMap::new()),
+            pending_on_ready: Mutex::new(Vec::new()),
+        }
     }
 
     /// Create a new registry wrapped in Arc for sharing
@@ -147,6 +184,40 @@ impl ElementRegistry {
             .ok()
             .map(|ids| ids.keys().cloned().collect())
             .unwrap_or_default()
+    }
+
+    // =========================================================================
+    // On-Ready Callbacks (for ElementHandle.on_ready())
+    // =========================================================================
+
+    /// Register an on_ready callback for a node
+    ///
+    /// This is called by ElementHandle.on_ready() to queue callbacks that will
+    /// be processed by the RenderTree after layout computation.
+    pub fn register_on_ready(&self, node_id: LayoutNodeId, callback: OnReadyCallback) {
+        if let Ok(mut pending) = self.pending_on_ready.lock() {
+            pending.push((node_id, callback));
+        }
+    }
+
+    /// Take all pending on_ready callbacks
+    ///
+    /// This is called by the RenderTree to move pending callbacks into its own
+    /// callback storage for processing after layout.
+    pub fn take_pending_on_ready(&self) -> Vec<(LayoutNodeId, OnReadyCallback)> {
+        if let Ok(mut pending) = self.pending_on_ready.lock() {
+            std::mem::take(&mut *pending)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Check if there are pending on_ready callbacks
+    pub fn has_pending_on_ready(&self) -> bool {
+        self.pending_on_ready
+            .lock()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
     }
 }
 

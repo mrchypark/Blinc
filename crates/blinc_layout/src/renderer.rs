@@ -296,6 +296,20 @@ pub struct LayoutBoundsEntry {
     pub on_change: Option<LayoutBoundsCallback>,
 }
 
+/// Callback type for on_ready notifications when an element is laid out and rendered
+///
+/// The callback receives the element's computed bounds after layout.
+/// This is triggered once per element after its first successful layout computation.
+pub type OnReadyCallback = Arc<dyn Fn(ElementBounds) + Send + Sync>;
+
+/// Entry for on_ready callbacks
+pub struct OnReadyEntry {
+    /// The callback to invoke when the element is ready
+    pub callback: OnReadyCallback,
+    /// Whether this callback has been triggered (only fires once)
+    pub triggered: bool,
+}
+
 /// RenderTree - bridges layout computation and rendering
 pub struct RenderTree {
     /// The underlying layout tree
@@ -343,6 +357,9 @@ pub struct RenderTree {
     /// Active scroll refs (persists across rebuilds, keyed by inner pointer address)
     /// Maps inner pointer -> ScrollRef for persistence across rebuilds
     active_scroll_refs: Vec<ScrollRef>,
+    /// On-ready callbacks for elements (fires once after first layout)
+    /// Maps node_id to callback entry. Callbacks are triggered after layout computation.
+    on_ready_callbacks: HashMap<LayoutNodeId, OnReadyEntry>,
 }
 
 /// Result of an incremental update attempt
@@ -386,6 +403,7 @@ impl RenderTree {
             element_registry: Arc::new(ElementRegistry::new()),
             scroll_refs: HashMap::new(),
             active_scroll_refs: Vec::new(),
+            on_ready_callbacks: HashMap::new(),
         }
     }
 
@@ -857,6 +875,9 @@ impl RenderTree {
         // Register layout bounds storage if element wants bounds updates
         self.register_element_bounds_storage(node_id, element);
 
+        // Register on_ready callback if element has one
+        self.register_element_on_ready(node_id, element);
+
         // Recursively update children
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
@@ -934,6 +955,9 @@ impl RenderTree {
 
         // Register layout bounds storage if element wants bounds updates
         self.register_element_bounds_storage(node_id, element);
+
+        // Register on_ready callback if element has one
+        self.register_element_on_ready(node_id, element);
 
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
@@ -1023,6 +1047,9 @@ impl RenderTree {
         // Register layout bounds storage if element wants bounds updates
         self.register_element_bounds_storage(node_id, element);
 
+        // Register on_ready callback if element has one
+        self.register_element_on_ready(node_id, element);
+
         // Register element ID if present (for selector API)
         if let Some(id) = element.element_id() {
             self.element_registry.register(id, node_id);
@@ -1053,6 +1080,13 @@ impl RenderTree {
 
     /// Collect render props from a boxed element builder
     fn collect_render_props_boxed(&mut self, element: &dyn ElementBuilder, node_id: LayoutNodeId) {
+        let type_id = element.element_type_id();
+        tracing::trace!(
+            "collect_render_props_boxed: processing {:?} element {:?}",
+            type_id,
+            node_id
+        );
+
         let mut props = element.render_props();
         props.node_id = Some(node_id);
 
@@ -1163,14 +1197,6 @@ impl RenderTree {
 
         // Register event handlers if present
         if let Some(handlers) = element.event_handlers() {
-            // Log if DRAG handler is being registered
-            if handlers.has_handler(blinc_core::events::event_types::DRAG) {
-                tracing::info!(
-                    "collect_render_props_boxed: Registering DRAG handler for node {:?} (element_type={:?})",
-                    node_id,
-                    element.element_type_id()
-                );
-            }
             self.handler_registry.register(node_id, handlers.clone());
         }
 
@@ -1191,6 +1217,9 @@ impl RenderTree {
         // Register layout bounds storage if element wants bounds updates
         self.register_element_bounds_storage(node_id, element);
 
+        // Register on_ready callback if element has one
+        self.register_element_on_ready(node_id, element);
+
         // Register element ID if present (for selector API)
         if let Some(id) = element.element_id() {
             self.element_registry.register(id, node_id);
@@ -1205,7 +1234,7 @@ impl RenderTree {
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
 
-        // Debug: warn on mismatch
+        // Debug: warn on mismatch (in collect_render_props_boxed)
         if child_node_ids.len() != child_builders.len() {
             tracing::warn!(
                 "collect_render_props_boxed: node {:?} has {} layout children but {} builder children",
@@ -1374,6 +1403,9 @@ impl RenderTree {
 
         // Register layout bounds storage if element wants bounds updates
         self.register_element_bounds_storage(node_id, element);
+
+        // Register on_ready callback if element has one
+        self.register_element_on_ready(node_id, element);
 
         // Register element ID if present (for selector API)
         if let Some(id) = element.element_id() {
@@ -1603,6 +1635,9 @@ impl RenderTree {
 
             // Update registered layout bounds storages
             self.update_layout_bounds_storages();
+
+            // Process on_ready callbacks for newly laid out elements
+            self.process_on_ready_callbacks();
         }
     }
 
@@ -1711,6 +1746,106 @@ impl RenderTree {
             if let Ok(mut guard) = entry.storage.lock() {
                 *guard = None;
             }
+        }
+    }
+
+    // =========================================================================
+    // On-Ready Callbacks
+    // =========================================================================
+
+    /// Register an on_ready callback for a node
+    ///
+    /// The callback will be invoked once after the element's first successful
+    /// layout computation. It receives the element's computed bounds.
+    ///
+    /// This is useful for triggering animations or other setup that depends
+    /// on the element being fully rendered and laid out.
+    pub fn register_on_ready_callback(&mut self, node_id: LayoutNodeId, callback: OnReadyCallback) {
+        self.on_ready_callbacks.insert(
+            node_id,
+            OnReadyEntry {
+                callback,
+                triggered: false,
+            },
+        );
+    }
+
+    /// Register on_ready callback from an element builder
+    ///
+    /// This helper checks on_ready_callback() from the ElementBuilder trait
+    /// and registers it if present.
+    fn register_element_on_ready(&mut self, node_id: LayoutNodeId, element: &dyn ElementBuilder) {
+        if let Some(callback) = element.on_ready_callback() {
+            self.on_ready_callbacks.insert(
+                node_id,
+                OnReadyEntry {
+                    callback,
+                    triggered: false,
+                },
+            );
+        }
+    }
+
+    /// Process all pending on_ready callbacks
+    ///
+    /// This is called after layout computation. Each callback is invoked with
+    /// the element's computed bounds, then marked as triggered so it won't
+    /// fire again on subsequent layouts.
+    ///
+    /// This method also picks up any pending callbacks registered via the query
+    /// API (ElementHandle.on_ready()) from the ElementRegistry.
+    ///
+    /// Callbacks are invoked after a short delay (500ms) to allow the window
+    /// to finish resizing/animating on platforms like macOS where fullscreen
+    /// transitions cause rapid resize events.
+    fn process_on_ready_callbacks(&mut self) {
+        // First, pick up any pending callbacks from the registry (via query API)
+        let pending_from_registry = self.element_registry.take_pending_on_ready();
+        for (node_id, callback) in pending_from_registry {
+            // Only add if not already registered (avoid duplicates)
+            if !self.on_ready_callbacks.contains_key(&node_id) {
+                self.on_ready_callbacks.insert(
+                    node_id,
+                    OnReadyEntry {
+                        callback,
+                        triggered: false,
+                    },
+                );
+            }
+        }
+
+        // Collect node_ids that need callback invocation
+        let to_trigger: Vec<(LayoutNodeId, OnReadyCallback, ElementBounds)> = self
+            .on_ready_callbacks
+            .iter()
+            .filter(|(_, entry)| !entry.triggered)
+            .filter_map(|(&node_id, entry)| {
+                self.layout_tree
+                    .get_bounds(node_id, (0.0, 0.0))
+                    .map(|bounds| (node_id, entry.callback.clone(), bounds))
+            })
+            .collect();
+
+        // Mark as triggered before invoking (in case callback triggers rebuild)
+        for (node_id, _, _) in &to_trigger {
+            if let Some(entry) = self.on_ready_callbacks.get_mut(node_id) {
+                entry.triggered = true;
+            }
+        }
+
+        // Invoke callbacks with bounds after a delay
+        // The delay allows window resize/fullscreen animations to complete
+        // so that triggered animations are visible to the user
+        if !to_trigger.is_empty() {
+            std::thread::spawn(move || {
+                // Magic delay to let the window settle
+                std::thread::sleep(std::time::Duration::from_millis(200));
+
+                for (node_id, callback, bounds) in to_trigger {
+                    tracing::trace!("on_ready callback invoked for node {:?}", node_id);
+                    callback(bounds);
+                }
+            });
         }
     }
 
@@ -2795,6 +2930,10 @@ impl RenderTree {
 
     /// Render the entire tree to a DrawContext
     pub fn render(&self, ctx: &mut dyn DrawContext) {
+        tracing::trace!(
+            "render: motion_bindings count = {}",
+            self.motion_bindings.len()
+        );
         if let Some(root) = self.root {
             self.render_node(ctx, root, (0.0, 0.0));
         }
@@ -2838,6 +2977,15 @@ impl RenderTree {
         let motion_transform = self.get_motion_transform(node);
         let has_motion_transform = motion_transform.is_some();
         if let Some(ref transform) = motion_transform {
+            // Log to verify animation is running
+            if let Transform::Affine2D(a) = transform {
+                tracing::debug!(
+                    "paint_node: applying motion transform to {:?}: tx={}, ty={}",
+                    node,
+                    a.elements[4],
+                    a.elements[5]
+                );
+            }
             ctx.push_transform(transform.clone());
         }
 

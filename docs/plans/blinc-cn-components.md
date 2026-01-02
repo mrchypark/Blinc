@@ -57,7 +57,7 @@ Components for displaying data.
 | **Avatar** | image, div, text | Planned |
 | **Table** | div, scroll | Planned |
 | **Data Table** | table, scroll, sorting | Planned |
-| **Progress** | div, animation | Planned |
+| **Progress** | div | ✅ Done |
 | **Calendar** | div, text, grid | Planned |
 | **Chart** | canvas | Planned |
 
@@ -503,7 +503,45 @@ Next components to implement:
 - Spinner uses canvas-based animation with AnimatedTimeline for smooth 60fps rotation
 - Input supports full color customization (border, bg, text, placeholder, cursor, selection)
 - Checkbox uses State<bool> from context with signal-based reactivity and SVG checkmark
-- Switch uses State<bool> with motion() animation for smooth spring physics (enabled by default)
-- Textarea wraps text_area primitive with size presets (Small/Medium/Large) and rows/cols support
+- Switch uses State<bool> with dual animation system:
+  - Spring physics via `motion().translate_x(SharedAnimatedValue)` for thumb movement
+  - Opacity animation via `SharedAnimatedValue` for background color transition
+  - Thumb wrapper uses absolute positioning (left=0, top=0) with motion translation for visual movement
+- Slider uses drag-based interaction with animated fill:
+  - `SharedAnimatedValue` for smooth thumb position updates
+  - Fill track reveals from left using `overflow_clip()` with animated width
+  - Thumb wrapper absolutely positioned at origin with `motion().translate_x()` for GPU-accelerated movement
+- Textarea uses builder pattern with lazy initialization:
+  - `TextareaConfig` struct holds configuration
+  - `Textarea` struct contains `inner: Div` with fully-built element tree
+  - `TextareaBuilder` uses `OnceCell` for lazy init ensuring `children_builders()` returns actual children
+  - Size presets (Small/Medium/Large) with rows/cols support
 - Radio Group uses State<String> for selected value with smooth hover/press feedback
+- Progress is a simple static div-based progress bar:
+  - Size presets (Small/Medium/Large) control bar height (4px/8px/12px)
+  - Uses theme tokens for indicator and track colors
+  - For animated progress, wrap the indicator with `motion().scale_x(SharedAnimatedValue)` with `transform_origin_left()`
 - All components use theme tokens from blinc_theme
+
+### Builder Pattern for Complex Components
+
+Components that wrap other elements must use the builder pattern with lazy initialization to ensure the incremental diff system works correctly:
+
+```rust
+pub struct MyComponent {
+    inner: Div,  // Contains fully-built element tree
+}
+
+pub struct MyComponentBuilder {
+    config: MyComponentConfig,
+    built: std::cell::OnceCell<MyComponent>,  // Lazy init
+}
+
+impl ElementBuilder for MyComponentBuilder {
+    fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
+        self.get_or_build().inner.children_builders()  // Delegate to inner
+    }
+}
+```
+
+This ensures `children_builders()` returns the actual children, which the layout tree diff algorithm requires.

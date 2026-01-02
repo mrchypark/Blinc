@@ -379,6 +379,8 @@ pub struct Div {
     pub(crate) event_handlers: crate::event_handler::EventHandlers,
     /// Element ID for selector API queries
     pub(crate) element_id: Option<String>,
+    /// On-ready callback invoked after first layout computation
+    pub(crate) on_ready: Option<crate::renderer::OnReadyCallback>,
 }
 
 impl Default for Div {
@@ -406,6 +408,7 @@ impl Div {
             cursor: None,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
+            on_ready: None,
         }
     }
 
@@ -1703,6 +1706,41 @@ impl Div {
     }
 
     // =========================================================================
+    // On-Ready Callback
+    // =========================================================================
+
+    /// Set an on_ready callback that fires once after the element is laid out
+    ///
+    /// The callback receives the element's computed bounds after layout.
+    /// This is triggered once per element after its first successful layout
+    /// computation.
+    ///
+    /// This is useful for triggering animations or other setup that depends
+    /// on the element being fully rendered and laid out.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use blinc_layout::prelude::*;
+    /// use std::sync::Arc;
+    ///
+    /// div()
+    ///     .w(200.0)
+    ///     .h(100.0)
+    ///     .on_ready(|bounds| {
+    ///         println!("Element ready at ({}, {}) size {}x{}",
+    ///             bounds.x, bounds.y, bounds.width, bounds.height);
+    ///     })
+    /// ```
+    pub fn on_ready<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(crate::element::ElementBounds) + Send + Sync + 'static,
+    {
+        self.on_ready = Some(std::sync::Arc::new(callback));
+        self
+    }
+
+    // =========================================================================
     // Children
     // =========================================================================
 
@@ -2365,6 +2403,18 @@ pub trait ElementBuilder {
     fn bound_scroll_ref(&self) -> Option<&crate::selector::ScrollRef> {
         None
     }
+
+    /// Get the on_ready callback for this element
+    ///
+    /// If this element has an on_ready callback, it will be invoked once
+    /// after the element's first successful layout computation. The callback
+    /// receives the element's computed bounds.
+    ///
+    /// This is useful for triggering animations or other setup that depends
+    /// on the element being fully rendered and laid out.
+    fn on_ready_callback(&self) -> Option<crate::renderer::OnReadyCallback> {
+        None
+    }
 }
 
 impl ElementBuilder for Div {
@@ -2423,6 +2473,10 @@ impl ElementBuilder for Div {
 
     fn element_id(&self) -> Option<&str> {
         self.element_id.as_deref()
+    }
+
+    fn on_ready_callback(&self) -> Option<crate::renderer::OnReadyCallback> {
+        self.on_ready.clone()
     }
 }
 

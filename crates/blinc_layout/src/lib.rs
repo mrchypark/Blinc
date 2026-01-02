@@ -104,8 +104,8 @@ pub use text::{text, Text};
 
 // Renderer
 pub use renderer::{
-    GlassPanel, ImageData, LayoutRenderer, RenderTree, StyledTextData, StyledTextSpan, SvgData,
-    TextData, UpdateResult,
+    GlassPanel, ImageData, LayoutRenderer, OnReadyCallback, OnReadyEntry, RenderTree,
+    StyledTextData, StyledTextSpan, SvgData, TextData, UpdateResult,
 };
 
 // Canvas element
@@ -251,7 +251,8 @@ pub mod prelude {
     };
     #[allow(deprecated)]
     pub use crate::renderer::{
-        GlassPanel, ImageData, LayoutRenderer, RenderTree, SvgData, TextData, UpdateResult,
+        GlassPanel, ImageData, LayoutRenderer, OnReadyCallback, RenderTree, SvgData, TextData,
+        UpdateResult,
     };
     // Scroll container (ready-to-use widget with Div extension)
     pub use crate::rich_text::{rich_text, rich_text_styled, RichText};

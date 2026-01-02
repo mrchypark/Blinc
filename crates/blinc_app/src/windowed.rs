@@ -117,6 +117,12 @@ impl HookState {
 /// Shared hook state for the application
 pub type SharedHookState = Arc<Mutex<HookState>>;
 
+/// Callback type for on_ready handlers
+pub type ReadyCallback = Box<dyn FnOnce() + Send + Sync>;
+
+/// Shared storage for ready callbacks
+pub type SharedReadyCallbacks = Arc<Mutex<Vec<ReadyCallback>>>;
+
 /// Context passed to the UI builder function
 pub struct WindowedContext {
     /// Current window width in logical pixels (for UI layout)
@@ -135,6 +141,11 @@ pub struct WindowedContext {
     physical_height: f32,
     /// Whether the window is focused
     pub focused: bool,
+    /// Number of completed UI rebuilds (0 = first build in progress)
+    ///
+    /// Use `is_ready()` to check if the UI has been built at least once.
+    /// This is useful for triggering animations after motion bindings are registered.
+    pub rebuild_count: u32,
     /// Event router for input event handling
     pub event_router: EventRouter,
     /// Animation scheduler for spring/keyframe animations
@@ -149,6 +160,8 @@ pub struct WindowedContext {
     overlay_manager: OverlayManager,
     /// Element registry for query API (shared with RenderTree)
     element_registry: SharedElementRegistry,
+    /// Callbacks to run after UI is ready (motion bindings registered)
+    ready_callbacks: SharedReadyCallbacks,
 }
 
 impl WindowedContext {
@@ -161,6 +174,7 @@ impl WindowedContext {
         hooks: SharedHookState,
         overlay_mgr: OverlayManager,
         element_registry: SharedElementRegistry,
+        ready_callbacks: SharedReadyCallbacks,
     ) -> Self {
         // Get physical size (actual surface pixels) and scale factor
         let (physical_width, physical_height) = window.size();
@@ -179,6 +193,7 @@ impl WindowedContext {
             physical_width: physical_width as f32,
             physical_height: physical_height as f32,
             focused: window.is_focused(),
+            rebuild_count: 0,
             event_router,
             animations,
             ref_dirty_flag,
@@ -186,6 +201,7 @@ impl WindowedContext {
             hooks,
             overlay_manager: overlay_mgr,
             element_registry,
+            ready_callbacks,
         }
     }
 
@@ -218,6 +234,80 @@ impl WindowedContext {
     /// Get the physical window height (for advanced use cases)
     pub fn physical_height(&self) -> f32 {
         self.physical_height
+    }
+
+    /// Check if the UI is ready (has completed at least one rebuild)
+    ///
+    /// This is useful for triggering animations after the first UI build,
+    /// when motion bindings have been registered with the renderer.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn my_component(ctx: &WindowedContext) -> impl ElementBuilder {
+    ///     let progress = ctx.use_animated_value_for("progress", 0.0, SpringConfig::gentle());
+    ///
+    ///     // Only trigger animation after UI is ready
+    ///     let triggered = ctx.use_state_keyed("triggered", || false);
+    ///     if ctx.is_ready() && !triggered.get() {
+    ///         triggered.set(true);
+    ///         progress.lock().unwrap().set_target(100.0);
+    ///     }
+    ///
+    ///     // ... build UI ...
+    /// }
+    /// ```
+    pub fn is_ready(&self) -> bool {
+        self.rebuild_count > 0
+    }
+
+    /// Register a callback to run once after the UI is ready
+    ///
+    /// The callback will be executed after the first UI rebuild completes,
+    /// when motion bindings have been registered with the renderer.
+    /// This is the recommended way to trigger initial animations.
+    ///
+    /// Callbacks are executed once and then discarded. If `is_ready()` is
+    /// already true, the callback will run on the next frame.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// fn my_component(ctx: &WindowedContext) -> impl ElementBuilder {
+    ///     let progress = ctx.use_animated_value_for("progress", 0.0, SpringConfig::gentle());
+    ///
+    ///     // Register animation to trigger when UI is ready
+    ///     let progress_clone = progress.clone();
+    ///     ctx.on_ready(move || {
+    ///         if let Ok(mut value) = progress_clone.lock() {
+    ///             value.set_target(100.0);
+    ///         }
+    ///     });
+    ///
+    ///     // ... build UI ...
+    /// }
+    /// ```
+    /// Register a callback to run once when the UI is ready (context-level).
+    ///
+    /// **Note:** For element-specific callbacks, prefer using `.on_ready()` on
+    /// individual elements (like `div().on_ready(|| ...)`), which ties the
+    /// callback to that element's layout node.
+    ///
+    /// This context-level callback runs after the first rebuild completes.
+    /// If called after the UI is already ready, executes immediately.
+    pub fn on_ready<F>(&self, callback: F)
+    where
+        F: FnOnce() + Send + Sync + 'static,
+    {
+        // If already ready, execute immediately
+        if self.rebuild_count > 0 {
+            callback();
+            return;
+        }
+        // Otherwise queue for execution after first rebuild
+        if let Ok(mut callbacks) = self.ready_callbacks.lock() {
+            callbacks.push(Box::new(callback));
+        }
     }
 
     // =========================================================================
@@ -1245,6 +1335,8 @@ impl WindowedApp {
         // Shared element registry for query API
         let element_registry: SharedElementRegistry =
             Arc::new(blinc_layout::selector::ElementRegistry::new());
+        // Shared storage for on_ready callbacks
+        let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
 
         // Set up continuous redraw callback for text widget cursor animation
         // This bridges text widgets (which track focus) with the animation scheduler (which drives redraws)
@@ -1302,7 +1394,7 @@ impl WindowedApp {
                                     surface_config = Some(config);
                                     app = Some(blinc_app);
 
-                                    // Initialize context with event router, animations, dirty flag, reactive graph, hooks, overlay manager, and registry
+                                    // Initialize context with event router, animations, dirty flag, reactive graph, hooks, overlay manager, registry, and ready callbacks
                                     ctx = Some(WindowedContext::from_window(
                                         window,
                                         EventRouter::new(),
@@ -1312,6 +1404,7 @@ impl WindowedApp {
                                         Arc::clone(&hooks),
                                         Arc::clone(&overlays),
                                         Arc::clone(&element_registry),
+                                        Arc::clone(&ready_callbacks),
                                     ));
 
                                     // Initialize render state with the shared animation scheduler
@@ -2082,7 +2175,23 @@ impl WindowedApp {
                                 }
 
                                 needs_rebuild = false;
+                                let was_first_rebuild = windowed_ctx.rebuild_count == 0;
+                                windowed_ctx.rebuild_count = windowed_ctx.rebuild_count.saturating_add(1);
+
+                                // Execute on_ready callbacks after first rebuild
+                                if was_first_rebuild {
+                                    if let Ok(mut callbacks) = ready_callbacks.lock() {
+                                        for callback in callbacks.drain(..) {
+                                            callback();
+                                        }
+                                    }
+                                }
                             }
+
+                            // Note: on_ready callbacks are only executed after the FIRST rebuild
+                            // (in the was_first_rebuild block above). Callbacks registered
+                            // after the first rebuild are executed immediately since the UI
+                            // is already ready at that point.
 
                             // =========================================================
                             // PHASE 3: Tick animations and dynamic render state

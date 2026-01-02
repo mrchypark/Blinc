@@ -14,6 +14,7 @@ pub mod card;
 pub mod checkbox;
 pub mod input;
 pub mod label;
+pub mod progress;
 pub mod radio;
 pub mod separator;
 pub mod slider;
@@ -30,6 +31,7 @@ pub use card::{card, card_content, card_footer, card_header, Card, CardContent, 
 pub use checkbox::{checkbox, Checkbox, CheckboxSize};
 pub use input::{input, Input, InputBgColors, InputBorderColors, InputSize};
 pub use label::{label, Label, LabelBuilder, LabelSize};
+pub use progress::{progress, progress_animated, AnimatedProgress, Progress, ProgressSize};
 pub use radio::{radio_group, RadioGroup, RadioGroupBuilder, RadioLayout, RadioSize};
 pub use separator::{separator, Separator, SeparatorOrientation};
 pub use slider::{slider, Slider, SliderSize};

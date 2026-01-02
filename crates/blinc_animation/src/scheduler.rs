@@ -564,9 +564,13 @@ impl SchedulerHandle {
 
     /// Register a spring and return its ID
     pub fn register_spring(&self, spring: Spring) -> Option<SpringId> {
-        self.inner
-            .upgrade()
-            .map(|inner| inner.lock().unwrap().springs.insert(spring))
+        self.inner.upgrade().map(|inner| {
+            let mut guard = inner.lock().unwrap();
+            // Reset last_frame to now to prevent huge dt on first tick
+            // This ensures new springs start animating smoothly from their current frame
+            guard.last_frame = std::time::Instant::now();
+            guard.springs.insert(spring)
+        })
     }
 
     /// Update a spring's target

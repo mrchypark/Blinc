@@ -52,6 +52,7 @@ pub mod cn {
     pub use crate::components::checkbox::checkbox;
     pub use crate::components::input::input;
     pub use crate::components::label::label;
+    pub use crate::components::progress::{progress, progress_animated};
     pub use crate::components::radio::radio_group;
     pub use crate::components::separator::separator;
     pub use crate::components::slider::slider;
@@ -72,6 +73,7 @@ pub mod prelude {
     pub use crate::components::checkbox::{checkbox, Checkbox, CheckboxSize};
     pub use crate::components::input::{input, Input, InputBgColors, InputBorderColors, InputSize};
     pub use crate::components::label::{label, Label, LabelBuilder, LabelSize};
+    pub use crate::components::progress::{progress, progress_animated, AnimatedProgress, Progress, ProgressSize};
     pub use crate::components::radio::{radio_group, RadioGroup, RadioGroupBuilder, RadioLayout, RadioSize};
     pub use crate::components::separator::{separator, Separator, SeparatorOrientation};
     pub use crate::components::slider::{slider, Slider, SliderBuilder, SliderSize};

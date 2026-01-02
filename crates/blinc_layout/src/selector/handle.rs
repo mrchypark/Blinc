@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::element::ElementBounds;
 use crate::tree::LayoutNodeId;
 
-use super::registry::ElementRegistry;
+use super::registry::{ElementRegistry, OnReadyCallback};
 use super::ScrollOptions;
 
 /// Handle to a queried element for programmatic manipulation
@@ -153,6 +153,39 @@ impl<T> ElementHandle<T> {
     pub fn dispatch_event(&self, _event: ElementEvent) {
         // TODO: Wire up to EventRouter/HandlerRegistry
         // This needs access to the event dispatch system
+    }
+
+    // =========================================================================
+    // On-Ready Callback
+    // =========================================================================
+
+    /// Register an on_ready callback for this element
+    ///
+    /// The callback will be invoked once after the element's first successful
+    /// layout computation. The callback receives the element's computed bounds.
+    ///
+    /// This is useful for triggering animations or other setup that depends
+    /// on the element being fully rendered and laid out.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Trigger animation when element is ready
+    /// ctx.query("progress-bar").on_ready(|bounds| {
+    ///     progress_anim.lock().unwrap().set_target(bounds.width * 0.75);
+    /// });
+    /// ```
+    pub fn on_ready<F>(&self, callback: F)
+    where
+        F: Fn(ElementBounds) + Send + Sync + 'static,
+    {
+        self.registry
+            .register_on_ready(self.node_id, Arc::new(callback));
+    }
+
+    /// Register an on_ready callback (Arc version for shared callbacks)
+    pub fn on_ready_arc(&self, callback: OnReadyCallback) {
+        self.registry.register_on_ready(self.node_id, callback);
     }
 }
 

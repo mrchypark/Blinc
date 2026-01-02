@@ -4,9 +4,16 @@
 //!
 //! Run with: cargo run -p blinc_app --example cn_demo --features windowed
 
+use std::os::unix::thread;
+use std::thread::{Thread, sleep};
+use std::time::Duration;
+
+use blinc_animation::SpringConfig;
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_cn::prelude::*;
+use blinc_core::Color;
+use blinc_layout::selector::ScrollRef;
 use blinc_layout::widgets::text_input::text_input_data;
 use blinc_theme::{ColorToken, ThemeState};
 
@@ -17,10 +24,10 @@ fn main() -> Result<()> {
 
     let config = WindowConfig {
         title: "blinc_cn Components Demo".to_string(),
-        width: 1400,
+        width: 900,
         height: 900,
         resizable: true,
-        fullscreen: true,
+        fullscreen: false,
         ..Default::default()
     };
 
@@ -31,6 +38,9 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
     let theme = ThemeState::get();
     let bg = theme.color(ColorToken::Background);
 
+    // Create scroll ref to track scroll position
+    let scroll_ref = ctx.use_scroll_ref("main_scroll");
+
     div()
         .w(ctx.width)
         .h(ctx.height)
@@ -38,24 +48,29 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         .flex_col()
         .child(header())
         .child(
-            scroll().w_full().h(ctx.height - 80.0).child(
-                div()
-                    .w_full()
-                    .p(theme.spacing().space_6)
-                    .flex_col()
-                    .gap(theme.spacing().space_8)
-                    // Component sections
-                    .child(buttons_section(ctx))
-                    .child(badges_section())
-                    .child(cards_section())
-                    .child(alerts_section())
-                    .child(form_inputs_section(ctx))
-                    .child(toggles_section(ctx))
-                    .child(slider_section(ctx))
-                    .child(radio_section(ctx))
-                    .child(loading_section(ctx))
-                    .child(misc_section()),
-            ),
+            scroll()
+                .w_full()
+                .h(ctx.height - 80.0)
+                .bind(&scroll_ref)
+                .child(
+                    div()
+                        .w_full()
+                        .p(theme.spacing().space_6)
+                        .flex_col()
+                        .gap(theme.spacing().space_8)
+                        // Component sections
+                        .child(progress_section(ctx, &scroll_ref))
+                        .child(buttons_section(ctx))
+                        .child(badges_section())
+                        .child(cards_section())
+                        .child(alerts_section())
+                        .child(form_inputs_section(ctx))
+                        .child(toggles_section(ctx))
+                        .child(slider_section(ctx))
+                        .child(radio_section(ctx))
+                        .child(loading_section(ctx))
+                        .child(misc_section()),
+                ),
         )
 }
 
@@ -356,9 +371,12 @@ fn slider_section(ctx: &WindowedContext) -> impl ElementBuilder {
             .flex_col()
             .gap(24.0)
             .child(
-                div()
-                    .w(300.0)
-                    .child(cn::slider(&volume).label("Volume").show_value().build_final(ctx)),
+                div().w(300.0).child(
+                    cn::slider(&volume)
+                        .label("Volume")
+                        .show_value()
+                        .build_final(ctx),
+                ),
             )
             .child(
                 div().w(300.0).child(
@@ -456,6 +474,120 @@ fn loading_section(ctx: &WindowedContext) -> impl ElementBuilder {
                         .child(cn::spinner(timeline3).size(SpinnerSize::Large)),
                 ),
         )
+}
+
+// ============================================================================
+// PROGRESS SECTION
+// ============================================================================
+
+fn progress_section(ctx: &WindowedContext, _scroll_ref: &ScrollRef) -> impl ElementBuilder {
+    const PROGRESS_WIDTH: f32 = 300.0;
+
+    // Create animated progress - start at 0
+    // Using gentle() for visible spring animation
+    let animated_progress = ctx.use_animated_value_for(
+        "animated_progress_v9", // Fresh key to reset persisted state
+        0.0,
+        SpringConfig::gentle(),
+    );
+
+    let progress_for_ready = animated_progress.clone();
+
+    // Debug: log current animated value on each rebuild
+    if let Ok(value) = animated_progress.lock() {
+        tracing::info!(
+            "build: animated_progress current={:.1}, target={:.1}, animating={}",
+            value.get(),
+            value.target(),
+            value.is_animating()
+        );
+    }
+
+    let is_reset = ctx.use_state_keyed("is_reset", || false);
+    let button_state = ctx.use_state_for("progress_reset_button", ButtonState::Idle);
+
+    // Clone for reset button
+    let progress_for_reset = animated_progress.clone();
+
+    section_container().child(section_title("Progress")).child(
+        div()
+            .flex_col()
+            .gap(20.0)
+            // Static progress bars
+            .child(
+                div()
+                    .flex_col()
+                    .gap(12.0)
+                    .child(cn::label("Static Progress"))
+                    .child(
+                        div()
+                            .flex_row()
+                            .gap(16.0)
+                            .items_center()
+                            .child(cn::progress(25.0).w(200.0))
+                            .child(cn::label("25%").size(LabelSize::Small)),
+                    )
+                    .child(
+                        div()
+                            .flex_row()
+                            .gap(16.0)
+                            .items_center()
+                            .child(cn::progress(50.0).w(200.0).size(ProgressSize::Small))
+                            .child(cn::label("50% (small)").size(LabelSize::Small)),
+                    )
+                    .child(
+                        div()
+                            .flex_row()
+                            .gap(16.0)
+                            .items_center()
+                            .child(cn::progress(75.0).w(200.0).size(ProgressSize::Large))
+                            .child(cn::label("75% (large)").size(LabelSize::Small)),
+                    ),
+            )
+            // Animated progress bar - auto-triggers on load
+            .child(
+                div()
+                    .w_fit()
+                    .flex_col()
+                    .gap(12.0)
+                    .child(cn::label("Animated Progress (auto-animates to 75%)"))
+                    .child(cn::progress_animated(animated_progress).w(PROGRESS_WIDTH))
+                    .child(
+                        stateful(button_state)
+                            .deps(&[is_reset.signal_id()])
+                            .w(PROGRESS_WIDTH)
+                            .justify_center()
+                            .p(8.0)
+                            .px(16.0)
+                            .bg(ThemeState::get().color(ColorToken::Primary))
+                            .rounded(6.0)
+                            .cursor_pointer()
+                            .child(text("Reset Animation").size(14.0).color(Color::WHITE))
+                            .on_click(move |_| {
+                                if let Ok(mut value) = progress_for_reset.lock() {
+                                    let reset_flag = !is_reset.get();
+
+                                    if reset_flag {
+                                        value.set_target(0.0);
+                                        is_reset.set(true);
+                                        tracing::info!("Progress animation reset to 0");
+                                    } else {
+                                        value.set_target(PROGRESS_WIDTH * 0.75);
+                                        is_reset.set(false);
+                                        tracing::info!("Progress animation reset to 75%");
+                                    }
+                                }
+                            }),
+                    ),
+            )
+            // on_ready fires once after element is laid out (with built-in 500ms delay)
+            .on_ready(move |_| {
+                if let Ok(mut value) = progress_for_ready.lock() {
+                    value.set_target(PROGRESS_WIDTH * 0.75);
+                    tracing::info!("on_ready: animation triggered to 75%");
+                }
+            }),
+    )
 }
 
 // ============================================================================
