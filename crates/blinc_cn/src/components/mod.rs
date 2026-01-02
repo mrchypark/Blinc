@@ -18,6 +18,7 @@ pub mod separator;
 pub mod skeleton;
 pub mod spinner;
 pub mod switch;
+pub mod textarea;
 
 // Re-export all components
 pub use alert::{alert, alert_box, Alert, AlertBox, AlertVariant};
@@ -31,3 +32,4 @@ pub use separator::{separator, Separator, SeparatorOrientation};
 pub use skeleton::{skeleton, skeleton_circle, Skeleton};
 pub use spinner::{spinner, Spinner, SpinnerSize};
 pub use switch::{switch, Switch, SwitchSize};
+pub use textarea::{textarea, Textarea, TextareaSize};

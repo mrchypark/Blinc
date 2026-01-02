@@ -56,6 +56,7 @@ pub mod cn {
     pub use crate::components::skeleton::{skeleton, skeleton_circle};
     pub use crate::components::spinner::spinner;
     pub use crate::components::switch::switch;
+    pub use crate::components::textarea::textarea;
 }
 
 /// Prelude for convenient imports
@@ -73,8 +74,11 @@ pub mod prelude {
     pub use crate::components::skeleton::{skeleton, skeleton_circle, Skeleton};
     pub use crate::components::spinner::{spinner, Spinner, SpinnerSize};
     pub use crate::components::switch::{switch, Switch, SwitchSize};
+    pub use crate::components::textarea::{textarea, Textarea, TextareaSize};
     // Re-export State for checkbox/switch usage
     pub use blinc_core::State;
+    // Re-export text_area_state for textarea usage
+    pub use blinc_layout::widgets::text_area::{text_area_state, SharedTextAreaState};
     // Re-export commonly needed theme types
     pub use blinc_theme::{ColorToken, RadiusToken, ShadowToken, SpacingToken, ThemeState};
 }
