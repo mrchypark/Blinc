@@ -2074,6 +2074,7 @@ impl RenderTree {
     ///
     /// Note: This does NOT automatically mark the tree as dirty.
     /// Handlers that need a rebuild should use EventContext::request_rebuild().
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch_event_with_local(
         &mut self,
         node_id: LayoutNodeId,
@@ -2082,6 +2083,8 @@ impl RenderTree {
         mouse_y: f32,
         local_x: f32,
         local_y: f32,
+        bounds_x: f32,
+        bounds_y: f32,
         bounds_width: f32,
         bounds_height: f32,
     ) {
@@ -2092,6 +2095,8 @@ impl RenderTree {
             mouse_y,
             local_x,
             local_y,
+            bounds_x,
+            bounds_y,
             bounds_width,
             bounds_height,
             0.0,
@@ -2102,6 +2107,7 @@ impl RenderTree {
     /// Dispatch an event with all context data including drag delta
     ///
     /// This is the full dispatch method that includes drag_delta for DRAG events.
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch_event_full(
         &mut self,
         node_id: LayoutNodeId,
@@ -2110,6 +2116,8 @@ impl RenderTree {
         mouse_y: f32,
         local_x: f32,
         local_y: f32,
+        bounds_x: f32,
+        bounds_y: f32,
         bounds_width: f32,
         bounds_height: f32,
         drag_delta_x: f32,
@@ -2128,6 +2136,7 @@ impl RenderTree {
         let ctx = crate::event_handler::EventContext::new(event_type, node_id)
             .with_mouse_pos(mouse_x, mouse_y)
             .with_local_pos(local_x, local_y)
+            .with_bounds_pos(bounds_x, bounds_y)
             .with_bounds(bounds_width, bounds_height)
             .with_drag_delta(drag_delta_x, drag_delta_y);
 

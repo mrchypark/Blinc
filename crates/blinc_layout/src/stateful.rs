@@ -1485,7 +1485,12 @@ impl<S: StateTransitions> Stateful<S> {
     where
         F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
     {
+        tracing::debug!("Stateful::on_click - registering click handler");
         self.event_handlers_cache.borrow_mut().on_click(handler);
+        tracing::debug!(
+            "Stateful::on_click - cache empty after: {}",
+            self.event_handlers_cache.borrow().is_empty()
+        );
         self
     }
 

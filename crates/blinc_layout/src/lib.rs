@@ -63,6 +63,9 @@ pub mod markdown;
 // Selector API for programmatic element access
 pub mod selector;
 
+// Global overlay state singleton
+pub mod overlay_state;
+
 // Core types
 pub use element::{
     BorderSide, BorderSides, CursorStyle, DynRenderProps, ElementBounds, MotionAnimation,
@@ -347,4 +350,7 @@ pub mod prelude {
         ElementEvent, ElementHandle, ElementRegistry, ScrollBehavior, ScrollBlock, ScrollInline,
         ScrollOptions, ScrollRef,
     };
+
+    // Overlay context singleton
+    pub use crate::overlay_state::{get_overlay_manager, OverlayContext};
 }

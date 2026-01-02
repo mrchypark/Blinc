@@ -22,8 +22,7 @@
 //! }
 //! ```
 
-use std::any::TypeId;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -33,8 +32,10 @@ use blinc_animation::{
     AnimatedTimeline, AnimatedValue, AnimationContext, AnimationScheduler, SchedulerHandle,
     SharedAnimatedTimeline, SharedAnimatedValue, SpringConfig,
 };
-use blinc_core::reactive::{Derived, ReactiveGraph, Signal, State, StatefulDepsCallback};
+use blinc_core::context_state::{BlincContextState, HookState, SharedHookState, StateKey};
+use blinc_core::reactive::{Derived, ReactiveGraph, Signal, SignalId, State, StatefulDepsCallback};
 use blinc_layout::prelude::*;
+use blinc_layout::overlay_state::OverlayContext;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager, OverlayManagerExt};
 use blinc_platform::{
     ControlFlow, Event, EventLoop, InputEvent, Key, KeyState, LifecycleEvent, MouseEvent, Platform,
@@ -60,62 +61,6 @@ pub type SharedReactiveGraph = Arc<Mutex<ReactiveGraph>>;
 
 /// Shared element registry for query API (thread-safe)
 pub type SharedElementRegistry = Arc<blinc_layout::selector::ElementRegistry>;
-
-use std::collections::HashMap;
-
-/// Key for identifying a signal in the keyed state system
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct StateKey {
-    /// Hash of the user-provided key
-    key_hash: u64,
-    /// Type ID of the signal value
-    type_id: TypeId,
-}
-
-impl StateKey {
-    fn new<T: 'static, K: Hash>(key: &K) -> Self {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hasher);
-        Self {
-            key_hash: hasher.finish(),
-            type_id: TypeId::of::<T>(),
-        }
-    }
-
-    fn from_string<T: 'static>(key: &str) -> Self {
-        Self::new::<T, _>(&key)
-    }
-}
-
-/// Stores keyed state across rebuilds
-///
-/// This enables component-level state management where each signal
-/// is identified by a unique string key rather than call order.
-pub struct HookState {
-    /// Keyed signals: key -> raw signal ID
-    signals: HashMap<StateKey, u64>,
-}
-
-impl HookState {
-    fn new() -> Self {
-        Self {
-            signals: HashMap::new(),
-        }
-    }
-
-    /// Get an existing signal by key
-    fn get(&self, key: &StateKey) -> Option<u64> {
-        self.signals.get(key).copied()
-    }
-
-    /// Store a signal with the given key
-    fn insert(&mut self, key: StateKey, signal_id: u64) {
-        self.signals.insert(key, signal_id);
-    }
-}
-
-/// Shared hook state for the application
-pub type SharedHookState = Arc<Mutex<HookState>>;
 
 /// Callback type for on_ready handlers
 pub type ReadyCallback = Box<dyn FnOnce() + Send + Sync>;
@@ -1325,6 +1270,22 @@ impl WindowedApp {
         let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
         // Shared hook state for use_state persistence
         let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
+
+        // Initialize global context state singleton (if not already initialized)
+        // This allows components to create internal state without context parameters
+        if !BlincContextState::is_initialized() {
+            let stateful_callback: std::sync::Arc<dyn Fn(&[SignalId]) + Send + Sync> =
+                Arc::new(|signal_ids| {
+                    blinc_layout::check_stateful_deps(signal_ids);
+                });
+            BlincContextState::init_with_callback(
+                Arc::clone(&reactive),
+                Arc::clone(&hooks),
+                Arc::clone(&ref_dirty_flag),
+                stateful_callback,
+            );
+        }
+
         // Shared animation scheduler for spring/keyframe animations
         // Runs on background thread so animations continue even when window loses focus
         let mut scheduler = AnimationScheduler::new();
@@ -1359,6 +1320,11 @@ impl WindowedApp {
 
         // Overlay manager for modals, dialogs, toasts, etc.
         let overlays: OverlayManager = overlay_manager();
+
+        // Initialize overlay context singleton for component access
+        if !OverlayContext::is_initialized() {
+            OverlayContext::init(Arc::clone(&overlays));
+        }
 
         event_loop
             .run(move |event, window| {
@@ -1493,6 +1459,9 @@ impl WindowedApp {
                             /// Local coordinates relative to element bounds
                             local_x: f32,
                             local_y: f32,
+                            /// Absolute position of element bounds (top-left corner)
+                            bounds_x: f32,
+                            bounds_y: f32,
                             /// Computed bounds dimensions of the element
                             bounds_width: f32,
                             bounds_height: f32,
@@ -1518,6 +1487,8 @@ impl WindowedApp {
                                     mouse_y: 0.0,
                                     local_x: 0.0,
                                     local_y: 0.0,
+                                    bounds_x: 0.0,
+                                    bounds_y: 0.0,
                                     bounds_width: 0.0,
                                     bounds_height: 0.0,
                                     scroll_delta_x: 0.0,
@@ -1611,22 +1582,37 @@ impl WindowedApp {
                                             // Block the click from reaching main UI
                                             // TODO: Route click events to overlay tree for modal content interaction
                                         } else {
-                                            // Blur any focused text inputs BEFORE processing mouse down
-                                            // This mimics HTML behavior where clicking anywhere blurs inputs,
-                                            // and clicking on an input then re-focuses it via its own handler
-                                            blinc_layout::widgets::blur_all_text_inputs();
+                                            // Check for dismissable overlays (dropdowns, context menus)
+                                            // If click is on backdrop (outside overlay content), dismiss and block the click
+                                            // This prevents opening a new dropdown while dismissing the old one
+                                            let overlay_dismissed = if windowed_ctx.overlay_manager.has_dismissable_overlay() {
+                                                windowed_ctx.overlay_manager.handle_click_at(lx, ly)
+                                            } else {
+                                                false
+                                            };
 
-                                            let _events = router.on_mouse_down(tree, lx, ly, btn);
+                                            // Only process click if no overlay was dismissed
+                                            if !overlay_dismissed {
+                                                // Blur any focused text inputs BEFORE processing mouse down
+                                                // This mimics HTML behavior where clicking anywhere blurs inputs,
+                                                // and clicking on an input then re-focuses it via its own handler
+                                                blinc_layout::widgets::blur_all_text_inputs();
 
-                                            let (local_x, local_y) = router.last_hit_local();
-                                            let (bounds_width, bounds_height) = router.last_hit_bounds();
-                                            for event in pending_events.iter_mut() {
-                                                event.mouse_x = lx;
-                                                event.mouse_y = ly;
-                                                event.local_x = local_x;
-                                                event.local_y = local_y;
-                                                event.bounds_width = bounds_width;
-                                                event.bounds_height = bounds_height;
+                                                let _events = router.on_mouse_down(tree, lx, ly, btn);
+
+                                                let (local_x, local_y) = router.last_hit_local();
+                                                let (bounds_x, bounds_y) = router.last_hit_bounds_pos();
+                                                let (bounds_width, bounds_height) = router.last_hit_bounds();
+                                                for event in pending_events.iter_mut() {
+                                                    event.mouse_x = lx;
+                                                    event.mouse_y = ly;
+                                                    event.local_x = local_x;
+                                                    event.local_y = local_y;
+                                                    event.bounds_x = bounds_x;
+                                                    event.bounds_y = bounds_y;
+                                                    event.bounds_width = bounds_width;
+                                                    event.bounds_height = bounds_height;
+                                                }
                                             }
                                         }
                                     }
@@ -1638,12 +1624,15 @@ impl WindowedApp {
                                         // Use the local coordinates from when the press started
                                         // (stored by on_mouse_down via last_hit_local)
                                         let (local_x, local_y) = router.last_hit_local();
+                                        let (bounds_x, bounds_y) = router.last_hit_bounds_pos();
                                         let (bounds_width, bounds_height) = router.last_hit_bounds();
                                         for event in pending_events.iter_mut() {
                                             event.mouse_x = lx;
                                             event.mouse_y = ly;
                                             event.local_x = local_x;
                                             event.local_y = local_y;
+                                            event.bounds_x = bounds_x;
+                                            event.bounds_y = bounds_y;
                                             event.bounds_width = bounds_width;
                                             event.bounds_height = bounds_height;
                                         }
@@ -1801,12 +1790,15 @@ impl WindowedApp {
                                         let ly = y / scale;
                                         router.on_mouse_down(tree, lx, ly, MouseButton::Left);
                                         let (local_x, local_y) = router.last_hit_local();
+                                        let (bounds_x, bounds_y) = router.last_hit_bounds_pos();
                                         let (bounds_width, bounds_height) = router.last_hit_bounds();
                                         for event in pending_events.iter_mut() {
                                             event.mouse_x = lx;
                                             event.mouse_y = ly;
                                             event.local_x = local_x;
                                             event.local_y = local_y;
+                                            event.bounds_x = bounds_x;
+                                            event.bounds_y = bounds_y;
                                             event.bounds_width = bounds_width;
                                             event.bounds_height = bounds_height;
                                         }
@@ -1886,10 +1878,21 @@ impl WindowedApp {
                             // Skip scroll delta entirely if gesture just ended - the delta
                             // from the same event as gesture_ended is the last finger movement,
                             // not momentum, but we still want to ignore it for instant snap-back
+                            //
+                            // Also skip scroll when an overlay with backdrop is open to prevent
+                            // background content from scrolling while dropdown/modal is visible.
+                            let has_overlay_backdrop = ctx
+                                .as_ref()
+                                .map(|c| c.overlay_manager.has_blocking_overlay() || c.overlay_manager.has_dismissable_overlay())
+                                .unwrap_or(false);
+
                             if let Some((mouse_x, mouse_y, delta_x, delta_y)) = scroll_info {
                                 // Skip if gesture ended in this same event - go straight to bounce
                                 if gesture_ended {
                                     tracing::trace!("Skipping scroll delta - gesture ended, bouncing");
+                                } else if has_overlay_backdrop {
+                                    // Skip scroll when overlay is visible to prevent background scrolling
+                                    tracing::trace!("Skipping scroll delta - overlay with backdrop is visible");
                                 } else {
                                     tracing::trace!(
                                         "Scroll dispatch: pos=({:.1}, {:.1}) delta=({:.1}, {:.1})",
@@ -1930,6 +1933,8 @@ impl WindowedApp {
                                     event.mouse_y,
                                     event.local_x,
                                     event.local_y,
+                                    event.bounds_x,
+                                    event.bounds_y,
                                     event.bounds_width,
                                     event.bounds_height,
                                     event.drag_delta_x,

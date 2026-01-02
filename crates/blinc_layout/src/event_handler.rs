@@ -57,6 +57,9 @@ pub struct EventContext {
     /// Position relative to element bounds
     pub local_x: f32,
     pub local_y: f32,
+    /// Absolute position of element bounds (top-left corner)
+    pub bounds_x: f32,
+    pub bounds_y: f32,
     /// Computed bounds width (set after layout)
     pub bounds_width: f32,
     /// Computed bounds height (set after layout)
@@ -91,6 +94,8 @@ impl EventContext {
             mouse_y: 0.0,
             local_x: 0.0,
             local_y: 0.0,
+            bounds_x: 0.0,
+            bounds_y: 0.0,
             bounds_width: 0.0,
             bounds_height: 0.0,
             scroll_delta_x: 0.0,
@@ -124,6 +129,13 @@ impl EventContext {
     pub fn with_bounds(mut self, width: f32, height: f32) -> Self {
         self.bounds_width = width;
         self.bounds_height = height;
+        self
+    }
+
+    /// Set bounds position (absolute position of element top-left corner)
+    pub fn with_bounds_pos(mut self, x: f32, y: f32) -> Self {
+        self.bounds_x = x;
+        self.bounds_y = y;
         self
     }
 

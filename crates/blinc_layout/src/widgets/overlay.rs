@@ -420,8 +420,13 @@ impl OverlayConfig {
     pub fn dropdown() -> Self {
         Self {
             kind: OverlayKind::Dropdown,
-            position: OverlayPosition::Centered, // Will be overridden by anchor
-            backdrop: None,
+            position: OverlayPosition::Centered, // Will be overridden by anchor or at()
+            // Transparent backdrop that dismisses on click outside
+            backdrop: Some(BackdropConfig {
+                color: blinc_core::Color::TRANSPARENT,
+                dismiss_on_click: true,
+                blur: 0.0,
+            }),
             animation: OverlayAnimation::dropdown(),
             dismiss_on_escape: true,
             auto_dismiss_ms: None,
@@ -446,6 +451,13 @@ impl OverlayHandle {
         Self(id)
     }
 
+    /// Reconstruct a handle from a raw ID
+    ///
+    /// This is useful for storing handles in state and reconstructing them later.
+    pub fn from_raw(id: u64) -> Self {
+        Self(id)
+    }
+
     /// Get the raw ID
     pub fn id(&self) -> u64 {
         self.0
@@ -455,6 +467,9 @@ impl OverlayHandle {
 // =============================================================================
 // ActiveOverlay
 // =============================================================================
+
+/// Callback invoked when an overlay is closed
+pub type OnCloseCallback = Arc<dyn Fn() + Send + Sync>;
 
 /// An active overlay instance
 pub struct ActiveOverlay {
@@ -470,6 +485,8 @@ pub struct ActiveOverlay {
     opened_at_ms: Option<u64>,
     /// Cached content size after layout (for positioning)
     pub cached_size: Option<(f32, f32)>,
+    /// Callback invoked when the overlay is closed (backdrop click, escape, etc.)
+    on_close: Option<OnCloseCallback>,
 }
 
 impl ActiveOverlay {
@@ -570,6 +587,18 @@ impl OverlayManagerInner {
         config: OverlayConfig,
         content: impl Fn() -> Div + Send + Sync + 'static,
     ) -> OverlayHandle {
+        self.add_with_close_callback(config, content, None)
+    }
+
+    /// Add a new overlay with a close callback
+    ///
+    /// The callback is invoked when the overlay is dismissed (backdrop click, escape, etc.)
+    pub fn add_with_close_callback(
+        &mut self,
+        config: OverlayConfig,
+        content: impl Fn() -> Div + Send + Sync + 'static,
+        on_close: Option<OnCloseCallback>,
+    ) -> OverlayHandle {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let handle = OverlayHandle::new(id);
 
@@ -586,6 +615,7 @@ impl OverlayManagerInner {
             content_builder: Box::new(content),
             opened_at_ms: None,
             cached_size: None,
+            on_close,
         };
 
         self.overlays.insert(handle, overlay);
@@ -722,8 +752,14 @@ impl OverlayManagerInner {
             .map(|o| o.handle)
         {
             if let Some(overlay) = self.overlays.get_mut(&handle) {
+                // Get callback before mutating
+                let on_close = overlay.on_close.clone();
                 if overlay.transition(overlay_events::ESCAPE) {
                     self.mark_dirty();
+                    // Invoke on_close callback
+                    if let Some(cb) = on_close {
+                        cb();
+                    }
                     return true;
                 }
             }
@@ -737,6 +773,21 @@ impl OverlayManagerInner {
             o.is_visible()
                 && matches!(o.config.kind, OverlayKind::Modal | OverlayKind::Dialog)
                 && o.config.backdrop.is_some()
+        })
+    }
+
+    /// Check if any overlay with dismiss-on-click backdrop is visible
+    ///
+    /// This includes dropdowns, context menus, and other non-blocking overlays
+    /// that should be dismissed when clicking outside.
+    pub fn has_dismissable_overlay(&self) -> bool {
+        self.overlays.values().any(|o| {
+            o.state.is_open()
+                && o.config
+                    .backdrop
+                    .as_ref()
+                    .map(|b| b.dismiss_on_click)
+                    .unwrap_or(false)
         })
     }
 
@@ -761,8 +812,14 @@ impl OverlayManagerInner {
             .map(|o| o.handle)
         {
             if let Some(overlay) = self.overlays.get_mut(&handle) {
+                // Get callback before mutating
+                let on_close = overlay.on_close.clone();
                 if overlay.transition(overlay_events::BACKDROP_CLICK) {
                     self.mark_dirty();
+                    // Invoke on_close callback
+                    if let Some(cb) = on_close {
+                        cb();
+                    }
                     return true;
                 }
             }
@@ -802,10 +859,37 @@ impl OverlayManagerInner {
                 overlay.config.size.unwrap_or((400.0, 300.0))
             });
 
-            // For centered overlays, compute content bounds
+            // Compute content position based on overlay position type
             let (vp_w, vp_h) = self.viewport;
-            let content_x = (vp_w - content_w) / 2.0;
-            let content_y = (vp_h - content_h) / 2.0;
+            let (content_x, content_y) = match &overlay.config.position {
+                OverlayPosition::Centered => {
+                    // Center the content in viewport
+                    ((vp_w - content_w) / 2.0, (vp_h - content_h) / 2.0)
+                }
+                OverlayPosition::AtPoint { x: px, y: py } => {
+                    // Content is positioned at the specified point
+                    (*px, *py)
+                }
+                OverlayPosition::Corner(corner) => {
+                    // Position in corner with margin
+                    let margin = 16.0;
+                    match corner {
+                        Corner::TopLeft => (margin, margin),
+                        Corner::TopRight => (vp_w - content_w - margin, margin),
+                        Corner::BottomLeft => (margin, vp_h - content_h - margin),
+                        Corner::BottomRight => {
+                            (vp_w - content_w - margin, vp_h - content_h - margin)
+                        }
+                    }
+                }
+                OverlayPosition::RelativeToAnchor {
+                    offset_x, offset_y, ..
+                } => {
+                    // For anchor-based positioning, use offset as position
+                    // (Anchor lookup not yet implemented, so treat as point)
+                    (*offset_x, *offset_y)
+                }
+            };
 
             // Check if click is outside content bounds
             let in_content = x >= content_x
@@ -850,15 +934,7 @@ impl OverlayManagerInner {
 
     /// Build the overlay render tree
     pub fn build_overlay_tree(&self) -> Option<RenderTree> {
-        tracing::debug!(
-            "build_overlay_tree: {} overlays, viewport=({}, {})",
-            self.overlays.len(),
-            self.viewport.0,
-            self.viewport.1
-        );
-
         if !self.has_visible_overlays() {
-            tracing::debug!("build_overlay_tree: no visible overlays");
             return None;
         }
 
@@ -910,34 +986,23 @@ impl OverlayManagerInner {
         // Build the layer with optional backdrop
         if let Some(ref backdrop_config) = overlay.config.backdrop {
             tracing::debug!(
-                "build_overlay_layer: using backdrop color {:?}",
-                backdrop_config.color
+                "build_overlay_layer: using backdrop color {:?}, position {:?}",
+                backdrop_config.color,
+                overlay.config.position
             );
             // Use stack: first child (backdrop) renders behind, second child (content) on top
             div().w(vp_width).h(vp_height).child(
                 stack()
                     .w_full()
                     .h_full()
-                    // Backdrop layer (behind)
+                    // Backdrop layer (behind) - fills entire viewport
                     .child(div().w_full().h_full().bg(backdrop_config.color))
-                    // Content layer (on top) - centered
-                    .child(
-                        div()
-                            .w_full()
-                            .h_full()
-                            .items_center()
-                            .justify_center()
-                            .child(content),
-                    ),
+                    // Content layer (on top) - positioned according to config
+                    .child(self.position_content(overlay, content, vp_width, vp_height)),
             )
         } else {
             // No backdrop - position content according to config
-            div()
-                .w(vp_width)
-                .h(vp_height)
-                .items_center()
-                .justify_center()
-                .child(content)
+            self.position_content(overlay, content, vp_width, vp_height)
         }
     }
 
@@ -961,8 +1026,14 @@ impl OverlayManagerInner {
             }
 
             OverlayPosition::AtPoint { x, y } => {
-                // Absolute positioning at point
-                div().w(vp_width).h(vp_height).child(content.ml(*x).mt(*y))
+                // Position content at specific point using absolute positioning within viewport
+                // Wrap in a full viewport container with top-left alignment so margins work correctly
+                div()
+                    .w(vp_width)
+                    .h(vp_height)
+                    .items_start()
+                    .justify_start()
+                    .child(content.absolute().left(*x).top(*y))
             }
 
             OverlayPosition::Corner(corner) => {
@@ -1106,6 +1177,10 @@ pub trait OverlayManagerExt {
     fn build_overlay_tree(&self) -> Option<RenderTree>;
     /// Check if any blocking overlay is active
     fn has_blocking_overlay(&self) -> bool;
+    /// Check if any dismissable overlay is visible (dropdown, context menu, etc.)
+    fn has_dismissable_overlay(&self) -> bool;
+    /// Check if a specific overlay handle is still visible
+    fn is_visible(&self, handle: OverlayHandle) -> bool;
     /// Update overlay states - call every frame for animations and auto-dismiss
     fn update(&self, current_time_ms: u64);
 }
@@ -1175,6 +1250,19 @@ impl OverlayManagerExt for OverlayManager {
 
     fn has_blocking_overlay(&self) -> bool {
         self.lock().unwrap().has_blocking_overlay()
+    }
+
+    fn has_dismissable_overlay(&self) -> bool {
+        self.lock().unwrap().has_dismissable_overlay()
+    }
+
+    fn is_visible(&self, handle: OverlayHandle) -> bool {
+        self.lock()
+            .unwrap()
+            .overlays
+            .get(&handle)
+            .map(|o| o.is_visible())
+            .unwrap_or(false)
     }
 
     fn update(&self, current_time_ms: u64) {
@@ -1383,6 +1471,7 @@ pub struct DropdownBuilder {
     manager: OverlayManager,
     config: OverlayConfig,
     content: Option<Box<dyn Fn() -> Div + Send + Sync>>,
+    on_close: Option<OnCloseCallback>,
 }
 
 impl DropdownBuilder {
@@ -1391,7 +1480,17 @@ impl DropdownBuilder {
             manager,
             config: OverlayConfig::dropdown(),
             content: None,
+            on_close: None,
         }
+    }
+
+    /// Position at specific coordinates
+    ///
+    /// This is useful when the dropdown position is calculated from mouse position
+    /// or other dynamic sources.
+    pub fn at(mut self, x: f32, y: f32) -> Self {
+        self.config.position = OverlayPosition::AtPoint { x, y };
+        self
     }
 
     /// Position relative to an anchor element
@@ -1416,6 +1515,21 @@ impl DropdownBuilder {
         self
     }
 
+    /// Enable dismiss on escape key
+    pub fn dismiss_on_escape(mut self, dismiss: bool) -> Self {
+        self.config.dismiss_on_escape = dismiss;
+        self
+    }
+
+    /// Set the expected content size for hit testing
+    ///
+    /// This helps with backdrop click detection by providing the expected
+    /// size of the dropdown content. Without this, a default size is used.
+    pub fn size(mut self, width: f32, height: f32) -> Self {
+        self.config.size = Some((width, height));
+        self
+    }
+
     /// Set the content using a builder function
     pub fn content<F>(mut self, f: F) -> Self
     where
@@ -1425,10 +1539,24 @@ impl DropdownBuilder {
         self
     }
 
+    /// Set a callback to be invoked when the dropdown is closed
+    ///
+    /// This is called when the dropdown is dismissed via backdrop click, escape key, etc.
+    pub fn on_close<F>(mut self, f: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.on_close = Some(Arc::new(f));
+        self
+    }
+
     /// Show the dropdown
     pub fn show(self) -> OverlayHandle {
         let content = self.content.unwrap_or_else(|| Box::new(|| div()));
-        self.manager.lock().unwrap().add(self.config, content)
+        self.manager
+            .lock()
+            .unwrap()
+            .add_with_close_callback(self.config, content, self.on_close)
     }
 }
 

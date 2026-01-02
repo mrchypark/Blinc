@@ -34,6 +34,7 @@
 //! ```
 
 pub mod context;
+pub mod context_state;
 pub mod draw;
 pub mod events;
 pub mod fsm;
@@ -69,3 +70,7 @@ pub use value::{
 
 // Re-export context types at crate level for convenience
 pub use context::{BlincContext, BlincContextExt};
+pub use context_state::{
+    BlincContextState, HookState, SharedHookState, StateKey,
+    use_signal_keyed, use_state_keyed, request_rebuild,
+};

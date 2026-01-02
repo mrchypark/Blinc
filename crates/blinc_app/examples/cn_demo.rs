@@ -4,10 +4,6 @@
 //!
 //! Run with: cargo run -p blinc_app --example cn_demo --features windowed
 
-use std::os::unix::thread;
-use std::thread::{sleep, Thread};
-use std::time::Duration;
-
 use blinc_animation::SpringConfig;
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
@@ -123,7 +119,7 @@ fn section_title(title: &str) -> impl ElementBuilder {
 /// Section container helper
 fn section_container() -> Div {
     let theme = ThemeState::get();
-    let surface = theme.color(ColorToken::Surface);
+    let surface = theme.color(ColorToken::Surface).with_alpha(0.6);
     let border = theme.color(ColorToken::Border);
     let radius = theme.radii().radius_xl;
 
@@ -442,11 +438,8 @@ fn radio_section(ctx: &WindowedContext) -> impl ElementBuilder {
 
 fn select_section(ctx: &WindowedContext) -> impl ElementBuilder {
     let fruit = ctx.use_state_keyed("fruit_select", || "".to_string());
-    let fruit_open = ctx.use_state_keyed("fruit_open", || false);
     let size = ctx.use_state_keyed("size_select", || "medium".to_string());
-    let size_open = ctx.use_state_keyed("size_open", || false);
     let disabled_select = ctx.use_state_keyed("disabled_select", || "option1".to_string());
-    let disabled_open = ctx.use_state_keyed("disabled_open", || false);
 
     section_container()
         .child(section_title("Select"))
@@ -458,7 +451,7 @@ fn select_section(ctx: &WindowedContext) -> impl ElementBuilder {
                 // Basic select with placeholder
                 .child(
                     div().w(200.0).child(
-                        cn::select(&fruit, &fruit_open)
+                        cn::select(&fruit)
                             .label("Favorite Fruit")
                             .placeholder("Choose a fruit...")
                             .option("apple", "Apple")
@@ -472,7 +465,7 @@ fn select_section(ctx: &WindowedContext) -> impl ElementBuilder {
                 // Select with pre-selected value
                 .child(
                     div().w(200.0).child(
-                        cn::select(&size, &size_open)
+                        cn::select(&size)
                             .label("Size")
                             .option("small", "Small")
                             .option("medium", "Medium")
@@ -483,7 +476,7 @@ fn select_section(ctx: &WindowedContext) -> impl ElementBuilder {
                 // Disabled select
                 .child(
                     div().w(200.0).child(
-                        cn::select(&disabled_select, &disabled_open)
+                        cn::select(&disabled_select)
                             .label("Disabled")
                             .option("option1", "Option 1")
                             .option("option2", "Option 2")
