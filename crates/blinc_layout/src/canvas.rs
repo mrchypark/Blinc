@@ -86,6 +86,8 @@ pub struct Canvas {
     opacity: f32,
     /// Render layer (background, foreground, glass)
     layer: RenderLayer,
+    /// Callback invoked when element is first laid out
+    on_ready: Option<crate::renderer::OnReadyCallback>,
 }
 
 impl Canvas {
@@ -96,6 +98,7 @@ impl Canvas {
             render_fn: None,
             opacity: 1.0,
             layer: RenderLayer::default(),
+            on_ready: None,
         }
     }
 
@@ -109,6 +112,7 @@ impl Canvas {
             render_fn: Some(Rc::new(render_fn)),
             opacity: 1.0,
             layer: RenderLayer::default(),
+            on_ready: None,
         }
     }
 
@@ -204,6 +208,15 @@ impl Canvas {
     pub fn render_fn(&self) -> Option<&CanvasRenderFn> {
         self.render_fn.as_ref()
     }
+
+    /// Set a callback to be invoked when the element is first laid out
+    pub fn on_ready<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(crate::element::ElementBounds) + Send + Sync + 'static,
+    {
+        self.on_ready = Some(std::sync::Arc::new(callback));
+        self
+    }
 }
 
 impl Default for Canvas {
@@ -240,6 +253,10 @@ impl ElementBuilder for Canvas {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         Some(&self.style)
+    }
+
+    fn on_ready_callback(&self) -> Option<crate::renderer::OnReadyCallback> {
+        self.on_ready.clone()
     }
 }
 

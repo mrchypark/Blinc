@@ -43,7 +43,7 @@ Form inputs and controls.
 | **Radio Group** | Stateful, div | ✅ Done |
 | **Switch** | Stateful, motion | ✅ Done |
 | **Slider** | Stateful, div | ✅ Done |
-| **Select** | scroll, text, overlay | Planned |
+| **Select** | Stateful, div, scroll | ✅ Done |
 | **Combobox** | text_input, scroll, overlay | Planned |
 | **Form** | div, validation | Planned |
 | **Field** | div, label, input, error | Planned |

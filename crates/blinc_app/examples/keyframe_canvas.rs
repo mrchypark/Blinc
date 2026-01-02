@@ -201,12 +201,12 @@ fn progress_bar_demo(ctx: &WindowedContext) -> Div {
     // Configure timeline on first use (closure only runs once, returns existing IDs after)
     let entry_id = timeline.lock().unwrap().configure(|t| {
         let entry = t.add(0, 2000, 0.0, 1.0);
-        t.start();
         entry
     });
 
     let render_timeline = Arc::clone(&timeline);
     let click_timeline = Arc::clone(&timeline);
+    let ready_timeline = Arc::clone(&timeline);
 
     demo_card("Progress Bar")
         .child(
@@ -261,6 +261,9 @@ fn progress_bar_demo(ctx: &WindowedContext) -> Div {
         .on_click(move |_| {
             // Restart animation on click
             click_timeline.lock().unwrap().restart();
+        }).on_ready(move |_|{
+            // Start animation when first laid out
+            ready_timeline.lock().unwrap().start();
         })
 }
 
