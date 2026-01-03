@@ -80,6 +80,10 @@ struct Primitive {
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read> primitives: array<Primitive>;
+// Glyph atlas textures for unified text rendering
+@group(0) @binding(2) var glyph_atlas: texture_2d<f32>;
+@group(0) @binding(3) var glyph_sampler: sampler;
+@group(0) @binding(4) var color_glyph_atlas: texture_2d<f32>;
 
 // ============================================================================
 // Vertex Shader
@@ -415,6 +419,45 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             var inner_result = prim.shadow_color;
             inner_result.a *= clamp(biased_alpha, 0.0, 1.0) * clip_alpha;
             return inner_result;
+        }
+        case PRIM_TEXT: {
+            // Text glyph - sample from glyph atlas
+            // UV bounds are stored in gradient_params: (u_min, v_min, u_max, v_max)
+            // fill_type stores is_color flag (1 = color emoji, 0 = grayscale)
+            let uv_bounds = prim.gradient_params;
+            let is_color = fill_type == 1u;
+
+            // Calculate UV within the glyph quad
+            // p is in screen coordinates, bounds defines the glyph quad
+            let local_uv = (p - origin) / size;
+
+            // Map to atlas UV coordinates
+            let atlas_uv = uv_bounds.xy + local_uv * (uv_bounds.zw - uv_bounds.xy);
+
+            var text_result: vec4<f32>;
+            if is_color {
+                // Color emoji - sample RGBA directly from color atlas
+                text_result = textureSample(color_glyph_atlas, glyph_sampler, atlas_uv);
+            } else {
+                // Grayscale text - sample coverage from R channel, apply color tint
+                let coverage = textureSample(glyph_atlas, glyph_sampler, atlas_uv).r;
+                // Apply gamma correction for crisp text rendering
+                let gamma_coverage = pow(coverage, 0.7);
+                text_result = vec4<f32>(prim.color.rgb, prim.color.a * gamma_coverage);
+            }
+
+            // Apply clip alpha
+            text_result.a *= clip_alpha;
+
+            // Soft anti-aliased clipping at edges
+            let edge_aa = 1.0;
+            let clip_edge_alpha = smoothstep(0.0, edge_aa, min(
+                min(p.x - prim.clip_bounds.x, prim.clip_bounds.x + prim.clip_bounds.z - p.x),
+                min(p.y - prim.clip_bounds.y, prim.clip_bounds.y + prim.clip_bounds.w - p.y)
+            ));
+            text_result.a *= clip_edge_alpha;
+
+            return text_result;
         }
         default: {
             d = sd_rounded_rect(p, origin, size, prim.corner_radius);

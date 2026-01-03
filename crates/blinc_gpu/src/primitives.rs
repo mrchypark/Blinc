@@ -833,6 +833,39 @@ impl PrimitiveBatch {
         self.glyphs.push(glyph);
     }
 
+    /// Convert a glyph to a primitive and add it to the foreground primitives
+    ///
+    /// This enables unified rendering of text and SDF shapes in the same pass,
+    /// ensuring transforms are applied consistently during animations.
+    pub fn push_glyph_as_primitive(&mut self, glyph: GpuGlyph) {
+        self.foreground_primitives
+            .push(GpuPrimitive::from_glyph(&glyph));
+    }
+
+    /// Convert all accumulated glyphs to foreground primitives
+    ///
+    /// This should be called before rendering to enable unified text/SDF rendering.
+    /// After calling this, the glyphs vector will be empty and all text will be
+    /// rendered as SDF primitives.
+    pub fn convert_glyphs_to_primitives(&mut self) {
+        for glyph in self.glyphs.drain(..) {
+            self.foreground_primitives
+                .push(GpuPrimitive::from_glyph(&glyph));
+        }
+    }
+
+    /// Get the combined primitives including converted glyphs for unified rendering
+    ///
+    /// Returns a vector of all foreground primitives plus glyphs converted to primitives.
+    /// This is useful for unified rendering without modifying the batch state.
+    pub fn get_unified_foreground_primitives(&self) -> Vec<GpuPrimitive> {
+        let mut result = self.foreground_primitives.clone();
+        for glyph in &self.glyphs {
+            result.push(GpuPrimitive::from_glyph(glyph));
+        }
+        result
+    }
+
     /// Add tessellated path geometry to the batch
     pub fn push_path(&mut self, tessellated: crate::path::TessellatedPath) {
         if tessellated.is_empty() {
