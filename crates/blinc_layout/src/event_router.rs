@@ -200,6 +200,31 @@ impl EventRouter {
         self.is_dragging
     }
 
+    /// Check if a specific node is currently hovered
+    pub fn is_hovered(&self, node_id: LayoutNodeId) -> bool {
+        self.hovered.contains(&node_id)
+    }
+
+    /// Check if a specific node is currently pressed
+    pub fn is_pressed(&self, node_id: LayoutNodeId) -> bool {
+        self.pressed_target == Some(node_id)
+    }
+
+    /// Check if a specific node is currently focused
+    pub fn is_focused(&self, node_id: LayoutNodeId) -> bool {
+        self.focused == Some(node_id)
+    }
+
+    /// Get all currently hovered node IDs
+    pub fn hovered_nodes(&self) -> impl Iterator<Item = LayoutNodeId> + '_ {
+        self.hovered.iter().copied()
+    }
+
+    /// Get the pressed target node, if any
+    pub fn pressed_target(&self) -> Option<LayoutNodeId> {
+        self.pressed_target
+    }
+
     /// Set the event callback for routing events to elements
     ///
     /// The callback receives (node_id, event_type) and should dispatch

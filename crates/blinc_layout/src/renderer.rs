@@ -3035,6 +3035,63 @@ impl RenderTree {
             || stylesheet.contains_with_state(&element_id, ElementState::Disabled)
     }
 
+    /// Apply stylesheet state styles based on EventRouter state
+    ///
+    /// This should be called after mouse events to update styles for nodes
+    /// whose interaction state has changed. It applies `:hover`, `:active`,
+    /// and `:focus` styles from the stylesheet.
+    ///
+    /// # Arguments
+    /// * `router` - The event router containing current interaction state
+    ///
+    /// # Returns
+    /// `true` if any styles were applied, `false` otherwise
+    pub fn apply_stylesheet_state_styles(
+        &mut self,
+        router: &crate::event_router::EventRouter,
+    ) -> bool {
+        // Early return if no stylesheet
+        if self.stylesheet.is_none() {
+            return false;
+        }
+
+        let mut any_applied = false;
+
+        // Get all registered element IDs and their node IDs
+        let registered_ids: Vec<(String, crate::tree::LayoutNodeId)> = self
+            .element_registry
+            .all_ids()
+            .into_iter()
+            .filter_map(|id| {
+                self.element_registry.get(&id).map(|node_id| (id, node_id))
+            })
+            .collect();
+
+        // Apply state styles for each registered element
+        for (element_id, node_id) in registered_ids {
+            // Check if this element has any state styles in the stylesheet
+            if !self.has_state_styles(node_id) {
+                continue;
+            }
+
+            // Get current interaction state from router
+            let hovered = router.is_hovered(node_id);
+            let pressed = router.is_pressed(node_id);
+            let focused = router.is_focused(node_id);
+
+            // Apply state styles
+            if self.apply_state_styles(node_id, hovered, pressed, focused) {
+                any_applied = true;
+                tracing::trace!(
+                    "Applied stylesheet state styles to #{}: hovered={}, pressed={}, focused={}",
+                    element_id, hovered, pressed, focused
+                );
+            }
+        }
+
+        any_applied
+    }
+
     /// Rebuild only the children of a specific node
     ///
     /// This is used for incremental updates when a stateful element's
