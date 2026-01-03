@@ -57,7 +57,7 @@ use blinc_layout::element::CursorStyle;
 use blinc_layout::overlay_state::get_overlay_manager;
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{OverlayHandle, OverlayManagerExt};
-use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
+use blinc_theme::{ColorToken, RadiusToken, ThemeState};
 
 /// A menu item in the context menu
 #[derive(Clone)]
@@ -273,10 +273,13 @@ impl ContextMenuBuilder {
         let text_tertiary = theme.color(ColorToken::TextTertiary);
         let surface_elevated = theme.color(ColorToken::SurfaceElevated);
         let radius = theme.radius(RadiusToken::Md);
-        let spacing = theme.spacing_value(SpacingToken::Space2);
+
+        // Use same sizing as Select dropdown for consistency
+        let font_size = 14.0; // Medium size font
+        let padding = 12.0; // Medium size padding
 
         let items = self.items;
-        let min_width = self.min_width;
+        let width = self.min_width;
         let x = self.x;
         let y = self.y;
 
@@ -296,7 +299,7 @@ impl ContextMenuBuilder {
             .content(move || {
                 build_menu_content(
                     &items,
-                    min_width,
+                    width,
                     &handle_state_for_content,
                     bg,
                     border,
@@ -305,7 +308,8 @@ impl ContextMenuBuilder {
                     text_tertiary,
                     surface_elevated,
                     radius,
-                    spacing,
+                    font_size,
+                    padding,
                 )
             })
             .show();
@@ -373,10 +377,12 @@ impl SubmenuBuilder {
 }
 
 /// Build the menu content div
+///
+/// Uses the same layout pattern as the Select dropdown for consistency.
 #[allow(clippy::too_many_arguments)]
 fn build_menu_content(
     items: &[ContextMenuItem],
-    min_width: f32,
+    width: f32,
     overlay_handle_state: &State<Option<u64>>,
     bg: Color,
     border: Color,
@@ -385,19 +391,20 @@ fn build_menu_content(
     text_tertiary: Color,
     surface_elevated: Color,
     radius: f32,
-    spacing: f32,
+    font_size: f32,
+    padding: f32,
 ) -> Div {
     let handle_state_for_ready = overlay_handle_state.clone();
 
     let mut menu = div()
         .flex_col()
-        .min_w(min_width)
+        .w(width)
         .bg(bg)
         .border(1.0, border)
         .rounded(radius)
         .shadow_lg()
         .overflow_clip()
-        .py(spacing)
+        .h_fit()
         .on_ready(move |bounds| {
             // Report actual content size to overlay manager
             if let Some(handle_id) = handle_state_for_ready.get() {
@@ -412,13 +419,13 @@ fn build_menu_content(
 
     for (idx, item) in items.iter().enumerate() {
         if item.is_separator {
-            // Separator line
+            // Separator line - use pixel margin for consistency
             menu = menu.child(
                 div()
                     .h(1.0)
                     .w_full()
                     .bg(border)
-                    .my(spacing),
+                    .my(padding / 8.0),
             );
         } else {
             // Regular menu item
@@ -452,14 +459,15 @@ fn build_menu_content(
 
             let shortcut_color = text_secondary;
 
-            // Build the menu item row
+            // Build the menu item row - use same padding pattern as dropdown
             let mut row = div()
-                .flex_row()
                 .w_full()
+                .h_fit()
+                .flex_row()
                 .items_center()
                 .justify_between()
-                .px(spacing * 2.0)
-                .py(spacing)
+                .py(padding / 4.0)
+                .px(padding / 2.0)
                 .bg(item_bg)
                 .cursor(if item_disabled {
                     CursorStyle::NotAllowed
@@ -489,19 +497,19 @@ fn build_menu_content(
             }
 
             // Left side: icon + label
-            let mut left_side = div().flex_row().items_center().gap(spacing);
+            let mut left_side = div().flex_row().items_center().gap(padding / 4.0);
 
             if let Some(ref icon_svg) = item_icon {
                 left_side = left_side.child(
                     svg(icon_svg)
                         .size(16.0, 16.0)
-                        .tint(item_text_color),
+                        .color(item_text_color),
                 );
             }
 
             left_side = left_side.child(
                 text(&item_label)
-                    .size(14.0)
+                    .size(font_size)
                     .color(item_text_color)
                     .no_cursor(),
             );
@@ -511,26 +519,20 @@ fn build_menu_content(
             // Right side: shortcut or submenu arrow
             if let Some(ref shortcut) = item_shortcut {
                 row = row.child(
-                    div()
-                        .ml(spacing * 4.0)
-                        .child(
-                            text(shortcut)
-                                .size(12.0)
-                                .color(shortcut_color)
-                                .no_cursor(),
-                        ),
+                    div().child(
+                        text(shortcut)
+                            .size(font_size - 2.0)
+                            .color(shortcut_color)
+                            .no_cursor(),
+                    ),
                 );
             } else if has_submenu {
                 // Chevron right for submenu
                 let chevron_right = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
                 row = row.child(
-                    div()
-                        .ml(spacing * 2.0)
-                        .child(
-                            svg(chevron_right)
-                                .size(14.0, 14.0)
-                                .tint(text_tertiary),
-                        ),
+                    svg(chevron_right)
+                        .size(12.0, 12.0)
+                        .color(text_tertiary),
                 );
             }
 
