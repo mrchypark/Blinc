@@ -1,6 +1,6 @@
 //! CSS Parser Demo
 //!
-//! Demonstrates the CSS parser with error collection and human-readable diagnostics.
+//! Demonstrates the CSS parser with error collection and colored diagnostics.
 //!
 //! Run with: cargo run -p blinc_app --example css_parser_demo
 
@@ -11,7 +11,7 @@ fn main() {
     // Initialize theme (required for theme() function in CSS)
     ThemeState::init_default();
 
-    println!("=== CSS Parser Demo ===\n");
+    println!("\n=== CSS Parser Demo ===\n");
 
     // Example 1: Valid CSS
     println!("1. Parsing valid CSS:");
@@ -122,7 +122,7 @@ fn main() {
         }
     }
 
-    println!("\n=== Demo Complete ===");
+    println!("\n=== Demo Complete ===\n");
 }
 
 fn print_result(result: &CssParseResult, _css: &str) {
@@ -133,18 +133,10 @@ fn print_result(result: &CssParseResult, _css: &str) {
         println!("  #{} => {:?}", id, style);
     }
 
-    // Print diagnostics
-    if result.errors.is_empty() {
-        println!("\n✅ No errors or warnings");
-    } else {
-        println!("\nDiagnostics ({} issue(s)):", result.errors.len());
-        for err in &result.errors {
-            let icon = match err.severity {
-                blinc_layout::prelude::CssSeverity::Error => "❌",
-                blinc_layout::prelude::CssSeverity::Warning => "⚠️ ",
-                blinc_layout::prelude::CssSeverity::Info => "ℹ️ ",
-            };
-            println!("{} {}", icon, err.to_warning_string());
-        }
+    // Let the formatter handle colored diagnostics
+    if !result.errors.is_empty() {
+        println!();
     }
+    result.print_colored_diagnostics();
+    result.print_summary();
 }

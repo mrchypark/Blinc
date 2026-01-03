@@ -232,6 +232,73 @@ impl ParseError {
         }
         s
     }
+
+    /// Format with ANSI color codes for terminal output
+    ///
+    /// Colors:
+    /// - Error: Red
+    /// - Warning: Yellow
+    /// - Info: Cyan
+    /// - Property names: Blue
+    /// - Values: Magenta
+    /// - Line numbers: Dim
+    pub fn to_colored_string(&self) -> String {
+        // ANSI color codes
+        const RESET: &str = "\x1b[0m";
+        const RED: &str = "\x1b[31m";
+        const YELLOW: &str = "\x1b[33m";
+        const CYAN: &str = "\x1b[36m";
+        const BLUE: &str = "\x1b[34m";
+        const MAGENTA: &str = "\x1b[35m";
+        const DIM: &str = "\x1b[2m";
+        const BOLD: &str = "\x1b[1m";
+
+        let (severity_color, icon) = match self.severity {
+            Severity::Error => (RED, "✖"),
+            Severity::Warning => (YELLOW, "⚠"),
+            Severity::Info => (CYAN, "ℹ"),
+        };
+
+        let mut s = String::new();
+
+        // Severity with icon and color
+        s.push_str(&format!(
+            "{}{}{} {}{}{}{RESET} ",
+            BOLD, severity_color, icon, severity_color, self.severity, RESET
+        ));
+
+        // Location in dim
+        s.push_str(&format!(
+            "{DIM}[{}:{}]{RESET} ",
+            self.line, self.column
+        ));
+
+        // Message
+        s.push_str(&self.message);
+
+        // Property and value with colors
+        if let Some(ref prop) = self.property {
+            s.push_str(&format!("\n  {BLUE}Property:{RESET} {}", prop));
+            if let Some(ref val) = self.value {
+                s.push_str(&format!(" = {MAGENTA}{}{RESET}", val));
+            }
+        }
+
+        // Context in dim
+        if !self.contexts.is_empty() {
+            s.push_str(&format!(
+                "\n  {DIM}Context: {}{RESET}",
+                self.contexts.join(" > ")
+            ));
+        }
+
+        // Near fragment
+        if !self.fragment.is_empty() && self.fragment.len() < 80 {
+            s.push_str(&format!("\n  {DIM}Near:{RESET} \"{}\"", self.fragment));
+        }
+
+        s
+    }
 }
 
 /// Result of parsing CSS with error collection
@@ -266,7 +333,7 @@ impl CssParseResult {
             .filter(|e| e.severity == Severity::Warning)
     }
 
-    /// Print all errors and warnings as human-readable text
+    /// Print all errors and warnings as human-readable text (plain, no colors)
     pub fn print_diagnostics(&self) {
         for err in &self.errors {
             match err.severity {
@@ -274,6 +341,43 @@ impl CssParseResult {
                 Severity::Warning => eprintln!("⚠️  {}", err.to_warning_string()),
                 Severity::Info => eprintln!("ℹ️  {}", err.to_warning_string()),
             }
+        }
+    }
+
+    /// Print all errors and warnings with ANSI color coding
+    ///
+    /// Uses terminal colors for better readability:
+    /// - Errors: Red
+    /// - Warnings: Yellow
+    /// - Info: Cyan
+    pub fn print_colored_diagnostics(&self) {
+        for err in &self.errors {
+            eprintln!("{}", err.to_colored_string());
+        }
+    }
+
+    /// Print a summary line with counts (colored)
+    pub fn print_summary(&self) {
+        const RESET: &str = "\x1b[0m";
+        const RED: &str = "\x1b[31m";
+        const YELLOW: &str = "\x1b[33m";
+        const GREEN: &str = "\x1b[32m";
+        const BOLD: &str = "\x1b[1m";
+
+        let error_count = self.errors_only().count();
+        let warning_count = self.warnings_only().count();
+
+        if error_count == 0 && warning_count == 0 {
+            eprintln!("{BOLD}{GREEN}✓ CSS parsed successfully{RESET}");
+        } else {
+            let mut parts = Vec::new();
+            if error_count > 0 {
+                parts.push(format!("{RED}{} error(s){RESET}", error_count));
+            }
+            if warning_count > 0 {
+                parts.push(format!("{YELLOW}{} warning(s){RESET}", warning_count));
+            }
+            eprintln!("{BOLD}CSS parsing completed with {}{RESET}", parts.join(", "));
         }
     }
 
