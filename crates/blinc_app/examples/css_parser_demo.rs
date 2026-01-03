@@ -4,7 +4,7 @@
 //!
 //! Run with: cargo run -p blinc_app --example css_parser_demo
 
-use blinc_layout::prelude::{CssParseResult, Stylesheet};
+use blinc_layout::prelude::{CssElementState, CssParseResult, Stylesheet};
 use blinc_theme::ThemeState;
 
 fn main() {
@@ -13,8 +13,8 @@ fn main() {
 
     println!("\n=== CSS Parser Demo ===\n");
 
-    // Example 1: Valid CSS
-    println!("1. Parsing valid CSS:");
+    // Example 1: Valid CSS with state modifiers
+    println!("1. Parsing CSS with state modifiers (:hover, :active, etc):");
     println!("{}", "-".repeat(50));
     let valid_css = r#"
 #card {
@@ -27,6 +27,19 @@ fn main() {
     background: theme(primary);
     transform: scale(1.0);
     border-radius: theme(radius-default);
+}
+
+#button-primary:hover {
+    opacity: 0.9;
+    transform: scale(1.02);
+}
+
+#button-primary:active {
+    transform: scale(0.98);
+}
+
+#button-primary:disabled {
+    opacity: 0.5;
 }
 "#;
 
@@ -120,6 +133,91 @@ fn main() {
             }
             println!("      message: {}", err.message);
         }
+    }
+
+    // Example 6: CSS Variables with :root
+    println!("\n6. CSS Variables (:root and var()):");
+    println!("{}", "-".repeat(50));
+    let css_with_vars = r#"
+:root {
+    --brand-color: #3498db;
+    --hover-opacity: 0.85;
+    --card-radius: 12px;
+}
+
+#card {
+    background: var(--brand-color);
+    border-radius: var(--card-radius);
+    opacity: 1.0;
+}
+
+#card:hover {
+    opacity: var(--hover-opacity);
+}
+"#;
+
+    let result = Stylesheet::parse_with_errors(css_with_vars);
+    print_result(&result, css_with_vars);
+
+    // Show variable access
+    println!("\nCSS Variables defined:");
+    for name in result.stylesheet.variable_names() {
+        let value = result.stylesheet.get_variable(name).unwrap();
+        println!("  --{}: {}", name, value);
+    }
+
+    // Example 7: State modifier API
+    println!("\n7. State Modifier API Demo:");
+    println!("{}", "-".repeat(50));
+    let css = r#"
+#button {
+    background: blue;
+    opacity: 1.0;
+}
+#button:hover {
+    opacity: 0.9;
+}
+#button:active {
+    transform: scale(0.95);
+}
+#button:focus {
+    border-radius: 4px;
+}
+#button:disabled {
+    opacity: 0.4;
+}
+"#;
+    let result = Stylesheet::parse_with_errors(css);
+
+    println!("CSS: {}", css.trim());
+    println!("\nQuerying state-specific styles:");
+
+    // Show base style
+    if let Some(base) = result.stylesheet.get("button") {
+        println!("  #button (base): opacity={:?}", base.opacity);
+    }
+
+    // Show state styles using get_with_state
+    if let Some(hover) = result.stylesheet.get_with_state("button", CssElementState::Hover) {
+        println!("  #button:hover: opacity={:?}", hover.opacity);
+    }
+    if let Some(active) = result.stylesheet.get_with_state("button", CssElementState::Active) {
+        println!("  #button:active: transform={:?}", active.transform);
+    }
+    if let Some(focus) = result.stylesheet.get_with_state("button", CssElementState::Focus) {
+        println!("  #button:focus: corner_radius={:?}", focus.corner_radius);
+    }
+    if let Some(disabled) = result.stylesheet.get_with_state("button", CssElementState::Disabled) {
+        println!("  #button:disabled: opacity={:?}", disabled.opacity);
+    }
+
+    // Show get_all_states API
+    println!("\nUsing get_all_states():");
+    let (base, states) = result.stylesheet.get_all_states("button");
+    println!("  Base style: {:?}", base.map(|s| s.opacity));
+    println!("  State variants: {}", states.len());
+    for (state, style) in &states {
+        println!("    :{} => opacity={:?}, transform={:?}", state, style.opacity, style.transform);
     }
 
     println!("\n=== Demo Complete ===\n");

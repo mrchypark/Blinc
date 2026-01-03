@@ -359,6 +359,7 @@ pub mod prelude {
 
     // CSS parser for loading stylesheets
     pub use crate::css_parser::{
-        CssParseResult, ParseError as CssParseError, Severity as CssSeverity, Stylesheet,
+        CssParseResult, CssSelector, ElementState as CssElementState,
+        ParseError as CssParseError, Severity as CssSeverity, Stylesheet,
     };
 }

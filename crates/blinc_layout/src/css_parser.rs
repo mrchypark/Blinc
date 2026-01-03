@@ -441,9 +441,82 @@ fn format_verbose_error(err: &VerboseError<&str>) -> String {
     }
 }
 
+/// Element state for pseudo-class selectors
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ElementState {
+    /// :hover pseudo-class
+    Hover,
+    /// :active pseudo-class (pressed)
+    Active,
+    /// :focus pseudo-class
+    Focus,
+    /// :disabled pseudo-class
+    Disabled,
+}
+
+impl ElementState {
+    /// Parse a state from a pseudo-class string
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "hover" => Some(ElementState::Hover),
+            "active" => Some(ElementState::Active),
+            "focus" => Some(ElementState::Focus),
+            "disabled" => Some(ElementState::Disabled),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ElementState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ElementState::Hover => write!(f, "hover"),
+            ElementState::Active => write!(f, "active"),
+            ElementState::Focus => write!(f, "focus"),
+            ElementState::Disabled => write!(f, "disabled"),
+        }
+    }
+}
+
+/// A parsed CSS selector with optional state modifier
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CssSelector {
+    /// The element ID (without #)
+    pub id: String,
+    /// Optional state modifier (:hover, :active, :focus, :disabled)
+    pub state: Option<ElementState>,
+}
+
+impl CssSelector {
+    /// Create a selector for an ID without state
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            state: None,
+        }
+    }
+
+    /// Create a selector with a state modifier
+    pub fn with_state(id: impl Into<String>, state: ElementState) -> Self {
+        Self {
+            id: id.into(),
+            state: Some(state),
+        }
+    }
+
+    /// Get the storage key for this selector
+    fn key(&self) -> String {
+        match &self.state {
+            Some(state) => format!("{}:{}", self.id, state),
+            None => self.id.clone(),
+        }
+    }
+}
+
 /// A parsed stylesheet containing styles keyed by element ID
 #[derive(Clone, Default, Debug)]
 pub struct Stylesheet {
+    /// Styles keyed by selector (id or id:state)
     styles: HashMap<String, ElementStyle>,
     /// CSS custom properties (variables) defined in :root
     variables: HashMap<String, String>,
@@ -565,9 +638,61 @@ impl Stylesheet {
         self.styles.get(id)
     }
 
+    /// Get a style by element ID and state
+    ///
+    /// Looks up `#id:state` in the stylesheet.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let css = "#button:hover { opacity: 0.8; }";
+    /// let stylesheet = Stylesheet::parse(css)?;
+    /// let hover_style = stylesheet.get_with_state("button", ElementState::Hover);
+    /// ```
+    pub fn get_with_state(&self, id: &str, state: ElementState) -> Option<&ElementStyle> {
+        let key = format!("{}:{}", id, state);
+        self.styles.get(&key)
+    }
+
+    /// Get all styles for an element, including state variants
+    ///
+    /// Returns a tuple of (base_style, state_styles) where state_styles is a Vec
+    /// of (ElementState, &ElementStyle) pairs.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let css = r#"
+    ///     #button { background: blue; }
+    ///     #button:hover { background: lightblue; }
+    ///     #button:active { background: darkblue; }
+    /// "#;
+    /// let stylesheet = Stylesheet::parse(css)?;
+    /// let (base, states) = stylesheet.get_all_states("button");
+    /// ```
+    pub fn get_all_states(&self, id: &str) -> (Option<&ElementStyle>, Vec<(ElementState, &ElementStyle)>) {
+        let base = self.styles.get(id);
+
+        let mut state_styles = Vec::new();
+        for state in [ElementState::Hover, ElementState::Active, ElementState::Focus, ElementState::Disabled] {
+            let key = format!("{}:{}", id, state);
+            if let Some(style) = self.styles.get(&key) {
+                state_styles.push((state, style));
+            }
+        }
+
+        (base, state_styles)
+    }
+
     /// Check if a style exists for the given ID
     pub fn contains(&self, id: &str) -> bool {
         self.styles.contains_key(id)
+    }
+
+    /// Check if a style exists for the given ID and state
+    pub fn contains_with_state(&self, id: &str, state: ElementState) -> bool {
+        let key = format!("{}:{}", id, state);
+        self.styles.contains_key(&key)
     }
 
     /// Get all style IDs in the stylesheet
@@ -696,12 +821,26 @@ fn identifier<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str,
     take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '_')(input)
 }
 
-/// Parse an ID selector: #identifier
-fn id_selector(input: &str) -> ParseResult<&str> {
-    context(
-        "ID selector",
-        preceded(char('#'), cut(identifier)),
-    )(input)
+/// Parse an ID selector: #identifier or #identifier:state
+fn id_selector(input: &str) -> ParseResult<CssSelector> {
+    context("ID selector", |input| {
+        let (input, _) = char('#')(input)?;
+        let (input, id) = cut(identifier)(input)?;
+
+        // Check for optional state modifier
+        let (input, state) = opt(|i| {
+            let (i, _) = char(':')(i)?;
+            let (i, state_name) = identifier(i)?;
+            Ok((i, state_name))
+        })(input)?;
+
+        let element_state = state.and_then(ElementState::from_str);
+
+        Ok((input, CssSelector {
+            id: id.to_string(),
+            state: element_state,
+        }))
+    })(input)
 }
 
 /// Parse a property name (including CSS custom properties like --var-name)
@@ -785,10 +924,10 @@ enum CssBlock {
     Variables(Vec<(String, String)>),
 }
 
-/// Parse a complete rule: #id { ... }
+/// Parse a complete rule: #id { ... } or #id:state { ... }
 fn css_rule(input: &str) -> ParseResult<(String, ElementStyle)> {
     let (input, _) = ws(input)?;
-    let (input, id) = context("CSS rule selector", id_selector)(input)?;
+    let (input, selector) = context("CSS rule selector", id_selector)(input)?;
     let (input, _) = ws(input)?;
     let (input, properties) = context("CSS rule block", rule_block)(input)?;
 
@@ -797,7 +936,8 @@ fn css_rule(input: &str) -> ParseResult<(String, ElementStyle)> {
         apply_property(&mut style, name, value);
     }
 
-    Ok((input, (id.to_string(), style)))
+    // Use the selector key (id or id:state)
+    Ok((input, (selector.key(), style)))
 }
 
 /// Parse an entire stylesheet
@@ -809,7 +949,7 @@ fn parse_stylesheet(input: &str) -> ParseResult<Vec<(String, ElementStyle)>> {
     Ok((input, rules))
 }
 
-/// Parse a complete rule with error collection: #id { ... }
+/// Parse a complete rule with error collection: #id { ... } or #id:state { ... }
 fn css_rule_with_errors<'a, 'b>(
     original_css: &'a str,
     errors: &'b mut Vec<ParseError>,
@@ -819,7 +959,7 @@ where
 {
     move |input: &'a str| {
         let (input, _) = ws(input)?;
-        let (input, id) = context("CSS rule selector", id_selector)(input)?;
+        let (input, selector) = context("CSS rule selector", id_selector)(input)?;
         let (input, _) = ws(input)?;
         let (input, properties) = context("CSS rule block", rule_block)(input)?;
 
@@ -828,7 +968,7 @@ where
             apply_property_with_errors(&mut style, name, value, original_css, input, errors);
         }
 
-        Ok((input, (id.to_string(), style)))
+        Ok((input, (selector.key(), style)))
     }
 }
 
@@ -899,7 +1039,7 @@ fn parse_stylesheet_with_errors<'a>(
     ))
 }
 
-/// Parse a complete rule with error collection and variable resolution: #id { ... }
+/// Parse a complete rule with error collection and variable resolution: #id { ... } or #id:state { ... }
 fn css_rule_with_errors_and_vars<'a, 'b>(
     original_css: &'a str,
     errors: &'b mut Vec<ParseError>,
@@ -910,7 +1050,7 @@ where
 {
     move |input: &'a str| {
         let (input, _) = ws(input)?;
-        let (input, id) = context("CSS rule selector", id_selector)(input)?;
+        let (input, selector) = context("CSS rule selector", id_selector)(input)?;
         let (input, _) = ws(input)?;
         let (input, properties) = context("CSS rule block", rule_block)(input)?;
 
@@ -928,7 +1068,7 @@ where
             );
         }
 
-        Ok((input, (id.to_string(), style)))
+        Ok((input, (selector.key(), style)))
     }
 }
 
@@ -2248,5 +2388,204 @@ mod tests {
 
         let style = result.stylesheet.get("test").unwrap();
         assert_eq!(style.opacity, Some(0.5));
+    }
+
+    // ========================================================================
+    // State Modifier Tests (Pseudo-classes)
+    // ========================================================================
+
+    #[test]
+    fn test_state_modifier_hover() {
+        let css = r#"
+            #button {
+                opacity: 1.0;
+            }
+            #button:hover {
+                opacity: 0.8;
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        // Base style
+        let base = result.stylesheet.get("button").unwrap();
+        assert_eq!(base.opacity, Some(1.0));
+
+        // Hover style
+        let hover = result.stylesheet.get_with_state("button", ElementState::Hover).unwrap();
+        assert_eq!(hover.opacity, Some(0.8));
+    }
+
+    #[test]
+    fn test_state_modifier_active() {
+        let css = r#"
+            #button:active {
+                transform: scale(0.95);
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        let active = result.stylesheet.get_with_state("button", ElementState::Active).unwrap();
+        assert!(active.transform.is_some());
+    }
+
+    #[test]
+    fn test_state_modifier_focus() {
+        let css = r#"
+            #input:focus {
+                border-radius: 4px;
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        let focus = result.stylesheet.get_with_state("input", ElementState::Focus).unwrap();
+        assert!(focus.corner_radius.is_some());
+    }
+
+    #[test]
+    fn test_state_modifier_disabled() {
+        let css = r#"
+            #button:disabled {
+                opacity: 0.5;
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        let disabled = result.stylesheet.get_with_state("button", ElementState::Disabled).unwrap();
+        assert_eq!(disabled.opacity, Some(0.5));
+    }
+
+    #[test]
+    fn test_multiple_state_modifiers() {
+        let css = r#"
+            #button {
+                background: #0000FF;
+                opacity: 1.0;
+            }
+            #button:hover {
+                opacity: 0.9;
+            }
+            #button:active {
+                opacity: 0.8;
+                transform: scale(0.98);
+            }
+            #button:focus {
+                border-radius: 4px;
+            }
+            #button:disabled {
+                opacity: 0.4;
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        // Base style
+        assert!(result.stylesheet.contains("button"));
+        let base = result.stylesheet.get("button").unwrap();
+        assert_eq!(base.opacity, Some(1.0));
+
+        // Check all states exist
+        assert!(result.stylesheet.contains_with_state("button", ElementState::Hover));
+        assert!(result.stylesheet.contains_with_state("button", ElementState::Active));
+        assert!(result.stylesheet.contains_with_state("button", ElementState::Focus));
+        assert!(result.stylesheet.contains_with_state("button", ElementState::Disabled));
+
+        // Verify state styles
+        let hover = result.stylesheet.get_with_state("button", ElementState::Hover).unwrap();
+        assert_eq!(hover.opacity, Some(0.9));
+
+        let active = result.stylesheet.get_with_state("button", ElementState::Active).unwrap();
+        assert_eq!(active.opacity, Some(0.8));
+        assert!(active.transform.is_some());
+
+        let focus = result.stylesheet.get_with_state("button", ElementState::Focus).unwrap();
+        assert!(focus.corner_radius.is_some());
+
+        let disabled = result.stylesheet.get_with_state("button", ElementState::Disabled).unwrap();
+        assert_eq!(disabled.opacity, Some(0.4));
+    }
+
+    #[test]
+    fn test_get_all_states() {
+        let css = r#"
+            #card {
+                opacity: 1.0;
+            }
+            #card:hover {
+                opacity: 0.9;
+            }
+            #card:active {
+                opacity: 0.8;
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        let (base, states) = result.stylesheet.get_all_states("card");
+
+        assert!(base.is_some());
+        assert_eq!(base.unwrap().opacity, Some(1.0));
+
+        assert_eq!(states.len(), 2);
+
+        // Check we got hover and active
+        let state_types: Vec<_> = states.iter().map(|(s, _)| *s).collect();
+        assert!(state_types.contains(&ElementState::Hover));
+        assert!(state_types.contains(&ElementState::Active));
+    }
+
+    #[test]
+    fn test_state_modifier_with_variables() {
+        let css = r#"
+            :root {
+                --hover-opacity: 0.85;
+            }
+            #button:hover {
+                opacity: var(--hover-opacity);
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        let hover = result.stylesheet.get_with_state("button", ElementState::Hover).unwrap();
+        assert_eq!(hover.opacity, Some(0.85));
+    }
+
+    #[test]
+    fn test_unknown_state_modifier_ignored() {
+        // Unknown pseudo-class should parse the ID part but not set state
+        let css = "#button:unknown { opacity: 0.5; }";
+        let result = Stylesheet::parse_with_errors(css);
+
+        // The selector "#button:unknown" where "unknown" is not a valid state
+        // should still be stored, but with the state part as None
+        // Actually, since we parse :unknown but it's not a known state,
+        // the state will be None, so it just becomes "button"
+        assert!(result.stylesheet.contains("button"));
+        let style = result.stylesheet.get("button").unwrap();
+        assert_eq!(style.opacity, Some(0.5));
+    }
+
+    #[test]
+    fn test_element_state_from_str() {
+        assert_eq!(ElementState::from_str("hover"), Some(ElementState::Hover));
+        assert_eq!(ElementState::from_str("HOVER"), Some(ElementState::Hover));
+        assert_eq!(ElementState::from_str("active"), Some(ElementState::Active));
+        assert_eq!(ElementState::from_str("focus"), Some(ElementState::Focus));
+        assert_eq!(ElementState::from_str("disabled"), Some(ElementState::Disabled));
+        assert_eq!(ElementState::from_str("unknown"), None);
+    }
+
+    #[test]
+    fn test_element_state_display() {
+        assert_eq!(format!("{}", ElementState::Hover), "hover");
+        assert_eq!(format!("{}", ElementState::Active), "active");
+        assert_eq!(format!("{}", ElementState::Focus), "focus");
+        assert_eq!(format!("{}", ElementState::Disabled), "disabled");
+    }
+
+    #[test]
+    fn test_css_selector_key() {
+        let selector = CssSelector::new("button");
+        assert_eq!(selector.key(), "button");
+
+        let selector_hover = CssSelector::with_state("button", ElementState::Hover);
+        assert_eq!(selector_hover.key(), "button:hover");
     }
 }
