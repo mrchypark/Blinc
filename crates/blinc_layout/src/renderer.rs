@@ -16,6 +16,7 @@ use blinc_core::{
 use taffy::prelude::*;
 
 use crate::canvas::CanvasData;
+use crate::css_parser::{ElementState, Stylesheet};
 use crate::diff::{render_props_eq, ChangeCategory, DivHash};
 use crate::div::{ElementBuilder, ElementTypeId};
 use crate::element::{ElementBounds, GlassMaterial, Material, RenderLayer, RenderProps};
@@ -360,6 +361,12 @@ pub struct RenderTree {
     /// On-ready callbacks for elements (fires once after first layout)
     /// Maps node_id to callback entry. Callbacks are triggered after layout computation.
     on_ready_callbacks: HashMap<LayoutNodeId, OnReadyEntry>,
+    /// Optional stylesheet for automatic state modifier application
+    /// When set, elements with IDs will automatically get :hover, :active, :focus, :disabled styles
+    stylesheet: Option<Arc<Stylesheet>>,
+    /// Base styles for elements (before state modifiers)
+    /// Used to restore original styles when state changes
+    base_styles: HashMap<LayoutNodeId, RenderProps>,
 }
 
 /// Result of an incremental update attempt
@@ -404,6 +411,8 @@ impl RenderTree {
             scroll_refs: HashMap::new(),
             active_scroll_refs: Vec::new(),
             on_ready_callbacks: HashMap::new(),
+            stylesheet: None,
+            base_styles: HashMap::new(),
         }
     }
 
@@ -2853,6 +2862,177 @@ impl RenderTree {
         if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
             f(&mut render_node.props);
         }
+    }
+
+    // =========================================================================
+    // Stylesheet Integration
+    // =========================================================================
+
+    /// Set the stylesheet for automatic state modifier application
+    ///
+    /// When a stylesheet is set, elements with IDs will automatically get
+    /// `:hover`, `:active`, `:focus`, `:disabled` styles applied based on
+    /// their current interaction state.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let css = r#"
+    ///     #button { background: blue; }
+    ///     #button:hover { opacity: 0.9; }
+    ///     #button:active { transform: scale(0.98); }
+    /// "#;
+    /// let stylesheet = Stylesheet::parse_with_errors(css).stylesheet;
+    /// tree.set_stylesheet(stylesheet);
+    /// ```
+    pub fn set_stylesheet(&mut self, stylesheet: Stylesheet) {
+        self.stylesheet = Some(Arc::new(stylesheet));
+    }
+
+    /// Set a shared stylesheet reference
+    pub fn set_stylesheet_arc(&mut self, stylesheet: Arc<Stylesheet>) {
+        self.stylesheet = Some(stylesheet);
+    }
+
+    /// Get the current stylesheet, if any
+    pub fn stylesheet(&self) -> Option<&Stylesheet> {
+        self.stylesheet.as_ref().map(|s| s.as_ref())
+    }
+
+    /// Apply state-specific styles from the stylesheet to a node
+    ///
+    /// This is called when a node's interaction state changes (hover, pressed, focused).
+    /// It looks up the node's string ID and applies any matching state styles.
+    ///
+    /// # Arguments
+    /// * `node_id` - The node whose state changed
+    /// * `hovered` - Whether the node is currently hovered
+    /// * `pressed` - Whether the node is currently pressed
+    /// * `focused` - Whether the node is currently focused
+    ///
+    /// # Returns
+    /// `true` if styles were applied, `false` if no stylesheet or no matching styles
+    pub fn apply_state_styles(
+        &mut self,
+        node_id: LayoutNodeId,
+        hovered: bool,
+        pressed: bool,
+        focused: bool,
+    ) -> bool {
+        // Early return if no stylesheet
+        let stylesheet = match &self.stylesheet {
+            Some(s) => s.clone(),
+            None => return false,
+        };
+
+        // Look up the node's string ID from the registry
+        let element_id = match self.element_registry.get_id(node_id) {
+            Some(id) => id,
+            None => return false, // Node has no ID, can't apply stylesheet styles
+        };
+
+        // Get or store base style for this node
+        if !self.base_styles.contains_key(&node_id) {
+            if let Some(render_node) = self.render_nodes.get(&node_id) {
+                self.base_styles.insert(node_id, render_node.props.clone());
+            }
+        }
+
+        // Start with base style
+        let base_props = match self.base_styles.get(&node_id) {
+            Some(props) => props.clone(),
+            None => return false,
+        };
+
+        // Apply state-specific styles in order of precedence
+        let mut applied = false;
+        let render_node = match self.render_nodes.get_mut(&node_id) {
+            Some(node) => node,
+            None => return false,
+        };
+
+        // Reset to base style first
+        render_node.props = base_props;
+
+        // Apply base stylesheet style (if any)
+        if let Some(base_style) = stylesheet.get(&element_id) {
+            Self::apply_element_style_to_props(&mut render_node.props, base_style);
+            applied = true;
+        }
+
+        // Apply hover style
+        if hovered {
+            if let Some(hover_style) = stylesheet.get_with_state(&element_id, ElementState::Hover) {
+                Self::apply_element_style_to_props(&mut render_node.props, hover_style);
+                applied = true;
+            }
+        }
+
+        // Apply active/pressed style (takes precedence over hover)
+        if pressed {
+            if let Some(active_style) = stylesheet.get_with_state(&element_id, ElementState::Active)
+            {
+                Self::apply_element_style_to_props(&mut render_node.props, active_style);
+                applied = true;
+            }
+        }
+
+        // Apply focus style
+        if focused {
+            if let Some(focus_style) = stylesheet.get_with_state(&element_id, ElementState::Focus) {
+                Self::apply_element_style_to_props(&mut render_node.props, focus_style);
+                applied = true;
+            }
+        }
+
+        applied
+    }
+
+    /// Apply ElementStyle properties to RenderProps
+    fn apply_element_style_to_props(
+        props: &mut RenderProps,
+        style: &crate::element_style::ElementStyle,
+    ) {
+        if let Some(ref bg) = style.background {
+            props.background = Some(bg.clone());
+        }
+        if let Some(ref cr) = style.corner_radius {
+            props.border_radius = *cr;
+        }
+        if let Some(ref shadow) = style.shadow {
+            props.shadow = Some(shadow.clone());
+        }
+        if let Some(ref transform) = style.transform {
+            props.transform = Some(transform.clone());
+        }
+        if let Some(opacity) = style.opacity {
+            props.opacity = opacity;
+        }
+        if let Some(ref render_layer) = style.render_layer {
+            props.layer = *render_layer;
+        }
+    }
+
+    /// Check if a node has stylesheet state styles defined
+    ///
+    /// Returns true if the node has an ID and the stylesheet has any
+    /// state-specific styles (`:hover`, `:active`, `:focus`, `:disabled`) for it.
+    pub fn has_state_styles(&self, node_id: LayoutNodeId) -> bool {
+        let stylesheet = match &self.stylesheet {
+            Some(s) => s,
+            None => return false,
+        };
+
+        let element_id = match self.element_registry.get_id(node_id) {
+            Some(id) => id,
+            None => return false,
+        };
+
+        // Check if any state styles exist
+        stylesheet.contains_with_state(&element_id, ElementState::Hover)
+            || stylesheet.contains_with_state(&element_id, ElementState::Active)
+            || stylesheet.contains_with_state(&element_id, ElementState::Focus)
+            || stylesheet.contains_with_state(&element_id, ElementState::Disabled)
     }
 
     /// Rebuild only the children of a specific node
