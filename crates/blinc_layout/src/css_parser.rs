@@ -445,6 +445,8 @@ fn format_verbose_error(err: &VerboseError<&str>) -> String {
 #[derive(Clone, Default, Debug)]
 pub struct Stylesheet {
     styles: HashMap<String, ElementStyle>,
+    /// CSS custom properties (variables) defined in :root
+    variables: HashMap<String, String>,
 }
 
 impl Stylesheet {
@@ -473,9 +475,10 @@ impl Stylesheet {
     /// ```
     pub fn parse_with_errors(css: &str) -> CssParseResult {
         let mut errors: Vec<ParseError> = Vec::new();
+        let initial_vars = HashMap::new();
 
-        match parse_stylesheet_with_errors(css, &mut errors).finish() {
-            Ok((remaining, rules)) => {
+        match parse_stylesheet_with_errors(css, &mut errors, &initial_vars).finish() {
+            Ok((remaining, parsed)) => {
                 // Warn if there's unparsed content
                 let remaining = remaining.trim();
                 if !remaining.is_empty() {
@@ -496,7 +499,8 @@ impl Stylesheet {
                 }
 
                 let mut stylesheet = Stylesheet::new();
-                for (id, style) in rules {
+                stylesheet.variables = parsed.variables;
+                for (id, style) in parsed.rules {
                     stylesheet.styles.insert(id, style);
                 }
 
@@ -580,6 +584,75 @@ impl Stylesheet {
     pub fn is_empty(&self) -> bool {
         self.styles.is_empty()
     }
+
+    // =========================================================================
+    // CSS Variables (Custom Properties)
+    // =========================================================================
+
+    /// Get a CSS variable value by name (without the -- prefix)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let css = ":root { --card-bg: #ffffff; }";
+    /// let stylesheet = Stylesheet::parse(css)?;
+    /// assert_eq!(stylesheet.get_variable("card-bg"), Some("#ffffff"));
+    /// ```
+    pub fn get_variable(&self, name: &str) -> Option<&str> {
+        self.variables.get(name).map(|s| s.as_str())
+    }
+
+    /// Set a CSS variable (useful for runtime overrides)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// stylesheet.set_variable("primary-color", "#FF0000");
+    /// ```
+    pub fn set_variable(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.variables.insert(name.into(), value.into());
+    }
+
+    /// Get all variable names
+    pub fn variable_names(&self) -> impl Iterator<Item = &str> {
+        self.variables.keys().map(|s| s.as_str())
+    }
+
+    /// Get the number of variables defined
+    pub fn variable_count(&self) -> usize {
+        self.variables.len()
+    }
+
+    /// Resolve a var() reference to its value
+    ///
+    /// Supports fallback syntax: `var(--name, fallback)`
+    fn resolve_variable(&self, var_ref: &str) -> Option<String> {
+        // Parse var(--name) or var(--name, fallback)
+        let inner = var_ref.trim();
+        if !inner.starts_with("var(") || !inner.ends_with(')') {
+            return None;
+        }
+
+        let content = &inner[4..inner.len() - 1].trim();
+
+        // Split on comma for fallback support
+        if let Some(comma_pos) = content.find(',') {
+            let var_name = content[..comma_pos].trim();
+            let fallback = content[comma_pos + 1..].trim();
+
+            // Variable name should start with --
+            let name = var_name.strip_prefix("--")?;
+
+            self.variables
+                .get(name)
+                .cloned()
+                .or_else(|| Some(fallback.to_string()))
+        } else {
+            // No fallback
+            let name = content.strip_prefix("--")?;
+            self.variables.get(name).cloned()
+        }
+    }
 }
 
 // ============================================================================
@@ -631,9 +704,19 @@ fn id_selector(input: &str) -> ParseResult<&str> {
     )(input)
 }
 
-/// Parse a property name
+/// Parse a property name (including CSS custom properties like --var-name)
 fn property_name(input: &str) -> ParseResult<&str> {
-    context("property name", identifier)(input)
+    context(
+        "property name",
+        take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '_'),
+    )(input)
+}
+
+/// Parse a CSS variable name: --identifier
+fn variable_name(input: &str) -> ParseResult<&str> {
+    let (input, _) = tag("--")(input)?;
+    let (input, name) = identifier(input)?;
+    Ok((input, name))
 }
 
 /// Parse a property value (everything until ; or })
@@ -669,6 +752,39 @@ fn rule_block(input: &str) -> ParseResult<Vec<(&str, &str)>> {
     Ok((input, properties))
 }
 
+/// Parse a :root block for CSS variables
+fn root_block(input: &str) -> ParseResult<Vec<(String, String)>> {
+    let (input, _) = ws(input)?;
+    let (input, _) = tag(":root")(input)?;
+    let (input, _) = ws(input)?;
+    let (input, _) = char('{')(input)?;
+    let (input, _) = ws(input)?;
+
+    // Parse variable declarations
+    let (input, declarations) = many0(|i| {
+        let (i, _) = ws(i)?;
+        let (i, _) = tag("--")(i)?;
+        let (i, name) = identifier(i)?;
+        let (i, _) = ws(i)?;
+        let (i, _) = char(':')(i)?;
+        let (i, _) = ws(i)?;
+        let (i, value) = property_value(i)?;
+        let (i, _) = ws(i)?;
+        let (i, _) = opt(char(';'))(i)?;
+        Ok((i, (name.to_string(), value.to_string())))
+    })(input)?;
+
+    let (input, _) = ws(input)?;
+    let (input, _) = char('}')(input)?;
+    Ok((input, declarations))
+}
+
+/// Parsed content from a stylesheet - can be either a rule or variables
+enum CssBlock {
+    Rule(String, ElementStyle),
+    Variables(Vec<(String, String)>),
+}
+
 /// Parse a complete rule: #id { ... }
 fn css_rule(input: &str) -> ParseResult<(String, ElementStyle)> {
     let (input, _) = ws(input)?;
@@ -685,6 +801,7 @@ fn css_rule(input: &str) -> ParseResult<(String, ElementStyle)> {
 }
 
 /// Parse an entire stylesheet
+#[allow(dead_code)]
 fn parse_stylesheet(input: &str) -> ParseResult<Vec<(String, ElementStyle)>> {
     let (input, _) = ws(input)?;
     let (input, rules) = many0(css_rule)(input)?;
@@ -715,15 +832,23 @@ where
     }
 }
 
+/// Result of parsing a stylesheet - rules and variables
+struct ParsedStylesheet {
+    rules: Vec<(String, ElementStyle)>,
+    variables: HashMap<String, String>,
+}
+
 /// Parse an entire stylesheet with error collection
 fn parse_stylesheet_with_errors<'a>(
     css: &'a str,
     errors: &mut Vec<ParseError>,
-) -> ParseResult<'a, Vec<(String, ElementStyle)>> {
+    variables: &HashMap<String, String>,
+) -> ParseResult<'a, ParsedStylesheet> {
     let (input, _) = ws(css)?;
 
-    // Parse rules one at a time to collect errors
+    // Parse blocks one at a time to collect errors
     let mut rules = Vec::new();
+    let mut parsed_variables = variables.clone();
     let mut remaining = input;
 
     loop {
@@ -732,8 +857,24 @@ fn parse_stylesheet_with_errors<'a>(
             break;
         }
 
+        // Try to parse a :root block first
+        if trimmed.starts_with(":root") {
+            match root_block(trimmed) {
+                Ok((rest, vars)) => {
+                    for (name, value) in vars {
+                        parsed_variables.insert(name, value);
+                    }
+                    remaining = rest;
+                    continue;
+                }
+                Err(_) => {
+                    // Not a valid :root block, try as a rule
+                }
+            }
+        }
+
         // Try to parse a rule
-        match css_rule_with_errors(css, errors)(trimmed) {
+        match css_rule_with_errors_and_vars(css, errors, &parsed_variables)(trimmed) {
             Ok((rest, rule)) => {
                 rules.push(rule);
                 remaining = rest;
@@ -749,7 +890,114 @@ fn parse_stylesheet_with_errors<'a>(
     }
 
     let (input, _) = ws(remaining)?;
-    Ok((input, rules))
+    Ok((
+        input,
+        ParsedStylesheet {
+            rules,
+            variables: parsed_variables,
+        },
+    ))
+}
+
+/// Parse a complete rule with error collection and variable resolution: #id { ... }
+fn css_rule_with_errors_and_vars<'a, 'b>(
+    original_css: &'a str,
+    errors: &'b mut Vec<ParseError>,
+    variables: &'b HashMap<String, String>,
+) -> impl FnMut(&'a str) -> ParseResult<'a, (String, ElementStyle)> + 'b
+where
+    'a: 'b,
+{
+    move |input: &'a str| {
+        let (input, _) = ws(input)?;
+        let (input, id) = context("CSS rule selector", id_selector)(input)?;
+        let (input, _) = ws(input)?;
+        let (input, properties) = context("CSS rule block", rule_block)(input)?;
+
+        let mut style = ElementStyle::new();
+        for (name, value) in properties {
+            // Resolve var() references before applying
+            let resolved_value = resolve_var_references(value, variables);
+            apply_property_with_errors(
+                &mut style,
+                name,
+                &resolved_value,
+                original_css,
+                input,
+                errors,
+            );
+        }
+
+        Ok((input, (id.to_string(), style)))
+    }
+}
+
+/// Resolve var(--name) references in a value string
+fn resolve_var_references(value: &str, variables: &HashMap<String, String>) -> String {
+    let mut result = value.to_string();
+    let mut iterations = 0;
+    const MAX_ITERATIONS: usize = 10; // Prevent infinite loops from circular references
+
+    // Keep resolving until no more var() references
+    while result.contains("var(") && iterations < MAX_ITERATIONS {
+        iterations += 1;
+
+        // Find var( and its matching )
+        if let Some(start) = result.find("var(") {
+            let after_var = &result[start + 4..];
+
+            // Find matching closing paren (handling nested parens)
+            let mut depth = 1;
+            let mut end_offset = 0;
+            for (i, c) in after_var.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end_offset = i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if depth == 0 {
+                let var_content = &after_var[..end_offset];
+                let full_var = &result[start..start + 4 + end_offset + 1];
+
+                // Parse var content: --name or --name, fallback
+                let resolved = if let Some(comma_pos) = var_content.find(',') {
+                    let var_name = var_content[..comma_pos].trim();
+                    let fallback = var_content[comma_pos + 1..].trim();
+
+                    if let Some(name) = var_name.strip_prefix("--") {
+                        variables
+                            .get(name)
+                            .cloned()
+                            .unwrap_or_else(|| fallback.to_string())
+                    } else {
+                        fallback.to_string()
+                    }
+                } else {
+                    let var_name = var_content.trim();
+                    if let Some(name) = var_name.strip_prefix("--") {
+                        variables.get(name).cloned().unwrap_or_default()
+                    } else {
+                        String::new()
+                    }
+                };
+
+                result = result.replace(full_var, &resolved);
+            } else {
+                // Malformed var(), break to avoid infinite loop
+                break;
+            }
+        }
+    }
+
+    result
 }
 
 // ============================================================================
@@ -1296,6 +1544,7 @@ fn parse_named_color(name: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blinc_theme::ThemeState;
 
     #[test]
     fn test_parse_empty() {
@@ -1831,5 +2080,173 @@ mod tests {
         assert!(result.errors.is_empty(), "Valid CSS should have no errors");
         assert!(!result.has_errors());
         assert!(!result.has_warnings());
+    }
+
+    // ========================================================================
+    // CSS Variables Tests
+    // ========================================================================
+
+    #[test]
+    fn test_css_variables_root_parsing() {
+        let css = r#"
+            :root {
+                --primary-color: #FF0000;
+                --secondary-color: #00FF00;
+                --card-radius: 8px;
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        assert_eq!(result.stylesheet.variable_count(), 3);
+        assert_eq!(
+            result.stylesheet.get_variable("primary-color"),
+            Some("#FF0000")
+        );
+        assert_eq!(
+            result.stylesheet.get_variable("secondary-color"),
+            Some("#00FF00")
+        );
+        assert_eq!(result.stylesheet.get_variable("card-radius"), Some("8px"));
+    }
+
+    #[test]
+    fn test_css_variables_usage() {
+        let css = r#"
+            :root {
+                --main-opacity: 0.8;
+            }
+            #card {
+                opacity: var(--main-opacity);
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        assert!(result.stylesheet.contains("card"));
+        let style = result.stylesheet.get("card").unwrap();
+        assert_eq!(style.opacity, Some(0.8));
+    }
+
+    #[test]
+    fn test_css_variables_with_fallback() {
+        let css = r#"
+            #card {
+                opacity: var(--undefined-var, 0.5);
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        let style = result.stylesheet.get("card").unwrap();
+        assert_eq!(style.opacity, Some(0.5));
+    }
+
+    #[test]
+    fn test_css_variables_color() {
+        let css = r#"
+            :root {
+                --brand-color: #3498db;
+            }
+            #button {
+                background: var(--brand-color);
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        let style = result.stylesheet.get("button").unwrap();
+        assert!(style.background.is_some());
+    }
+
+    #[test]
+    fn test_css_variables_multiple_rules() {
+        let css = r#"
+            :root {
+                --base-radius: 4px;
+                --card-opacity: 0.9;
+            }
+            #card {
+                border-radius: var(--base-radius);
+                opacity: var(--card-opacity);
+            }
+            #button {
+                opacity: var(--card-opacity);
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        assert!(result.stylesheet.contains("card"));
+        assert!(result.stylesheet.contains("button"));
+
+        let card = result.stylesheet.get("card").unwrap();
+        let button = result.stylesheet.get("button").unwrap();
+
+        assert!(card.corner_radius.is_some());
+        assert_eq!(card.opacity, Some(0.9));
+        assert_eq!(button.opacity, Some(0.9));
+    }
+
+    #[test]
+    fn test_css_variables_set_at_runtime() {
+        let css = "#card { opacity: 0.5; }";
+        let mut stylesheet = Stylesheet::parse(css).unwrap();
+
+        // Set variable at runtime
+        stylesheet.set_variable("custom-var", "#FF0000");
+
+        assert_eq!(stylesheet.get_variable("custom-var"), Some("#FF0000"));
+    }
+
+    #[test]
+    fn test_css_variables_names_iterator() {
+        let css = r#"
+            :root {
+                --a: 1;
+                --b: 2;
+                --c: 3;
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        let names: Vec<_> = result.stylesheet.variable_names().collect();
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"a"));
+        assert!(names.contains(&"b"));
+        assert!(names.contains(&"c"));
+    }
+
+    #[test]
+    fn test_css_variables_with_theme_fallback() {
+        // Initialize theme (required for theme() functions)
+        ThemeState::init_default();
+
+        let css = r#"
+            :root {
+                --card-shadow: theme(shadow-md);
+            }
+            #card {
+                box-shadow: var(--card-shadow);
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        // The variable stores the raw value "theme(shadow-md)"
+        // which gets resolved when applied to the style
+        let style = result.stylesheet.get("card").unwrap();
+        assert!(style.shadow.is_some());
+    }
+
+    #[test]
+    fn test_css_variables_nested_resolution() {
+        let css = r#"
+            :root {
+                --base: 0.5;
+                --derived: var(--base);
+            }
+            #test {
+                opacity: var(--derived);
+            }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+
+        let style = result.stylesheet.get("test").unwrap();
+        assert_eq!(style.opacity, Some(0.5));
     }
 }
