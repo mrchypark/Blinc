@@ -287,9 +287,12 @@ impl ContextMenuBuilder {
         let handle_state_for_content = overlay_handle_state.clone();
 
         let mgr = get_overlay_manager();
+        // Use dropdown() instead of context_menu() to get transparent backdrop
+        // that dismisses on click outside (same as Select component)
         let handle = mgr
-            .context_menu()
+            .dropdown()
             .at(x, y)
+            .dismiss_on_escape(true)
             .content(move || {
                 build_menu_content(
                     &items,
