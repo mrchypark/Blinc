@@ -121,7 +121,7 @@ impl AnimatedSkeleton {
         Self {
             skeleton,
             timeline,
-            duration_ms: 1500,  // 1.5 seconds for full cycle
+            duration_ms: 1500, // 1.5 seconds for full cycle
             min_opacity: 0.4,
             max_opacity: 1.0,
         }
@@ -152,7 +152,7 @@ impl ElementBuilder for AnimatedSkeleton {
         // To simulate ping-pong, we add two entries: 0->1 and 1->0
         let half_duration = self.duration_ms / 2;
         let (entry1, entry2) = self.timeline.lock().unwrap().configure(|t| {
-            let id1 = t.add(0, half_duration, 0.0, 1.0);           // Fade to max
+            let id1 = t.add(0, half_duration, 0.0, 1.0); // Fade to max
             let id2 = t.add(half_duration as i32, half_duration, 1.0, 0.0); // Fade back to min
             t.set_loop(-1); // Infinite loop
             t.start();
@@ -167,11 +167,16 @@ impl ElementBuilder for AnimatedSkeleton {
         let bg_color = theme.color(ColorToken::SurfaceElevated);
         let radius = theme.radius(RadiusToken::Default);
 
+        use blinc_core::{Brush, CornerRadius, DrawContext, Rect};
         use blinc_layout::canvas::{canvas, CanvasBounds};
-        use blinc_core::{Brush, DrawContext, Rect, CornerRadius};
 
         // Get dimensions from skeleton style
-        let skeleton_style = self.skeleton.inner.layout_style().cloned().unwrap_or_default();
+        let skeleton_style = self
+            .skeleton
+            .inner
+            .layout_style()
+            .cloned()
+            .unwrap_or_default();
         let width = match skeleton_style.size.width {
             taffy::Dimension::Length(l) => Some(l),
             _ => None,
@@ -180,7 +185,8 @@ impl ElementBuilder for AnimatedSkeleton {
             taffy::Dimension::Length(l) => Some(l),
             _ => None,
         };
-        let is_full_width = matches!(skeleton_style.size.width, taffy::Dimension::Percent(p) if p >= 0.99);
+        let is_full_width =
+            matches!(skeleton_style.size.width, taffy::Dimension::Percent(p) if p >= 0.99);
 
         // Build canvas with animated rendering
         let mut canvas_builder = canvas(move |ctx: &mut dyn DrawContext, bounds: CanvasBounds| {

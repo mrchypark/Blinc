@@ -50,7 +50,9 @@
 
 use std::collections::HashMap;
 
-use blinc_core::{Brush, Color, CornerRadius, Gradient, GradientSpace, GradientStop, Point, Shadow, Transform};
+use blinc_core::{
+    Brush, Color, CornerRadius, Gradient, GradientSpace, GradientStop, Point, Shadow, Transform,
+};
 use blinc_theme::{ColorToken, ThemeState};
 use nom::{
     branch::alt,
@@ -269,10 +271,7 @@ impl ParseError {
         ));
 
         // Location in dim
-        s.push_str(&format!(
-            "{DIM}[{}:{}]{RESET} ",
-            self.line, self.column
-        ));
+        s.push_str(&format!("{DIM}[{}:{}]{RESET} ", self.line, self.column));
 
         // Message
         s.push_str(&self.message);
@@ -378,7 +377,10 @@ impl CssParseResult {
             if warning_count > 0 {
                 parts.push(format!("{YELLOW}{} warning(s){RESET}", warning_count));
             }
-            eprintln!("{BOLD}CSS parsing completed with {}{RESET}", parts.join(", "));
+            eprintln!(
+                "{BOLD}CSS parsing completed with {}{RESET}",
+                parts.join(", ")
+            );
         }
     }
 
@@ -547,19 +549,26 @@ impl CssKeyframes {
     pub fn add_keyframe(&mut self, position: f32, style: ElementStyle) {
         self.keyframes.push(CssKeyframe { position, style });
         // Keep keyframes sorted by position
-        self.keyframes.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+        self.keyframes
+            .sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
     }
 
     /// Get the keyframe at or before a given position
     pub fn keyframe_at(&self, position: f32) -> Option<&CssKeyframe> {
-        self.keyframes.iter().rev().find(|kf| kf.position <= position)
+        self.keyframes
+            .iter()
+            .rev()
+            .find(|kf| kf.position <= position)
     }
 
     /// Convert to Blinc MotionAnimation for enter animations
     ///
     /// Uses the first keyframe (0% or from) as enter_from and animates to the final state.
     pub fn to_enter_animation(&self, duration_ms: u32) -> crate::element::MotionAnimation {
-        let enter_from = self.keyframes.first().map(|kf| Self::style_to_motion_keyframe(&kf.style));
+        let enter_from = self
+            .keyframes
+            .first()
+            .map(|kf| Self::style_to_motion_keyframe(&kf.style));
 
         crate::element::MotionAnimation {
             enter_from,
@@ -574,7 +583,10 @@ impl CssKeyframes {
     ///
     /// Uses the last keyframe (100% or to) as exit_to.
     pub fn to_exit_animation(&self, duration_ms: u32) -> crate::element::MotionAnimation {
-        let exit_to = self.keyframes.last().map(|kf| Self::style_to_motion_keyframe(&kf.style));
+        let exit_to = self
+            .keyframes
+            .last()
+            .map(|kf| Self::style_to_motion_keyframe(&kf.style));
 
         crate::element::MotionAnimation {
             enter_from: None,
@@ -588,9 +600,19 @@ impl CssKeyframes {
     /// Convert to a full enter/exit MotionAnimation
     ///
     /// First keyframe becomes enter_from, last keyframe becomes exit_to.
-    pub fn to_motion_animation(&self, enter_duration_ms: u32, exit_duration_ms: u32) -> crate::element::MotionAnimation {
-        let enter_from = self.keyframes.first().map(|kf| Self::style_to_motion_keyframe(&kf.style));
-        let exit_to = self.keyframes.last().map(|kf| Self::style_to_motion_keyframe(&kf.style));
+    pub fn to_motion_animation(
+        &self,
+        enter_duration_ms: u32,
+        exit_duration_ms: u32,
+    ) -> crate::element::MotionAnimation {
+        let enter_from = self
+            .keyframes
+            .first()
+            .map(|kf| Self::style_to_motion_keyframe(&kf.style));
+        let exit_to = self
+            .keyframes
+            .last()
+            .map(|kf| Self::style_to_motion_keyframe(&kf.style));
 
         crate::element::MotionAnimation {
             enter_from,
@@ -859,10 +881,7 @@ impl Stylesheet {
                     let (line, column, fragment) = calculate_position(css, remaining);
                     errors.push(ParseError {
                         severity: Severity::Warning,
-                        message: format!(
-                            "Unparsed content remaining ({} chars)",
-                            remaining.len()
-                        ),
+                        message: format!("Unparsed content remaining ({} chars)", remaining.len()),
                         line,
                         column,
                         fragment,
@@ -878,7 +897,9 @@ impl Stylesheet {
                     stylesheet.styles.insert(id, style);
                 }
                 for keyframes in parsed.keyframes {
-                    stylesheet.keyframes.insert(keyframes.name.clone(), keyframes);
+                    stylesheet
+                        .keyframes
+                        .insert(keyframes.name.clone(), keyframes);
                 }
 
                 CssParseResult { stylesheet, errors }
@@ -974,11 +995,19 @@ impl Stylesheet {
     /// let stylesheet = Stylesheet::parse(css)?;
     /// let (base, states) = stylesheet.get_all_states("button");
     /// ```
-    pub fn get_all_states(&self, id: &str) -> (Option<&ElementStyle>, Vec<(ElementState, &ElementStyle)>) {
+    pub fn get_all_states(
+        &self,
+        id: &str,
+    ) -> (Option<&ElementStyle>, Vec<(ElementState, &ElementStyle)>) {
         let base = self.styles.get(id);
 
         let mut state_styles = Vec::new();
-        for state in [ElementState::Hover, ElementState::Active, ElementState::Focus, ElementState::Disabled] {
+        for state in [
+            ElementState::Hover,
+            ElementState::Active,
+            ElementState::Focus,
+            ElementState::Disabled,
+        ] {
             let key = format!("{}:{}", id, state);
             if let Some(style) = self.styles.get(&key) {
                 state_styles.push((state, style));
@@ -1171,7 +1200,8 @@ impl Stylesheet {
         // Convert to MotionAnimation
         // For enter animation, use the configured duration
         // For exit animation, use the same duration (can be customized later)
-        let mut motion = keyframes.to_motion_animation(anim_config.duration_ms, anim_config.duration_ms);
+        let mut motion =
+            keyframes.to_motion_animation(anim_config.duration_ms, anim_config.duration_ms);
 
         // Apply delay from config
         motion.enter_delay_ms = anim_config.delay_ms;
@@ -1191,10 +1221,8 @@ impl Stylesheet {
         if let Some(style) = self.get_with_state(id, state) {
             if let Some(anim_config) = &style.animation {
                 if let Some(keyframes) = self.get_keyframes(&anim_config.name) {
-                    let mut motion = keyframes.to_motion_animation(
-                        anim_config.duration_ms,
-                        anim_config.duration_ms,
-                    );
+                    let mut motion = keyframes
+                        .to_motion_animation(anim_config.duration_ms, anim_config.duration_ms);
                     motion.enter_delay_ms = anim_config.delay_ms;
                     return Some(motion);
                 }
@@ -1230,10 +1258,7 @@ fn calculate_position(original: &str, fragment: &str) -> (usize, usize, String) 
 fn ws<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str, (), E> {
     value(
         (),
-        many0(alt((
-            value((), multispace1),
-            value((), parse_comment),
-        ))),
+        many0(alt((value((), multispace1), value((), parse_comment)))),
     )(input)
 }
 
@@ -1262,10 +1287,13 @@ fn id_selector(input: &str) -> ParseResult<CssSelector> {
 
         let element_state = state.and_then(ElementState::from_str);
 
-        Ok((input, CssSelector {
-            id: id.to_string(),
-            state: element_state,
-        }))
+        Ok((
+            input,
+            CssSelector {
+                id: id.to_string(),
+                state: element_state,
+            },
+        ))
     })(input)
 }
 
@@ -1795,7 +1823,11 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
         }
         _ => {
             // Unknown property - log at debug level for forward compatibility
-            debug!(property = name, value = value, "Unknown CSS property (ignored)");
+            debug!(
+                property = name,
+                value = value,
+                "Unknown CSS property (ignored)"
+            );
         }
     }
 }
@@ -1967,7 +1999,8 @@ fn parse_theme_color<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&
     let (input, _) = ws(input)?;
     let (input, _) = tag_no_case("theme")(input)?;
     let (input, _) = ws(input)?;
-    let (input, token_name) = delimited(char('('), take_while1(|c: char| c != ')'), char(')'))(input)?;
+    let (input, token_name) =
+        delimited(char('('), take_while1(|c: char| c != ')'), char(')'))(input)?;
 
     let token_name = token_name.trim();
     let token = match token_name.to_lowercase().as_str() {
@@ -2026,11 +2059,14 @@ fn parse_radius(value: &str) -> Option<CornerRadius> {
 }
 
 /// Parse theme(radius-*) tokens
-fn parse_theme_radius<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str, CornerRadius, E> {
+fn parse_theme_radius<'a, E: NomParseError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, CornerRadius, E> {
     let (input, _) = ws(input)?;
     let (input, _) = tag_no_case("theme")(input)?;
     let (input, _) = ws(input)?;
-    let (input, token_name) = delimited(char('('), take_while1(|c: char| c != ')'), char(')'))(input)?;
+    let (input, token_name) =
+        delimited(char('('), take_while1(|c: char| c != ')'), char(')'))(input)?;
 
     let token_name = token_name.trim();
     let radii = ThemeState::get().radii();
@@ -2073,11 +2109,14 @@ fn parse_shadow(value: &str) -> Option<Shadow> {
 }
 
 /// Parse theme(shadow-*) tokens
-fn parse_theme_shadow<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str, Shadow, E> {
+fn parse_theme_shadow<'a, E: NomParseError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, Shadow, E> {
     let (input, _) = ws(input)?;
     let (input, _) = tag_no_case("theme")(input)?;
     let (input, _) = ws(input)?;
-    let (input, token_name) = delimited(char('('), take_while1(|c: char| c != ')'), char(')'))(input)?;
+    let (input, token_name) =
+        delimited(char('('), take_while1(|c: char| c != ')'), char(')'))(input)?;
 
     let token_name = token_name.trim();
     let shadows = ThemeState::get().shadows();
@@ -2136,7 +2175,9 @@ fn parse_transform(value: &str) -> Option<Transform> {
 }
 
 /// Parse scale(x) or scale(x, y)
-fn parse_scale_transform<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str, Transform, E> {
+fn parse_scale_transform<'a, E: NomParseError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, Transform, E> {
     let (input, _) = ws(input)?;
     let (input, _) = tag_no_case("scale")(input)?;
     let (input, _) = ws(input)?;
@@ -2144,10 +2185,7 @@ fn parse_scale_transform<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResu
     let (input, _) = ws(input)?;
     let (input, sx) = float(input)?;
     let (input, _) = ws(input)?;
-    let (input, sy) = opt(preceded(
-        tuple((char(','), ws::<E>)),
-        float,
-    ))(input)?;
+    let (input, sy) = opt(preceded(tuple((char(','), ws::<E>)), float))(input)?;
     let (input, _) = ws(input)?;
     let (input, _) = char(')')(input)?;
 
@@ -2156,7 +2194,9 @@ fn parse_scale_transform<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResu
 }
 
 /// Parse rotate(deg)
-fn parse_rotate_transform<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str, Transform, E> {
+fn parse_rotate_transform<'a, E: NomParseError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, Transform, E> {
     let (input, _) = ws(input)?;
     let (input, _) = tag_no_case("rotate")(input)?;
     let (input, _) = ws(input)?;
@@ -2167,11 +2207,16 @@ fn parse_rotate_transform<'a, E: NomParseError<&'a str>>(input: &'a str) -> IRes
     let (input, _) = ws(input)?;
     let (input, _) = char(')')(input)?;
 
-    Ok((input, Transform::rotate(degrees * std::f32::consts::PI / 180.0)))
+    Ok((
+        input,
+        Transform::rotate(degrees * std::f32::consts::PI / 180.0),
+    ))
 }
 
 /// Parse translate(x, y), translateX(x), or translateY(y)
-fn parse_translate_transform<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str, Transform, E> {
+fn parse_translate_transform<'a, E: NomParseError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, Transform, E> {
     let (input, _) = ws(input)?;
 
     // Try translateX(x)
@@ -2241,11 +2286,7 @@ fn parse_css_length(input: &str) -> Option<Length> {
 fn parse_length<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str, Length, E> {
     let (input, value) = float(input)?;
     // Try to match a unit suffix
-    let (input, unit) = opt(alt((
-        tag_no_case("px"),
-        tag_no_case("sp"),
-        tag("%"),
-    )))(input)?;
+    let (input, unit) = opt(alt((tag_no_case("px"), tag_no_case("sp"), tag("%"))))(input)?;
 
     let length = match unit {
         Some("sp") | Some("SP") => Length::Sp(value),
@@ -2271,7 +2312,9 @@ fn parse_opacity<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a s
 }
 
 /// Parse render layer
-fn parse_render_layer<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str, RenderLayer, E> {
+fn parse_render_layer<'a, E: NomParseError<&'a str>>(
+    input: &'a str,
+) -> IResult<&'a str, RenderLayer, E> {
     let (input, _) = ws(input)?;
     alt((
         value(RenderLayer::Foreground, tag_no_case("foreground")),
@@ -2389,7 +2432,11 @@ fn parse_time_value(input: &str) -> Option<u32> {
 
     // Try seconds
     if let Some(s_str) = input.strip_suffix('s') {
-        return s_str.trim().parse::<f32>().ok().map(|s| (s * 1000.0) as u32);
+        return s_str
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|s| (s * 1000.0) as u32);
     }
 
     // Try plain number (assume milliseconds)
@@ -2895,7 +2942,9 @@ fn extract_color_and_position(part: &str, index: usize, total: usize) -> (&str, 
     if let Some(pct_pos) = part.rfind('%') {
         // Find where the number starts (work backwards from %)
         let before_pct = &part[..pct_pos];
-        if let Some(space_pos) = before_pct.rfind(|c: char| !c.is_ascii_digit() && c != '.' && c != '-') {
+        if let Some(space_pos) =
+            before_pct.rfind(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
+        {
             let num_str = &part[space_pos + 1..pct_pos];
             if let Ok(pct) = num_str.trim().parse::<f32>() {
                 let color_str = part[..=space_pos].trim();
@@ -2913,7 +2962,9 @@ fn extract_color_and_position(part: &str, index: usize, total: usize) -> (&str, 
     // Check for pixel value at the end (less common in CSS but valid)
     if let Some(px_pos) = part.rfind("px") {
         let before_px = &part[..px_pos];
-        if let Some(space_pos) = before_px.rfind(|c: char| !c.is_ascii_digit() && c != '.' && c != '-') {
+        if let Some(space_pos) =
+            before_px.rfind(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
+        {
             let num_str = &part[space_pos + 1..px_pos];
             if let Ok(_px) = num_str.trim().parse::<f32>() {
                 // For now, ignore pixel values and use default positioning
@@ -3219,7 +3270,8 @@ mod tests {
         // and errors should contain info about what went wrong
 
         // Either we have an error, or we have unparsed content warning
-        let has_issues = result.has_errors() || result.has_warnings() || result.stylesheet.is_empty();
+        let has_issues =
+            result.has_errors() || result.has_warnings() || result.stylesheet.is_empty();
         assert!(has_issues, "Should have some indication of incomplete CSS");
 
         // If there are errors, validate their details
@@ -3330,10 +3382,10 @@ mod tests {
     fn test_collect_multiple_errors_via_iterations() {
         // Demonstrate how to collect errors from multiple CSS inputs
         let css_inputs = vec![
-            ("#valid { opacity: 0.5; }", true),    // valid
-            ("#broken {", false),                  // invalid - missing close
+            ("#valid { opacity: 0.5; }", true),      // valid
+            ("#broken {", false),                    // invalid - missing close
             ("#also-valid { opacity: 1.0; }", true), // valid
-            ("@ invalid at-rule", false),          // invalid - no ID selector
+            ("@ invalid at-rule", false),            // invalid - no ID selector
         ];
 
         let mut errors: Vec<ParseError> = Vec::new();
@@ -3429,10 +3481,16 @@ mod tests {
         assert_eq!(style.opacity, Some(0.5));
 
         // Should have collected warnings for unknown properties
-        assert!(result.has_warnings(), "Should have warnings for unknown properties");
+        assert!(
+            result.has_warnings(),
+            "Should have warnings for unknown properties"
+        );
 
         let warnings: Vec<_> = result.warnings_only().collect();
-        assert!(warnings.len() >= 2, "Should have at least 2 warnings for unknown props");
+        assert!(
+            warnings.len() >= 2,
+            "Should have at least 2 warnings for unknown props"
+        );
 
         // Check that warnings contain property info
         for warning in &warnings {
@@ -3456,7 +3514,10 @@ mod tests {
         assert!(result.has_warnings());
 
         let warnings: Vec<_> = result.warnings_only().collect();
-        assert!(warnings.len() >= 2, "Should have warnings for invalid values");
+        assert!(
+            warnings.len() >= 2,
+            "Should have warnings for invalid values"
+        );
 
         // Check warning details
         for warning in &warnings {
@@ -3743,7 +3804,10 @@ mod tests {
         assert_eq!(base.opacity, Some(1.0));
 
         // Hover style
-        let hover = result.stylesheet.get_with_state("button", ElementState::Hover).unwrap();
+        let hover = result
+            .stylesheet
+            .get_with_state("button", ElementState::Hover)
+            .unwrap();
         assert_eq!(hover.opacity, Some(0.8));
     }
 
@@ -3756,7 +3820,10 @@ mod tests {
         "#;
         let result = Stylesheet::parse_with_errors(css);
 
-        let active = result.stylesheet.get_with_state("button", ElementState::Active).unwrap();
+        let active = result
+            .stylesheet
+            .get_with_state("button", ElementState::Active)
+            .unwrap();
         assert!(active.transform.is_some());
     }
 
@@ -3769,7 +3836,10 @@ mod tests {
         "#;
         let result = Stylesheet::parse_with_errors(css);
 
-        let focus = result.stylesheet.get_with_state("input", ElementState::Focus).unwrap();
+        let focus = result
+            .stylesheet
+            .get_with_state("input", ElementState::Focus)
+            .unwrap();
         assert!(focus.corner_radius.is_some());
     }
 
@@ -3782,7 +3852,10 @@ mod tests {
         "#;
         let result = Stylesheet::parse_with_errors(css);
 
-        let disabled = result.stylesheet.get_with_state("button", ElementState::Disabled).unwrap();
+        let disabled = result
+            .stylesheet
+            .get_with_state("button", ElementState::Disabled)
+            .unwrap();
         assert_eq!(disabled.opacity, Some(0.5));
     }
 
@@ -3815,23 +3888,43 @@ mod tests {
         assert_eq!(base.opacity, Some(1.0));
 
         // Check all states exist
-        assert!(result.stylesheet.contains_with_state("button", ElementState::Hover));
-        assert!(result.stylesheet.contains_with_state("button", ElementState::Active));
-        assert!(result.stylesheet.contains_with_state("button", ElementState::Focus));
-        assert!(result.stylesheet.contains_with_state("button", ElementState::Disabled));
+        assert!(result
+            .stylesheet
+            .contains_with_state("button", ElementState::Hover));
+        assert!(result
+            .stylesheet
+            .contains_with_state("button", ElementState::Active));
+        assert!(result
+            .stylesheet
+            .contains_with_state("button", ElementState::Focus));
+        assert!(result
+            .stylesheet
+            .contains_with_state("button", ElementState::Disabled));
 
         // Verify state styles
-        let hover = result.stylesheet.get_with_state("button", ElementState::Hover).unwrap();
+        let hover = result
+            .stylesheet
+            .get_with_state("button", ElementState::Hover)
+            .unwrap();
         assert_eq!(hover.opacity, Some(0.9));
 
-        let active = result.stylesheet.get_with_state("button", ElementState::Active).unwrap();
+        let active = result
+            .stylesheet
+            .get_with_state("button", ElementState::Active)
+            .unwrap();
         assert_eq!(active.opacity, Some(0.8));
         assert!(active.transform.is_some());
 
-        let focus = result.stylesheet.get_with_state("button", ElementState::Focus).unwrap();
+        let focus = result
+            .stylesheet
+            .get_with_state("button", ElementState::Focus)
+            .unwrap();
         assert!(focus.corner_radius.is_some());
 
-        let disabled = result.stylesheet.get_with_state("button", ElementState::Disabled).unwrap();
+        let disabled = result
+            .stylesheet
+            .get_with_state("button", ElementState::Disabled)
+            .unwrap();
         assert_eq!(disabled.opacity, Some(0.4));
     }
 
@@ -3875,7 +3968,10 @@ mod tests {
         "#;
         let result = Stylesheet::parse_with_errors(css);
 
-        let hover = result.stylesheet.get_with_state("button", ElementState::Hover).unwrap();
+        let hover = result
+            .stylesheet
+            .get_with_state("button", ElementState::Hover)
+            .unwrap();
         assert_eq!(hover.opacity, Some(0.85));
     }
 
@@ -3900,7 +3996,10 @@ mod tests {
         assert_eq!(ElementState::from_str("HOVER"), Some(ElementState::Hover));
         assert_eq!(ElementState::from_str("active"), Some(ElementState::Active));
         assert_eq!(ElementState::from_str("focus"), Some(ElementState::Focus));
-        assert_eq!(ElementState::from_str("disabled"), Some(ElementState::Disabled));
+        assert_eq!(
+            ElementState::from_str("disabled"),
+            Some(ElementState::Disabled)
+        );
         assert_eq!(ElementState::from_str("unknown"), None);
     }
 
@@ -4160,7 +4259,9 @@ mod tests {
 
         // Rules should also be parsed
         assert!(result.stylesheet.contains("card"));
-        assert!(result.stylesheet.contains_with_state("card", ElementState::Hover));
+        assert!(result
+            .stylesheet
+            .contains_with_state("card", ElementState::Hover));
     }
 
     // =========================================================================
@@ -4403,7 +4504,8 @@ mod tests {
 
     #[test]
     fn test_linear_gradient_multiple_stops() {
-        let css = r#"#card { background: linear-gradient(90deg, red 0%, yellow 50%, green 100%); }"#;
+        let css =
+            r#"#card { background: linear-gradient(90deg, red 0%, yellow 50%, green 100%); }"#;
         let result = Stylesheet::parse_with_errors(css);
 
         assert!(!result.has_errors());
@@ -4440,8 +4542,7 @@ mod tests {
 
     #[test]
     fn test_linear_gradient_rgba_colors() {
-        let css =
-            r#"#card { background: linear-gradient(45deg, rgba(255, 0, 0, 0.5) 0%, rgba(0, 0, 255, 0.8) 100%); }"#;
+        let css = r#"#card { background: linear-gradient(45deg, rgba(255, 0, 0, 0.5) 0%, rgba(0, 0, 255, 0.8) 100%); }"#;
         let result = Stylesheet::parse_with_errors(css);
 
         assert!(!result.has_errors());

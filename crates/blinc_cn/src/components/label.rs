@@ -80,12 +80,7 @@ impl Label {
                         .color(text_color)
                         .medium(),
                 )
-                .child(
-                    text("*")
-                        .size(font_size)
-                        .color(required_color)
-                        .medium(),
-                )
+                .child(text("*").size(font_size).color(required_color).medium())
         } else {
             div().child(
                 text(&config.text)
@@ -217,7 +212,10 @@ mod tests {
         let typography = TypographyTokens::default();
         assert_eq!(LabelSize::Small.font_size(&typography), typography.text_xs);
         assert_eq!(LabelSize::Medium.font_size(&typography), typography.text_sm);
-        assert_eq!(LabelSize::Large.font_size(&typography), typography.text_base);
+        assert_eq!(
+            LabelSize::Large.font_size(&typography),
+            typography.text_base
+        );
     }
 
     #[test]

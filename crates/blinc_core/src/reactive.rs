@@ -628,11 +628,7 @@ pub struct State<T> {
 
 impl<T: Clone + Send + 'static> State<T> {
     /// Create a new State wrapper
-    pub fn new(
-        signal: Signal<T>,
-        reactive: SharedReactiveGraph,
-        dirty_flag: DirtyFlag,
-    ) -> Self {
+    pub fn new(signal: Signal<T>, reactive: SharedReactiveGraph, dirty_flag: DirtyFlag) -> Self {
         Self {
             signal,
             reactive,

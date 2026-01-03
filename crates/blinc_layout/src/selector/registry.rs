@@ -35,10 +35,7 @@ impl std::fmt::Debug for ElementRegistry {
                 "pending_on_ready",
                 &format!(
                     "{} pending",
-                    self.pending_on_ready
-                        .lock()
-                        .map(|v| v.len())
-                        .unwrap_or(0)
+                    self.pending_on_ready.lock().map(|v| v.len()).unwrap_or(0)
                 ),
             )
             .finish()

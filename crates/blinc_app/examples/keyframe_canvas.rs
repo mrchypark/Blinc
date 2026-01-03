@@ -261,7 +261,8 @@ fn progress_bar_demo(ctx: &WindowedContext) -> Div {
         .on_click(move |_| {
             // Restart animation on click
             click_timeline.lock().unwrap().restart();
-        }).on_ready(move |_|{
+        })
+        .on_ready(move |_| {
             // Start animation when first laid out
             ready_timeline.lock().unwrap().start();
         })

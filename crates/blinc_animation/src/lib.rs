@@ -20,7 +20,9 @@ pub mod scheduler;
 pub mod spring;
 pub mod timeline;
 
-pub use context::{AnimationContext, AnimationContextExt, SharedAnimatedTimeline, SharedAnimatedValue};
+pub use context::{
+    AnimationContext, AnimationContextExt, SharedAnimatedTimeline, SharedAnimatedValue,
+};
 pub use easing::Easing;
 pub use keyframe::{
     FillMode, Keyframe, KeyframeAnimation, KeyframeProperties, MultiKeyframe,

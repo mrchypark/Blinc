@@ -696,7 +696,12 @@ fn build_dropdown_content(
                 if let Some(ref content_fn) = opt_content {
                     content_fn()
                 } else {
-                    div().child(text(&opt_label).size(font_size).no_cursor().color(option_text_color))
+                    div().child(
+                        text(&opt_label)
+                            .size(font_size)
+                            .no_cursor()
+                            .color(option_text_color),
+                    )
                 },
             );
 

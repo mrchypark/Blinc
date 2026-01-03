@@ -1538,13 +1538,7 @@ impl TextInput {
     }
 
     /// Set all border colors at once for consistent theming
-    pub fn border_colors(
-        self,
-        idle: Color,
-        hover: Color,
-        focused: Color,
-        error: Color,
-    ) -> Self {
+    pub fn border_colors(self, idle: Color, hover: Color, focused: Color, error: Color) -> Self {
         let mut cfg = self.config.lock().unwrap();
         cfg.border_color = idle;
         cfg.hover_border_color = hover;

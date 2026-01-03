@@ -93,7 +93,7 @@ impl CheckboxSize {
 /// Checkbox component
 ///
 /// A toggle checkbox with hover and press feedback.
-/// Uses State<bool> from context for reactive state management.
+/// Uses `State<bool>` from context for reactive state management.
 pub struct Checkbox {
     /// The fully-built inner element (Div containing checkbox and optional label)
     inner: Div,
@@ -318,7 +318,8 @@ impl CheckboxBuilder {
 
     /// Get or build the inner Checkbox
     fn get_or_build(&self) -> &Checkbox {
-        self.built.get_or_init(|| Checkbox::with_config(self.config.clone()))
+        self.built
+            .get_or_init(|| Checkbox::with_config(self.config.clone()))
     }
 
     /// Set the checkbox size

@@ -154,11 +154,7 @@ impl Spinner {
 
         Rc::new(move |ctx: &mut dyn DrawContext, bounds: CanvasBounds| {
             // Get current rotation angle from timeline
-            let angle_deg = render_timeline
-                .lock()
-                .unwrap()
-                .get(entry_id)
-                .unwrap_or(0.0);
+            let angle_deg = render_timeline.lock().unwrap().get(entry_id).unwrap_or(0.0);
             let angle_rad = angle_deg * PI / 180.0;
 
             let cx = bounds.width / 2.0;

@@ -1,7 +1,7 @@
 //! Radio Group component for single-selection from multiple options
 //!
 //! A themed radio button group with smooth selection transitions.
-//! Uses State<String> from context for reactive state management.
+//! Uses `State<String>` from context for reactive state management.
 //!
 //! # Example
 //!
@@ -108,7 +108,7 @@ struct RadioOption {
 /// Radio Group component
 ///
 /// A group of radio buttons where only one can be selected at a time.
-/// Uses State<String> from context for reactive state management.
+/// Uses `State<String>` from context for reactive state management.
 pub struct RadioGroup {
     /// The fully-built inner element (Div containing radio buttons and optional label)
     inner: Div,

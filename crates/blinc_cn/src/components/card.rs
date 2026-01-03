@@ -205,11 +205,7 @@ impl CardHeader {
     pub fn new() -> Self {
         let theme = ThemeState::get();
         let gap = theme.spacing_value(SpacingToken::Space1_5); // 6px
-        let inner = div()
-            .flex_col()
-            .items_start()
-            .w_full()
-            .gap_px(gap);
+        let inner = div().flex_col().items_start().w_full().gap_px(gap);
 
         Self { inner }
     }
@@ -373,11 +369,7 @@ impl CardFooter {
     pub fn new() -> Self {
         let theme = ThemeState::get();
         let gap = theme.spacing_value(SpacingToken::Space2); // 8px
-        let inner = div()
-            .flex_row()
-            .w_full()
-            .gap_px(gap)
-            .justify_end();
+        let inner = div().flex_row().w_full().gap_px(gap).justify_end();
 
         Self { inner }
     }

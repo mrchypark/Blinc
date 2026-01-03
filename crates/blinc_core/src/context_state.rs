@@ -185,9 +185,9 @@ impl BlincContextState {
     ///
     /// Panics if `init()` has not been called.
     pub fn get() -> &'static BlincContextState {
-        CONTEXT_STATE
-            .get()
-            .expect("BlincContextState not initialized. Call BlincContextState::init() at app startup.")
+        CONTEXT_STATE.get().expect(
+            "BlincContextState not initialized. Call BlincContextState::init() at app startup.",
+        )
     }
 
     /// Try to get the global context state (returns None if not initialized)
@@ -238,7 +238,11 @@ impl BlincContextState {
                 Arc::clone(callback),
             )
         } else {
-            State::new(signal, Arc::clone(&self.reactive), Arc::clone(&self.dirty_flag))
+            State::new(
+                signal,
+                Arc::clone(&self.reactive),
+                Arc::clone(&self.dirty_flag),
+            )
         }
     }
 

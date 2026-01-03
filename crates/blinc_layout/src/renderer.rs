@@ -3114,9 +3114,7 @@ impl RenderTree {
             .element_registry
             .all_ids()
             .into_iter()
-            .filter_map(|id| {
-                self.element_registry.get(&id).map(|node_id| (id, node_id))
-            })
+            .filter_map(|id| self.element_registry.get(&id).map(|node_id| (id, node_id)))
             .collect();
 
         // Apply state styles for each registered element
@@ -3136,7 +3134,10 @@ impl RenderTree {
                 any_applied = true;
                 tracing::trace!(
                     "Applied stylesheet state styles to #{}: hovered={}, pressed={}, focused={}",
-                    element_id, hovered, pressed, focused
+                    element_id,
+                    hovered,
+                    pressed,
+                    focused
                 );
             }
         }

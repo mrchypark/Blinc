@@ -148,10 +148,10 @@ impl ButtonSize {
     /// Get the height for this size using theme tokens
     fn height(&self, theme: &ThemeState) -> f32 {
         match self {
-            ButtonSize::Small => theme.spacing_value(SpacingToken::Space8),  // 32px
+            ButtonSize::Small => theme.spacing_value(SpacingToken::Space8), // 32px
             ButtonSize::Medium => theme.spacing_value(SpacingToken::Space10), // 40px
             ButtonSize::Large => theme.spacing_value(SpacingToken::Space12), // 48px
-            ButtonSize::Icon => theme.spacing_value(SpacingToken::Space10),  // 40px
+            ButtonSize::Icon => theme.spacing_value(SpacingToken::Space10), // 40px
         }
     }
 
@@ -225,7 +225,12 @@ pub struct Button {
 impl Button {
     /// Create a new button with a label
     pub fn new(label: impl Into<String>) -> Self {
-        Self::with_options(label, ButtonVariant::default(), ButtonSize::default(), false)
+        Self::with_options(
+            label,
+            ButtonVariant::default(),
+            ButtonSize::default(),
+            false,
+        )
     }
 
     /// Create a button with specific variant and size

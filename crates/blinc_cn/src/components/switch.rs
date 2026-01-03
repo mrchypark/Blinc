@@ -1,7 +1,7 @@
 //! Switch component for boolean toggle
 //!
 //! A themed toggle switch with smooth animated thumb movement.
-//! Uses State<bool> from context for reactive state management.
+//! Uses `State<bool>` from context for reactive state management.
 //!
 //! # Example
 //!
@@ -91,7 +91,7 @@ impl SwitchSize {
 /// Switch component
 ///
 /// A toggle switch with smooth spring animation.
-/// Uses State<bool> from context for reactive state management.
+/// Uses `State<bool>` from context for reactive state management.
 pub struct Switch {
     /// The fully-built inner element (Div containing switch and optional label)
     inner: Div,
@@ -143,29 +143,20 @@ impl Switch {
 
         // Build background layers outside of on_state so motion bindings are properly registered
         // Off layer is always visible as the base
-        let off_layer = div()
-            .absolute()
-            .inset(0.0)
-            .rounded(radius)
-            .bg(off_bg);
+        let off_layer = div().absolute().inset(0.0).rounded(radius).bg(off_bg);
 
         // On layer with animated opacity
         // The motion container must be absolutely positioned and sized to cover the track
         // (motion's child being absolute would make motion collapse to 0x0)
-        let on_layer = div()
-            .absolute()
-            .inset(0.0)
-            .child(
-                motion()
-                    .opacity(color_anim)
-                    .child(
-                        div()
-                            .w(track_width)
-                            .h(track_height)
-                            .rounded(radius)
-                            .bg(on_bg)
-                    )
-            );
+        let on_layer = div().absolute().inset(0.0).child(
+            motion().opacity(color_anim).child(
+                div()
+                    .w(track_width)
+                    .h(track_height)
+                    .rounded(radius)
+                    .bg(on_bg),
+            ),
+        );
 
         // Thumb with animated position
         let thumb_element = div()
@@ -174,9 +165,7 @@ impl Switch {
             .rounded(thumb_size / 2.0)
             .bg(thumb_color);
 
-        let animated_thumb = motion()
-            .translate_x(thumb_anim)
-            .child(thumb_element);
+        let animated_thumb = motion().translate_x(thumb_anim).child(thumb_element);
 
         // Main switch container
         let mut switch = div()
@@ -210,8 +199,14 @@ impl Switch {
             // Update animated value targets for smooth thumb movement and color fade
             let thumb_target = if new_value { thumb_travel } else { 0.0 };
             let color_target = if new_value { 1.0 } else { 0.0 };
-            thumb_anim_for_click.lock().unwrap().set_target(thumb_target);
-            color_anim_for_click.lock().unwrap().set_target(color_target);
+            thumb_anim_for_click
+                .lock()
+                .unwrap()
+                .set_target(thumb_target);
+            color_anim_for_click
+                .lock()
+                .unwrap()
+                .set_target(color_target);
 
             if let Some(ref callback) = on_change {
                 callback(new_value);
@@ -336,7 +331,8 @@ impl SwitchBuilder {
 
     /// Get or build the inner Switch
     fn get_or_build(&self) -> &Switch {
-        self.built.get_or_init(|| Switch::with_config(self.config.clone()))
+        self.built
+            .get_or_init(|| Switch::with_config(self.config.clone()))
     }
 
     /// Set the switch size

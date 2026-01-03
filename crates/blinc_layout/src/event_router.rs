@@ -372,7 +372,9 @@ impl EventRouter {
                 self.is_dragging = true;
                 tracing::info!(
                     "DRAG started: target={:?}, delta=({:.1}, {:.1})",
-                    target, self.drag_delta_x, self.drag_delta_y
+                    target,
+                    self.drag_delta_x,
+                    self.drag_delta_y
                 );
             }
 
@@ -380,7 +382,9 @@ impl EventRouter {
             if self.is_dragging {
                 tracing::info!(
                     "Emitting DRAG to {:?}, delta=({:.1}, {:.1})",
-                    target, self.drag_delta_x, self.drag_delta_y
+                    target,
+                    self.drag_delta_x,
+                    self.drag_delta_y
                 );
                 self.emit_event(target, event_types::DRAG);
                 events.push((target, event_types::DRAG));
@@ -895,7 +899,12 @@ impl EventRouter {
         let children = tree.layout().children(node);
         tracing::trace!(
             "hit_test_node: node={:?}, bounds=({:.1}, {:.1}, {:.1}x{:.1}), children={:?}",
-            node, bounds.x, bounds.y, bounds.width, bounds.height, children
+            node,
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+            children
         );
         for child in children.into_iter().rev() {
             if let Some(result) =
@@ -906,7 +915,10 @@ impl EventRouter {
         }
 
         // No child hit, this node is the target
-        tracing::trace!("hit_test_node: returning node={:?} as target (no children hit)", node);
+        tracing::trace!(
+            "hit_test_node: returning node={:?} as target (no children hit)",
+            node
+        );
         Some(HitTestResult {
             node,
             local_x: x - bounds.x,

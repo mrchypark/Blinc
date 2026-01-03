@@ -81,9 +81,7 @@ impl StateTransitions for SliderThumbState {
 
             // Pressed transitions
             (SliderThumbState::Pressed, event_types::POINTER_UP) => Some(SliderThumbState::Hovered),
-            (SliderThumbState::Pressed, event_types::POINTER_LEAVE) => {
-                Some(SliderThumbState::Idle)
-            }
+            (SliderThumbState::Pressed, event_types::POINTER_LEAVE) => Some(SliderThumbState::Idle),
             // When dragging starts, transition to Dragging
             (SliderThumbState::Pressed, event_types::DRAG) => Some(SliderThumbState::Dragging),
 
@@ -213,7 +211,12 @@ impl Slider {
         // These survive across UI rebuilds!
         // Use the instance_key from config so each slider has its own state
         let instance_key = &config.instance_key;
-        let thumb_offset = SliderState::use_thumb_offset_for(ctx, instance_key, initial_offset, SpringConfig::snappy());
+        let thumb_offset = SliderState::use_thumb_offset_for(
+            ctx,
+            instance_key,
+            initial_offset,
+            SpringConfig::snappy(),
+        );
         let drag_start_x = SliderState::use_drag_start_x_for(ctx, instance_key, 0.0);
         let drag_start_offset = SliderState::use_drag_start_offset_for(ctx, instance_key, 0.0);
         let is_dragging = SliderState::use_is_dragging_for(ctx, instance_key, false);
@@ -273,7 +276,8 @@ impl Slider {
                     .h(thumb_size)
                     .rounded(thumb_size / 2.0)
                     .border(2.0, theme.color(ColorToken::Border))
-                    .bg(thumb_bg).shadow_sm();
+                    .bg(thumb_bg)
+                    .shadow_sm();
 
                 if dragging {
                     // Visual feedback when dragging: add border
@@ -304,11 +308,7 @@ impl Slider {
         // At offset=0, fill right edge should be at thumb_size/2
         // So fill left edge should be at: thumb_size/2 - track_width
         let fill_left = thumb_size / 2.0 - track_width;
-        let fill_positioned = div()
-            .absolute()
-            .left(fill_left)
-            .top(0.0)
-            .child(fill_bar);
+        let fill_positioned = div().absolute().left(fill_left).top(0.0).child(fill_bar);
 
         // Motion translates by thumb_offset - same value as thumb uses
         let animated_fill = motion()
@@ -324,7 +324,7 @@ impl Slider {
             .h(track_height)
             .overflow_clip()
             .rounded(radius)
-            .relative()  // Positioning context for absolute child
+            .relative() // Positioning context for absolute child
             .child(animated_fill);
 
         // Track visual element (the thin bar) - owns click-to-jump behavior
@@ -333,7 +333,7 @@ impl Slider {
             .absolute()
             .left(0.0)
             .right(0.0)
-            .top((thumb_size - track_height) / 2.0)  // Center vertically
+            .top((thumb_size - track_height) / 2.0) // Center vertically
             .h(track_height)
             .rounded(radius)
             .bg(track_bg)
@@ -387,9 +387,9 @@ impl Slider {
         // - Hit testing uses layout bounds, so clicks at the thumb's visual position miss it
         // - The container spans the full track width and always receives events correctly
         let mut slider_container = div()
-            .relative()  // Positioning context for absolute children
+            .relative() // Positioning context for absolute children
             .h(thumb_size)
-            .overflow_visible()  // Allow thumb to overflow if needed
+            .overflow_visible() // Allow thumb to overflow if needed
             .cursor(CursorStyle::Grab)
             // Track background layer (absolutely positioned, centered)
             .child(track_visual)
@@ -424,7 +424,10 @@ impl Slider {
                 let new_offset = (start_offset + delta_x).clamp(0.0, max_offset);
 
                 // Update thumb position immediately (no spring animation during drag)
-                thumb_offset_for_drag.lock().unwrap().set_immediate(new_offset);
+                thumb_offset_for_drag
+                    .lock()
+                    .unwrap()
+                    .set_immediate(new_offset);
 
                 // Calculate and update value
                 let norm = new_offset / max_offset;
@@ -497,12 +500,15 @@ impl Slider {
                         .deps(&[config.value_state.signal_id()])
                         .on_state(move |_state: &(), container: &mut Div| {
                             let current_value = value_state_for_display.get();
-                            let value_text = if step_for_display.is_some() && step_for_display.unwrap() >= 1.0 {
-                                format!("{:.0}", current_value)
-                            } else {
-                                format!("{:.2}", current_value)
-                            };
-                            container.merge(div().child(text(&value_text).size(14.0).color(value_color)));
+                            let value_text =
+                                if step_for_display.is_some() && step_for_display.unwrap() >= 1.0 {
+                                    format!("{:.0}", current_value)
+                                } else {
+                                    format!("{:.2}", current_value)
+                                };
+                            container.merge(
+                                div().child(text(&value_text).size(14.0).color(value_color)),
+                            );
                         });
                     header = header.child(value_display);
                 }
@@ -595,7 +601,13 @@ impl SliderBuilder {
     #[track_caller]
     pub fn new(value_state: &State<f32>) -> Self {
         let loc = std::panic::Location::caller();
-        let instance_key = format!("{}:{}:{}:{}", loc.file(), loc.line(), loc.column(), value_state.signal_id().to_raw());
+        let instance_key = format!(
+            "{}:{}:{}:{}",
+            loc.file(),
+            loc.line(),
+            loc.column(),
+            value_state.signal_id().to_raw()
+        );
         Self {
             config: SliderConfig::new(value_state.clone(), instance_key),
         }

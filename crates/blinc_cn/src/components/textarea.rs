@@ -35,7 +35,9 @@
 
 use super::label::{label, LabelSize};
 use blinc_layout::prelude::*;
-use blinc_layout::widgets::text_area::{text_area, SharedTextAreaState, TextArea as LayoutTextArea};
+use blinc_layout::widgets::text_area::{
+    text_area, SharedTextAreaState, TextArea as LayoutTextArea,
+};
 use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState, TypographyTokens};
 
 /// Textarea size variants (affects default dimensions)
@@ -61,8 +63,8 @@ impl TextareaSize {
 
     fn font_size(&self, typography: &TypographyTokens) -> f32 {
         match self {
-            TextareaSize::Small => typography.text_xs,  // 12px
-            TextareaSize::Medium => typography.text_sm, // 14px
+            TextareaSize::Small => typography.text_xs,   // 12px
+            TextareaSize::Medium => typography.text_sm,  // 14px
             TextareaSize::Large => typography.text_base, // 16px
         }
     }
@@ -127,7 +129,9 @@ impl Textarea {
         let typography = theme.typography();
 
         // Build the layout TextArea
-        let radius = config.corner_radius.unwrap_or_else(|| theme.radius(RadiusToken::Md));
+        let radius = config
+            .corner_radius
+            .unwrap_or_else(|| theme.radius(RadiusToken::Md));
 
         let mut ta = text_area(&config.state)
             .font_size(config.size.font_size(&typography))
@@ -173,46 +177,49 @@ impl Textarea {
         }
 
         // If no label, description, or error, wrap textarea in a div
-        let inner = if config.label.is_none() && config.description.is_none() && config.error.is_none() {
-            div().child(ta)
-        } else {
-            // Build a container with label, textarea, and description/error
-            let spacing = theme.spacing_value(SpacingToken::Space2);
-            let mut container = div().flex_col().gap_px(spacing);
+        let inner =
+            if config.label.is_none() && config.description.is_none() && config.error.is_none() {
+                div().child(ta)
+            } else {
+                // Build a container with label, textarea, and description/error
+                let spacing = theme.spacing_value(SpacingToken::Space2);
+                let mut container = div().flex_col().gap_px(spacing);
 
-            // Apply width to container
-            if config.full_width {
-                container = container.w_full();
-            } else if let Some(w) = config.width {
-                container = container.w(w);
-            }
-
-            // Label
-            if let Some(ref label_text) = config.label {
-                let mut lbl = label(label_text).size(LabelSize::Medium);
-                if config.required {
-                    lbl = lbl.required();
+                // Apply width to container
+                if config.full_width {
+                    container = container.w_full();
+                } else if let Some(w) = config.width {
+                    container = container.w(w);
                 }
-                if config.disabled {
-                    lbl = lbl.disabled(true);
+
+                // Label
+                if let Some(ref label_text) = config.label {
+                    let mut lbl = label(label_text).size(LabelSize::Medium);
+                    if config.required {
+                        lbl = lbl.required();
+                    }
+                    if config.disabled {
+                        lbl = lbl.disabled(true);
+                    }
+                    container = container.child(lbl);
                 }
-                container = container.child(lbl);
-            }
 
-            // Textarea
-            container = container.child(ta);
+                // Textarea
+                container = container.child(ta);
 
-            // Error or description
-            if let Some(ref error_text) = config.error {
-                let error_color = theme.color(ColorToken::Error);
-                container = container.child(text(error_text).size(typography.text_xs).color(error_color));
-            } else if let Some(ref desc_text) = config.description {
-                let desc_color = theme.color(ColorToken::TextTertiary);
-                container = container.child(text(desc_text).size(typography.text_xs).color(desc_color));
-            }
+                // Error or description
+                if let Some(ref error_text) = config.error {
+                    let error_color = theme.color(ColorToken::Error);
+                    container = container
+                        .child(text(error_text).size(typography.text_xs).color(error_color));
+                } else if let Some(ref desc_text) = config.description {
+                    let desc_color = theme.color(ColorToken::TextTertiary);
+                    container =
+                        container.child(text(desc_text).size(typography.text_xs).color(desc_color));
+                }
 
-            container
-        };
+                container
+            };
 
         Self { inner }
     }
@@ -258,7 +265,8 @@ impl TextareaBuilder {
 
     /// Get or build the inner Textarea
     fn get_or_build(&self) -> &Textarea {
-        self.built.get_or_init(|| Textarea::from_config(self.config.clone()))
+        self.built
+            .get_or_init(|| Textarea::from_config(self.config.clone()))
     }
 
     /// Set the textarea size preset
@@ -432,9 +440,18 @@ mod tests {
         assert_eq!(TextareaSize::Large.default_rows(), 6);
 
         // Font sizes
-        assert_eq!(TextareaSize::Small.font_size(&typography), typography.text_xs);
-        assert_eq!(TextareaSize::Medium.font_size(&typography), typography.text_sm);
-        assert_eq!(TextareaSize::Large.font_size(&typography), typography.text_base);
+        assert_eq!(
+            TextareaSize::Small.font_size(&typography),
+            typography.text_xs
+        );
+        assert_eq!(
+            TextareaSize::Medium.font_size(&typography),
+            typography.text_sm
+        );
+        assert_eq!(
+            TextareaSize::Large.font_size(&typography),
+            typography.text_base
+        );
     }
 
     #[test]

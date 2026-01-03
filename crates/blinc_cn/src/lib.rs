@@ -56,8 +56,8 @@ pub mod cn {
     pub use crate::components::radio::radio_group;
     pub use crate::components::select::select;
     pub use crate::components::separator::separator;
-    pub use crate::components::slider::slider;
     pub use crate::components::skeleton::{skeleton, skeleton_circle};
+    pub use crate::components::slider::slider;
     pub use crate::components::spinner::spinner;
     pub use crate::components::switch::switch;
     pub use crate::components::textarea::textarea;
@@ -70,16 +70,22 @@ pub mod prelude {
     pub use crate::components::alert::{alert, alert_box, Alert, AlertBox, AlertVariant};
     pub use crate::components::badge::{badge, Badge, BadgeVariant};
     pub use crate::components::button::{button, Button, ButtonSize, ButtonVariant};
-    pub use crate::components::card::{card, card_content, card_footer, card_header, Card, CardContent, CardFooter, CardHeader};
+    pub use crate::components::card::{
+        card, card_content, card_footer, card_header, Card, CardContent, CardFooter, CardHeader,
+    };
     pub use crate::components::checkbox::{checkbox, Checkbox, CheckboxSize};
     pub use crate::components::input::{input, Input, InputBgColors, InputBorderColors, InputSize};
     pub use crate::components::label::{label, Label, LabelBuilder, LabelSize};
-    pub use crate::components::progress::{progress, progress_animated, AnimatedProgress, Progress, ProgressSize};
-    pub use crate::components::radio::{radio_group, RadioGroup, RadioGroupBuilder, RadioLayout, RadioSize};
+    pub use crate::components::progress::{
+        progress, progress_animated, AnimatedProgress, Progress, ProgressSize,
+    };
+    pub use crate::components::radio::{
+        radio_group, RadioGroup, RadioGroupBuilder, RadioLayout, RadioSize,
+    };
     pub use crate::components::select::{select, Select, SelectBuilder, SelectOption, SelectSize};
     pub use crate::components::separator::{separator, Separator, SeparatorOrientation};
-    pub use crate::components::slider::{slider, Slider, SliderBuilder, SliderSize};
     pub use crate::components::skeleton::{skeleton, skeleton_circle, Skeleton};
+    pub use crate::components::slider::{slider, Slider, SliderBuilder, SliderSize};
     pub use crate::components::spinner::{spinner, Spinner, SpinnerSize};
     pub use crate::components::switch::{switch, Switch, SwitchSize};
     pub use crate::components::textarea::{textarea, Textarea, TextareaSize};

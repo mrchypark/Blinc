@@ -109,8 +109,8 @@ impl InputSize {
 
     fn font_size(&self, typography: &TypographyTokens) -> f32 {
         match self {
-            InputSize::Small => typography.text_xs,  // 12px
-            InputSize::Medium => typography.text_sm, // 14px
+            InputSize::Small => typography.text_xs,   // 12px
+            InputSize::Medium => typography.text_sm,  // 14px
             InputSize::Large => typography.text_base, // 16px
         }
     }
@@ -188,7 +188,8 @@ impl Input {
         // Error or description
         if let Some(ref error_text) = config.error {
             let error_color = theme.color(ColorToken::Error);
-            container = container.child(text(error_text).size(typography.text_xs).color(error_color));
+            container =
+                container.child(text(error_text).size(typography.text_xs).color(error_color));
         } else if let Some(ref desc_text) = config.description {
             let desc_color = theme.color(ColorToken::TextTertiary);
             container = container.child(text(desc_text).size(typography.text_xs).color(desc_color));
@@ -198,7 +199,11 @@ impl Input {
     }
 
     /// Build the text input element from config
-    fn build_text_input(config: &InputConfig, theme: &ThemeState, typography: &TypographyTokens) -> TextInput {
+    fn build_text_input(
+        config: &InputConfig,
+        theme: &ThemeState,
+        typography: &TypographyTokens,
+    ) -> TextInput {
         // Get default theme colors for fallbacks
         let default_border = theme.color(ColorToken::Border);
         let default_border_hover = theme.color(ColorToken::BorderHover);
@@ -212,7 +217,9 @@ impl Input {
         let default_cursor = theme.color(ColorToken::Primary);
         let default_selection = theme.color(ColorToken::Selection);
 
-        let radius = config.corner_radius.unwrap_or_else(|| theme.radius(RadiusToken::Md));
+        let radius = config
+            .corner_radius
+            .unwrap_or_else(|| theme.radius(RadiusToken::Md));
 
         let mut input = blinc_layout::widgets::text_input::text_input(&config.data)
             .h(config.size.height(theme))
@@ -224,9 +231,12 @@ impl Input {
 
         // Apply border colors (user overrides or theme defaults)
         input = input.idle_border_color(config.border_colors.idle.unwrap_or(default_border));
-        input = input.hover_border_color(config.border_colors.hover.unwrap_or(default_border_hover));
-        input = input.focused_border_color(config.border_colors.focused.unwrap_or(default_border_focus));
-        input = input.error_border_color(config.border_colors.error.unwrap_or(default_border_error));
+        input =
+            input.hover_border_color(config.border_colors.hover.unwrap_or(default_border_hover));
+        input = input
+            .focused_border_color(config.border_colors.focused.unwrap_or(default_border_focus));
+        input =
+            input.error_border_color(config.border_colors.error.unwrap_or(default_border_error));
 
         // Apply background colors
         input = input.idle_bg_color(config.bg_colors.idle.unwrap_or(default_bg));
@@ -366,7 +376,8 @@ impl InputBuilder {
 
     /// Get or build the inner Input
     fn get_or_build(&self) -> &Input {
-        self.built.get_or_init(|| Input::with_config(self.config.clone()))
+        self.built
+            .get_or_init(|| Input::with_config(self.config.clone()))
     }
 
     /// Set the input size
@@ -611,7 +622,10 @@ mod tests {
         // Font sizes use typography tokens
         assert_eq!(InputSize::Small.font_size(&typography), typography.text_xs);
         assert_eq!(InputSize::Medium.font_size(&typography), typography.text_sm);
-        assert_eq!(InputSize::Large.font_size(&typography), typography.text_base);
+        assert_eq!(
+            InputSize::Large.font_size(&typography),
+            typography.text_base
+        );
     }
 
     #[test]

@@ -112,14 +112,21 @@ fn main() {
     println!("\nUsing CssParseResult API:");
     println!("  - has_errors(): {}", result.has_errors());
     println!("  - has_warnings(): {}", result.has_warnings());
-    println!("  - errors_only().count(): {}", result.errors_only().count());
-    println!("  - warnings_only().count(): {}", result.warnings_only().count());
+    println!(
+        "  - errors_only().count(): {}",
+        result.errors_only().count()
+    );
+    println!(
+        "  - warnings_only().count(): {}",
+        result.warnings_only().count()
+    );
     println!("  - stylesheet.len(): {}", result.stylesheet.len());
 
     if !result.errors.is_empty() {
         println!("\nCollected errors/warnings:");
         for (i, err) in result.errors.iter().enumerate() {
-            println!("  [{}] {} (line {}, col {})",
+            println!(
+                "  [{}] {} (line {}, col {})",
                 i + 1,
                 err.severity,
                 err.line,
@@ -198,16 +205,28 @@ fn main() {
     }
 
     // Show state styles using get_with_state
-    if let Some(hover) = result.stylesheet.get_with_state("button", CssElementState::Hover) {
+    if let Some(hover) = result
+        .stylesheet
+        .get_with_state("button", CssElementState::Hover)
+    {
         println!("  #button:hover: opacity={:?}", hover.opacity);
     }
-    if let Some(active) = result.stylesheet.get_with_state("button", CssElementState::Active) {
+    if let Some(active) = result
+        .stylesheet
+        .get_with_state("button", CssElementState::Active)
+    {
         println!("  #button:active: transform={:?}", active.transform);
     }
-    if let Some(focus) = result.stylesheet.get_with_state("button", CssElementState::Focus) {
+    if let Some(focus) = result
+        .stylesheet
+        .get_with_state("button", CssElementState::Focus)
+    {
         println!("  #button:focus: corner_radius={:?}", focus.corner_radius);
     }
-    if let Some(disabled) = result.stylesheet.get_with_state("button", CssElementState::Disabled) {
+    if let Some(disabled) = result
+        .stylesheet
+        .get_with_state("button", CssElementState::Disabled)
+    {
         println!("  #button:disabled: opacity={:?}", disabled.opacity);
     }
 
@@ -217,7 +236,10 @@ fn main() {
     println!("  Base style: {:?}", base.map(|s| s.opacity));
     println!("  State variants: {}", states.len());
     for (state, style) in &states {
-        println!("    :{} => opacity={:?}, transform={:?}", state, style.opacity, style.transform);
+        println!(
+            "    :{} => opacity={:?}, transform={:?}",
+            state, style.opacity, style.transform
+        );
     }
 
     // Example 8: Keyframe Animations
@@ -252,9 +274,14 @@ fn main() {
     println!("\nKeyframe animations defined:");
     for name in result.stylesheet.keyframe_names() {
         let keyframes = result.stylesheet.get_keyframes(name).unwrap();
-        println!("  @keyframes {} ({} stops):", name, keyframes.keyframes.len());
+        println!(
+            "  @keyframes {} ({} stops):",
+            name,
+            keyframes.keyframes.len()
+        );
         for kf in &keyframes.keyframes {
-            println!("    {}% => opacity={:?}, transform={:?}",
+            println!(
+                "    {}% => opacity={:?}, transform={:?}",
                 (kf.position * 100.0) as i32,
                 kf.style.opacity,
                 kf.style.transform.is_some()
@@ -269,10 +296,16 @@ fn main() {
         println!("    enter_duration_ms: {}", motion.enter_duration_ms);
         println!("    exit_duration_ms: {}", motion.exit_duration_ms);
         if let Some(ref enter) = motion.enter_from {
-            println!("    enter_from: opacity={:?}, translate_y={:?}", enter.opacity, enter.translate_y);
+            println!(
+                "    enter_from: opacity={:?}, translate_y={:?}",
+                enter.opacity, enter.translate_y
+            );
         }
         if let Some(ref exit) = motion.exit_to {
-            println!("    exit_to: opacity={:?}, translate_y={:?}", exit.opacity, exit.translate_y);
+            println!(
+                "    exit_to: opacity={:?}, translate_y={:?}",
+                exit.opacity, exit.translate_y
+            );
         }
     }
 

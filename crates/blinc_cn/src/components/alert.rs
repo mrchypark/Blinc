@@ -216,12 +216,9 @@ impl AlertBox {
         let theme = ThemeState::get();
         let color = self.variant.text_color(&theme);
 
-        self.inner = self.inner.child(
-            text(title)
-                .size(14.0)
-                .semibold()
-                .color(color),
-        );
+        self.inner = self
+            .inner
+            .child(text(title).size(14.0).semibold().color(color));
         self
     }
 

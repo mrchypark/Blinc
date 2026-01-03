@@ -455,49 +455,47 @@ fn select_section(ctx: &WindowedContext) -> impl ElementBuilder {
     let size = ctx.use_state_keyed("size_select", || "medium".to_string());
     let disabled_select = ctx.use_state_keyed("disabled_select", || "option1".to_string());
 
-    section_container()
-        .child(section_title("Select"))
-        .child(
-            div()
-                .flex_row()
-                .flex_wrap()
-                .gap(24.0)
-                // Basic select with placeholder
-                .child(
-                    div().w(200.0).child(
-                        cn::select(&fruit)
-                            .label("Favorite Fruit")
-                            .placeholder("Choose a fruit...")
-                            .option("apple", "Apple")
-                            .option("banana", "Banana")
-                            .option("cherry", "Cherry")
-                            .option("date", "Date")
-                            .option("elderberry", "Elderberry")
-                            .on_change(|v| tracing::info!("Selected fruit: {}", v)),
-                    ),
-                )
-                // Select with pre-selected value
-                .child(
-                    div().w(200.0).child(
-                        cn::select(&size)
-                            .label("Size")
-                            .option("small", "Small")
-                            .option("medium", "Medium")
-                            .option("large", "Large")
-                            .option("xl", "Extra Large"),
-                    ),
-                )
-                // Disabled select
-                .child(
-                    div().w(200.0).child(
-                        cn::select(&disabled_select)
-                            .label("Disabled")
-                            .option("option1", "Option 1")
-                            .option("option2", "Option 2")
-                            .disabled(true),
-                    ),
+    section_container().child(section_title("Select")).child(
+        div()
+            .flex_row()
+            .flex_wrap()
+            .gap(24.0)
+            // Basic select with placeholder
+            .child(
+                div().w(200.0).child(
+                    cn::select(&fruit)
+                        .label("Favorite Fruit")
+                        .placeholder("Choose a fruit...")
+                        .option("apple", "Apple")
+                        .option("banana", "Banana")
+                        .option("cherry", "Cherry")
+                        .option("date", "Date")
+                        .option("elderberry", "Elderberry")
+                        .on_change(|v| tracing::info!("Selected fruit: {}", v)),
                 ),
-        )
+            )
+            // Select with pre-selected value
+            .child(
+                div().w(200.0).child(
+                    cn::select(&size)
+                        .label("Size")
+                        .option("small", "Small")
+                        .option("medium", "Medium")
+                        .option("large", "Large")
+                        .option("xl", "Extra Large"),
+                ),
+            )
+            // Disabled select
+            .child(
+                div().w(200.0).child(
+                    cn::select(&disabled_select)
+                        .label("Disabled")
+                        .option("option1", "Option 1")
+                        .option("option2", "Option 2")
+                        .disabled(true),
+                ),
+            ),
+    )
 }
 
 // ============================================================================

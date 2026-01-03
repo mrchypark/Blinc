@@ -325,17 +325,11 @@ impl AnimatedProgress {
         // For 75%: translate_x = width * 0.75 = 225, indicator left edge at -75, right edge at 225
 
         // The indicator bar itself - full width, will be clipped by track
-        let indicator = div()
-            .w(width)
-            .h(height)
-            .rounded(radius)
-            .bg(indicator_color);
+        let indicator = div().w(width).h(height).rounded(radius).bg(indicator_color);
 
         // Motion wrapper that translates the indicator
         // The animated value goes from 0 (empty) to width (full)
-        let animated_indicator = motion()
-            .translate_x(config.value.clone())
-            .child(indicator);
+        let animated_indicator = motion().translate_x(config.value.clone()).child(indicator);
 
         // Position wrapper at -width so at translate_x=0, nothing is visible
         // At translate_x=225 (75%), indicator spans from -75 to +225 (225px visible)
