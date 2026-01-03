@@ -12,6 +12,7 @@ pub mod badge;
 pub mod button;
 pub mod card;
 pub mod checkbox;
+pub mod context_menu;
 pub mod input;
 pub mod label;
 pub mod progress;
@@ -32,6 +33,7 @@ pub use card::{
     card, card_content, card_footer, card_header, Card, CardContent, CardFooter, CardHeader,
 };
 pub use checkbox::{checkbox, Checkbox, CheckboxSize};
+pub use context_menu::{context_menu, ContextMenuBuilder, ContextMenuItem, SubmenuBuilder};
 pub use input::{input, Input, InputBgColors, InputBorderColors, InputSize};
 pub use label::{label, Label, LabelBuilder, LabelSize};
 pub use progress::{progress, progress_animated, AnimatedProgress, Progress, ProgressSize};

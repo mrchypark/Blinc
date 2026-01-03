@@ -1,0 +1,607 @@
+//! Context Menu component for right-click menus
+//!
+//! A themed context menu that appears at a specific position (usually mouse coordinates).
+//! Uses the overlay system for proper positioning and dismissal.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use blinc_cn::prelude::*;
+//!
+//! fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
+//!     div()
+//!         .w(400.0)
+//!         .h(300.0)
+//!         .bg(theme.color(ColorToken::Surface))
+//!         .on_click(|event_ctx| {
+//!             // Use mouse_x/mouse_y from EventContext for absolute screen position
+//!             cn::context_menu()
+//!                 .at(event_ctx.mouse_x, event_ctx.mouse_y)
+//!                 .item("Cut", || println!("Cut"))
+//!                 .item("Copy", || println!("Copy"))
+//!                 .item("Paste", || println!("Paste"))
+//!                 .separator()
+//!                 .item("Delete", || println!("Delete"))
+//!                 .show();
+//!         })
+//! }
+//!
+//! // With keyboard shortcuts displayed
+//! cn::context_menu()
+//!     .at(x, y)
+//!     .item_with_shortcut("Cut", "Ctrl+X", || {})
+//!     .item_with_shortcut("Copy", "Ctrl+C", || {})
+//!     .item_with_shortcut("Paste", "Ctrl+V", || {})
+//!
+//! // Disabled items
+//! cn::context_menu()
+//!     .at(x, y)
+//!     .item("Undo", || {})
+//!     .item_disabled("Redo")  // No action available
+//!
+//! // Submenus (nested menus)
+//! cn::context_menu()
+//!     .at(x, y)
+//!     .item("Open", || {})
+//!     .submenu("Recent Files", |sub| {
+//!         sub.item("file1.rs", || {})
+//!            .item("file2.rs", || {})
+//!     })
+//! ```
+
+use std::sync::Arc;
+
+use blinc_core::context_state::BlincContextState;
+use blinc_core::{Color, State};
+use blinc_layout::element::CursorStyle;
+use blinc_layout::overlay_state::get_overlay_manager;
+use blinc_layout::prelude::*;
+use blinc_layout::widgets::overlay::{OverlayHandle, OverlayManagerExt};
+use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
+
+/// A menu item in the context menu
+#[derive(Clone)]
+pub struct ContextMenuItem {
+    /// Display label
+    label: String,
+    /// Optional keyboard shortcut display
+    shortcut: Option<String>,
+    /// Optional icon SVG
+    icon: Option<String>,
+    /// Click handler
+    on_click: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Whether this item is disabled
+    disabled: bool,
+    /// Whether this is a separator (ignores other fields)
+    is_separator: bool,
+    /// Submenu items (if this is a submenu trigger)
+    submenu: Option<Vec<ContextMenuItem>>,
+}
+
+impl std::fmt::Debug for ContextMenuItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContextMenuItem")
+            .field("label", &self.label)
+            .field("shortcut", &self.shortcut)
+            .field("icon", &self.icon.is_some())
+            .field("disabled", &self.disabled)
+            .field("is_separator", &self.is_separator)
+            .field("submenu", &self.submenu.as_ref().map(|s| s.len()))
+            .finish()
+    }
+}
+
+impl ContextMenuItem {
+    /// Create a new menu item
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            shortcut: None,
+            icon: None,
+            on_click: None,
+            disabled: false,
+            is_separator: false,
+            submenu: None,
+        }
+    }
+
+    /// Create a separator
+    pub fn separator() -> Self {
+        Self {
+            label: String::new(),
+            shortcut: None,
+            icon: None,
+            on_click: None,
+            disabled: false,
+            is_separator: true,
+            submenu: None,
+        }
+    }
+
+    /// Set the click handler
+    pub fn on_click<F>(mut self, f: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.on_click = Some(Arc::new(f));
+        self
+    }
+
+    /// Set a keyboard shortcut hint
+    pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    /// Set an icon (SVG string)
+    pub fn icon(mut self, svg: impl Into<String>) -> Self {
+        self.icon = Some(svg.into());
+        self
+    }
+
+    /// Mark as disabled
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self
+    }
+
+    /// Set submenu items
+    pub fn submenu(mut self, items: Vec<ContextMenuItem>) -> Self {
+        self.submenu = Some(items);
+        self
+    }
+}
+
+/// Builder for creating context menus
+pub struct ContextMenuBuilder {
+    /// Position x coordinate
+    x: f32,
+    /// Position y coordinate
+    y: f32,
+    /// Menu items
+    items: Vec<ContextMenuItem>,
+    /// Minimum width
+    min_width: f32,
+}
+
+impl ContextMenuBuilder {
+    /// Create a new context menu builder
+    pub fn new() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            items: Vec::new(),
+            min_width: 180.0,
+        }
+    }
+
+    /// Set the position where the menu should appear
+    pub fn at(mut self, x: f32, y: f32) -> Self {
+        self.x = x;
+        self.y = y;
+        self
+    }
+
+    /// Add a menu item
+    pub fn item<F>(mut self, label: impl Into<String>, on_click: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.items
+            .push(ContextMenuItem::new(label).on_click(on_click));
+        self
+    }
+
+    /// Add a menu item with keyboard shortcut
+    pub fn item_with_shortcut<F>(
+        mut self,
+        label: impl Into<String>,
+        shortcut: impl Into<String>,
+        on_click: F,
+    ) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.items.push(
+            ContextMenuItem::new(label)
+                .shortcut(shortcut)
+                .on_click(on_click),
+        );
+        self
+    }
+
+    /// Add a menu item with icon
+    pub fn item_with_icon<F>(
+        mut self,
+        label: impl Into<String>,
+        icon_svg: impl Into<String>,
+        on_click: F,
+    ) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.items.push(
+            ContextMenuItem::new(label)
+                .icon(icon_svg)
+                .on_click(on_click),
+        );
+        self
+    }
+
+    /// Add a disabled menu item
+    pub fn item_disabled(mut self, label: impl Into<String>) -> Self {
+        self.items.push(ContextMenuItem::new(label).disabled());
+        self
+    }
+
+    /// Add a separator line
+    pub fn separator(mut self) -> Self {
+        self.items.push(ContextMenuItem::separator());
+        self
+    }
+
+    /// Add a submenu
+    pub fn submenu<F>(mut self, label: impl Into<String>, builder: F) -> Self
+    where
+        F: FnOnce(SubmenuBuilder) -> SubmenuBuilder,
+    {
+        let sub = builder(SubmenuBuilder::new());
+        self.items
+            .push(ContextMenuItem::new(label).submenu(sub.items));
+        self
+    }
+
+    /// Add a raw menu item
+    pub fn add_item(mut self, item: ContextMenuItem) -> Self {
+        self.items.push(item);
+        self
+    }
+
+    /// Set minimum width
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.min_width = width;
+        self
+    }
+
+    /// Show the context menu
+    pub fn show(self) -> OverlayHandle {
+        let theme = ThemeState::get();
+        let bg = theme.color(ColorToken::Surface);
+        let border = theme.color(ColorToken::Border);
+        let text_color = theme.color(ColorToken::TextPrimary);
+        let text_secondary = theme.color(ColorToken::TextSecondary);
+        let text_tertiary = theme.color(ColorToken::TextTertiary);
+        let surface_elevated = theme.color(ColorToken::SurfaceElevated);
+        let radius = theme.radius(RadiusToken::Md);
+        let spacing = theme.spacing_value(SpacingToken::Space2);
+
+        let items = self.items;
+        let min_width = self.min_width;
+        let x = self.x;
+        let y = self.y;
+
+        // Store overlay handle for closing from menu items
+        let handle_key = format!("_context_menu_handle_{}_{}", x as i32, y as i32);
+        let overlay_handle_state: State<Option<u64>> =
+            BlincContextState::get().use_state_keyed(&handle_key, || None);
+        let handle_state_for_content = overlay_handle_state.clone();
+
+        let mgr = get_overlay_manager();
+        let handle = mgr
+            .context_menu()
+            .at(x, y)
+            .content(move || {
+                build_menu_content(
+                    &items,
+                    min_width,
+                    &handle_state_for_content,
+                    bg,
+                    border,
+                    text_color,
+                    text_secondary,
+                    text_tertiary,
+                    surface_elevated,
+                    radius,
+                    spacing,
+                )
+            })
+            .show();
+
+        overlay_handle_state.set(Some(handle.id()));
+        handle
+    }
+}
+
+impl Default for ContextMenuBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Builder for submenu items
+pub struct SubmenuBuilder {
+    items: Vec<ContextMenuItem>,
+}
+
+impl SubmenuBuilder {
+    fn new() -> Self {
+        Self { items: Vec::new() }
+    }
+
+    /// Add a menu item
+    pub fn item<F>(mut self, label: impl Into<String>, on_click: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.items
+            .push(ContextMenuItem::new(label).on_click(on_click));
+        self
+    }
+
+    /// Add a menu item with keyboard shortcut
+    pub fn item_with_shortcut<F>(
+        mut self,
+        label: impl Into<String>,
+        shortcut: impl Into<String>,
+        on_click: F,
+    ) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.items.push(
+            ContextMenuItem::new(label)
+                .shortcut(shortcut)
+                .on_click(on_click),
+        );
+        self
+    }
+
+    /// Add a disabled menu item
+    pub fn item_disabled(mut self, label: impl Into<String>) -> Self {
+        self.items.push(ContextMenuItem::new(label).disabled());
+        self
+    }
+
+    /// Add a separator
+    pub fn separator(mut self) -> Self {
+        self.items.push(ContextMenuItem::separator());
+        self
+    }
+}
+
+/// Build the menu content div
+#[allow(clippy::too_many_arguments)]
+fn build_menu_content(
+    items: &[ContextMenuItem],
+    min_width: f32,
+    overlay_handle_state: &State<Option<u64>>,
+    bg: Color,
+    border: Color,
+    text_color: Color,
+    text_secondary: Color,
+    text_tertiary: Color,
+    surface_elevated: Color,
+    radius: f32,
+    spacing: f32,
+) -> Div {
+    let handle_state_for_ready = overlay_handle_state.clone();
+
+    let mut menu = div()
+        .flex_col()
+        .min_w(min_width)
+        .bg(bg)
+        .border(1.0, border)
+        .rounded(radius)
+        .shadow_lg()
+        .overflow_clip()
+        .py(spacing)
+        .on_ready(move |bounds| {
+            // Report actual content size to overlay manager
+            if let Some(handle_id) = handle_state_for_ready.get() {
+                let mgr = get_overlay_manager();
+                mgr.set_content_size(
+                    OverlayHandle::from_raw(handle_id),
+                    bounds.width,
+                    bounds.height,
+                );
+            }
+        });
+
+    for (idx, item) in items.iter().enumerate() {
+        if item.is_separator {
+            // Separator line
+            menu = menu.child(
+                div()
+                    .h(1.0)
+                    .w_full()
+                    .bg(border)
+                    .my(spacing),
+            );
+        } else {
+            // Regular menu item
+            let item_label = item.label.clone();
+            let item_shortcut = item.shortcut.clone();
+            let item_icon = item.icon.clone();
+            let item_disabled = item.disabled;
+            let item_on_click = item.on_click.clone();
+            let has_submenu = item.submenu.is_some();
+
+            let handle_state_for_click = overlay_handle_state.clone();
+
+            // Hover state for this item
+            let hover_key = format!("_ctx_menu_item_hover_{}", idx);
+            let hover_state = BlincContextState::get().use_state_keyed(&hover_key, || false);
+            let is_hovered = hover_state.get();
+            let hover_state_enter = hover_state.clone();
+            let hover_state_leave = hover_state.clone();
+
+            let item_bg = if is_hovered && !item_disabled {
+                surface_elevated
+            } else {
+                bg
+            };
+
+            let item_text_color = if item_disabled {
+                text_tertiary
+            } else {
+                text_color
+            };
+
+            let shortcut_color = text_secondary;
+
+            // Build the menu item row
+            let mut row = div()
+                .flex_row()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .px(spacing * 2.0)
+                .py(spacing)
+                .bg(item_bg)
+                .cursor(if item_disabled {
+                    CursorStyle::NotAllowed
+                } else {
+                    CursorStyle::Pointer
+                })
+                .on_hover_enter(move |_| {
+                    hover_state_enter.set(true);
+                })
+                .on_hover_leave(move |_| {
+                    hover_state_leave.set(false);
+                });
+
+            if !item_disabled {
+                row = row.on_click(move |_| {
+                    // Execute the callback
+                    if let Some(ref cb) = item_on_click {
+                        cb();
+                    }
+
+                    // Close the menu
+                    if let Some(handle_id) = handle_state_for_click.get() {
+                        let mgr = get_overlay_manager();
+                        mgr.close(OverlayHandle::from_raw(handle_id));
+                    }
+                });
+            }
+
+            // Left side: icon + label
+            let mut left_side = div().flex_row().items_center().gap(spacing);
+
+            if let Some(ref icon_svg) = item_icon {
+                left_side = left_side.child(
+                    svg(icon_svg)
+                        .size(16.0, 16.0)
+                        .tint(item_text_color),
+                );
+            }
+
+            left_side = left_side.child(
+                text(&item_label)
+                    .size(14.0)
+                    .color(item_text_color)
+                    .no_cursor(),
+            );
+
+            row = row.child(left_side);
+
+            // Right side: shortcut or submenu arrow
+            if let Some(ref shortcut) = item_shortcut {
+                row = row.child(
+                    div()
+                        .ml(spacing * 4.0)
+                        .child(
+                            text(shortcut)
+                                .size(12.0)
+                                .color(shortcut_color)
+                                .no_cursor(),
+                        ),
+                );
+            } else if has_submenu {
+                // Chevron right for submenu
+                let chevron_right = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
+                row = row.child(
+                    div()
+                        .ml(spacing * 2.0)
+                        .child(
+                            svg(chevron_right)
+                                .size(14.0, 14.0)
+                                .tint(text_tertiary),
+                        ),
+                );
+            }
+
+            menu = menu.child(row);
+        }
+    }
+
+    menu
+}
+
+/// Create a context menu builder
+///
+/// # Example
+///
+/// ```ignore
+/// cn::context_menu()
+///     .at(event.x, event.y)
+///     .item("Cut", || println!("Cut"))
+///     .item("Copy", || println!("Copy"))
+///     .separator()
+///     .item("Paste", || println!("Paste"))
+///     .show();
+/// ```
+pub fn context_menu() -> ContextMenuBuilder {
+    ContextMenuBuilder::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_menu_item_creation() {
+        let item = ContextMenuItem::new("Test");
+        assert_eq!(item.label, "Test");
+        assert!(!item.disabled);
+        assert!(!item.is_separator);
+    }
+
+    #[test]
+    fn test_menu_item_with_shortcut() {
+        let item = ContextMenuItem::new("Copy").shortcut("Ctrl+C");
+        assert_eq!(item.shortcut, Some("Ctrl+C".to_string()));
+    }
+
+    #[test]
+    fn test_separator() {
+        let sep = ContextMenuItem::separator();
+        assert!(sep.is_separator);
+    }
+
+    #[test]
+    fn test_disabled_item() {
+        let item = ContextMenuItem::new("Disabled").disabled();
+        assert!(item.disabled);
+    }
+
+    #[test]
+    fn test_builder_items() {
+        let menu = ContextMenuBuilder::new()
+            .item("Item 1", || {})
+            .separator()
+            .item("Item 2", || {});
+
+        assert_eq!(menu.items.len(), 3);
+        assert!(!menu.items[0].is_separator);
+        assert!(menu.items[1].is_separator);
+        assert!(!menu.items[2].is_separator);
+    }
+
+    #[test]
+    fn test_builder_position() {
+        let menu = ContextMenuBuilder::new().at(100.0, 200.0);
+        assert_eq!(menu.x, 100.0);
+        assert_eq!(menu.y, 200.0);
+    }
+}

@@ -50,6 +50,7 @@ pub mod cn {
     pub use crate::components::button::button;
     pub use crate::components::card::{card, card_content, card_footer, card_header};
     pub use crate::components::checkbox::checkbox;
+    pub use crate::components::context_menu::context_menu;
     pub use crate::components::input::input;
     pub use crate::components::label::label;
     pub use crate::components::progress::{progress, progress_animated};
@@ -74,6 +75,9 @@ pub mod prelude {
         card, card_content, card_footer, card_header, Card, CardContent, CardFooter, CardHeader,
     };
     pub use crate::components::checkbox::{checkbox, Checkbox, CheckboxSize};
+    pub use crate::components::context_menu::{
+        context_menu, ContextMenuBuilder, ContextMenuItem, SubmenuBuilder,
+    };
     pub use crate::components::input::{input, Input, InputBgColors, InputBorderColors, InputSize};
     pub use crate::components::label::{label, Label, LabelBuilder, LabelSize};
     pub use crate::components::progress::{

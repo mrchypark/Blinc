@@ -65,6 +65,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .child(slider_section(ctx))
                         .child(radio_section(ctx))
                         .child(select_section(ctx))
+                        .child(context_menu_section())
                         .child(loading_section(ctx))
                         .child(misc_section()),
                 ),
@@ -496,6 +497,162 @@ fn select_section(ctx: &WindowedContext) -> impl ElementBuilder {
                 ),
             ),
     )
+}
+
+// ============================================================================
+// CONTEXT MENU SECTION
+// ============================================================================
+
+fn context_menu_section() -> impl ElementBuilder {
+    let theme = ThemeState::get();
+    let surface = theme.color(ColorToken::Surface);
+    let border = theme.color(ColorToken::Border);
+    let text_secondary = theme.color(ColorToken::TextSecondary);
+
+    // Common icon SVGs for menu items
+    let scissors_icon = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/></svg>"#;
+    let copy_icon = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>"#;
+    let clipboard_icon = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>"#;
+    let trash_icon = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>"#;
+
+    section_container()
+        .child(section_title("Context Menu"))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                // Basic context menu trigger
+                .child(
+                    div()
+                        .w(200.0)
+                        .h(120.0)
+                        .bg(surface)
+                        .border(1.0, border)
+                        .rounded(8.0)
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .child(
+                            text("Click me!")
+                                .size(14.0)
+                                .color(text_secondary),
+                        )
+                        .child(
+                            text("(opens context menu)")
+                                .size(12.0)
+                                .color(text_secondary),
+                        )
+                        .on_click(move |ctx| {
+                            cn::context_menu()
+                                .at(ctx.mouse_x, ctx.mouse_y)
+                                .item("Cut", || tracing::info!("Cut clicked"))
+                                .item("Copy", || tracing::info!("Copy clicked"))
+                                .item("Paste", || tracing::info!("Paste clicked"))
+                                .separator()
+                                .item("Delete", || tracing::info!("Delete clicked"))
+                                .show();
+                        }),
+                )
+                // Context menu with shortcuts
+                .child({
+                    div()
+                        .w(200.0)
+                        .h(120.0)
+                        .bg(surface)
+                        .border(1.0, border)
+                        .rounded(8.0)
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .child(
+                            text("With Shortcuts")
+                                .size(14.0)
+                                .color(text_secondary),
+                        )
+                        .on_click(move |ctx| {
+                            cn::context_menu()
+                                .at(ctx.mouse_x, ctx.mouse_y)
+                                .item_with_shortcut("Undo", "Ctrl+Z", || tracing::info!("Undo"))
+                                .item_with_shortcut("Redo", "Ctrl+Y", || tracing::info!("Redo"))
+                                .separator()
+                                .item_with_shortcut("Cut", "Ctrl+X", || tracing::info!("Cut"))
+                                .item_with_shortcut("Copy", "Ctrl+C", || tracing::info!("Copy"))
+                                .item_with_shortcut("Paste", "Ctrl+V", || tracing::info!("Paste"))
+                                .separator()
+                                .item_with_shortcut("Select All", "Ctrl+A", || {
+                                    tracing::info!("Select All")
+                                })
+                                .show();
+                        })
+                })
+                // Context menu with icons
+                .child({
+                    let scissors = scissors_icon.to_string();
+                    let copy = copy_icon.to_string();
+                    let paste = clipboard_icon.to_string();
+                    let trash = trash_icon.to_string();
+
+                    div()
+                        .w(200.0)
+                        .h(120.0)
+                        .bg(surface)
+                        .border(1.0, border)
+                        .rounded(8.0)
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .child(
+                            text("With Icons")
+                                .size(14.0)
+                                .color(text_secondary),
+                        )
+                        .on_click(move |ctx| {
+                            cn::context_menu()
+                                .at(ctx.mouse_x, ctx.mouse_y)
+                                .item_with_icon("Cut", scissors.clone(), || tracing::info!("Cut"))
+                                .item_with_icon("Copy", copy.clone(), || tracing::info!("Copy"))
+                                .item_with_icon("Paste", paste.clone(), || tracing::info!("Paste"))
+                                .separator()
+                                .item_with_icon("Delete", trash.clone(), || {
+                                    tracing::info!("Delete")
+                                })
+                                .show();
+                        })
+                })
+                // Context menu with disabled items
+                .child(
+                    div()
+                        .w(200.0)
+                        .h(120.0)
+                        .bg(surface)
+                        .border(1.0, border)
+                        .rounded(8.0)
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .child(
+                            text("With Disabled Items")
+                                .size(14.0)
+                                .color(text_secondary),
+                        )
+                        .on_click(move |ctx| {
+                            cn::context_menu()
+                                .at(ctx.mouse_x, ctx.mouse_y)
+                                .item_disabled("Undo (nothing to undo)")
+                                .item_disabled("Redo (nothing to redo)")
+                                .separator()
+                                .item("Cut", || tracing::info!("Cut"))
+                                .item("Copy", || tracing::info!("Copy"))
+                                .item("Paste", || tracing::info!("Paste"))
+                                .show();
+                        }),
+                ),
+        )
 }
 
 // ============================================================================

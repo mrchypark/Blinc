@@ -82,7 +82,7 @@ Modal and overlay components.
 | **Sheet** | overlay, motion | Planned |
 | **Drawer** | overlay, motion | Planned |
 | **Dropdown Menu** | overlay, scroll | Planned |
-| **Context Menu** | overlay, scroll | Planned |
+| **Context Menu** | overlay, scroll | ✅ Done |
 | **Menubar** | div, overlay | Planned |
 | **Hover Card** | overlay, motion | Planned |
 
