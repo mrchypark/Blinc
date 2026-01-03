@@ -184,7 +184,7 @@ impl Slider {
         // Get colors
         let track_bg = config
             .track_color
-            .unwrap_or_else(|| theme.color(ColorToken::Border));
+            .unwrap_or_else(|| theme.color(ColorToken::SurfaceElevated));
         let thumb_bg = config
             .thumb_color
             .unwrap_or_else(|| theme.color(ColorToken::TextInverse));
@@ -272,11 +272,12 @@ impl Slider {
                     .w(thumb_size)
                     .h(thumb_size)
                     .rounded(thumb_size / 2.0)
-                    .bg(thumb_bg);
+                    .border(2.0, theme.color(ColorToken::Border))
+                    .bg(thumb_bg).shadow_sm();
 
                 if dragging {
                     // Visual feedback when dragging: add border
-                    thumb_div = thumb_div.border(2.0, thumb_border_dragging).shadow_sm();
+                    thumb_div = thumb_div.border(2.0, thumb_border_dragging).shadow_md();
                 }
 
                 container.merge(thumb_div);

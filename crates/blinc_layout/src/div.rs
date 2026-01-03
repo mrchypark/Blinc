@@ -19,6 +19,7 @@ use std::sync::{
 };
 
 use blinc_core::{Brush, Color, CornerRadius, Shadow, Transform};
+use blinc_theme::ThemeState;
 use taffy::prelude::*;
 use taffy::Overflow;
 
@@ -1089,6 +1090,59 @@ impl Div {
         self
     }
 
+    // -------------------------------------------------------------------------
+    // Theme-based gap spacing
+    // -------------------------------------------------------------------------
+
+    /// Set gap using theme spacing scale (space_1 = 4px)
+    pub fn gap_1(self) -> Self {
+        self.gap_px(ThemeState::get().spacing().space_1)
+    }
+
+    /// Set gap using theme spacing scale (space_2 = 8px)
+    pub fn gap_2(self) -> Self {
+        self.gap_px(ThemeState::get().spacing().space_2)
+    }
+
+    /// Set gap using theme spacing scale (space_3 = 12px)
+    pub fn gap_3(self) -> Self {
+        self.gap_px(ThemeState::get().spacing().space_3)
+    }
+
+    /// Set gap using theme spacing scale (space_4 = 16px)
+    pub fn gap_4(self) -> Self {
+        self.gap_px(ThemeState::get().spacing().space_4)
+    }
+
+    /// Set gap using theme spacing scale (space_5 = 20px)
+    pub fn gap_5(self) -> Self {
+        self.gap_px(ThemeState::get().spacing().space_5)
+    }
+
+    /// Set gap using theme spacing scale (space_6 = 24px)
+    pub fn gap_6(self) -> Self {
+        self.gap_px(ThemeState::get().spacing().space_6)
+    }
+
+    /// Set gap using theme spacing scale (space_8 = 32px)
+    pub fn gap_8(self) -> Self {
+        self.gap_px(ThemeState::get().spacing().space_8)
+    }
+
+    /// Set gap using theme spacing scale (space_10 = 40px)
+    pub fn gap_10(self) -> Self {
+        self.gap_px(ThemeState::get().spacing().space_10)
+    }
+
+    /// Set gap using theme spacing scale (space_12 = 48px)
+    pub fn gap_12(self) -> Self {
+        self.gap_px(ThemeState::get().spacing().space_12)
+    }
+
+    // -------------------------------------------------------------------------
+    // Padding
+    // -------------------------------------------------------------------------
+
     /// Set padding on all sides (in 4px units)
     /// p(4) = 16px padding
     pub fn p(mut self, units: f32) -> Self {
@@ -1152,6 +1206,64 @@ impl Div {
     pub fn pb(mut self, units: f32) -> Self {
         self.style.padding.bottom = LengthPercentage::Length(units * 4.0);
         self
+    }
+
+    // -------------------------------------------------------------------------
+    // Theme-based padding
+    // -------------------------------------------------------------------------
+
+    /// Set padding using theme spacing scale (space_1 = 4px)
+    pub fn p_1(self) -> Self {
+        let px = ThemeState::get().spacing().space_1;
+        self.padding(crate::units::Length::Px(px))
+    }
+
+    /// Set padding using theme spacing scale (space_2 = 8px)
+    pub fn p_2(self) -> Self {
+        let px = ThemeState::get().spacing().space_2;
+        self.padding(crate::units::Length::Px(px))
+    }
+
+    /// Set padding using theme spacing scale (space_3 = 12px)
+    pub fn p_3(self) -> Self {
+        let px = ThemeState::get().spacing().space_3;
+        self.padding(crate::units::Length::Px(px))
+    }
+
+    /// Set padding using theme spacing scale (space_4 = 16px)
+    pub fn p_4(self) -> Self {
+        let px = ThemeState::get().spacing().space_4;
+        self.padding(crate::units::Length::Px(px))
+    }
+
+    /// Set padding using theme spacing scale (space_5 = 20px)
+    pub fn p_5(self) -> Self {
+        let px = ThemeState::get().spacing().space_5;
+        self.padding(crate::units::Length::Px(px))
+    }
+
+    /// Set padding using theme spacing scale (space_6 = 24px)
+    pub fn p_6(self) -> Self {
+        let px = ThemeState::get().spacing().space_6;
+        self.padding(crate::units::Length::Px(px))
+    }
+
+    /// Set padding using theme spacing scale (space_8 = 32px)
+    pub fn p_8(self) -> Self {
+        let px = ThemeState::get().spacing().space_8;
+        self.padding(crate::units::Length::Px(px))
+    }
+
+    /// Set padding using theme spacing scale (space_10 = 40px)
+    pub fn p_10(self) -> Self {
+        let px = ThemeState::get().spacing().space_10;
+        self.padding(crate::units::Length::Px(px))
+    }
+
+    /// Set padding using theme spacing scale (space_12 = 48px)
+    pub fn p_12(self) -> Self {
+        let px = ThemeState::get().spacing().space_12;
+        self.padding(crate::units::Length::Px(px))
     }
 
     // =========================================================================
@@ -1285,6 +1397,45 @@ impl Div {
         self
     }
 
+    // -------------------------------------------------------------------------
+    // Theme-based margin
+    // -------------------------------------------------------------------------
+
+    /// Set margin using theme spacing scale (space_1 = 4px)
+    pub fn m_1(self) -> Self {
+        self.m_px(ThemeState::get().spacing().space_1)
+    }
+
+    /// Set margin using theme spacing scale (space_2 = 8px)
+    pub fn m_2(self) -> Self {
+        self.m_px(ThemeState::get().spacing().space_2)
+    }
+
+    /// Set margin using theme spacing scale (space_3 = 12px)
+    pub fn m_3(self) -> Self {
+        self.m_px(ThemeState::get().spacing().space_3)
+    }
+
+    /// Set margin using theme spacing scale (space_4 = 16px)
+    pub fn m_4(self) -> Self {
+        self.m_px(ThemeState::get().spacing().space_4)
+    }
+
+    /// Set margin using theme spacing scale (space_5 = 20px)
+    pub fn m_5(self) -> Self {
+        self.m_px(ThemeState::get().spacing().space_5)
+    }
+
+    /// Set margin using theme spacing scale (space_6 = 24px)
+    pub fn m_6(self) -> Self {
+        self.m_px(ThemeState::get().spacing().space_6)
+    }
+
+    /// Set margin using theme spacing scale (space_8 = 32px)
+    pub fn m_8(self) -> Self {
+        self.m_px(ThemeState::get().spacing().space_8)
+    }
+
     // =========================================================================
     // Position
     // =========================================================================
@@ -1395,6 +1546,64 @@ impl Div {
         self
     }
 
+    // -------------------------------------------------------------------------
+    // Theme-based background colors
+    // -------------------------------------------------------------------------
+
+    /// Set background to theme primary color
+    pub fn bg_primary(self) -> Self {
+        self.bg(ThemeState::get().color(blinc_theme::ColorToken::Primary))
+    }
+
+    /// Set background to theme secondary color
+    pub fn bg_secondary(self) -> Self {
+        self.bg(ThemeState::get().color(blinc_theme::ColorToken::Secondary))
+    }
+
+    /// Set background to theme background color
+    pub fn bg_background(self) -> Self {
+        self.bg(ThemeState::get().color(blinc_theme::ColorToken::Background))
+    }
+
+    /// Set background to theme surface color
+    pub fn bg_surface(self) -> Self {
+        self.bg(ThemeState::get().color(blinc_theme::ColorToken::Surface))
+    }
+
+    /// Set background to theme elevated surface color
+    pub fn bg_surface_elevated(self) -> Self {
+        self.bg(ThemeState::get().color(blinc_theme::ColorToken::SurfaceElevated))
+    }
+
+    /// Set background to theme success color
+    pub fn bg_success(self) -> Self {
+        self.bg(ThemeState::get().color(blinc_theme::ColorToken::SuccessBg))
+    }
+
+    /// Set background to theme warning color
+    pub fn bg_warning(self) -> Self {
+        self.bg(ThemeState::get().color(blinc_theme::ColorToken::WarningBg))
+    }
+
+    /// Set background to theme error color
+    pub fn bg_error(self) -> Self {
+        self.bg(ThemeState::get().color(blinc_theme::ColorToken::ErrorBg))
+    }
+
+    /// Set background to theme info color
+    pub fn bg_info(self) -> Self {
+        self.bg(ThemeState::get().color(blinc_theme::ColorToken::InfoBg))
+    }
+
+    /// Set background to theme accent color
+    pub fn bg_accent(self) -> Self {
+        self.bg(ThemeState::get().color(blinc_theme::ColorToken::Accent))
+    }
+
+    // -------------------------------------------------------------------------
+    // Corner Radius
+    // -------------------------------------------------------------------------
+
     /// Set corner radius (all corners)
     pub fn rounded(mut self, radius: f32) -> Self {
         self.border_radius = CornerRadius::uniform(radius);
@@ -1412,6 +1621,50 @@ impl Div {
     pub fn rounded_corners(mut self, tl: f32, tr: f32, br: f32, bl: f32) -> Self {
         self.border_radius = CornerRadius::new(tl, tr, br, bl);
         self
+    }
+
+    // -------------------------------------------------------------------------
+    // Theme-based corner radii
+    // -------------------------------------------------------------------------
+
+    /// Set corner radius to theme's small radius
+    pub fn rounded_sm(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_sm)
+    }
+
+    /// Set corner radius to theme's default radius
+    pub fn rounded_default(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_default)
+    }
+
+    /// Set corner radius to theme's medium radius
+    pub fn rounded_md(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_md)
+    }
+
+    /// Set corner radius to theme's large radius
+    pub fn rounded_lg(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_lg)
+    }
+
+    /// Set corner radius to theme's extra large radius
+    pub fn rounded_xl(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_xl)
+    }
+
+    /// Set corner radius to theme's 2xl radius
+    pub fn rounded_2xl(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_2xl)
+    }
+
+    /// Set corner radius to theme's 3xl radius
+    pub fn rounded_3xl(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_3xl)
+    }
+
+    /// Set corner radius to none (0)
+    pub fn rounded_none(self) -> Self {
+        self.rounded(0.0)
     }
 
     // =========================================================================
@@ -1570,29 +1823,24 @@ impl Div {
         self.shadow(Shadow::new(offset_x, offset_y, blur, color))
     }
 
-    /// Apply a small drop shadow (2px offset, 4px blur)
+    /// Apply a small drop shadow using theme colors
     pub fn shadow_sm(self) -> Self {
-        self.shadow(Shadow::new(0.0, 2.0, 4.0, Color::rgba(0.0, 0.0, 0.0, 0.1)))
+        self.shadow(ThemeState::get().shadows().shadow_sm.into())
     }
 
-    /// Apply a medium drop shadow (4px offset, 8px blur)
+    /// Apply a medium drop shadow using theme colors
     pub fn shadow_md(self) -> Self {
-        self.shadow(Shadow::new(0.0, 4.0, 8.0, Color::rgba(0.0, 0.0, 0.0, 0.15)))
+        self.shadow(ThemeState::get().shadows().shadow_md.into())
     }
 
-    /// Apply a large drop shadow (8px offset, 16px blur)
+    /// Apply a large drop shadow using theme colors
     pub fn shadow_lg(self) -> Self {
-        self.shadow(Shadow::new(0.0, 8.0, 16.0, Color::rgba(0.0, 0.0, 0.0, 0.2)))
+        self.shadow(ThemeState::get().shadows().shadow_lg.into())
     }
 
-    /// Apply an extra large drop shadow (12px offset, 24px blur)
+    /// Apply an extra large drop shadow using theme colors
     pub fn shadow_xl(self) -> Self {
-        self.shadow(Shadow::new(
-            0.0,
-            12.0,
-            24.0,
-            Color::rgba(0.0, 0.0, 0.0, 0.25),
-        ))
+        self.shadow(ThemeState::get().shadows().shadow_xl.into())
     }
 
     // =========================================================================

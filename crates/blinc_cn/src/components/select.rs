@@ -600,7 +600,7 @@ fn build_dropdown_content(
         .bg(bg)
         .border(1.0, border)
         .rounded(radius)
-        .shadow_md()
+        .shadow_lg()
         .overflow_clip()
         .h_fit()
         .on_ready(move |bounds| {

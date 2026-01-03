@@ -28,6 +28,7 @@
 //! ```
 
 use blinc_core::{Brush, Color, CornerRadius, Shadow, Transform};
+use blinc_theme::ThemeState;
 
 use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, WoodMaterial};
 
@@ -110,6 +111,45 @@ impl ElementStyle {
         self
     }
 
+    // -------------------------------------------------------------------------
+    // Theme-based corner radii
+    // -------------------------------------------------------------------------
+
+    /// Set corner radius to theme's small radius
+    pub fn rounded_sm(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_sm)
+    }
+
+    /// Set corner radius to theme's default radius
+    pub fn rounded_default(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_default)
+    }
+
+    /// Set corner radius to theme's medium radius
+    pub fn rounded_md(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_md)
+    }
+
+    /// Set corner radius to theme's large radius
+    pub fn rounded_lg(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_lg)
+    }
+
+    /// Set corner radius to theme's extra large radius
+    pub fn rounded_xl(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_xl)
+    }
+
+    /// Set corner radius to theme's 2xl radius
+    pub fn rounded_2xl(self) -> Self {
+        self.rounded(ThemeState::get().radii().radius_2xl)
+    }
+
+    /// Set corner radius to none (0)
+    pub fn rounded_none(self) -> Self {
+        self.rounded(0.0)
+    }
+
     // =========================================================================
     // Shadow
     // =========================================================================
@@ -125,29 +165,24 @@ impl ElementStyle {
         self.shadow(Shadow::new(offset_x, offset_y, blur, color))
     }
 
-    /// Small shadow preset (2px offset, 4px blur)
+    /// Small shadow preset using theme colors
     pub fn shadow_sm(self) -> Self {
-        self.shadow(Shadow::new(0.0, 2.0, 4.0, Color::rgba(0.0, 0.0, 0.0, 0.1)))
+        self.shadow(ThemeState::get().shadows().shadow_sm.into())
     }
 
-    /// Medium shadow preset (4px offset, 8px blur)
+    /// Medium shadow preset using theme colors
     pub fn shadow_md(self) -> Self {
-        self.shadow(Shadow::new(0.0, 4.0, 8.0, Color::rgba(0.0, 0.0, 0.0, 0.15)))
+        self.shadow(ThemeState::get().shadows().shadow_md.into())
     }
 
-    /// Large shadow preset (8px offset, 16px blur)
+    /// Large shadow preset using theme colors
     pub fn shadow_lg(self) -> Self {
-        self.shadow(Shadow::new(0.0, 8.0, 16.0, Color::rgba(0.0, 0.0, 0.0, 0.2)))
+        self.shadow(ThemeState::get().shadows().shadow_lg.into())
     }
 
-    /// Extra large shadow preset (12px offset, 24px blur)
+    /// Extra large shadow preset using theme colors
     pub fn shadow_xl(self) -> Self {
-        self.shadow(Shadow::new(
-            0.0,
-            12.0,
-            24.0,
-            Color::rgba(0.0, 0.0, 0.0, 0.25),
-        ))
+        self.shadow(ThemeState::get().shadows().shadow_xl.into())
     }
 
     /// Explicitly clear shadow (override any inherited shadow)

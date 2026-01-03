@@ -64,6 +64,30 @@ impl Default for Shadow {
     }
 }
 
+impl From<Shadow> for blinc_core::Shadow {
+    fn from(shadow: Shadow) -> Self {
+        blinc_core::Shadow {
+            offset_x: shadow.offset_x,
+            offset_y: shadow.offset_y,
+            blur: shadow.blur,
+            spread: shadow.spread,
+            color: shadow.color,
+        }
+    }
+}
+
+impl From<&Shadow> for blinc_core::Shadow {
+    fn from(shadow: &Shadow) -> Self {
+        blinc_core::Shadow {
+            offset_x: shadow.offset_x,
+            offset_y: shadow.offset_y,
+            blur: shadow.blur,
+            spread: shadow.spread,
+            color: shadow.color,
+        }
+    }
+}
+
 /// Complete set of shadow tokens
 #[derive(Clone, Debug)]
 pub struct ShadowTokens {

@@ -133,7 +133,7 @@ fn section_title(title: &str) -> impl ElementBuilder {
 /// Section container helper
 fn section_container() -> Div {
     let theme = ThemeState::get();
-    let surface = theme.color(ColorToken::Surface).with_alpha(0.6);
+    let surface = theme.color(ColorToken::Background).with_alpha(0.6);
     let border = theme.color(ColorToken::Border);
     let radius = theme.radii().radius_xl;
 
