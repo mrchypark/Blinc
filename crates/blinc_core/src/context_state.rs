@@ -120,6 +120,50 @@ pub type StatefulCallback = Arc<dyn Fn(&[SignalId]) + Send + Sync>;
 /// Returns the raw node ID (u64) if found, None otherwise
 pub type QueryCallback = Arc<dyn Fn(&str) -> Option<u64> + Send + Sync>;
 
+/// Simple bounds representation for element queries
+/// Used by BlincContextState to avoid circular dependencies with blinc_layout
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Bounds {
+    /// X position (absolute, after layout)
+    pub x: f32,
+    /// Y position (absolute, after layout)
+    pub y: f32,
+    /// Computed width
+    pub width: f32,
+    /// Computed height
+    pub height: f32,
+}
+
+impl Bounds {
+    /// Create new bounds
+    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self { x, y, width, height }
+    }
+
+    /// Check if a point is inside the bounds
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px < self.x + self.width && py >= self.y && py < self.y + self.height
+    }
+
+    /// Check if bounds intersect with another bounds
+    pub fn intersects(&self, other: &Bounds) -> bool {
+        self.x < other.x + other.width
+            && self.x + self.width > other.x
+            && self.y < other.y + other.height
+            && self.y + self.height > other.y
+    }
+}
+
+/// Callback for getting element bounds by string ID
+pub type BoundsCallback = Arc<dyn Fn(&str) -> Option<Bounds> + Send + Sync>;
+
+/// Callback for focus management
+/// Called with Some(id) to focus an element, None to clear focus
+pub type FocusCallback = Arc<dyn Fn(Option<&str>) + Send + Sync>;
+
+/// Callback for scrolling an element into view
+pub type ScrollCallback = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Global context state singleton
 ///
 /// Provides access to reactive state management and other context-level
@@ -137,6 +181,20 @@ pub struct BlincContextState {
     stateful_callback: Option<StatefulCallback>,
     /// Optional callback for querying elements by ID
     query_callback: RwLock<Option<QueryCallback>>,
+
+    // =========================================================================
+    // ElementHandle Callbacks (set by WindowedApp)
+    // =========================================================================
+    /// Callback for getting element bounds by string ID
+    bounds_callback: RwLock<Option<BoundsCallback>>,
+    /// Callback for focus management
+    focus_callback: RwLock<Option<FocusCallback>>,
+    /// Callback for scrolling elements into view
+    scroll_callback: RwLock<Option<ScrollCallback>>,
+    /// Current viewport size (width, height)
+    viewport_size: RwLock<(f32, f32)>,
+    /// Currently focused element ID
+    focused_element: RwLock<Option<String>>,
 }
 
 impl BlincContextState {
@@ -152,6 +210,11 @@ impl BlincContextState {
             dirty_flag,
             stateful_callback: None,
             query_callback: RwLock::new(None),
+            bounds_callback: RwLock::new(None),
+            focus_callback: RwLock::new(None),
+            scroll_callback: RwLock::new(None),
+            viewport_size: RwLock::new((0.0, 0.0)),
+            focused_element: RwLock::new(None),
         };
 
         if CONTEXT_STATE.set(state).is_err() {
@@ -172,6 +235,11 @@ impl BlincContextState {
             dirty_flag,
             stateful_callback: Some(callback),
             query_callback: RwLock::new(None),
+            bounds_callback: RwLock::new(None),
+            focus_callback: RwLock::new(None),
+            scroll_callback: RwLock::new(None),
+            viewport_size: RwLock::new((0.0, 0.0)),
+            focused_element: RwLock::new(None),
         };
 
         if CONTEXT_STATE.set(state).is_err() {
@@ -319,6 +387,16 @@ impl BlincContextState {
         self.dirty_flag.store(true, Ordering::SeqCst);
     }
 
+    /// Notify stateful elements of signal changes
+    ///
+    /// This triggers only the stateful elements that depend on the given signals,
+    /// causing targeted subtree rebuilds rather than a full UI rebuild.
+    pub fn notify_stateful_deps(&self, signal_ids: &[SignalId]) {
+        if let Some(ref callback) = self.stateful_callback {
+            callback(signal_ids);
+        }
+    }
+
     // =========================================================================
     // Element Query System
     // =========================================================================
@@ -351,6 +429,97 @@ impl BlincContextState {
             .unwrap()
             .as_ref()
             .and_then(|cb| cb(id))
+    }
+
+    // =========================================================================
+    // Element Bounds & Visibility
+    // =========================================================================
+
+    /// Set the bounds callback for element bounds lookup
+    ///
+    /// Called by `WindowedApp` to enable bounds queries by element ID.
+    pub fn set_bounds_callback(&self, callback: BoundsCallback) {
+        *self.bounds_callback.write().unwrap() = Some(callback);
+    }
+
+    /// Get element bounds by string ID
+    ///
+    /// Returns the computed bounds after layout, or None if the element
+    /// doesn't exist or hasn't been laid out yet.
+    pub fn get_bounds(&self, id: &str) -> Option<Bounds> {
+        self.bounds_callback
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|cb| cb(id))
+    }
+
+    /// Set the current viewport size
+    ///
+    /// Called by `WindowedApp` when the window is resized.
+    pub fn set_viewport_size(&self, width: f32, height: f32) {
+        *self.viewport_size.write().unwrap() = (width, height);
+    }
+
+    /// Get the current viewport size (width, height)
+    pub fn viewport_size(&self) -> (f32, f32) {
+        *self.viewport_size.read().unwrap()
+    }
+
+    // =========================================================================
+    // Focus Management
+    // =========================================================================
+
+    /// Set the focus callback
+    ///
+    /// Called by `WindowedApp` to wire focus changes to the EventRouter.
+    pub fn set_focus_callback(&self, callback: FocusCallback) {
+        *self.focus_callback.write().unwrap() = Some(callback);
+    }
+
+    /// Set focus to an element by string ID
+    ///
+    /// Pass `None` to clear focus.
+    pub fn set_focus(&self, id: Option<&str>) {
+        // Update internal state
+        *self.focused_element.write().unwrap() = id.map(|s| s.to_string());
+
+        // Call the callback to update EventRouter
+        if let Some(cb) = self.focus_callback.read().unwrap().as_ref() {
+            cb(id);
+        }
+    }
+
+    /// Get the currently focused element ID
+    pub fn focused_element(&self) -> Option<String> {
+        self.focused_element.read().unwrap().clone()
+    }
+
+    /// Check if an element is currently focused
+    pub fn is_focused(&self, id: &str) -> bool {
+        self.focused_element
+            .read()
+            .unwrap()
+            .as_deref()
+            == Some(id)
+    }
+
+    // =========================================================================
+    // Scroll Into View
+    // =========================================================================
+
+    /// Set the scroll callback
+    ///
+    /// Called by `WindowedApp` to wire scroll requests to the RenderTree.
+    pub fn set_scroll_callback(&self, callback: ScrollCallback) {
+        *self.scroll_callback.write().unwrap() = Some(callback);
+    }
+
+    /// Scroll an element into view
+    pub fn scroll_element_into_view(&self, id: &str) {
+        if let Some(cb) = self.scroll_callback.read().unwrap().as_ref() {
+            cb(id);
+        }
     }
 }
 

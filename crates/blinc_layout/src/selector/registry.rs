@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+use blinc_core::Bounds;
+
 use crate::element::ElementBounds;
 use crate::tree::LayoutNodeId;
 
@@ -26,6 +28,9 @@ pub struct ElementRegistry {
     /// Set of string IDs that have already had their on_ready callback triggered
     /// This survives across rebuilds since string IDs are stable
     triggered_on_ready_ids: Mutex<std::collections::HashSet<String>>,
+    /// Cached element bounds (populated after layout computation)
+    /// Maps string ID → computed bounds
+    bounds_cache: RwLock<HashMap<String, Bounds>>,
 }
 
 impl std::fmt::Debug for ElementRegistry {
@@ -60,6 +65,7 @@ impl ElementRegistry {
             parents: RwLock::new(HashMap::new()),
             pending_on_ready: Mutex::new(Vec::new()),
             triggered_on_ready_ids: Mutex::new(std::collections::HashSet::new()),
+            bounds_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -152,6 +158,35 @@ impl ElementRegistry {
         }
         if let Ok(mut parents) = self.parents.write() {
             parents.clear();
+        }
+        // Note: bounds_cache is NOT cleared here - it's cleared separately
+        // via clear_bounds() when layout is recomputed
+    }
+
+    // =========================================================================
+    // Bounds Cache (for ElementHandle.bounds())
+    // =========================================================================
+
+    /// Update cached bounds for an element
+    ///
+    /// Called by RenderTree after layout computation.
+    pub fn update_bounds(&self, element_id: &str, bounds: Bounds) {
+        if let Ok(mut cache) = self.bounds_cache.write() {
+            cache.insert(element_id.to_string(), bounds);
+        }
+    }
+
+    /// Get cached bounds for an element
+    ///
+    /// Returns None if the element doesn't exist or hasn't been laid out yet.
+    pub fn get_bounds(&self, element_id: &str) -> Option<Bounds> {
+        self.bounds_cache.read().ok()?.get(element_id).copied()
+    }
+
+    /// Clear the bounds cache (called before layout recomputation)
+    pub fn clear_bounds(&self) {
+        if let Ok(mut cache) = self.bounds_cache.write() {
+            cache.clear();
         }
     }
 

@@ -1695,8 +1695,32 @@ impl RenderTree {
             // Update registered layout bounds storages
             self.update_layout_bounds_storages();
 
+            // Cache element bounds for ElementHandle.bounds() queries
+            self.cache_element_bounds();
+
             // Process on_ready callbacks for newly laid out elements
             self.process_on_ready_callbacks();
+        }
+    }
+
+    /// Cache element bounds for all elements with string IDs
+    ///
+    /// This populates the ElementRegistry's bounds cache so that
+    /// `ElementHandle.bounds()` can return computed bounds.
+    fn cache_element_bounds(&self) {
+        // Clear the previous cache
+        self.element_registry.clear_bounds();
+
+        // Iterate through all render nodes and cache bounds for those with string IDs
+        for (node_id, _render_node) in &self.render_nodes {
+            if let Some(string_id) = self.element_registry.get_id(*node_id) {
+                if let Some(bounds) = self.get_bounds(*node_id) {
+                    self.element_registry.update_bounds(
+                        &string_id,
+                        blinc_core::Bounds::new(bounds.x, bounds.y, bounds.width, bounds.height),
+                    );
+                }
+            }
         }
     }
 

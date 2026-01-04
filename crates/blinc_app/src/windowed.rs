@@ -1331,6 +1331,15 @@ impl WindowedApp {
             BlincContextState::get().set_query_callback(query_callback);
         }
 
+        // Set up bounds callback for ElementHandle.bounds()
+        {
+            let registry_for_bounds = Arc::clone(&element_registry);
+            let bounds_callback: blinc_core::BoundsCallback = Arc::new(move |id: &str| {
+                registry_for_bounds.get_bounds(id)
+            });
+            BlincContextState::get().set_bounds_callback(bounds_callback);
+        }
+
         // Shared storage for on_ready callbacks
         let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
 
@@ -1408,6 +1417,11 @@ impl WindowedApp {
                                         Arc::clone(&ready_callbacks),
                                     ));
 
+                                    // Set initial viewport size in BlincContextState
+                                    if let Some(ref windowed_ctx) = ctx {
+                                        BlincContextState::get().set_viewport_size(windowed_ctx.width, windowed_ctx.height);
+                                    }
+
                                     // Initialize render state with the shared animation scheduler
                                     // RenderState handles dynamic properties (cursor blink, animations)
                                     // independently from tree structure changes
@@ -1447,6 +1461,9 @@ impl WindowedApp {
                                     windowed_ctx.height = logical_height;
                                     windowed_ctx.physical_width = width as f32;
                                     windowed_ctx.physical_height = height as f32;
+
+                                    // Update viewport size in BlincContextState for ElementHandle.is_visible()
+                                    BlincContextState::get().set_viewport_size(logical_width, logical_height);
 
                                     windowed_ctx
                                         .event_router

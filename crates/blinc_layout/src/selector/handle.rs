@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use blinc_core::BlincContextState;
+
 use crate::element::ElementBounds;
 use crate::tree::LayoutNodeId;
 
@@ -64,20 +66,34 @@ impl<T> ElementHandle<T> {
 
     /// Get the computed bounds of this element
     ///
-    /// Returns None if layout hasn't been computed yet.
+    /// Returns None if layout hasn't been computed yet or the element doesn't exist.
     pub fn bounds(&self) -> Option<ElementBounds> {
-        // TODO: This needs access to the RenderTree's computed layout
-        // For now, return None - will be wired up when integrated with renderer
-        None
+        // Get bounds from the registry cache (populated by RenderTree after layout)
+        let bounds = self.registry.get_bounds(&self.string_id)?;
+        Some(ElementBounds::new(bounds.x, bounds.y, bounds.width, bounds.height))
     }
 
     /// Check if this element is visible in the viewport
     ///
-    /// An element is visible if its bounds intersect with any ancestor
-    /// scroll container's viewport.
+    /// An element is visible if its bounds intersect with the window viewport.
+    /// This is a simple viewport check - does not account for scroll container clipping.
     pub fn is_visible(&self) -> bool {
-        // TODO: Implement visibility check against scroll container viewports
-        true
+        let Some(bounds) = self.registry.get_bounds(&self.string_id) else {
+            return false;
+        };
+
+        // Get viewport size from BlincContextState
+        if let Some(ctx) = BlincContextState::try_get() {
+            let (vw, vh) = ctx.viewport_size();
+            // Check if element bounds intersect viewport
+            bounds.x < vw
+                && bounds.x + bounds.width > 0.0
+                && bounds.y < vh
+                && bounds.y + bounds.height > 0.0
+        } else {
+            // No context state, assume visible
+            true
+        }
     }
 
     // =========================================================================
@@ -114,8 +130,10 @@ impl<T> ElementHandle<T> {
 
     /// Scroll this element into view with custom options
     pub fn scroll_into_view_with(&self, _options: ScrollOptions) {
-        // TODO: Wire up to RenderTree.scroll_node_into_view()
-        // This needs access to scroll containers and their offsets
+        // Use BlincContextState callback to scroll the element
+        if let Some(ctx) = BlincContextState::try_get() {
+            ctx.scroll_element_into_view(&self.string_id);
+        }
     }
 
     /// Focus this element
@@ -123,12 +141,26 @@ impl<T> ElementHandle<T> {
     /// For focusable elements like TextInput, this sets keyboard focus.
     /// For other elements, this updates the EventRouter's focus state.
     pub fn focus(&self) {
-        // TODO: Wire up to EventRouter.set_focus() and TextInput focus
+        if let Some(ctx) = BlincContextState::try_get() {
+            ctx.set_focus(Some(&self.string_id));
+        }
     }
 
     /// Remove focus from this element
     pub fn blur(&self) {
-        // TODO: Wire up to EventRouter focus management
+        if let Some(ctx) = BlincContextState::try_get() {
+            // Only blur if this element is currently focused
+            if ctx.is_focused(&self.string_id) {
+                ctx.set_focus(None);
+            }
+        }
+    }
+
+    /// Check if this element is currently focused
+    pub fn is_focused(&self) -> bool {
+        BlincContextState::try_get()
+            .map(|ctx| ctx.is_focused(&self.string_id))
+            .unwrap_or(false)
     }
 
     // =========================================================================
@@ -137,15 +169,38 @@ impl<T> ElementHandle<T> {
 
     /// Emit a signal to trigger reactive updates
     ///
-    /// Elements depending on this signal will be rebuilt.
-    pub fn emit_signal(&self, _signal_id: blinc_core::SignalId) {
-        // TODO: Wire up to signal system
-        // This needs access to the signal dispatcher
+    /// This notifies stateful elements that depend on this signal, triggering
+    /// only the affected subtree rebuilds through the reactive system.
+    ///
+    /// Note: For typed signal updates, use `State::set()` directly which
+    /// automatically triggers dependent updates.
+    pub fn emit_signal(&self, signal_id: blinc_core::SignalId) {
+        if let Some(ctx) = BlincContextState::try_get() {
+            // Notify stateful elements via the callback - this triggers
+            // targeted subtree rebuilds, not a full UI rebuild
+            ctx.notify_stateful_deps(&[signal_id]);
+        }
     }
 
     /// Mark this element as dirty, forcing a rebuild
+    ///
+    /// This triggers a UI rebuild. The hash-based diffing system will
+    /// determine what actually needs to be updated.
     pub fn mark_dirty(&self) {
-        // TODO: Wire up to dirty tracking system
+        if let Some(ctx) = BlincContextState::try_get() {
+            ctx.request_rebuild();
+        }
+    }
+
+    /// Mark this element's subtree as dirty with new children
+    ///
+    /// This queues an explicit subtree rebuild with the provided new children.
+    /// Use this for more efficient updates when you know exactly what the
+    /// new children should be.
+    pub fn mark_dirty_subtree(&self, new_children: crate::div::Div) {
+        if let Some(node_id) = self.registry.get(&self.string_id) {
+            crate::stateful::queue_subtree_rebuild(node_id, new_children);
+        }
     }
 
     // =========================================================================
