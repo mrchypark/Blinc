@@ -39,6 +39,7 @@
 
 # Advanced
 
+- [Element Query API](./advanced/element-query.md)
 - [Overlay System](./advanced/overlays.md)
 - [Custom State Machines](./advanced/state-machines.md)
 - [Performance Tips](./advanced/performance.md)
