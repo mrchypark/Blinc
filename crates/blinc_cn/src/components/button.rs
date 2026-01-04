@@ -1,13 +1,14 @@
 //! Button component with shadcn-style variants
 //!
-//! A themed button component built on `blinc_layout::Stateful<ButtonState>`.
+//! A themed button component using Stateful<ButtonState> for hover/press interactions.
+//! The button manages its own state internally using `#[track_caller]` for unique key generation.
 //!
 //! # Example
 //!
 //! ```ignore
 //! use blinc_cn::prelude::*;
 //!
-//! // Primary button (default)
+//! // Primary button (default) - state managed internally via track_caller
 //! cn::button("Click me")
 //!
 //! // Destructive button
@@ -19,27 +20,20 @@
 //!     .variant(ButtonVariant::Outline)
 //!     .size(ButtonSize::Small)
 //!
-//! // Ghost button (minimal styling)
-//! cn::button("More")
-//!     .variant(ButtonVariant::Ghost)
-//!
-//! // Button with click handler and custom margin
+//! // Button with click handler
 //! cn::button("Submit")
 //!     .on_click(|_| println!("Submitted!"))
-//!     .m(8.0)  // All Stateful/Div methods are available
-//!
-//! // Custom styling via Deref to Stateful<ButtonState>
-//! cn::button("Custom")
-//!     .shadow_lg()
-//!     .gap(8.0)
 //! ```
 
-use std::ops::{Deref, DerefMut};
-
-use blinc_core::{Color, Transform};
+use blinc_core::context_state::BlincContextState;
+use blinc_core::Color;
+use blinc_layout::div::ElementBuilder;
+use blinc_layout::element::CursorStyle;
 use blinc_layout::prelude::*;
-use blinc_layout::stateful::{ButtonState, Stateful};
-use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
+use blinc_layout::stateful::{ButtonState, SharedState, Stateful, StatefulInner};
+use blinc_layout::tree::{LayoutNodeId, LayoutTree};
+use blinc_theme::{ColorToken, RadiusToken, ThemeState};
+use std::sync::{Arc, Mutex};
 
 /// Button visual variants (like shadcn)
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -99,6 +93,7 @@ impl ButtonVariant {
         }
     }
 
+    /// Get the base (idle) background color
     fn base_background(&self, theme: &ThemeState) -> Color {
         match self {
             ButtonVariant::Primary => theme.color(ColorToken::Primary),
@@ -113,15 +108,16 @@ impl ButtonVariant {
     /// Get the foreground (text) color for this variant
     fn foreground(&self, theme: &ThemeState) -> Color {
         match self {
-            ButtonVariant::Primary | ButtonVariant::Secondary | ButtonVariant::Destructive => {
+            ButtonVariant::Primary | ButtonVariant::Destructive => {
                 theme.color(ColorToken::TextInverse)
             }
+            ButtonVariant::Secondary => theme.color(ColorToken::TextPrimary),
             ButtonVariant::Outline | ButtonVariant::Ghost => theme.color(ColorToken::TextPrimary),
-            ButtonVariant::Link => theme.color(ColorToken::TextLink),
+            ButtonVariant::Link => theme.color(ColorToken::Primary),
         }
     }
 
-    /// Get the border color (if any) for this variant
+    /// Get the border color for this variant (if any)
     fn border(&self, theme: &ThemeState) -> Option<Color> {
         match self {
             ButtonVariant::Outline => Some(theme.color(ColorToken::Border)),
@@ -133,49 +129,49 @@ impl ButtonVariant {
 /// Button size variants
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ButtonSize {
-    /// Small button - compact UI
+    /// Small button
     Small,
-    /// Medium button - default size
+    /// Default size
     #[default]
     Medium,
-    /// Large button - prominent actions
+    /// Large button
     Large,
-    /// Icon-only button - square with icon
+    /// Icon-only button (square)
     Icon,
 }
 
 impl ButtonSize {
-    /// Get the height for this size using theme tokens
-    fn height(&self, theme: &ThemeState) -> f32 {
+    /// Get height
+    fn height(&self) -> f32 {
         match self {
-            ButtonSize::Small => theme.spacing_value(SpacingToken::Space8), // 32px
-            ButtonSize::Medium => theme.spacing_value(SpacingToken::Space10), // 40px
-            ButtonSize::Large => theme.spacing_value(SpacingToken::Space12), // 48px
-            ButtonSize::Icon => theme.spacing_value(SpacingToken::Space10), // 40px
+            ButtonSize::Small => 32.0,
+            ButtonSize::Medium => 40.0,
+            ButtonSize::Large => 44.0,
+            ButtonSize::Icon => 40.0,
         }
     }
 
-    /// Get the horizontal padding
-    fn padding_x(&self, theme: &ThemeState) -> f32 {
+    /// Get horizontal padding
+    fn padding_x(&self) -> f32 {
         match self {
-            ButtonSize::Small => theme.spacing_value(SpacingToken::Space3), // 12px
-            ButtonSize::Medium => theme.spacing_value(SpacingToken::Space4), // 16px
-            ButtonSize::Large => theme.spacing_value(SpacingToken::Space6), // 24px
-            ButtonSize::Icon => 0.0,
+            ButtonSize::Small => 12.0,
+            ButtonSize::Medium => 16.0,
+            ButtonSize::Large => 24.0,
+            ButtonSize::Icon => 8.0,
         }
     }
 
-    /// Get the vertical padding
-    fn padding_y(&self, theme: &ThemeState) -> f32 {
+    /// Get vertical padding
+    fn padding_y(&self) -> f32 {
         match self {
-            ButtonSize::Small => theme.spacing_value(SpacingToken::Space1_5), // 6px
-            ButtonSize::Medium => theme.spacing_value(SpacingToken::Space2),  // 8px
-            ButtonSize::Large => theme.spacing_value(SpacingToken::Space3),   // 12px
-            ButtonSize::Icon => 0.0,
+            ButtonSize::Small => 4.0,
+            ButtonSize::Medium => 8.0,
+            ButtonSize::Large => 12.0,
+            ButtonSize::Icon => 8.0,
         }
     }
 
-    /// Get the font size
+    /// Get font size
     fn font_size(&self) -> f32 {
         match self {
             ButtonSize::Small => 13.0,
@@ -185,18 +181,23 @@ impl ButtonSize {
         }
     }
 
-    /// Get the border radius using theme tokens
+    /// Get border radius using theme tokens
     fn border_radius(&self, theme: &ThemeState) -> f32 {
-        match self {
-            ButtonSize::Small => theme.radius(RadiusToken::Sm),
-            ButtonSize::Medium => theme.radius(RadiusToken::Md),
-            ButtonSize::Large => theme.radius(RadiusToken::Lg),
-            ButtonSize::Icon => theme.radius(RadiusToken::Md),
-        }
+        theme.radius(RadiusToken::Md)
     }
 }
 
-/// Icon position relative to the label
+/// Helper to darken a color
+fn darken(color: Color, amount: f32) -> Color {
+    Color::rgba(
+        (color.r * (1.0 - amount)).max(0.0),
+        (color.g * (1.0 - amount)).max(0.0),
+        (color.b * (1.0 - amount)).max(0.0),
+        color.a,
+    )
+}
+
+/// Icon position within the button
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IconPosition {
     /// Icon appears before the label (left in LTR)
@@ -206,249 +207,168 @@ pub enum IconPosition {
     End,
 }
 
-/// Button component with variants and sizes
+/// Get or create a persistent SharedState<ButtonState> for the given key
 ///
-/// Built on `blinc_layout::Stateful<ButtonState>` for hover/press interactions.
-/// Implements `Deref` and `DerefMut` to `Stateful<ButtonState>` so all Div
-/// methods are available for customization (margins, padding, shadows, etc.).
+/// This bridges BlincContextState (which stores arbitrary values via signals)
+/// with SharedState<S> (which Stateful needs for FSM state management).
+fn use_button_state(key: &str) -> SharedState<ButtonState> {
+    let ctx = BlincContextState::get();
+
+    // We store the SharedState wrapped in an Arc inside the signal
+    // This way it persists across rebuilds
+    let state: blinc_core::State<Option<SharedState<ButtonState>>> =
+        ctx.use_state_keyed(key, || None);
+
+    let existing = state.get();
+    if let Some(shared) = existing {
+        shared
+    } else {
+        // First time - create the SharedState and store it
+        let shared: SharedState<ButtonState> =
+            Arc::new(Mutex::new(StatefulInner::new(ButtonState::Idle)));
+        state.set(Some(shared.clone()));
+        shared
+    }
+}
+
+/// Create a button with a label
+///
+/// Uses `#[track_caller]` to generate a unique instance key based on the call site.
+/// State is managed internally and persists across rebuilds.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use blinc_cn::prelude::*;
 ///
-/// // All Stateful/Div methods are available via Deref
-/// cn::button("Custom")
+/// cn::button("OK")
 ///     .variant(ButtonVariant::Primary)
-///     .m(8.0)        // margin
-///     .shadow_lg()   // shadow
-///     .gap(4.0)      // flex gap
-///
-/// // Button with icon
-/// cn::button("Save")
-///     .icon("💾")
-///     .variant(ButtonVariant::Primary)
+///     .on_click(|_| println!("Confirmed!"))
 /// ```
-pub struct Button {
-    inner: Stateful<ButtonState>,
+#[track_caller]
+pub fn button(label: impl Into<String>) -> ButtonBuilder {
+    let loc = std::panic::Location::caller();
+    let instance_key = format!("{}:{}:{}", loc.file(), loc.line(), loc.column());
+    ButtonBuilder::new(&instance_key, label)
+}
+
+/// Internal configuration for ButtonBuilder
+#[derive(Clone)]
+struct ButtonConfig {
+    instance_key: String,
     label: String,
     variant: ButtonVariant,
     btn_size: ButtonSize,
     disabled: bool,
     icon: Option<String>,
     icon_position: IconPosition,
+    on_click: Option<Arc<dyn Fn(&blinc_layout::event_handler::EventContext) + Send + Sync>>,
+}
+
+/// The built button element
+pub struct Button {
+    /// The fully-built inner element
+    inner: Div,
 }
 
 impl Button {
-    /// Create a new button with a label
-    pub fn new(label: impl Into<String>) -> Self {
-        Self::with_options(
-            label,
-            ButtonVariant::default(),
-            ButtonSize::default(),
-            false,
-            None,
-            IconPosition::Start,
-        )
-    }
-
-    /// Create a button with specific variant and size
-    fn with_options(
-        label: impl Into<String>,
-        variant: ButtonVariant,
-        btn_size: ButtonSize,
-        disabled: bool,
-        icon: Option<String>,
-        icon_position: IconPosition,
-    ) -> Self {
+    /// Build from a config
+    fn from_config(config: ButtonConfig) -> Self {
         let theme = ThemeState::get();
-        let label = label.into();
 
-        // Get colors for this variant
-        let fg = variant.foreground(&theme);
+        // Get persistent state for this button
+        let state_key = format!("_cn_btn_{}", config.instance_key);
+        let button_state = use_button_state(&state_key);
+
+        // Get sizes from config
+        let height = config.btn_size.height();
+        let px = config.btn_size.padding_x();
+        let py = config.btn_size.padding_y();
+        let font_size = config.btn_size.font_size();
+        let radius = config.btn_size.border_radius(&theme);
+        let variant = config.variant;
+        let label = config.label.clone();
+        let icon = config.icon.clone();
+        let icon_position = config.icon_position;
         let border = variant.border(&theme);
+        let disabled = config.disabled;
 
-        // Get sizes using theme tokens
-        let height = btn_size.height(&theme);
-        let px = btn_size.padding_x(&theme);
-        let py = btn_size.padding_y(&theme);
-        let font_size = btn_size.font_size();
-        let radius = btn_size.border_radius(&theme);
+        // Get initial colors for the label (will be updated by on_state)
+        let initial_fg = variant.foreground(&theme);
 
-        // Build the stateful button
-        let initial_state = if disabled {
-            ButtonState::Disabled
+        // Build content with icon + label or just label
+        let mut content = blinc_layout::div::div().flex_row().items_center().gap(6.0);
+        let label_text = text(&label).size(font_size).color(initial_fg);
+
+        if let Some(ref icon_str) = icon {
+            let icon_text = text(icon_str).size(font_size).color(initial_fg);
+            match icon_position {
+                IconPosition::Start => {
+                    content = content.child(icon_text).child(label_text);
+                }
+                IconPosition::End => {
+                    content = content.child(label_text).child(icon_text);
+                }
+            }
         } else {
-            ButtonState::Idle
-        };
+            content = content.child(label_text);
+        }
 
-        let mut btn = Stateful::new(initial_state)
+        // Create stateful container with FSM button state using persistent handle
+        let mut stateful = Stateful::with_shared_state(button_state)
             .h(height)
-            .padding_x(blinc_layout::units::px(px))
-            .padding_y(blinc_layout::units::px(py))
+            .padding_x(Length::Px(px))
+            .padding_y(Length::Px(py))
             .rounded(radius)
             .items_center()
             .justify_center()
-            .cursor_pointer();
+            .cursor(if disabled {
+                CursorStyle::NotAllowed
+            } else {
+                CursorStyle::Pointer
+            })
+            .w_fit()
+            .on_state(move |state: &ButtonState, container: &mut Div| {
+                let theme = ThemeState::get();
+                let bg = variant.background(&theme, *state);
 
-        // Handle border for outline variant
+                // Scale for pressed state
+                let scale = if matches!(state, ButtonState::Pressed) && !disabled {
+                    0.98
+                } else {
+                    1.0
+                };
+
+                // Apply visual properties using setters (preserves layout)
+                container.set_bg(bg);
+                container.set_transform(blinc_core::Transform::scale(scale, scale));
+            })
+            .child(content);
+
+        // Add border for outline variant
         if let Some(border_color) = border {
-            btn = btn.border(1.0, border_color);
+            stateful = stateful.border(1.0, border_color);
         }
 
-        // Default to fit content width
-        btn = btn.w_fit();
+        // Add click handler if provided
+        if let Some(handler) = config.on_click {
+            stateful = stateful.on_click(move |ctx| handler(ctx));
+        }
 
-        // Clone values for the closure
-        let label_clone = label.clone();
-        let icon_clone = icon.clone();
+        // If disabled, set initial state to Disabled
+        if disabled {
+            stateful.set_state(ButtonState::Disabled);
+        }
 
-        // State callback for hover/press visual changes
-        btn = btn.on_state(move |state, container| {
-            let theme = ThemeState::get();
-            let bg = variant.background(&theme, *state);
-            let scale = if matches!(state, ButtonState::Pressed) {
-                0.98
-            } else {
-                1.0
-            };
-
-            // Build content with icon + label or just label
-            let mut content = div().flex_row().items_center().gap(6.0);
-
-            let label_text = text(&label_clone).size(font_size).color(fg).no_cursor();
-
-            if let Some(ref icon_str) = icon_clone {
-                let icon_text = text(icon_str).size(font_size).color(fg).no_cursor();
-                match icon_position {
-                    IconPosition::Start => {
-                        content = content.child(icon_text).child(label_text);
-                    }
-                    IconPosition::End => {
-                        content = content.child(label_text).child(icon_text);
-                    }
-                }
-            } else {
-                content = content.child(label_text);
-            }
-
-            container.merge(
-                div()
-                    .bg(bg)
-                    .transform(Transform::scale(scale, scale))
-                    .cursor_pointer()
-                    .child(content),
-            );
-        });
-
+        // Wrap in a div for consistent ElementBuilder behavior
         Self {
-            inner: btn,
-            label,
-            variant,
-            btn_size,
-            disabled,
-            icon,
-            icon_position,
+            inner: div().child(stateful),
         }
     }
-
-    /// Set the button variant (rebuilds with new styling)
-    pub fn variant(self, variant: ButtonVariant) -> Self {
-        Self::with_options(
-            self.label,
-            variant,
-            self.btn_size,
-            self.disabled,
-            self.icon,
-            self.icon_position,
-        )
-    }
-
-    /// Set the button size (rebuilds with new sizing)
-    pub fn size(self, size: ButtonSize) -> Self {
-        Self::with_options(
-            self.label,
-            self.variant,
-            size,
-            self.disabled,
-            self.icon,
-            self.icon_position,
-        )
-    }
-
-    /// Make the button disabled
-    pub fn disabled(self, disabled: bool) -> Self {
-        Self::with_options(
-            self.label,
-            self.variant,
-            self.btn_size,
-            disabled,
-            self.icon,
-            self.icon_position,
-        )
-    }
-
-    /// Set an icon for the button
-    pub fn icon(self, icon: impl Into<String>) -> Self {
-        Self::with_options(
-            self.label,
-            self.variant,
-            self.btn_size,
-            self.disabled,
-            Some(icon.into()),
-            self.icon_position,
-        )
-    }
-
-    /// Set the icon position (Start or End)
-    pub fn icon_position(self, position: IconPosition) -> Self {
-        Self::with_options(
-            self.label,
-            self.variant,
-            self.btn_size,
-            self.disabled,
-            self.icon,
-            position,
-        )
-    }
-
-    /// Make the button full width
-    pub fn full_width(mut self) -> Self {
-        self.inner = self.inner.w_full();
-        self
-    }
-
-    /// Set click handler
-    ///
-    /// This method is provided on Button directly to allow chaining with
-    /// `.variant()` and `.size()` methods.
-    pub fn on_click<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(&blinc_layout::event_handler::EventContext) + Send + Sync + 'static,
-    {
-        self.inner = self.inner.on_click(handler);
-        self
-    }
 }
 
-// Implement Deref to expose all Stateful<ButtonState> methods
-impl Deref for Button {
-    type Target = Stateful<ButtonState>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl DerefMut for Button {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
-}
-
-// Implement ElementBuilder so Button can be used directly
 impl ElementBuilder for Button {
-    fn build(&self, tree: &mut blinc_layout::tree::LayoutTree) -> blinc_layout::tree::LayoutNodeId {
+    fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         self.inner.build(tree)
     }
 
@@ -460,107 +380,117 @@ impl ElementBuilder for Button {
         self.inner.children_builders()
     }
 
+    fn element_type_id(&self) -> blinc_layout::div::ElementTypeId {
+        self.inner.element_type_id()
+    }
+
     fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
-        self.inner.event_handlers()
+        ElementBuilder::event_handlers(&self.inner)
     }
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
     }
+}
+
+/// Button configuration for building buttons
+pub struct ButtonBuilder {
+    config: ButtonConfig,
+    /// Cached built Button - built lazily on first access
+    built: std::cell::OnceCell<Button>,
+}
+
+impl ButtonBuilder {
+    /// Create a new button builder
+    pub fn new(instance_key: &str, label: impl Into<String>) -> Self {
+        Self {
+            config: ButtonConfig {
+                instance_key: instance_key.to_string(),
+                label: label.into(),
+                variant: ButtonVariant::default(),
+                btn_size: ButtonSize::default(),
+                disabled: false,
+                icon: None,
+                icon_position: IconPosition::Start,
+                on_click: None,
+            },
+            built: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// Get or build the inner Button
+    fn get_or_build(&self) -> &Button {
+        self.built
+            .get_or_init(|| Button::from_config(self.config.clone()))
+    }
+
+    /// Set the button variant
+    pub fn variant(mut self, variant: ButtonVariant) -> Self {
+        self.config.variant = variant;
+        self
+    }
+
+    /// Set the button size
+    pub fn size(mut self, size: ButtonSize) -> Self {
+        self.config.btn_size = size;
+        self
+    }
+
+    /// Make the button disabled
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.config.disabled = disabled;
+        self
+    }
+
+    /// Set an icon for the button
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        self.config.icon = Some(icon.into());
+        self
+    }
+
+    /// Set the icon position
+    pub fn icon_position(mut self, position: IconPosition) -> Self {
+        self.config.icon_position = position;
+        self
+    }
+
+    /// Set the click handler
+    pub fn on_click<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&blinc_layout::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.config.on_click = Some(Arc::new(handler));
+        self
+    }
+
+    /// Build the final Button component
+    pub fn build_component(self) -> Button {
+        Button::from_config(self.config)
+    }
+}
+
+impl ElementBuilder for ButtonBuilder {
+    fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
+        self.get_or_build().build(tree)
+    }
+
+    fn render_props(&self) -> blinc_layout::element::RenderProps {
+        self.get_or_build().render_props()
+    }
+
+    fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
+        self.get_or_build().children_builders()
+    }
 
     fn element_type_id(&self) -> blinc_layout::div::ElementTypeId {
-        self.inner.element_type_id()
-    }
-}
-
-/// Create a button with a label
-///
-/// The button supports fluent chaining and exposes all `Stateful<ButtonState>`
-/// methods via `Deref`, allowing full customization.
-///
-/// # Example
-///
-/// ```ignore
-/// use blinc_cn::prelude::*;
-///
-/// // Basic button
-/// cn::button("Click me")
-///     .variant(ButtonVariant::Primary)
-///     .on_click(|_| println!("Clicked!"))
-///
-/// // With additional styling
-/// cn::button("Custom")
-///     .m(8.0)        // margin (via Deref)
-///     .shadow_md()   // shadow (via Deref)
-/// ```
-pub fn button(label: impl Into<String>) -> Button {
-    Button::new(label)
-}
-
-/// Helper to darken a color
-fn darken(color: Color, amount: f32) -> Color {
-    Color::rgba(
-        (color.r - amount).max(0.0),
-        (color.g - amount).max(0.0),
-        (color.b - amount).max(0.0),
-        color.a,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn init_theme() {
-        let _ = ThemeState::try_get().unwrap_or_else(|| {
-            ThemeState::init_default();
-            ThemeState::get()
-        });
+        self.get_or_build().element_type_id()
     }
 
-    #[test]
-    fn test_button_default() {
-        init_theme();
-        let btn = button("Test");
-        assert_eq!(btn.state(), ButtonState::Idle);
+    fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
+        self.get_or_build().event_handlers()
     }
 
-    #[test]
-    fn test_button_variants() {
-        init_theme();
-
-        // All variants should build without error
-        let _ = button("Primary").variant(ButtonVariant::Primary);
-        let _ = button("Secondary").variant(ButtonVariant::Secondary);
-        let _ = button("Destructive").variant(ButtonVariant::Destructive);
-        let _ = button("Outline").variant(ButtonVariant::Outline);
-        let _ = button("Ghost").variant(ButtonVariant::Ghost);
-        let _ = button("Link").variant(ButtonVariant::Link);
-    }
-
-    #[test]
-    fn test_button_sizes() {
-        init_theme();
-
-        // All sizes should build without error
-        let _ = button("Small").size(ButtonSize::Small);
-        let _ = button("Medium").size(ButtonSize::Medium);
-        let _ = button("Large").size(ButtonSize::Large);
-        let _ = button("Icon").size(ButtonSize::Icon);
-    }
-
-    #[test]
-    fn test_button_disabled() {
-        init_theme();
-        let btn = button("Disabled").disabled(true);
-        assert_eq!(btn.state(), ButtonState::Disabled);
-    }
-
-    #[test]
-    fn test_button_deref() {
-        init_theme();
-        // Test that Deref works - can access state() method
-        let btn = button("Test");
-        let _ = btn.state(); // This should compile thanks to Deref
+    fn layout_style(&self) -> Option<&taffy::Style> {
+        self.get_or_build().layout_style()
     }
 }

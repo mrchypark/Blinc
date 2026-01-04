@@ -71,7 +71,10 @@ pub mod prelude {
     // Components
     pub use crate::components::alert::{alert, alert_box, Alert, AlertBox, AlertVariant};
     pub use crate::components::badge::{badge, Badge, BadgeVariant};
-    pub use crate::components::button::{button, Button, ButtonSize, ButtonVariant, IconPosition};
+    pub use crate::components::button::{
+        button, Button, ButtonBuilder, ButtonSize, ButtonVariant, IconPosition,
+    };
+    // Re-export ButtonState for use with buttons
     pub use crate::components::card::{
         card, card_content, card_footer, card_header, Card, CardContent, CardFooter, CardHeader,
     };
@@ -97,6 +100,7 @@ pub mod prelude {
     pub use crate::components::spinner::{spinner, Spinner, SpinnerSize};
     pub use crate::components::switch::{switch, Switch, SwitchSize};
     pub use crate::components::textarea::{textarea, Textarea, TextareaSize};
+    pub use blinc_layout::stateful::ButtonState;
     // Re-export State for checkbox/switch/radio usage
     pub use blinc_core::State;
     // Re-export SchedulerHandle for slider/switch usage

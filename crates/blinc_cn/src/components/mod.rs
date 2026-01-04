@@ -29,7 +29,9 @@ pub mod textarea;
 // Re-export all components
 pub use alert::{alert, alert_box, Alert, AlertBox, AlertVariant};
 pub use badge::{badge, Badge, BadgeVariant};
-pub use button::{button, Button, ButtonSize, ButtonVariant, IconPosition};
+pub use button::{button, Button, ButtonBuilder, ButtonSize, ButtonVariant, IconPosition};
+// Re-export ButtonState for users who need it
+pub use blinc_layout::stateful::ButtonState;
 pub use card::{
     card, card_content, card_footer, card_header, Card, CardContent, CardFooter, CardHeader,
 };
