@@ -66,7 +66,7 @@ use std::cell::OnceCell;
 use std::sync::{Arc, Mutex};
 
 use blinc_animation::{AnimationPreset, MultiKeyframeAnimation};
-use blinc_core::{State, use_state_keyed};
+use blinc_core::{use_state_keyed, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
 use blinc_layout::motion::motion_derived;
@@ -580,7 +580,6 @@ impl TabsBuilder {
                     if tab.menu_item.value() == active_value {
                         let content = (tab.content)();
                         if transition != TabsTransition::None {
-                           
                             let tab_motion_key = format!("{}:{}", motion_base_key, active_value);
                             let mut m = motion_derived(&tab_motion_key).replay();
                             if let Some(enter) = transition.enter_animation() {
@@ -667,7 +666,8 @@ fn build_tab_trigger(
                     FontWeight::Medium
                 } else {
                     FontWeight::Normal
-                }).no_cursor(),
+                })
+                .no_cursor(),
         );
     }
 
@@ -684,7 +684,8 @@ fn build_tab_trigger(
                     text(badge_text)
                         .size(size.badge_font_size())
                         .color(theme.color(ColorToken::PrimaryActive))
-                        .medium().no_cursor(),
+                        .medium()
+                        .no_cursor(),
                 ),
         );
     }

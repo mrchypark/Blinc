@@ -112,12 +112,15 @@ pub struct PendingSubtreeRebuild {
     pub parent_id: LayoutNodeId,
     /// The new child element (a Div that was produced by the callback)
     pub new_child: crate::div::Div,
+    /// Whether this rebuild requires layout recomputation
+    /// False for visual-only updates (hover/press state changes)
+    pub needs_layout: bool,
 }
 
 // Safety: PendingSubtreeRebuild is only accessed from the main thread
 unsafe impl Send for PendingSubtreeRebuild {}
 
-/// Queue a subtree rebuild for a node
+/// Queue a subtree rebuild for a node (with layout recomputation)
 pub fn queue_subtree_rebuild(parent_id: LayoutNodeId, new_child: crate::div::Div) {
     PENDING_SUBTREE_REBUILDS
         .lock()
@@ -125,6 +128,22 @@ pub fn queue_subtree_rebuild(parent_id: LayoutNodeId, new_child: crate::div::Div
         .push(PendingSubtreeRebuild {
             parent_id,
             new_child,
+            needs_layout: true,
+        });
+}
+
+/// Queue a visual-only subtree rebuild (no layout recomputation)
+///
+/// Used for hover/press state changes where children's visual props change
+/// but the tree structure remains the same.
+pub fn queue_visual_subtree_rebuild(parent_id: LayoutNodeId, new_child: crate::div::Div) {
+    PENDING_SUBTREE_REBUILDS
+        .lock()
+        .unwrap()
+        .push(PendingSubtreeRebuild {
+            parent_id,
+            new_child,
+            needs_layout: false,
         });
 }
 
@@ -1075,6 +1094,13 @@ impl<S: StateTransitions> Stateful<S> {
             // Queue the prop update for this node
             if let Some(nid) = cached_node_id {
                 queue_prop_update(nid, final_props);
+
+                // Queue visual-only subtree update for children's props (bg, border, etc)
+                // This uses a non-destructive update that walks existing children
+                // and updates their render props without removing/rebuilding them
+                if !temp_div.children_builders().is_empty() {
+                    queue_visual_subtree_rebuild(nid, temp_div);
+                }
             }
         }
 
@@ -1115,7 +1141,8 @@ impl<S: StateTransitions> Stateful<S> {
         queue_prop_update(cached_node_id, final_props);
 
         // Check if children were set - if so, queue a subtree rebuild
-        if !temp_div.children_builders().is_empty() {
+        let children = temp_div.children_builders();
+        if !children.is_empty() {
             queue_subtree_rebuild(cached_node_id, temp_div);
         }
 
@@ -1126,19 +1153,15 @@ impl<S: StateTransitions> Stateful<S> {
     /// Dispatch a new state
     ///
     /// Updates the current state and applies the callback if the state changed.
+    /// Uses incremental prop/subtree updates instead of full tree rebuild.
     /// Returns true if the state changed.
     pub fn dispatch_state(&self, new_state: S) -> bool {
         let mut shared = self.shared_state.lock().unwrap();
         if shared.state != new_state {
             shared.state = new_state;
-            // Apply callback - clone via Arc to avoid borrow conflicts
-            if let Some(ref callback) = shared.state_callback {
-                let callback = Arc::clone(callback);
-                let state_copy = shared.state;
-                drop(shared); // Release lock before calling callback
-                callback(&state_copy, &mut *self.inner.borrow_mut());
-            }
-            crate::widgets::request_rebuild();
+            drop(shared);
+            // Use incremental update path (same as signal deps)
+            Self::refresh_props_internal(&self.shared_state);
             true
         } else {
             false
@@ -1173,7 +1196,7 @@ impl<S: StateTransitions> Stateful<S> {
         }
     }
 
-    pub fn id(self, id:&str) -> Self {
+    pub fn id(self, id: &str) -> Self {
         self.merge_into_inner(Div::new().id(id));
         self
     }

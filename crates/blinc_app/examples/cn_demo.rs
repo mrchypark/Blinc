@@ -678,8 +678,12 @@ fn dropdown_menu_section() -> impl ElementBuilder {
                 .child(
                     cn::dropdown_menu_custom(|is_open| {
                         div().child(
-                            cn::button(if is_open { "Close Menu" } else { "Custom Trigger" })
-                                .variant(ButtonVariant::Secondary),
+                            cn::button(if is_open {
+                                "Close Menu"
+                            } else {
+                                "Custom Trigger"
+                            })
+                            .variant(ButtonVariant::Secondary),
                         )
                     })
                     .item("Profile", || tracing::info!("Profile"))
@@ -963,27 +967,51 @@ fn tabs_section(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(cn::label("Simple Tabs"))
                     .child(
                         cn::tabs(&simple_tab)
-                        .transition(TabsTransition::SlideRight)
+                            .transition(TabsTransition::SlideRight)
                             .tab("tab1", "Account", || {
-                                div().px(10.0).bg_surface_elevated().w_full().h_full().items_center().child(
-                                    text("Manage your account settings and preferences.")
-                                        .size(14.0)
-                                        .color(ThemeState::get().color(ColorToken::TextSecondary)),
-                                )
+                                div()
+                                    .px(10.0)
+                                    .bg_surface_elevated()
+                                    .w_full()
+                                    .h_full()
+                                    .items_center()
+                                    .child(
+                                        text("Manage your account settings and preferences.")
+                                            .size(14.0)
+                                            .color(
+                                                ThemeState::get().color(ColorToken::TextSecondary),
+                                            ),
+                                    )
                             })
                             .tab("tab2", "Password", || {
-                                div().px(10.0).bg_surface_elevated().w_full().h_full().items_center().child(
-                                    text("Change your password and security settings.")
-                                        .size(14.0)
-                                        .color(ThemeState::get().color(ColorToken::TextSecondary)),
-                                )
+                                div()
+                                    .px(10.0)
+                                    .bg_surface_elevated()
+                                    .w_full()
+                                    .h_full()
+                                    .items_center()
+                                    .child(
+                                        text("Change your password and security settings.")
+                                            .size(14.0)
+                                            .color(
+                                                ThemeState::get().color(ColorToken::TextSecondary),
+                                            ),
+                                    )
                             })
                             .tab("tab3", "Notifications", || {
-                                div().px(10.0).bg_surface_elevated().w_full().h_full().items_center().child(
-                                    text("Configure your notification preferences.")
-                                        .size(14.0)
-                                        .color(ThemeState::get().color(ColorToken::TextSecondary)),
-                                )
+                                div()
+                                    .px(10.0)
+                                    .bg_surface_elevated()
+                                    .w_full()
+                                    .h_full()
+                                    .items_center()
+                                    .child(
+                                        text("Configure your notification preferences.")
+                                            .size(14.0)
+                                            .color(
+                                                ThemeState::get().color(ColorToken::TextSecondary),
+                                            ),
+                                    )
                             }),
                     ),
             )

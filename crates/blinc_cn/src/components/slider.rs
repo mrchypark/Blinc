@@ -168,11 +168,19 @@ impl Slider {
     /// ```
     #[track_caller]
     pub fn new<C: BlincContext + AnimationContext>(ctx: &C, value_state: &State<f32>) -> Self {
-        Self::with_config(ctx, InstanceKey::new("slider"), SliderConfig::new(value_state.clone()))
+        Self::with_config(
+            ctx,
+            InstanceKey::new("slider"),
+            SliderConfig::new(value_state.clone()),
+        )
     }
 
     /// Create from a full configuration
-    fn with_config<C: BlincContext + AnimationContext>(ctx: &C, key: InstanceKey, config: SliderConfig) -> Self {
+    fn with_config<C: BlincContext + AnimationContext>(
+        ctx: &C,
+        key: InstanceKey,
+        config: SliderConfig,
+    ) -> Self {
         let theme = ThemeState::get();
         let track_height = config.size.track_height();
         let thumb_size = config.size.thumb_size();

@@ -48,8 +48,8 @@ use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_layout::widgets::overlay::{OverlayHandle, OverlayManagerExt};
 use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
 
-use crate::ButtonVariant;
 use crate::button::use_button_state;
+use crate::ButtonVariant;
 
 use super::label::{label, LabelSize};
 use blinc_layout::InstanceKey;
@@ -278,7 +278,6 @@ impl Select {
                     ).cursor_pointer();
 
                 let main_container = div().relative().w_full().child(trigger);
-
                 container.merge(main_container);
             })
             .on_click(move |ctx| {
@@ -547,6 +546,10 @@ impl ElementBuilder for SelectBuilder {
 
     fn element_type_id(&self) -> ElementTypeId {
         self.get_or_build().inner.element_type_id()
+    }
+
+    fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
+        Some(self.get_or_build().inner.event_handlers())
     }
 }
 

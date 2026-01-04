@@ -68,7 +68,9 @@ pub mod cn {
     pub use crate::components::switch::switch;
     pub use crate::components::tabs::{tab_item, tabs, TabsSize, TabsTransition};
     pub use crate::components::textarea::textarea;
-    pub use crate::components::toast::{toast, toast_custom, toast_error, toast_success, toast_warning};
+    pub use crate::components::toast::{
+        toast, toast_custom, toast_error, toast_success, toast_warning,
+    };
 }
 
 /// Prelude for convenient imports

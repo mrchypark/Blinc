@@ -66,8 +66,8 @@ const CHEVRON_DOWN_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 /// Icon for chevron up
 const CHEVRON_UP_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>"#;
-use crate::ButtonVariant;
 use crate::button::use_button_state;
+use crate::ButtonVariant;
 use blinc_layout::InstanceKey;
 
 use super::context_menu::{ContextMenuItem, SubmenuBuilder};
@@ -283,8 +283,6 @@ impl DropdownMenuBuilder {
         let overlay_handle_state: State<Option<u64>> =
             BlincContextState::get().use_state_keyed(&self.key.derive("handle"), || None);
 
-      
-
         // Clone values for closures
         let items = self.items.clone();
         let min_width = self.min_width;
@@ -296,7 +294,7 @@ impl DropdownMenuBuilder {
 
         let btn_variant = ButtonVariant::Outline;
         let button_state = use_button_state(&self.key.derive("button"));
-       
+
         // Build trigger element
         let open_state_for_trigger = open_state.clone();
         let open_state_for_trigger_1 = open_state.clone();
@@ -336,13 +334,23 @@ impl DropdownMenuBuilder {
                         .rounded(theme.radius(RadiusToken::Md))
                         .border(1.0, theme.color(ColorToken::Border))
                         .bg(bg)
-                        .child(text(label).size(14.0).color(theme.color(ColorToken::TextPrimary)).no_cursor())
-                        .child(svg(chevron_svg).size(16.0, 16.0).color(theme.color(ColorToken::TextSecondary)))
+                        .child(
+                            text(label)
+                                .size(14.0)
+                                .color(theme.color(ColorToken::TextPrimary))
+                                .no_cursor(),
+                        )
+                        .child(
+                            svg(chevron_svg)
+                                .size(16.0, 16.0)
+                                .color(theme.color(ColorToken::TextSecondary)),
+                        )
                 } else {
                     div() // Fallback empty div
                 };
 
                 let trigger_div = div()
+                    .bg(bg)
                     .w_fit()
                     .cursor(CursorStyle::Pointer)
                     .child(trigger_content);
@@ -369,9 +377,8 @@ impl DropdownMenuBuilder {
                     overlay_handle_for_trigger.set(None);
                 } else {
                     // Calculate position based on trigger bounds from event context
-                    let (x, y) = calculate_dropdown_position(
-                        &bounds, position, align, offset, min_width,
-                    );
+                    let (x, y) =
+                        calculate_dropdown_position(&bounds, position, align, offset, min_width);
 
                     // Show the dropdown
                     let overlay_handle = show_dropdown_menu(
@@ -693,7 +700,7 @@ impl ElementBuilder for DropdownMenuBuilder {
     }
 
     fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
-        ElementBuilder::event_handlers(&self.get_or_build().inner)
+        self.get_or_build().inner.event_handlers()
     }
 }
 

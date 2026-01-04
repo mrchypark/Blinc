@@ -55,7 +55,7 @@ pub enum ButtonVariant {
 
 impl ButtonVariant {
     /// Get the background color for this variant and state
-    pub (crate) fn background(&self, theme: &ThemeState, state: ButtonState) -> Color {
+    pub(crate) fn background(&self, theme: &ThemeState, state: ButtonState) -> Color {
         match (self, state) {
             // Disabled state
             (_, ButtonState::Disabled) => {

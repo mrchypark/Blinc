@@ -199,6 +199,9 @@ pub mod prelude {
         stateful_checkbox,
         text_field,
         toggle,
+        // Utility functions for persistent shared state
+        use_shared_state,
+        use_shared_state_with,
         // Core generic type
         BoundStateful,
         // Type aliases for Stateful<S> - low-level for custom styling
@@ -217,9 +220,6 @@ pub mod prelude {
         TextFieldState,
         Toggle,
         ToggleState,
-        // Utility functions for persistent shared state
-        use_shared_state,
-        use_shared_state_with,
     };
 
     // Ready-to-use widgets (production-ready, work in fluent API without .build())

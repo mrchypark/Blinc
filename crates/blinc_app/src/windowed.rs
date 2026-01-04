@@ -2239,13 +2239,12 @@ impl WindowedApp {
                                 // Select/DropdownMenu buttons are in the main tree and need
                                 // their children rebuilt when the value changes
                                 if let Some(ref mut tree) = render_tree {
-                                    // Process pending subtree rebuilds (structural changes)
-                                    // Only recompute layout if subtree rebuilds occurred
-                                    let had_subtree_rebuilds = blinc_layout::has_pending_subtree_rebuilds();
-                                    tree.process_pending_subtree_rebuilds();
+                                    // Process pending subtree rebuilds
+                                    // Returns true only if structural changes need layout recomputation
+                                    // Visual-only rebuilds (hover/press) skip layout for performance
+                                    let needs_layout = tree.process_pending_subtree_rebuilds();
 
-                                    // Recompute layout only if structural changes happened
-                                    if had_subtree_rebuilds {
+                                    if needs_layout {
                                         tracing::debug!("Subtree rebuilds processed, recomputing layout");
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
                                         // Initialize motion animations for any new motion() containers

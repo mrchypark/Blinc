@@ -1097,13 +1097,6 @@ impl RenderTree {
 
     /// Collect render props from a boxed element builder
     fn collect_render_props_boxed(&mut self, element: &dyn ElementBuilder, node_id: LayoutNodeId) {
-        let type_id = element.element_type_id();
-        tracing::trace!(
-            "collect_render_props_boxed: processing {:?} element {:?}",
-            type_id,
-            node_id
-        );
-
         let mut props = element.render_props();
         props.node_id = Some(node_id);
 
@@ -3232,23 +3225,80 @@ impl RenderTree {
     ///
     /// This is called by the windowed app after processing events.
     /// It applies queued child rebuilds without rebuilding the entire tree.
-    pub fn process_pending_subtree_rebuilds(&mut self) {
+    /// Process pending subtree rebuilds
+    ///
+    /// Returns true if any rebuild requires layout recomputation.
+    /// Visual-only rebuilds (hover/press) return false.
+    pub fn process_pending_subtree_rebuilds(&mut self) -> bool {
         let pending = crate::stateful::take_pending_subtree_rebuilds();
-        for rebuild in pending {
-            // Always remove old children first (even if new children is empty)
-            // This fixes the bug where SVG checkmarks would persist after unchecking
-            let old_children = self.layout_tree.children(rebuild.parent_id);
-            for child_id in &old_children {
-                self.remove_subtree_nodes(*child_id);
-            }
-            self.layout_tree.clear_children(rebuild.parent_id);
+        if pending.is_empty() {
+            return false;
+        }
 
-            // Build new children (if any)
-            let children = rebuild.new_child.children_builders();
-            for child in children {
-                let child_id = child.build(&mut self.layout_tree);
-                self.layout_tree.add_child(rebuild.parent_id, child_id);
-                self.collect_render_props_boxed(child.as_ref(), child_id);
+        let mut needs_layout = false;
+        for rebuild in pending {
+            if rebuild.needs_layout {
+                // Full structural rebuild - remove old children and build new ones
+                needs_layout = true;
+
+                // Always remove old children first (even if new children is empty)
+                // This fixes the bug where SVG checkmarks would persist after unchecking
+                let old_children = self.layout_tree.children(rebuild.parent_id);
+                for child_id in &old_children {
+                    self.remove_subtree_nodes(*child_id);
+                }
+                self.layout_tree.clear_children(rebuild.parent_id);
+
+                // Build new children (if any)
+                let children = rebuild.new_child.children_builders();
+                for child in children {
+                    let child_id = child.build(&mut self.layout_tree);
+                    self.layout_tree.add_child(rebuild.parent_id, child_id);
+                    self.collect_render_props_boxed(child.as_ref(), child_id);
+                }
+            } else {
+                // Visual-only update - just update render props of existing children
+                // Don't remove/rebuild, just walk the tree and update props
+                self.update_subtree_props_recursive(rebuild.parent_id, &rebuild.new_child);
+            }
+        }
+
+        needs_layout
+    }
+
+    /// Recursively update render props for existing children without rebuilding
+    ///
+    /// This walks the existing layout tree children alongside the new element definition
+    /// and updates render props for matching nodes (by position in child order).
+    fn update_subtree_props_recursive(
+        &mut self,
+        parent_id: LayoutNodeId,
+        new_element: &crate::div::Div,
+    ) {
+        self.update_subtree_props_from_builder(parent_id, new_element);
+    }
+
+    /// Update subtree props from a generic ElementBuilder (for recursion)
+    fn update_subtree_props_from_builder(
+        &mut self,
+        parent_id: LayoutNodeId,
+        new_element: &dyn crate::div::ElementBuilder,
+    ) {
+        let existing_children = self.layout_tree.children(parent_id);
+        let new_children = new_element.children_builders();
+
+        for (i, child_id) in existing_children.iter().enumerate() {
+            if let Some(new_child) = new_children.get(i) {
+                // Update this child's render props
+                let new_props = new_child.render_props();
+                if let Some(render_node) = self.render_nodes.get_mut(child_id) {
+                    render_node.props.merge_from(&new_props);
+                }
+
+                // Recursively update grandchildren
+                if !new_child.children_builders().is_empty() {
+                    self.update_subtree_props_from_builder(*child_id, new_child.as_ref());
+                }
             }
         }
     }
