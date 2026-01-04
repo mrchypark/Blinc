@@ -671,6 +671,9 @@ impl Div {
         if other.opacity != default.opacity {
             self.opacity = other.opacity;
         }
+        if other.cursor.is_some() {
+            self.cursor = other.cursor;
+        }
 
         // Merge children - if other has children, replace ours
         if !other.children.is_empty() {
