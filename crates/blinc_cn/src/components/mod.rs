@@ -16,6 +16,7 @@ pub mod combobox;
 pub mod context_menu;
 pub mod dialog;
 pub mod dropdown_menu;
+pub mod hover_card;
 pub mod input;
 pub mod label;
 pub mod progress;
@@ -45,6 +46,9 @@ pub use context_menu::{context_menu, ContextMenuBuilder, ContextMenuItem, Submen
 pub use dialog::{alert_dialog, dialog, AlertDialogBuilder, DialogBuilder, DialogSize};
 pub use dropdown_menu::{
     dropdown_menu, dropdown_menu_custom, DropdownAlign, DropdownMenuBuilder, DropdownPosition,
+};
+pub use hover_card::{
+    hover_card, HoverCard, HoverCardAlign, HoverCardBuilder, HoverCardSide,
 };
 pub use input::{input, Input, InputBgColors, InputBorderColors, InputSize};
 pub use label::{label, Label, LabelBuilder, LabelSize};

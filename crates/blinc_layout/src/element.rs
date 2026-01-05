@@ -872,6 +872,10 @@ pub struct RenderProps {
     /// When true, this element will not capture clicks/hovers - only its children can.
     /// Used by Stack layers to allow clicks to pass through to siblings.
     pub pointer_events_none: bool,
+    /// Whether the motion should start exiting (set during build when overlay is closing)
+    /// This captures the is_overlay_closing() state at build time since initialize_motion_animations
+    /// runs later when the flag has already been reset.
+    pub motion_is_exiting: bool,
 }
 
 impl Default for RenderProps {
@@ -895,6 +899,7 @@ impl Default for RenderProps {
             is_stack_layer: false,
             cursor: None,
             pointer_events_none: false,
+            motion_is_exiting: false,
         }
     }
 }

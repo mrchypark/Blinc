@@ -351,6 +351,30 @@ impl EventRouter {
         let hits = self.hit_test_all(tree, x, y);
         let current_hovered: HashSet<LayoutNodeId> = hits.iter().map(|h| h.node).collect();
 
+        // Store bounds for all hit nodes (for event handlers to access via get_node_bounds)
+        // Clear previous bounds and populate with current hit test results
+        self.last_hit_ancestor_bounds.clear();
+        for hit in &hits {
+            self.last_hit_ancestor_bounds.insert(
+                hit.node.to_raw() as u32,
+                (hit.bounds_x, hit.bounds_y, hit.bounds_width, hit.bounds_height),
+            );
+            // Also store ancestor bounds from the hit
+            for (key, value) in &hit.ancestor_bounds {
+                self.last_hit_ancestor_bounds.insert(*key, *value);
+            }
+        }
+
+        // Update last_hit values from topmost hit (if any) for backwards compatibility
+        if let Some(topmost) = hits.last() {
+            self.last_hit_local_x = topmost.local_x;
+            self.last_hit_local_y = topmost.local_y;
+            self.last_hit_bounds_x = topmost.bounds_x;
+            self.last_hit_bounds_y = topmost.bounds_y;
+            self.last_hit_bounds_width = topmost.bounds_width;
+            self.last_hit_bounds_height = topmost.bounds_height;
+        }
+
         // Elements that were hovered but no longer are -> POINTER_LEAVE
         let left: Vec<_> = self.hovered.difference(&current_hovered).copied().collect();
         for node in left {

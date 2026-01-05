@@ -240,6 +240,9 @@ impl MotionAnimationState {
 /// Callback for querying motion animation state by stable key
 pub type MotionStateCallback = Arc<dyn Fn(&str) -> MotionAnimationState + Send + Sync>;
 
+/// Callback for canceling a motion's exit animation
+pub type MotionCancelExitCallback = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Type-erased element registry storage
 /// This allows blinc_core to store the registry without depending on blinc_layout
 pub type AnyElementRegistry = Arc<dyn Any + Send + Sync>;
@@ -280,6 +283,8 @@ pub struct BlincContextState {
     element_registry: RwLock<Option<AnyElementRegistry>>,
     /// Callback for querying motion animation state by stable key
     motion_state_callback: RwLock<Option<MotionStateCallback>>,
+    /// Callback for canceling a motion's exit animation
+    motion_cancel_exit_callback: RwLock<Option<MotionCancelExitCallback>>,
 }
 
 impl BlincContextState {
@@ -302,6 +307,7 @@ impl BlincContextState {
             focused_element: RwLock::new(None),
             element_registry: RwLock::new(None),
             motion_state_callback: RwLock::new(None),
+            motion_cancel_exit_callback: RwLock::new(None),
         };
 
         if CONTEXT_STATE.set(state).is_err() {
@@ -329,6 +335,7 @@ impl BlincContextState {
             focused_element: RwLock::new(None),
             element_registry: RwLock::new(None),
             motion_state_callback: RwLock::new(None),
+            motion_cancel_exit_callback: RwLock::new(None),
         };
 
         if CONTEXT_STATE.set(state).is_err() {
@@ -674,6 +681,26 @@ impl BlincContextState {
             .as_ref()
             .map(|cb| cb(key))
             .unwrap_or(MotionAnimationState::NotFound)
+    }
+
+    /// Set the motion cancel exit callback
+    ///
+    /// Called by `WindowedApp` to enable motion exit cancellation.
+    /// The callback receives a stable motion key and cancels its exit animation.
+    pub fn set_motion_cancel_exit_callback(&self, callback: MotionCancelExitCallback) {
+        *self.motion_cancel_exit_callback.write().unwrap() = Some(callback);
+    }
+
+    /// Cancel a motion's exit animation by stable key
+    ///
+    /// Used when an overlay's close is cancelled (e.g., mouse re-enters hover card).
+    /// This interrupts the exit animation and immediately sets the motion to fully visible.
+    ///
+    /// No-op if the motion is not in Exiting state or callback is not set.
+    pub fn cancel_motion_exit(&self, key: &str) {
+        if let Some(ref cb) = *self.motion_cancel_exit_callback.read().unwrap() {
+            cb(key);
+        }
     }
 }
 

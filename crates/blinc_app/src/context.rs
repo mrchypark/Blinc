@@ -950,7 +950,8 @@ impl RenderContext {
                 tree,
                 root,
                 (0.0, 0.0),
-                false,
+                false,      // inside_glass
+                false,      // inside_foreground
                 None,       // No initial clip
                 1.0,        // Initial motion opacity
                 (0.0, 0.0), // Initial motion translate offset
@@ -978,6 +979,7 @@ impl RenderContext {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         inside_glass: bool,
+        inside_foreground: bool,
         current_clip: Option<[f32; 4]>,
         inherited_motion_opacity: f32,
         inherited_motion_translate: (f32, f32),
@@ -1524,6 +1526,7 @@ impl RenderContext {
                 child_id,
                 new_offset,
                 children_inside_glass,
+                inside_foreground,
                 child_clip,
                 effective_motion_opacity,
                 effective_motion_translate,

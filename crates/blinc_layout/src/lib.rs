@@ -125,8 +125,8 @@ pub use canvas::{canvas, Canvas, CanvasBounds, CanvasData, CanvasRenderFn};
 
 // Render state (dynamic properties separate from tree structure)
 pub use render_state::{
-    create_shared_motion_states, ActiveMotion, MotionState, NodeRenderState, Overlay, RenderState,
-    SharedMotionStates,
+    create_shared_motion_states, queue_global_motion_exit_cancel, queue_global_motion_exit_start,
+    ActiveMotion, MotionState, NodeRenderState, Overlay, RenderState, SharedMotionStates,
 };
 
 // Stateful elements

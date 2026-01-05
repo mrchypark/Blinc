@@ -264,6 +264,7 @@ impl ElementBuilder for Svg {
             is_stack_layer: false,
             pointer_events_none: false,
             cursor: None,
+            motion_is_exiting: false,
         }
     }
 

@@ -379,6 +379,8 @@ pub struct Div {
     pub(crate) opacity: f32,
     pub(crate) cursor: Option<crate::element::CursorStyle>,
     pub(crate) pointer_events_none: bool,
+    /// Marks this as a stack layer for z-ordering (increments z_layer for interleaved rendering)
+    pub(crate) is_stack_layer: bool,
     pub(crate) event_handlers: crate::event_handler::EventHandlers,
     /// Element ID for selector API queries
     pub(crate) element_id: Option<String>,
@@ -408,6 +410,7 @@ impl Div {
             opacity: 1.0,
             cursor: None,
             pointer_events_none: false,
+            is_stack_layer: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
         }
@@ -952,6 +955,30 @@ impl Div {
     /// Align items to baseline
     pub fn items_baseline(mut self) -> Self {
         self.style.align_items = Some(AlignItems::Baseline);
+        self
+    }
+
+    /// Align self to start (overrides parent's align_items for this element)
+    pub fn align_self_start(mut self) -> Self {
+        self.style.align_self = Some(AlignSelf::Start);
+        self
+    }
+
+    /// Align self to center (overrides parent's align_items for this element)
+    pub fn align_self_center(mut self) -> Self {
+        self.style.align_self = Some(AlignSelf::Center);
+        self
+    }
+
+    /// Align self to end (overrides parent's align_items for this element)
+    pub fn align_self_end(mut self) -> Self {
+        self.style.align_self = Some(AlignSelf::End);
+        self
+    }
+
+    /// Stretch self to fill (overrides parent's align_items for this element)
+    pub fn align_self_stretch(mut self) -> Self {
+        self.style.align_self = Some(AlignSelf::Stretch);
         self
     }
 
@@ -2032,6 +2059,18 @@ impl Div {
         self
     }
 
+    /// Mark this element as a stack layer for z-ordering
+    ///
+    /// When set, entering this element increments the z_layer counter,
+    /// ensuring its content renders above previous siblings in the
+    /// interleaved primitive/text rendering. This is used internally
+    /// by Stack and can be used for overlay containers that need to
+    /// render above other content.
+    pub fn stack_layer(mut self) -> Self {
+        self.is_stack_layer = true;
+        self
+    }
+
     // =========================================================================
     // Children
     // =========================================================================
@@ -2673,6 +2712,14 @@ pub trait ElementBuilder {
         false
     }
 
+    /// Check if this motion should start its exit animation
+    ///
+    /// Returns true if the overlay was closing when this motion was constructed.
+    /// Used to trigger exit animations when the overlay transitions to Closing state.
+    fn motion_is_exiting(&self) -> bool {
+        false
+    }
+
     /// Get the layout style for this element
     ///
     /// This is used for hashing layout-affecting properties like size,
@@ -2749,9 +2796,10 @@ impl ElementBuilder for Div {
             motion: None,
             motion_stable_id: None,
             motion_should_replay: false,
-            is_stack_layer: false,
+            is_stack_layer: self.is_stack_layer,
             pointer_events_none: self.pointer_events_none,
             cursor: self.cursor,
+            motion_is_exiting: false,
         }
     }
 

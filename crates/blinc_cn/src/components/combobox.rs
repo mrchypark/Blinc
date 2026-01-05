@@ -184,7 +184,7 @@ impl Combobox {
         let height = config.size.height();
         let font_size = config.size.font_size();
         let padding = config.size.padding();
-        let radius = theme.radius(RadiusToken::Md);
+        let radius = theme.radius(RadiusToken::Sm);
 
         // Colors
         let bg = theme.color(ColorToken::Surface);
@@ -361,9 +361,9 @@ impl Combobox {
                     );
 
                     // Position dropdown directly below the trigger, left-aligned
-                    let offset = 4.0;
+                    //let offset = -24.0;
                     let dropdown_x = trigger_x;
-                    let dropdown_y = trigger_y + trigger_h + offset;
+                    let dropdown_y = trigger_y; //+ trigger_h + offset;
 
                     // Clone values for the dropdown content closure
                     let opts = options.clone();
@@ -689,6 +689,7 @@ fn build_dropdown_content(
     allow_custom: bool,
     placeholder: &Option<String>,
 ) -> Div {
+    let theme = ThemeState::get();
     let dropdown_id = key;
 
     let mut dropdown_div = div()
@@ -716,8 +717,8 @@ fn build_dropdown_content(
         .h(36.0)
         .text_size(font_size)
         .placeholder(search_placeholder)
-        .idle_border_color(blinc_core::Color::TRANSPARENT)
-        .hover_border_color(blinc_core::Color::TRANSPARENT)
+        .idle_border_color(theme.color(ColorToken::Border))
+        .hover_border_color(theme.color(ColorToken::BorderFocus))
         .focused_border_color(border_focus)
         .idle_bg_color(bg)
         .hover_bg_color(bg)
@@ -734,7 +735,7 @@ fn build_dropdown_content(
     let search_container = div()
         .w(width) // Explicit width to prevent resize on focus
         .flex_shrink_0() // Prevent container from shrinking
-        .p_px(padding / 2.0)
+        // .p_px(padding / 2.0)
         .border_bottom(1.0, border)
         .child(search_input);
 

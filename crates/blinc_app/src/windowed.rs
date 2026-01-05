@@ -1625,6 +1625,8 @@ impl WindowedApp {
                                         // Get drag delta from router (for DRAG events)
                                         let (drag_dx, drag_dy) = router.drag_delta();
 
+                                        // Populate bounds for each event from the router's hit test results
+                                        // This is needed for POINTER_ENTER/POINTER_LEAVE/POINTER_MOVE events
                                         for event in pending_events.iter_mut() {
                                             event.mouse_x = lx;
                                             event.mouse_y = ly;
@@ -1634,6 +1636,15 @@ impl WindowedApp {
                                             {
                                                 event.drag_delta_x = drag_dx;
                                                 event.drag_delta_y = drag_dy;
+                                            }
+                                            // Populate bounds from hit test results (stored in router)
+                                            if let Some((bx, by, bw, bh)) = router.get_node_bounds(event.node_id) {
+                                                event.bounds_x = bx;
+                                                event.bounds_y = by;
+                                                event.bounds_width = bw;
+                                                event.bounds_height = bh;
+                                                event.local_x = lx - bx;
+                                                event.local_y = ly - by;
                                             }
                                         }
 
@@ -2248,8 +2259,6 @@ impl WindowedApp {
 
                                 // Compose user UI with overlay layer using a regular Div container
                                 // We use position:relative with the overlay absolutely positioned on top.
-                                // IMPORTANT: We don't use Stack because StackChild wrappers stretch to
-                                // fill the entire Stack, blocking hit tests even when content is 0x0.
                                 let overlay_layer = windowed_ctx.overlay_manager.build_overlay_layer();
                                 let ui = div()
                                     .w(windowed_ctx.width)
@@ -2378,6 +2387,13 @@ impl WindowedApp {
                             // PHASE 3: Tick animations and dynamic render state
                             // This must happen AFTER tree rebuild so motions are initialized
                             // =========================================================
+
+                            // Process any pending motion exit cancellations
+                            // This must happen before tick() so cancelled motions don't continue exiting
+                            rs.process_global_motion_exit_cancels();
+
+                            // Process any pending motion exit starts (explicit exit triggers)
+                            rs.process_global_motion_exit_starts();
 
                             // Tick render state (handles cursor blink, color animations, etc.)
                             // This updates dynamic properties without touching tree structure

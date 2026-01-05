@@ -90,6 +90,65 @@ pub fn take_global_motion_replays() -> Vec<String> {
     std::mem::take(&mut *PENDING_MOTION_REPLAYS.lock().unwrap())
 }
 
+// =============================================================================
+// Global pending motion exit cancel queue
+// =============================================================================
+
+/// Global queue for motion keys that should cancel their exit animation
+///
+/// This allows components to request exit cancellation without needing direct
+/// access to RenderState.
+static PENDING_MOTION_EXIT_CANCELS: LazyLock<Mutex<Vec<String>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Queue a stable motion key for exit cancellation (global version)
+///
+/// Call this when an overlay's close is cancelled (e.g., mouse re-enters hover card).
+/// The cancellation will be processed when `RenderState::process_global_motion_exit_cancels()`
+/// is called during the next frame.
+pub fn queue_global_motion_exit_cancel(key: String) {
+    let mut queue = PENDING_MOTION_EXIT_CANCELS.lock().unwrap();
+    if !queue.contains(&key) {
+        queue.push(key);
+    }
+}
+
+/// Take all pending global motion exit cancels
+///
+/// Returns the queued keys and clears the queue.
+pub fn take_global_motion_exit_cancels() -> Vec<String> {
+    std::mem::take(&mut *PENDING_MOTION_EXIT_CANCELS.lock().unwrap())
+}
+
+// =============================================================================
+// Global pending motion exit start queue
+// =============================================================================
+
+/// Global queue for motion keys that should start their exit animation
+///
+/// This allows components to explicitly trigger exit animations without needing
+/// direct access to RenderState.
+static PENDING_MOTION_EXIT_STARTS: LazyLock<Mutex<Vec<String>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Queue a stable motion key for exit start (global version)
+///
+/// Call this to explicitly start the exit animation for a motion (e.g., when
+/// a hover card close countdown completes).
+pub fn queue_global_motion_exit_start(key: String) {
+    let mut queue = PENDING_MOTION_EXIT_STARTS.lock().unwrap();
+    if !queue.contains(&key) {
+        queue.push(key);
+    }
+}
+
+/// Take all pending global motion exit starts
+///
+/// Returns the queued keys and clears the queue.
+pub fn take_global_motion_exit_starts() -> Vec<String> {
+    std::mem::take(&mut *PENDING_MOTION_EXIT_STARTS.lock().unwrap())
+}
+
 /// Buffer zone around viewport for prefetching content
 /// This prevents pop-in when scrolling slowly
 const VIEWPORT_BUFFER: f32 = 100.0;
@@ -895,16 +954,20 @@ impl RenderState {
     /// If `replay` is true, the animation restarts from the beginning even if
     /// it already exists (useful for tab transitions where content changes).
     ///
-    /// If the overlay is closing (checked via `is_overlay_closing()`), this will
-    /// start the exit animation instead of leaving the motion alone.
-    pub fn start_stable_motion(&mut self, key: &str, config: MotionAnimation, replay: bool) {
-        use crate::overlay_state::is_overlay_closing;
-
+    /// If `is_exiting` is true (captured at build time when overlay was closing),
+    /// this will start the exit animation instead of leaving the motion alone.
+    pub fn start_stable_motion(
+        &mut self,
+        key: &str,
+        config: MotionAnimation,
+        replay: bool,
+        is_exiting: bool,
+    ) {
         // Mark this key as used this frame (for garbage collection)
         self.stable_motions_used.insert(key.to_string());
 
-        // Check if we're in overlay closing mode
-        let is_closing = is_overlay_closing();
+        // Use the is_exiting flag that was captured at build time
+        let is_closing = is_exiting;
 
         // Check if motion already exists
         if let Some(existing) = self.stable_motions.get_mut(key) {
@@ -927,14 +990,8 @@ impl RenderState {
                         progress: 0.0,
                         duration_ms: existing.config.exit_duration_ms as f32,
                     };
-                    existing.current = MotionKeyframe::default(); // Start from visible
-                } else {
-                    tracing::debug!(
-                        "start_stable_motion: Closing but no exit animation configured for key={}, exit_to={:?}, exit_duration={}",
-                        key,
-                        config.exit_to.is_some(),
-                        config.exit_duration_ms
-                    );
+                    // Don't reset existing.current - let exit animate from current position
+                    // This prevents visual snapping if enter animation was interrupted
                 }
                 return;
             }
@@ -1026,6 +1083,20 @@ impl RenderState {
         }
     }
 
+    /// Cancel a stable motion's exit animation and return to Visible state
+    ///
+    /// Used when an overlay's close is cancelled (e.g., mouse re-enters hover card).
+    /// This interrupts the exit animation and immediately sets the motion to fully visible.
+    pub fn cancel_stable_motion_exit(&mut self, key: &str) {
+        if let Some(motion) = self.stable_motions.get_mut(key) {
+            if matches!(motion.state, MotionState::Exiting { .. }) {
+                // Return to fully visible state
+                motion.state = MotionState::Visible;
+                motion.current = MotionKeyframe::default(); // Reset to default (fully visible)
+            }
+        }
+    }
+
     /// Queue a stable motion key for replay
     ///
     /// The replay will be processed after `initialize_motion_animations` completes.
@@ -1059,6 +1130,28 @@ impl RenderState {
         let keys = take_global_motion_replays();
         for key in keys {
             self.replay_stable_motion(&key);
+        }
+    }
+
+    /// Process all pending motion exit cancels from the global queue
+    ///
+    /// Call this during the render loop to cancel any exit animations
+    /// that were queued via `queue_global_motion_exit_cancel()`.
+    pub fn process_global_motion_exit_cancels(&mut self) {
+        let keys = take_global_motion_exit_cancels();
+        for key in keys {
+            self.cancel_stable_motion_exit(&key);
+        }
+    }
+
+    /// Process all pending motion exit starts from the global queue
+    ///
+    /// Call this during the render loop to start any exit animations
+    /// that were queued via `queue_global_motion_exit_start()`.
+    pub fn process_global_motion_exit_starts(&mut self) {
+        let keys = take_global_motion_exit_starts();
+        for key in keys {
+            self.start_stable_motion_exit(&key);
         }
     }
 

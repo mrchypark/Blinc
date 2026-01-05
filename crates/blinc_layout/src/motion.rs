@@ -421,6 +421,9 @@ pub struct Motion {
     rotation_timeline: Option<TimelineRotation>,
     /// Animated opacity
     opacity: Option<SharedAnimatedValue>,
+    /// Whether the overlay was closing when this motion was constructed
+    /// Captured at construction time since the flag resets after build_content()
+    is_exiting: bool,
 }
 
 /// Convert a MotionKeyframe to KeyframeProperties for animation system integration
@@ -493,6 +496,9 @@ pub fn motion() -> Motion {
         rotation: None,
         rotation_timeline: None,
         opacity: None,
+        // Capture closing state at construction time - this is the only reliable time
+        // to check since the overlay_closing flag is reset after build_content() returns
+        is_exiting: crate::overlay_state::is_overlay_closing(),
     }
 }
 
@@ -544,6 +550,7 @@ pub fn motion_derived(parent_key: &str) -> Motion {
         rotation: None,
         rotation_timeline: None,
         opacity: None,
+        is_exiting: crate::overlay_state::is_overlay_closing(),
     }
 }
 
@@ -1193,6 +1200,10 @@ impl ElementBuilder for Motion {
 
     fn motion_should_replay(&self) -> bool {
         self.replay
+    }
+
+    fn motion_is_exiting(&self) -> bool {
+        self.is_exiting
     }
 
     fn layout_style(&self) -> Option<&taffy::Style> {

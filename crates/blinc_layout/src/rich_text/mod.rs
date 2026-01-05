@@ -620,6 +620,7 @@ impl ElementBuilder for RichText {
             is_stack_layer: false,
             pointer_events_none: false,
             cursor: self.cursor,
+            motion_is_exiting: false,
         }
     }
 

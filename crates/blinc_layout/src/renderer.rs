@@ -1276,9 +1276,14 @@ impl RenderTree {
         } else {
             None
         };
-        // Get replay flag from Motion container
+        // Get replay and exiting flags from Motion container
         let motion_should_replay = if is_motion {
             element.motion_should_replay()
+        } else {
+            false
+        };
+        let motion_is_exiting = if is_motion {
+            element.motion_is_exiting()
         } else {
             false
         };
@@ -1300,6 +1305,7 @@ impl RenderTree {
                         Some(motion_config),
                         child_stable_id,
                         motion_should_replay,
+                        motion_is_exiting,
                     );
                     continue;
                 }
@@ -1316,6 +1322,7 @@ impl RenderTree {
         motion_config: Option<crate::element::MotionAnimation>,
         motion_stable_id: Option<String>,
         motion_should_replay: bool,
+        motion_is_exiting: bool,
     ) {
         let mut props = element.render_props();
         props.node_id = Some(node_id);
@@ -1325,6 +1332,9 @@ impl RenderTree {
             props.motion = motion_config;
             props.motion_stable_id = motion_stable_id.clone();
             props.motion_should_replay = motion_should_replay;
+            // Use the is_exiting flag from the Motion element, which captured
+            // the overlay closing state at construction time
+            props.motion_is_exiting = motion_is_exiting;
 
             // Queue replay with the CHILD's stable key (includes :child:N suffix)
             // This ensures replay uses the same key as initialize_motion_animations
@@ -2545,10 +2555,12 @@ impl RenderTree {
                 // Use stable key if available (for overlays), otherwise use node_id
                 if let Some(ref stable_key) = render_node.props.motion_stable_id {
                     // Start or replay stable motion based on replay flag
+                    // Pass motion_is_exiting which was captured at build time
                     render_state.start_stable_motion(
                         stable_key,
                         motion_config.clone(),
                         render_node.props.motion_should_replay,
+                        render_node.props.motion_is_exiting,
                     );
                 } else {
                     render_state.start_enter_motion(node_id, motion_config.clone());
@@ -3624,14 +3636,14 @@ impl RenderTree {
         if let Some(root) = self.root {
             // Pass 1: Background (excludes children of glass elements)
             ctx.set_foreground_layer(false);
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Background, false);
+            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Background, false, false);
 
             // Pass 2: Glass - these render as Brush::Glass which becomes glass primitives
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Glass, false);
+            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Glass, false, false);
 
             // Pass 3: Foreground (includes children of glass elements, rendered after glass)
             ctx.set_foreground_layer(true);
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Foreground, false);
+            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Foreground, false, false);
             ctx.set_foreground_layer(false);
         }
     }
@@ -3660,7 +3672,8 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Background,
-                false,
+                false, // inside_glass
+                false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
             );
@@ -3671,7 +3684,8 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Glass,
-                false,
+                false, // inside_glass
+                false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
             );
@@ -3683,7 +3697,8 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Foreground,
-                false,
+                false, // inside_glass
+                false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
             );
@@ -3700,6 +3715,9 @@ impl RenderTree {
     ///
     /// The `inherited_opacity` parameter allows parent motion containers to pass
     /// their opacity down to children, ensuring the entire motion group fades together.
+    ///
+    /// The `inside_foreground` parameter tracks whether we're inside a foreground element,
+    /// ensuring all descendants of foreground elements also render in the foreground pass.
     fn render_layer_with_motion(
         &self,
         ctx: &mut dyn DrawContext,
@@ -3707,6 +3725,7 @@ impl RenderTree {
         parent_offset: (f32, f32),
         target_layer: RenderLayer,
         inside_glass: bool,
+        inside_foreground: bool,
         render_state: &crate::render_state::RenderState,
         inherited_opacity: f32,
     ) {
@@ -3830,6 +3849,10 @@ impl RenderTree {
         let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
         let children_inside_glass = inside_glass || is_glass;
 
+        // Determine if this node is a foreground element
+        let is_foreground = render_node.props.layer == RenderLayer::Foreground;
+        let children_inside_foreground = inside_foreground || is_foreground;
+
         // Increment z_layer for Stack children for proper interleaved rendering
         // This ensures primitives AND text in each Stack layer render together
         let is_stack_layer = render_node.props.is_stack_layer;
@@ -3851,8 +3874,14 @@ impl RenderTree {
             ctx.push_clip(clip_shape);
         }
 
-        // Determine effective layer
+        // Determine effective layer:
+        // - Children of glass elements render in foreground
+        // - Children of foreground elements also render in foreground
+        // - Glass elements render in glass layer
+        // - Otherwise, use the node's explicit layer setting
         let effective_layer = if inside_glass && !is_glass {
+            RenderLayer::Foreground
+        } else if inside_foreground {
             RenderLayer::Foreground
         } else if is_glass {
             RenderLayer::Glass
@@ -4016,8 +4045,8 @@ impl RenderTree {
             ctx.push_transform(Transform::translate(scroll_offset.0, scroll_offset.1));
         }
 
-        // Render children, passing down the effective opacity
-        // This ensures all children inherit the parent motion's opacity
+        // Render children, passing down the effective opacity and layer inheritance
+        // This ensures all children inherit the parent motion's opacity and foreground layer
         for child_id in self.layout_tree.children(node) {
             self.render_layer_with_motion(
                 ctx,
@@ -4025,6 +4054,7 @@ impl RenderTree {
                 (0.0, 0.0),
                 target_layer,
                 children_inside_glass,
+                children_inside_foreground,
                 render_state,
                 motion_opacity, // Pass current opacity to children
             );
@@ -4112,10 +4142,11 @@ impl RenderTree {
                 (0.0, 0.0),
                 RenderLayer::Background,
                 false,
+                false,
             );
 
             // Pass 2: Glass - render as Brush::Glass
-            self.render_layer(glass_ctx, root, (0.0, 0.0), RenderLayer::Glass, false);
+            self.render_layer(glass_ctx, root, (0.0, 0.0), RenderLayer::Glass, false, false);
 
             // Pass 3: Foreground (includes children of glass elements)
             self.render_layer(
@@ -4123,6 +4154,7 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Foreground,
+                false,
                 false,
             );
         }
@@ -4143,7 +4175,7 @@ impl RenderTree {
                 ctx.push_transform(Transform::scale(self.scale_factor, self.scale_factor));
             }
 
-            self.render_layer(ctx, root, (0.0, 0.0), target_layer, false);
+            self.render_layer(ctx, root, (0.0, 0.0), target_layer, false, false);
 
             // Pop the DPI scale transform
             if has_scale {
@@ -4156,6 +4188,9 @@ impl RenderTree {
     ///
     /// The `inside_glass` flag tracks whether we're descending through a glass element.
     /// Children of glass elements are automatically rendered in the foreground pass.
+    ///
+    /// The `inside_foreground` flag tracks whether we're descending through a foreground element.
+    /// Children of foreground elements are also rendered in the foreground pass.
     fn render_layer(
         &self,
         ctx: &mut dyn DrawContext,
@@ -4163,6 +4198,7 @@ impl RenderTree {
         parent_offset: (f32, f32),
         target_layer: RenderLayer,
         inside_glass: bool,
+        inside_foreground: bool,
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -4197,6 +4233,11 @@ impl RenderTree {
         // Once inside glass, stay inside glass for all descendants
         let children_inside_glass = inside_glass || is_glass;
 
+        // Track if children should be considered inside foreground
+        // Once inside foreground, stay inside foreground for all descendants
+        let is_foreground = render_node.props.layer == RenderLayer::Foreground;
+        let children_inside_foreground = inside_foreground || is_foreground;
+
         // Push clip BEFORE rendering content if this element clips its children
         // Clip to padding box (full bounds) - matches CSS overflow:hidden behavior
         let clips_content = render_node.props.clips_content;
@@ -4213,9 +4254,13 @@ impl RenderTree {
 
         // Determine the effective layer for this node:
         // - If we're inside a glass element, children render as foreground
+        // - If we're inside a foreground element, children also render as foreground
         // - Otherwise, use the node's explicit layer setting
         let effective_layer = if inside_glass && !is_glass {
             // Children of glass elements render in foreground
+            RenderLayer::Foreground
+        } else if inside_foreground {
+            // Children of foreground elements render in foreground
             RenderLayer::Foreground
         } else if is_glass {
             // Glass elements render in glass layer
@@ -4344,7 +4389,7 @@ impl RenderTree {
             ctx.push_transform(Transform::translate(scroll_offset.0, scroll_offset.1));
         }
 
-        // Traverse children (they inherit our transform)
+        // Traverse children (they inherit our transform and layer inheritance)
         for child_id in self.layout_tree.children(node) {
             self.render_layer(
                 ctx,
@@ -4352,6 +4397,7 @@ impl RenderTree {
                 (0.0, 0.0),
                 target_layer,
                 children_inside_glass,
+                children_inside_foreground,
             );
         }
 
@@ -4714,7 +4760,7 @@ impl RenderTree {
     /// Render all text elements via the LayoutRenderer
     fn render_text_elements<R: LayoutRenderer>(&self, renderer: &mut R) {
         if let Some(root) = self.root {
-            self.render_text_recursive(renderer, root, (0.0, 0.0), false);
+            self.render_text_recursive(renderer, root, (0.0, 0.0), false, false);
         }
     }
 
@@ -4725,6 +4771,7 @@ impl RenderTree {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         inside_glass: bool,
+        inside_foreground: bool,
     ) {
         // Get bounds with (0,0) to get pure layout position relative to parent
         // parent_offset accumulates absolute position from ancestors + scroll + motion
@@ -4739,9 +4786,13 @@ impl RenderTree {
         let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
         let children_inside_glass = inside_glass || is_glass;
 
-        // Text inside glass goes to foreground
+        // Track foreground inheritance
+        let is_foreground = render_node.props.layer == RenderLayer::Foreground;
+        let children_inside_foreground = inside_foreground || is_foreground;
+
+        // Text inside glass or foreground goes to foreground layer
         let to_foreground =
-            children_inside_glass || render_node.props.layer == RenderLayer::Foreground;
+            children_inside_glass || children_inside_foreground;
 
         if let ElementType::Text(text_data) = &render_node.element_type {
             // Absolute position for text
@@ -4796,14 +4847,14 @@ impl RenderTree {
             parent_offset.1 + bounds.y + scroll_offset.1 + motion_offset.1,
         );
         for child_id in self.layout_tree.children(node) {
-            self.render_text_recursive(renderer, child_id, new_offset, children_inside_glass);
+            self.render_text_recursive(renderer, child_id, new_offset, children_inside_glass, children_inside_foreground);
         }
     }
 
     /// Render all SVG elements via the LayoutRenderer
     fn render_svg_elements<R: LayoutRenderer>(&self, renderer: &mut R) {
         if let Some(root) = self.root {
-            self.render_svg_recursive(renderer, root, (0.0, 0.0), false);
+            self.render_svg_recursive(renderer, root, (0.0, 0.0), false, false);
         }
     }
 
@@ -4814,6 +4865,7 @@ impl RenderTree {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         inside_glass: bool,
+        inside_foreground: bool,
     ) {
         // Get bounds with (0,0) to get pure layout position relative to parent
         // parent_offset accumulates absolute position from ancestors + scroll + motion
@@ -4828,9 +4880,12 @@ impl RenderTree {
         let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
         let children_inside_glass = inside_glass || is_glass;
 
-        // SVG inside glass goes to foreground
-        let to_foreground =
-            children_inside_glass || render_node.props.layer == RenderLayer::Foreground;
+        // Track foreground inheritance
+        let is_foreground = render_node.props.layer == RenderLayer::Foreground;
+        let children_inside_foreground = inside_foreground || is_foreground;
+
+        // SVG inside glass or foreground goes to foreground layer
+        let to_foreground = children_inside_glass || children_inside_foreground;
 
         if let ElementType::Svg(svg_data) = &render_node.element_type {
             // Absolute position for SVG
@@ -4878,7 +4933,7 @@ impl RenderTree {
             parent_offset.1 + bounds.y + scroll_offset.1 + motion_offset.1,
         );
         for child_id in self.layout_tree.children(node) {
-            self.render_svg_recursive(renderer, child_id, new_offset, children_inside_glass);
+            self.render_svg_recursive(renderer, child_id, new_offset, children_inside_glass, children_inside_foreground);
         }
     }
 

@@ -69,6 +69,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .child(combobox_section(ctx))
                         .child(context_menu_section())
                         .child(dropdown_menu_section())
+                        .child(hover_card_section())
                         .child(dialog_section(ctx))
                         .child(tabs_section(ctx))
                         .child(toast_section(ctx))
@@ -1180,6 +1181,159 @@ fn toast_section(_ctx: &WindowedContext) -> impl ElementBuilder {
                     }),
             ),
     )
+}
+
+// ============================================================================
+// Hover Card Section
+// ============================================================================
+
+fn hover_card_section() -> impl ElementBuilder {
+    let theme = ThemeState::get();
+    let text_primary = theme.color(ColorToken::TextPrimary);
+    let text_secondary = theme.color(ColorToken::TextSecondary);
+    let text_tertiary = theme.color(ColorToken::TextTertiary);
+    let accent = theme.color(ColorToken::Primary);
+
+    section_container()
+        .child(section_title("Hover Card"))
+        .child(
+            div()
+                .flex_col()
+                .gap(24.0)
+                // Basic hover card
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            text("Basic Hover Card")
+                                .size(14.0)
+                                .medium()
+                                .color(text_primary),
+                        )
+                        .child(
+                            cn::hover_card(move || {
+                                div().w_fit()
+                                    .cursor_pointer()
+                                    .child(text("@johndoe").size(14.0).color(accent).no_wrap())
+                            })
+                            .content(move || {
+                                div()
+                                    .flex_col()
+                                    .gap(12.0)
+                                    .child(
+                                        div()
+                                            .flex_row()
+                                            .gap(12.0)
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .w(48.0)
+                                                    .h(48.0)
+                                                    .rounded_full()
+                                                    .bg(accent.with_alpha(0.2)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_col()
+                                                    .gap(2.0)
+                                                    .child(
+                                                        text("John Doe")
+                                                            .size(16.0)
+                                                            .medium()
+                                                            .color(text_primary),
+                                                    )
+                                                    .child(
+                                                        text("@johndoe")
+                                                            .size(14.0)
+                                                            .color(text_secondary),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        text("Software Engineer at Acme Corp. Building great things with Rust and TypeScript.")
+                                            .size(14.0)
+                                            .color(text_secondary),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_row()
+                                            .gap(16.0)
+                                            .child(
+                                                div()
+                                                    .flex_row()
+                                                    .gap(4.0)
+                                                    .child(text("128").size(14.0).medium().color(text_primary))
+                                                    .child(text("Following").size(14.0).color(text_tertiary)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_row()
+                                                    .gap(4.0)
+                                                    .child(text("2.4k").size(14.0).medium().color(text_primary))
+                                                    .child(text("Followers").size(14.0).color(text_tertiary)),
+                                            ),
+                                    )
+                            }),
+                        ),
+                )
+                // Hover card with side positioning
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            text("Side Positions")
+                                .size(14.0)
+                                .medium()
+                                .color(text_primary),
+                        )
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(24.0)
+                                .child(
+                                    cn::hover_card(move || {
+                                        div().child(cn::button("Bottom (Default)").variant(ButtonVariant::Outline))
+                                    })
+                                    .side(HoverCardSide::Bottom)
+                                    .content(move || {
+                                        div().child(
+                                            text("This card appears below the trigger.")
+                                                .size(14.0)
+                                                .color(text_secondary),
+                                        )
+                                    }),
+                                )
+                                .child(
+                                    cn::hover_card(move || {
+                                        div().child(cn::button("Right").variant(ButtonVariant::Outline))
+                                    })
+                                    .side(HoverCardSide::Right)
+                                    .content(move || {
+                                        div().child(
+                                            text("This card appears to the right.")
+                                                .size(14.0)
+                                                .color(text_secondary),
+                                        )
+                                    }),
+                                )
+                                .child(
+                                    cn::hover_card(move || {
+                                        div().child(cn::button("Top").variant(ButtonVariant::Outline))
+                                    })
+                                    .side(HoverCardSide::Top)
+                                    .content(move || {
+                                        div().child(
+                                            text("This card appears above the trigger.")
+                                                .size(14.0)
+                                                .color(text_secondary),
+                                        )
+                                    }),
+                                ),
+                        ),
+                ),
+        )
 }
 
 fn misc_section() -> impl ElementBuilder {

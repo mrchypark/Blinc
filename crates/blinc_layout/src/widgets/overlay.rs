@@ -62,6 +62,14 @@ pub mod overlay_events {
     pub const BACKDROP_CLICK: u32 = 20004;
     /// Escape key pressed
     pub const ESCAPE: u32 = 20005;
+    /// Cancel a pending close (Closing -> Open) - used when mouse re-enters hover card
+    pub const CANCEL_CLOSE: u32 = 20006;
+    /// Mouse left trigger/content - start close delay countdown (Open -> PendingClose)
+    pub const HOVER_LEAVE: u32 = 20007;
+    /// Mouse re-entered trigger/content - cancel close delay (PendingClose -> Open)
+    pub const HOVER_ENTER: u32 = 20008;
+    /// Close delay expired - now actually close (PendingClose -> Closing)
+    pub const DELAY_EXPIRED: u32 = 20009;
 }
 
 // =============================================================================
@@ -105,6 +113,9 @@ pub enum OverlayState {
     Opening,
     /// Overlay is fully visible and interactive
     Open,
+    /// Mouse left overlay/trigger, waiting for close delay to expire
+    /// Used by hover cards to allow mouse movement between trigger and content
+    PendingClose,
     /// Exit animation is playing
     Closing,
 }
@@ -117,12 +128,17 @@ impl OverlayState {
 
     /// Check if overlay is fully open and interactive
     pub fn is_open(&self) -> bool {
-        matches!(self, OverlayState::Open)
+        matches!(self, OverlayState::Open | OverlayState::PendingClose)
     }
 
     /// Check if overlay is animating
     pub fn is_animating(&self) -> bool {
         matches!(self, OverlayState::Opening | OverlayState::Closing)
+    }
+
+    /// Check if overlay is waiting for close delay to expire
+    pub fn is_pending_close(&self) -> bool {
+        matches!(self, OverlayState::PendingClose)
     }
 }
 
@@ -138,14 +154,32 @@ impl StateTransitions for OverlayState {
             // Opening -> Open: Animation finished
             (Opening, ANIMATION_COMPLETE) => Some(Open),
 
-            // Open -> Closing: Start hide animation
+            // Open -> Closing: Start hide animation (immediate close)
             (Open, CLOSE) | (Open, ESCAPE) | (Open, BACKDROP_CLICK) => Some(Closing),
+
+            // Open -> PendingClose: Mouse left, start close delay countdown
+            (Open, HOVER_LEAVE) => Some(PendingClose),
+
+            // PendingClose -> Open: Mouse re-entered, cancel close delay
+            (PendingClose, HOVER_ENTER) => Some(Open),
+
+            // PendingClose -> Closing: Close delay expired, now actually close
+            (PendingClose, DELAY_EXPIRED) => Some(Closing),
+
+            // PendingClose -> Closing: Immediate close events still work
+            (PendingClose, CLOSE) | (PendingClose, ESCAPE) | (PendingClose, BACKDROP_CLICK) => {
+                Some(Closing)
+            }
 
             // Closing -> Closed: Animation finished, remove overlay
             (Closing, ANIMATION_COMPLETE) => Some(Closed),
 
             // Interrupt opening with close
             (Opening, CLOSE) | (Opening, ESCAPE) => Some(Closing),
+
+            // Cancel close - interrupt exit animation and return to Open state
+            // Used when mouse re-enters hover card during exit animation
+            (Closing, CANCEL_CLOSE) => Some(Open),
 
             _ => None,
         }
@@ -356,8 +390,14 @@ pub struct OverlayConfig {
     pub animation: OverlayAnimation,
     /// Close on Escape key press
     pub dismiss_on_escape: bool,
+    /// Close when mouse leaves the overlay content (for hover cards)
+    pub dismiss_on_hover_leave: bool,
     /// Auto-dismiss after duration (for toasts)
     pub auto_dismiss_ms: Option<u32>,
+    /// Delay before closing after mouse leaves (for hover cards)
+    /// When set, mouse leave triggers PendingClose state with this delay
+    /// before actually closing. Mouse re-entering cancels the delay.
+    pub close_delay_ms: Option<u32>,
     /// Trap focus within overlay (for modals)
     pub focus_trap: bool,
     /// Z-priority (higher = more on top)
@@ -381,7 +421,9 @@ impl OverlayConfig {
             backdrop: Some(BackdropConfig::default()),
             animation: OverlayAnimation::modal(),
             dismiss_on_escape: true,
+            dismiss_on_hover_leave: false,
             auto_dismiss_ms: None,
+            close_delay_ms: None,
             focus_trap: true,
             z_priority: 100,
             size: None,
@@ -404,7 +446,9 @@ impl OverlayConfig {
             backdrop: None,
             animation: OverlayAnimation::context_menu(),
             dismiss_on_escape: true,
+            dismiss_on_hover_leave: false,
             auto_dismiss_ms: None,
+            close_delay_ms: None,
             focus_trap: false,
             z_priority: 200,
             size: None,
@@ -419,7 +463,9 @@ impl OverlayConfig {
             backdrop: None,
             animation: OverlayAnimation::toast(),
             dismiss_on_escape: false,
+            dismiss_on_hover_leave: false,
             auto_dismiss_ms: Some(3000),
+            close_delay_ms: None,
             focus_trap: false,
             z_priority: 300,
             size: None,
@@ -439,7 +485,31 @@ impl OverlayConfig {
             }),
             animation: OverlayAnimation::dropdown(),
             dismiss_on_escape: true,
+            dismiss_on_hover_leave: false,
             auto_dismiss_ms: None,
+            close_delay_ms: None,
+            focus_trap: false,
+            z_priority: 150,
+            size: None,
+        }
+    }
+
+    /// Create hover card configuration (dropdown that dismisses on mouse leave)
+    ///
+    /// Hover cards are TRANSIENT overlays - they have NO backdrop and don't block
+    /// interaction with the UI below. Multiple hover cards can coexist.
+    /// Uses close_delay_ms to allow mouse movement between trigger and content.
+    pub fn hover_card() -> Self {
+        Self {
+            kind: OverlayKind::Tooltip, // Use Tooltip kind for transient behavior
+            position: OverlayPosition::Centered, // Will be overridden by at()
+            // NO backdrop - transient overlays don't block interaction
+            backdrop: None,
+            animation: OverlayAnimation::dropdown(),
+            dismiss_on_escape: true,
+            dismiss_on_hover_leave: true,
+            auto_dismiss_ms: Some(5000), // Auto-dismiss after 5 seconds as fallback
+            close_delay_ms: Some(300),   // 300ms delay before closing on mouse leave
             focus_trap: false,
             z_priority: 150,
             size: None,
@@ -497,6 +567,8 @@ pub struct ActiveOverlay {
     opened_at_ms: Option<u64>,
     /// Time when close animation started (for exit animation timing)
     close_started_at_ms: Option<u64>,
+    /// Time when pending close started (for close delay countdown)
+    pending_close_at_ms: Option<u64>,
     /// Cached content size after layout (for positioning)
     pub cached_size: Option<(f32, f32)>,
     /// Callback invoked when the overlay is closed (backdrop click, escape, etc.)
@@ -691,6 +763,7 @@ impl OverlayManagerInner {
             created_at_ms: None, // Will be set on first update
             opened_at_ms: None,
             close_started_at_ms: None,
+            pending_close_at_ms: None,
             cached_size: None,
             on_close,
         };
@@ -754,6 +827,31 @@ impl OverlayManagerInner {
                             if current_time_ms >= opened_at + duration_ms as u64 {
                                 to_close.push(*handle);
                             }
+                        }
+                    }
+                }
+                OverlayState::PendingClose => {
+                    // Check if close delay has expired
+                    if let Some(close_delay_ms) = overlay.config.close_delay_ms {
+                        if let Some(pending_close_at) = overlay.pending_close_at_ms {
+                            let elapsed = current_time_ms.saturating_sub(pending_close_at);
+                            if elapsed >= close_delay_ms as u64 {
+                                // Delay expired, now actually start closing
+                                tracing::debug!(
+                                    "Overlay {:?} close delay expired after {}ms, transitioning to Closing",
+                                    handle,
+                                    elapsed
+                                );
+                                if overlay.transition(overlay_events::DELAY_EXPIRED) {
+                                    animation_dirty = true;
+                                }
+                            }
+                            // While waiting, no dirty flag needed - just keep checking
+                        }
+                    } else {
+                        // No close delay configured, immediately close
+                        if overlay.transition(overlay_events::DELAY_EXPIRED) {
+                            animation_dirty = true;
                         }
                     }
                 }
@@ -830,6 +928,65 @@ impl OverlayManagerInner {
                 self.mark_animation_dirty();
             }
         }
+    }
+
+    /// Cancel a pending close and return overlay to Open state
+    ///
+    /// Used when mouse re-enters a hover card during exit animation.
+    /// This interrupts the exit animation and keeps the overlay visible.
+    pub fn cancel_close(&mut self, handle: OverlayHandle) {
+        if let Some(overlay) = self.overlays.get_mut(&handle) {
+            if overlay.transition(overlay_events::CANCEL_CLOSE) {
+                // Canceled close - need to reset motion animation state
+                self.mark_animation_dirty();
+            }
+        }
+    }
+
+    /// Trigger hover leave event - starts close delay countdown
+    ///
+    /// For overlays with `close_delay_ms` configured (like hover cards),
+    /// this transitions to PendingClose state. The overlay will close
+    /// after the delay unless `hover_enter` is called.
+    pub fn hover_leave(&mut self, handle: OverlayHandle) {
+        if let Some(overlay) = self.overlays.get_mut(&handle) {
+            if overlay.transition(overlay_events::HOVER_LEAVE) {
+                // Record when pending close started
+                overlay.pending_close_at_ms = Some(self.current_time_ms);
+                tracing::debug!(
+                    "Overlay {:?} hover leave -> PendingClose at {}ms",
+                    handle,
+                    self.current_time_ms
+                );
+                // No dirty flag needed - update loop will handle the delay
+            }
+        }
+    }
+
+    /// Trigger hover enter event - cancels close delay countdown
+    ///
+    /// If overlay is in PendingClose state, this cancels the delay
+    /// and returns to Open state.
+    pub fn hover_enter(&mut self, handle: OverlayHandle) {
+        if let Some(overlay) = self.overlays.get_mut(&handle) {
+            if overlay.transition(overlay_events::HOVER_ENTER) {
+                // Clear pending close timestamp
+                overlay.pending_close_at_ms = None;
+                tracing::debug!(
+                    "Overlay {:?} hover enter -> Open (canceled pending close)",
+                    handle
+                );
+                // No dirty flag needed - just staying open
+            }
+        }
+    }
+
+    /// Check if an overlay is in PendingClose state
+    pub fn is_pending_close(&self, handle: OverlayHandle) -> bool {
+        self.overlays
+            .get(&handle)
+            .map(|o| o.state.is_pending_close())
+            .unwrap_or(false)
     }
 
     /// Set the cached content size for an overlay (for hit testing)
@@ -1161,13 +1318,16 @@ impl OverlayManagerInner {
 
         // Always return a container with a stable ID
         // This allows subtree rebuilds to find and update it
+        // Use .stack_layer() to ensure overlay content renders above main UI
+        // through z_layer increment in the interleaved rendering system
         let mut layer = div()
             .id(OVERLAY_LAYER_ID)
             .w(layer_w)
             .h(layer_h)
             .absolute()
             .left(0.0)
-            .top(0.0);
+            .top(0.0)
+            .stack_layer();
 
         // Add visible overlays as children
         if has_visible && width > 0.0 && height > 0.0 {
@@ -1214,6 +1374,32 @@ impl OverlayManagerInner {
             content
         };
 
+        // Wrap content with hover leave handler if dismiss_on_hover_leave is enabled
+        let content = if overlay.config.dismiss_on_hover_leave {
+            let overlay_handle = overlay.handle;
+            let has_close_delay = overlay.config.close_delay_ms.is_some();
+            let on_close_callback = overlay.on_close.clone();
+            content.on_hover_leave(move |_| {
+                if let Some(ctx) = crate::overlay_state::OverlayContext::try_get() {
+                    let mgr = ctx.overlay_manager();
+                    let mut inner = mgr.lock().unwrap();
+                    if has_close_delay {
+                        // Use hover_leave to start close delay countdown
+                        inner.hover_leave(overlay_handle);
+                    } else {
+                        // Close immediately (no delay configured)
+                        inner.close(overlay_handle);
+                        // Call the on_close callback if provided
+                        if let Some(ref cb) = on_close_callback {
+                            cb();
+                        }
+                    }
+                }
+            })
+        } else {
+            content
+        };
+
         // Calculate backdrop opacity based on animation state
         let backdrop_opacity = if let Some((progress, is_entering)) =
             overlay.animation_progress(self.current_time_ms)
@@ -1225,7 +1411,7 @@ impl OverlayManagerInner {
             }
         } else {
             match overlay.state {
-                OverlayState::Open => 1.0,
+                OverlayState::Open | OverlayState::PendingClose => 1.0,
                 OverlayState::Closed => 0.0,
                 OverlayState::Opening => 0.0,
                 OverlayState::Closing => 1.0,
@@ -1287,7 +1473,17 @@ impl OverlayManagerInner {
                     .child(self.position_content(overlay, content, vp_width, vp_height)),
             )
         } else {
-            // No backdrop - position content according to config
+            // // No backdrop - wrap in viewport-sized container for proper z-ordering
+            // // The container is pointer-events:none equivalent (no event handlers)
+            // // so it doesn't block events to UI below
+            // div()
+            //     .w(vp_width)
+            //     .h(vp_height)
+            //     .absolute()
+            //     .left(0.0)
+            //     .top(0.0)
+            //     .child()
+
             self.position_content(overlay, content, vp_width, vp_height)
         }
     }
@@ -1434,9 +1630,26 @@ pub trait OverlayManagerExt {
     fn toast(&self) -> ToastBuilder;
     /// Start building a dropdown overlay
     fn dropdown(&self) -> DropdownBuilder;
+    /// Start building a hover card overlay (dropdown that closes on mouse leave)
+    fn hover_card(&self) -> DropdownBuilder;
 
     /// Close an overlay by handle
     fn close(&self, handle: OverlayHandle);
+    /// Cancel a pending close (Closing -> Open)
+    ///
+    /// Used when mouse re-enters a hover card during exit animation.
+    fn cancel_close(&self, handle: OverlayHandle);
+    /// Trigger hover leave - starts close delay countdown (Open -> PendingClose)
+    ///
+    /// For overlays with close_delay_ms configured, starts the countdown.
+    /// Use hover_enter to cancel before the delay expires.
+    fn hover_leave(&self, handle: OverlayHandle);
+    /// Trigger hover enter - cancels close delay countdown (PendingClose -> Open)
+    ///
+    /// If overlay is in PendingClose state, cancels the delay and stays open.
+    fn hover_enter(&self, handle: OverlayHandle);
+    /// Check if an overlay is in PendingClose state (waiting for close delay)
+    fn is_pending_close(&self, handle: OverlayHandle) -> bool;
     /// Close the topmost overlay
     fn close_top(&self);
     /// Close all overlays of a kind
@@ -1516,8 +1729,28 @@ impl OverlayManagerExt for OverlayManager {
         DropdownBuilder::new(Arc::clone(self))
     }
 
+    fn hover_card(&self) -> DropdownBuilder {
+        DropdownBuilder::new_hover_card(Arc::clone(self))
+    }
+
     fn close(&self, handle: OverlayHandle) {
         self.lock().unwrap().close(handle);
+    }
+
+    fn cancel_close(&self, handle: OverlayHandle) {
+        self.lock().unwrap().cancel_close(handle);
+    }
+
+    fn hover_leave(&self, handle: OverlayHandle) {
+        self.lock().unwrap().hover_leave(handle);
+    }
+
+    fn hover_enter(&self, handle: OverlayHandle) {
+        self.lock().unwrap().hover_enter(handle);
+    }
+
+    fn is_pending_close(&self, handle: OverlayHandle) -> bool {
+        self.lock().unwrap().is_pending_close(handle)
     }
 
     fn close_top(&self) {
@@ -1834,6 +2067,15 @@ impl DropdownBuilder {
         }
     }
 
+    fn new_hover_card(manager: OverlayManager) -> Self {
+        Self {
+            manager,
+            config: OverlayConfig::hover_card(),
+            content: None,
+            on_close: None,
+        }
+    }
+
     /// Position at specific coordinates
     ///
     /// This is useful when the dropdown position is calculated from mouse position
@@ -1868,6 +2110,16 @@ impl DropdownBuilder {
     /// Enable dismiss on escape key
     pub fn dismiss_on_escape(mut self, dismiss: bool) -> Self {
         self.config.dismiss_on_escape = dismiss;
+        self
+    }
+
+    /// Enable dismiss when mouse leaves the overlay content (for hover cards)
+    pub fn dismiss_on_hover_leave(mut self, dismiss: bool) -> Self {
+        self.config.dismiss_on_hover_leave = dismiss;
+        // When using hover leave dismiss, we typically don't want a backdrop
+        if dismiss {
+            self.config.backdrop = None;
+        }
         self
     }
 

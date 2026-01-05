@@ -57,6 +57,7 @@ pub mod cn {
     pub use crate::components::context_menu::context_menu;
     pub use crate::components::dialog::{alert_dialog, dialog};
     pub use crate::components::dropdown_menu::{dropdown_menu, dropdown_menu_custom};
+    pub use crate::components::hover_card::hover_card;
     pub use crate::components::input::input;
     pub use crate::components::label::label;
     pub use crate::components::progress::{progress, progress_animated};
@@ -96,6 +97,9 @@ pub mod prelude {
     };
     pub use crate::components::dropdown_menu::{
         dropdown_menu, dropdown_menu_custom, DropdownAlign, DropdownMenuBuilder, DropdownPosition,
+    };
+    pub use crate::components::hover_card::{
+        hover_card, HoverCard, HoverCardAlign, HoverCardBuilder, HoverCardSide,
     };
     pub use crate::components::input::{input, Input, InputBgColors, InputBorderColors, InputSize};
     pub use crate::components::label::{label, Label, LabelBuilder, LabelSize};

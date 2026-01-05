@@ -552,4 +552,26 @@ impl MotionHandle {
     pub fn exists(&self) -> bool {
         !matches!(self.state, MotionAnimationState::NotFound)
     }
+
+    /// Cancel the exit animation and return the motion to Visible state
+    ///
+    /// Used when an overlay's close is cancelled (e.g., mouse re-enters hover card).
+    /// This interrupts the exit animation and immediately sets the motion to fully visible.
+    ///
+    /// No-op if the motion is not in Exiting state.
+    pub fn cancel_exit(&self) {
+        // Queue the cancellation to be processed during the next render frame
+        crate::queue_global_motion_exit_cancel(self.key.clone());
+    }
+
+    /// Trigger the exit animation for this motion
+    ///
+    /// Used to explicitly trigger the exit animation (e.g., when a hover card
+    /// close countdown completes). This transitions the motion from Visible → Exiting.
+    ///
+    /// No-op if the motion is not in Visible state.
+    pub fn exit(&self) {
+        // Queue the exit to be processed during the next render frame
+        crate::queue_global_motion_exit_start(self.key.clone());
+    }
 }
