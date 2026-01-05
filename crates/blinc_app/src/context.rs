@@ -2,7 +2,7 @@
 //!
 //! Wraps the GPU rendering pipeline with a clean API.
 
-use blinc_core::{Brush, Color, CornerRadius, DrawCommand, DrawContextExt, Rect, Stroke};
+use blinc_core::{Brush, Color, CornerRadius, DrawCommand, DrawContext, DrawContextExt, Rect, Stroke};
 use blinc_gpu::{
     FontRegistry, GenericFont as GpuGenericFont, GpuGlyph, GpuImage, GpuImageInstance,
     GpuPaintContext, GpuPrimitive, GpuRenderer, ImageRenderingContext, PrimitiveBatch,
@@ -110,6 +110,21 @@ struct ImageElement {
     placeholder_type: u8,
     /// Placeholder color [r, g, b, a]
     placeholder_color: [f32; 4],
+}
+
+/// SVG element data for rendering
+struct SvgElement {
+    source: String,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    /// Tint color to apply to SVG fill/stroke
+    tint: Option<blinc_core::Color>,
+    /// Clip bounds from parent scroll container (x, y, width, height)
+    clip_bounds: Option<[f32; 4]>,
+    /// Motion opacity inherited from parent motion container
+    motion_opacity: f32,
 }
 
 impl RenderContext {
@@ -256,10 +271,9 @@ impl RenderContext {
         // Render SVGs to a new foreground context (svg_ctx)
         // We need a fresh context since fg_ctx's batch was already taken
         let mut svg_ctx = GpuPaintContext::new(width as f32, height as f32);
-        for (source, x, y, w, h) in &svgs {
-            if let Ok(doc) = SvgDocument::from_str(source) {
-                doc.render_fit(&mut svg_ctx, Rect::new(*x, *y, *w, *h));
-            }
+        tracing::debug!("Rendering {} SVGs", svgs.len());
+        for svg in &svgs {
+            self.render_svg_element(&mut svg_ctx, svg);
         }
 
         // Merge SVG batch into foreground batch
@@ -773,13 +787,120 @@ impl RenderContext {
         }
     }
 
+    /// Render an SVG element with clipping and opacity support
+    fn render_svg_element(&self, ctx: &mut GpuPaintContext, svg: &SvgElement) {
+        // Skip completely transparent SVGs
+        if svg.motion_opacity <= 0.001 {
+            return;
+        }
+
+        // Skip SVGs completely outside their clip bounds
+        if let Some([clip_x, clip_y, clip_w, clip_h]) = svg.clip_bounds {
+            let svg_right = svg.x + svg.width;
+            let svg_bottom = svg.y + svg.height;
+            let clip_right = clip_x + clip_w;
+            let clip_bottom = clip_y + clip_h;
+
+            // Check if SVG is completely outside clip bounds
+            if svg.x >= clip_right
+                || svg_right <= clip_x
+                || svg.y >= clip_bottom
+                || svg_bottom <= clip_y
+            {
+                return;
+            }
+        }
+
+        let Ok(doc) = SvgDocument::from_str(&svg.source) else {
+            return;
+        };
+
+        // Apply clipping if present
+        if let Some([clip_x, clip_y, clip_w, clip_h]) = svg.clip_bounds {
+            ctx.push_clip(blinc_core::ClipShape::rect(Rect::new(
+                clip_x, clip_y, clip_w, clip_h,
+            )));
+        }
+
+        // Apply opacity if not fully opaque
+        if svg.motion_opacity < 1.0 {
+            ctx.push_opacity(svg.motion_opacity);
+        }
+
+        // Render the SVG with optional tint color override
+        if let Some(tint) = svg.tint {
+            // Render with tint - we need to modify the SVG commands
+            self.render_svg_with_tint(ctx, &doc, svg.x, svg.y, svg.width, svg.height, tint);
+        } else {
+            doc.render_fit(ctx, Rect::new(svg.x, svg.y, svg.width, svg.height));
+        }
+
+        // Pop opacity if applied
+        if svg.motion_opacity < 1.0 {
+            ctx.pop_opacity();
+        }
+
+        // Pop clip if applied
+        if svg.clip_bounds.is_some() {
+            ctx.pop_clip();
+        }
+    }
+
+    /// Render an SVG with a tint color applied to all fills and strokes
+    fn render_svg_with_tint(
+        &self,
+        ctx: &mut GpuPaintContext,
+        doc: &SvgDocument,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        tint: blinc_core::Color,
+    ) {
+        use blinc_svg::SvgDrawCommand;
+
+        // Calculate scale to fit within bounds while maintaining aspect ratio
+        let scale_x = width / doc.width;
+        let scale_y = height / doc.height;
+        let scale = scale_x.min(scale_y);
+
+        // Center within bounds
+        let scaled_width = doc.width * scale;
+        let scaled_height = doc.height * scale;
+        let offset_x = x + (width - scaled_width) / 2.0;
+        let offset_y = y + (height - scaled_height) / 2.0;
+
+        let commands = doc.commands();
+        let tint_brush = Brush::Solid(tint);
+
+        for cmd in commands {
+            match cmd {
+                SvgDrawCommand::FillPath { path, brush: _ } => {
+                    let scaled = scale_and_translate_path(&path, offset_x, offset_y, scale);
+                    ctx.fill_path(&scaled, tint_brush.clone());
+                }
+                SvgDrawCommand::StrokePath {
+                    path,
+                    stroke,
+                    brush: _,
+                } => {
+                    let scaled = scale_and_translate_path(&path, offset_x, offset_y, scale);
+                    let scaled_stroke = Stroke::new(stroke.width * scale)
+                        .with_cap(stroke.cap)
+                        .with_join(stroke.join);
+                    ctx.stroke_path(&scaled, &scaled_stroke, tint_brush.clone());
+                }
+            }
+        }
+    }
+
     /// Collect text, SVG, and image elements from the render tree
     fn collect_render_elements(
         &self,
         tree: &RenderTree,
     ) -> (
         Vec<TextElement>,
-        Vec<(String, f32, f32, f32, f32)>,
+        Vec<SvgElement>,
         Vec<ImageElement>,
     ) {
         self.collect_render_elements_with_state(tree, None)
@@ -792,7 +913,7 @@ impl RenderContext {
         render_state: Option<&blinc_layout::RenderState>,
     ) -> (
         Vec<TextElement>,
-        Vec<(String, f32, f32, f32, f32)>,
+        Vec<SvgElement>,
         Vec<ImageElement>,
     ) {
         let mut texts = Vec::new();
@@ -847,7 +968,7 @@ impl RenderContext {
         scale: f32,
         z_layer: &mut u32,
         texts: &mut Vec<TextElement>,
-        svgs: &mut Vec<(String, f32, f32, f32, f32)>,
+        svgs: &mut Vec<SvgElement>,
         images: &mut Vec<ImageElement>,
     ) {
         use blinc_layout::Material;
@@ -1104,14 +1225,56 @@ impl RenderContext {
                     });
                 }
                 ElementType::Svg(svg_data) => {
-                    // Apply DPI scale factor to SVG positions and sizes
-                    svgs.push((
-                        svg_data.source.clone(),
-                        abs_x * scale,
-                        abs_y * scale,
-                        bounds.width * scale,
-                        bounds.height * scale,
-                    ));
+                    // Apply DPI scale factor FIRST to match shape rendering order
+                    let base_x = abs_x * scale;
+                    let base_y = abs_y * scale;
+                    let base_width = bounds.width * scale;
+                    let base_height = bounds.height * scale;
+
+                    // Scale motion translate by DPI factor
+                    let scaled_motion_tx = effective_motion_translate.0 * scale;
+                    let scaled_motion_ty = effective_motion_translate.1 * scale;
+
+                    // Apply motion scale and translation (same logic as Text)
+                    let (scaled_x, scaled_y, scaled_width, scaled_height) =
+                        if let Some((motion_center_x, motion_center_y)) =
+                            effective_motion_scale_center
+                        {
+                            let motion_center_x_scaled = motion_center_x * scale;
+                            let motion_center_y_scaled = motion_center_y * scale;
+
+                            let rel_x = base_x - motion_center_x_scaled;
+                            let rel_y = base_y - motion_center_y_scaled;
+
+                            let scaled_rel_x = rel_x * effective_motion_scale.0;
+                            let scaled_rel_y = rel_y * effective_motion_scale.1;
+                            let scaled_w = base_width * effective_motion_scale.0;
+                            let scaled_h = base_height * effective_motion_scale.1;
+
+                            let final_x = motion_center_x_scaled + scaled_rel_x + scaled_motion_tx;
+                            let final_y = motion_center_y_scaled + scaled_rel_y + scaled_motion_ty;
+
+                            (final_x, final_y, scaled_w, scaled_h)
+                        } else {
+                            let final_x = base_x + scaled_motion_tx;
+                            let final_y = base_y + scaled_motion_ty;
+                            (final_x, final_y, base_width, base_height)
+                        };
+
+                    // Scale clip bounds if present
+                    let scaled_clip = current_clip
+                        .map(|[cx, cy, cw, ch]| [cx * scale, cy * scale, cw * scale, ch * scale]);
+
+                    svgs.push(SvgElement {
+                        source: svg_data.source.clone(),
+                        x: scaled_x,
+                        y: scaled_y,
+                        width: scaled_width,
+                        height: scaled_height,
+                        tint: svg_data.tint,
+                        clip_bounds: scaled_clip,
+                        motion_opacity: effective_motion_opacity,
+                    });
                 }
                 ElementType::Image(image_data) => {
                     // Apply DPI scale factor to image positions and sizes
@@ -1552,10 +1715,8 @@ impl RenderContext {
 
         // Render SVGs
         let mut svg_ctx = GpuPaintContext::new(width as f32, height as f32);
-        for (source, x, y, w, h) in &svgs {
-            if let Ok(doc) = SvgDocument::from_str(source) {
-                doc.render_fit(&mut svg_ctx, Rect::new(*x, *y, *w, *h));
-            }
+        for svg in &svgs {
+            self.render_svg_element(&mut svg_ctx, svg);
         }
 
         // Merge SVG batch into main batch
@@ -1665,6 +1826,9 @@ impl RenderContext {
                     // Render text decorations for this layer
                     self.render_text_decorations_for_layer(target, &decorations_by_layer, z);
                 }
+
+                // Render paths (SVGs) - they don't have z-layers, render after all primitives
+                self.renderer.render_paths_overlay(target, &batch);
 
                 // Images render on top (existing behavior)
                 self.render_images(target, &images, width as f32, height as f32);
@@ -1812,10 +1976,8 @@ impl RenderContext {
 
         // Render SVGs
         let mut svg_ctx = GpuPaintContext::new(width as f32, height as f32);
-        for (source, x, y, w, h) in &svgs {
-            if let Ok(doc) = SvgDocument::from_str(source) {
-                doc.render_fit(&mut svg_ctx, Rect::new(*x, *y, *w, *h));
-            }
+        for svg in &svgs {
+            self.render_svg_element(&mut svg_ctx, svg);
         }
 
         // Merge SVG batch into main batch
@@ -2132,4 +2294,53 @@ fn generate_text_debug_primitives(texts: &[TextElement]) -> Vec<GpuPrimitive> {
     }
 
     primitives
+}
+
+/// Scale and translate a path for SVG rendering with tint
+fn scale_and_translate_path(path: &blinc_core::Path, x: f32, y: f32, scale: f32) -> blinc_core::Path {
+    use blinc_core::{PathCommand, Point, Vec2};
+
+    if scale == 1.0 && x == 0.0 && y == 0.0 {
+        return path.clone();
+    }
+
+    let transform_point = |p: Point| -> Point { Point::new(p.x * scale + x, p.y * scale + y) };
+
+    let new_commands: Vec<PathCommand> = path
+        .commands()
+        .iter()
+        .map(|cmd| match cmd {
+            PathCommand::MoveTo(p) => PathCommand::MoveTo(transform_point(*p)),
+            PathCommand::LineTo(p) => PathCommand::LineTo(transform_point(*p)),
+            PathCommand::QuadTo { control, end } => PathCommand::QuadTo {
+                control: transform_point(*control),
+                end: transform_point(*end),
+            },
+            PathCommand::CubicTo {
+                control1,
+                control2,
+                end,
+            } => PathCommand::CubicTo {
+                control1: transform_point(*control1),
+                control2: transform_point(*control2),
+                end: transform_point(*end),
+            },
+            PathCommand::ArcTo {
+                radii,
+                rotation,
+                large_arc,
+                sweep,
+                end,
+            } => PathCommand::ArcTo {
+                radii: Vec2::new(radii.x * scale, radii.y * scale),
+                rotation: *rotation,
+                large_arc: *large_arc,
+                sweep: *sweep,
+                end: transform_point(*end),
+            },
+            PathCommand::Close => PathCommand::Close,
+        })
+        .collect();
+
+    blinc_core::Path::from_commands(new_commands)
 }

@@ -2139,6 +2139,50 @@ impl GpuRenderer {
             drop(render_pass);
             self.queue.submit(std::iter::once(encoder.finish()));
         }
+
+        // Pass 5: Render paths (SVGs) on top of glass
+        // Paths are tessellated geometry that need their own pipeline
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        if has_paths {
+            // Update path buffers (creates/resizes as needed)
+            self.update_path_buffers(batch);
+
+            // Render paths
+            if let (Some(vb), Some(ib)) =
+                (&self.buffers.path_vertices, &self.buffers.path_indices)
+            {
+                let mut encoder = self
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Blinc Glass Path Encoder"),
+                    });
+
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Glass Path Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                // Use overlay path pipeline (1x sampled, no MSAA)
+                render_pass.set_pipeline(&self.pipelines.path_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                render_pass.set_vertex_buffer(0, vb.slice(..));
+                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+
+                drop(render_pass);
+                self.queue.submit(std::iter::once(encoder.finish()));
+            }
+        }
     }
 
     /// Render primitives as an overlay on existing content (1x sampled)
@@ -2283,6 +2327,54 @@ impl GpuRenderer {
 
         // Submit commands
         self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Render paths (tessellated geometry like SVGs) as an overlay
+    ///
+    /// This renders paths on top of existing content without clearing.
+    /// Used for z-layered rendering where paths need to be rendered separately.
+    pub fn render_paths_overlay(&mut self, target: &wgpu::TextureView, batch: &PrimitiveBatch) {
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        if !has_paths {
+            return;
+        }
+
+        // Update path buffers
+        self.update_path_buffers(batch);
+
+        // Render paths
+        if let (Some(vb), Some(ib)) = (&self.buffers.path_vertices, &self.buffers.path_indices) {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Blinc Paths Overlay Encoder"),
+                });
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Paths Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // Use overlay path pipeline (1x sampled)
+            render_pass.set_pipeline(&self.pipelines.path_overlay);
+            render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+            render_pass.set_vertex_buffer(0, vb.slice(..));
+            render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+
+            drop(render_pass);
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
     }
 
     /// Render SDF primitives with unified text rendering (text as primitives)
