@@ -11,7 +11,8 @@ use blinc_animation::AnimationScheduler;
 use indexmap::IndexMap;
 
 use blinc_core::{
-    Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle, Rect, Stroke, Transform,
+    Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle, Rect, Shadow, Stroke,
+    Transform,
 };
 use taffy::prelude::*;
 
@@ -3875,7 +3876,21 @@ impl RenderTree {
                 ctx.fill_rect(rect, radius, glass_brush);
             } else {
                 if let Some(ref shadow) = render_node.props.shadow {
-                    ctx.draw_shadow(rect, radius, shadow.clone());
+                    // Apply motion opacity to shadow color
+                    let shadow = if motion_opacity < 1.0 {
+                        Shadow {
+                            color: Color::rgba(
+                                shadow.color.r,
+                                shadow.color.g,
+                                shadow.color.b,
+                                shadow.color.a * motion_opacity,
+                            ),
+                            ..*shadow
+                        }
+                    } else {
+                        *shadow
+                    };
+                    ctx.draw_shadow(rect, radius, shadow);
                 }
                 if let Some(ref bg) = render_node.props.background {
                     // Apply motion opacity to background
