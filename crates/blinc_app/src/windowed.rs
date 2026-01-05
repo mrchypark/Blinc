@@ -2119,10 +2119,16 @@ impl WindowedApp {
                             );
                             windowed_ctx.overlay_manager.update(current_time);
 
-                            // Check if overlay content changed - queue subtree rebuild instead of full rebuild
-                            if windowed_ctx.overlay_manager.is_dirty() {
+                            // Check if overlay content changed OR animations are active
+                            // During animations (enter/exit), the backdrop opacity changes each frame,
+                            // so we need to rebuild the overlay layer to update the backdrop color.
+                            let overlay_content_dirty = windowed_ctx.overlay_manager.is_dirty();
+                            let overlay_animating = windowed_ctx.overlay_manager.has_animating_overlays();
+
+                            if overlay_content_dirty || overlay_animating {
                                 tracing::debug!(
-                                    "Overlay dirty flag set, has_visible_overlays={}",
+                                    "Overlay rebuild: dirty={}, animating={}, has_visible={}",
+                                    overlay_content_dirty, overlay_animating,
                                     windowed_ctx.overlay_manager.has_visible_overlays()
                                 );
                                 // Look up the overlay layer node by its element ID
@@ -2137,8 +2143,10 @@ impl WindowedApp {
                                     tracing::warn!("Overlay changed but node '{}' not found in registry - will rebuild on next frame",
                                         blinc_layout::widgets::overlay::OVERLAY_LAYER_ID);
                                 }
-                                // Consume the dirty flag
-                                windowed_ctx.overlay_manager.take_dirty();
+                                // Consume the dirty flag if it was set
+                                if overlay_content_dirty {
+                                    windowed_ctx.overlay_manager.take_dirty();
+                                }
                             }
 
                             // Check if stateful elements requested a redraw (hover/press changes)

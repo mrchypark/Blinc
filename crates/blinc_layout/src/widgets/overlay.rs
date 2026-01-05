@@ -1073,6 +1073,11 @@ impl OverlayManagerInner {
         self.overlays.values().any(|o| o.is_visible())
     }
 
+    /// Check if any overlay is currently animating (entering or exiting)
+    pub fn has_animating_overlays(&self) -> bool {
+        self.overlays.values().any(|o| o.state.is_animating())
+    }
+
     /// Get the number of overlays
     pub fn overlay_count(&self) -> usize {
         self.overlays.len()
@@ -1425,6 +1430,8 @@ pub trait OverlayManagerExt {
     fn has_dismissable_overlay(&self) -> bool;
     /// Check if any overlay is visible
     fn has_visible_overlays(&self) -> bool;
+    /// Check if any overlay is currently animating (entering or exiting)
+    fn has_animating_overlays(&self) -> bool;
     /// Check if a specific overlay handle is still visible
     fn is_visible(&self, handle: OverlayHandle) -> bool;
     /// Update overlay states - call every frame for animations and auto-dismiss
@@ -1532,6 +1539,10 @@ impl OverlayManagerExt for OverlayManager {
 
     fn has_visible_overlays(&self) -> bool {
         self.lock().unwrap().has_visible_overlays()
+    }
+
+    fn has_animating_overlays(&self) -> bool {
+        self.lock().unwrap().has_animating_overlays()
     }
 
     fn is_visible(&self, handle: OverlayHandle) -> bool {
