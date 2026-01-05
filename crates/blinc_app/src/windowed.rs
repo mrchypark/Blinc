@@ -1360,6 +1360,23 @@ impl WindowedApp {
         // This includes cursor blink, animated colors, hover states, etc.
         let mut render_state: Option<blinc_layout::RenderState> = None;
 
+        // Shared motion states for query API access
+        // This allows components to query motion animation state via query_motion()
+        let shared_motion_states = blinc_layout::create_shared_motion_states();
+
+        // Set up motion state callback in BlincContextState
+        {
+            let motion_states_for_callback = Arc::clone(&shared_motion_states);
+            let motion_callback: blinc_core::MotionStateCallback = Arc::new(move |key: &str| {
+                motion_states_for_callback
+                    .read()
+                    .ok()
+                    .and_then(|states| states.get(key).copied())
+                    .unwrap_or(blinc_core::MotionAnimationState::NotFound)
+            });
+            BlincContextState::get().set_motion_state_callback(motion_callback);
+        }
+
         // Overlay manager for modals, dialogs, toasts, etc.
         let overlays: OverlayManager = overlay_manager();
 
@@ -1423,7 +1440,9 @@ impl WindowedApp {
                                     // Initialize render state with the shared animation scheduler
                                     // RenderState handles dynamic properties (cursor blink, animations)
                                     // independently from tree structure changes
-                                    render_state = Some(blinc_layout::RenderState::new(Arc::clone(&animations)));
+                                    let mut rs = blinc_layout::RenderState::new(Arc::clone(&animations));
+                                    rs.set_shared_motion_states(Arc::clone(&shared_motion_states));
+                                    render_state = Some(rs);
 
                                     tracing::debug!("Blinc windowed app initialized");
                                 }
@@ -2344,6 +2363,9 @@ impl WindowedApp {
                             // Tick render state (handles cursor blink, color animations, etc.)
                             // This updates dynamic properties without touching tree structure
                             let _animations_active = rs.tick(current_time);
+
+                            // Sync motion states to shared store for query_motion API
+                            rs.sync_shared_motion_states();
 
                             // Tick theme animation (handles color interpolation during theme transitions)
                             let theme_animating = blinc_theme::ThemeState::get().tick();

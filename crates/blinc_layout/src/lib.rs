@@ -124,7 +124,10 @@ pub use renderer::{
 pub use canvas::{canvas, Canvas, CanvasBounds, CanvasData, CanvasRenderFn};
 
 // Render state (dynamic properties separate from tree structure)
-pub use render_state::{ActiveMotion, MotionState, NodeRenderState, Overlay, RenderState};
+pub use render_state::{
+    create_shared_motion_states, ActiveMotion, MotionState, NodeRenderState, Overlay, RenderState,
+    SharedMotionStates,
+};
 
 // Stateful elements
 pub use stateful::{
@@ -142,8 +145,9 @@ pub use units::{pct, px, sp, Length, Unit};
 
 // Motion container for entry/exit animations
 pub use motion::{
-    motion, motion_derived, ElementAnimation, Motion, MotionBindings, SharedAnimatedValue,
-    SlideDirection, StaggerConfig, StaggerDirection,
+    current_motion_key, is_inside_animating_motion, is_inside_motion, motion, motion_derived,
+    ElementAnimation, Motion, MotionBindings, SharedAnimatedValue, SlideDirection, StaggerConfig,
+    StaggerDirection,
 };
 
 // Text measurement
@@ -309,8 +313,9 @@ pub mod prelude {
 
     // Motion container for entry/exit animations
     pub use crate::motion::{
-        motion, motion_derived, ElementAnimation, Motion, MotionBindings, SharedAnimatedValue,
-        SlideDirection, StaggerConfig, StaggerDirection,
+        current_motion_key, is_inside_animating_motion, is_inside_motion, motion, motion_derived,
+        ElementAnimation, Motion, MotionBindings, SharedAnimatedValue, SlideDirection,
+        StaggerConfig, StaggerDirection,
     };
 
     // Text selection for clipboard support
@@ -360,8 +365,8 @@ pub mod prelude {
 
     // Selector API for programmatic element access
     pub use crate::selector::{
-        query, ElementEvent, ElementHandle, ElementRegistry, ScrollBehavior, ScrollBlock,
-        ScrollInline, ScrollOptions, ScrollRef, SharedElementRegistry,
+        query, query_motion, ElementEvent, ElementHandle, ElementRegistry, MotionHandle,
+        ScrollBehavior, ScrollBlock, ScrollInline, ScrollOptions, ScrollRef, SharedElementRegistry,
     };
 
     // Overlay context singleton

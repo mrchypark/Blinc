@@ -169,6 +169,77 @@ pub type FocusCallback = Arc<dyn Fn(Option<&str>) + Send + Sync>;
 /// Callback for scrolling an element into view
 pub type ScrollCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Motion animation state for query API
+///
+/// Represents the current state of a motion animation.
+/// Used by MotionHandle to query animation progress.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MotionAnimationState {
+    /// Animation hasn't started yet (waiting for delay)
+    Waiting,
+    /// Element is entering (fade-in, scale-in, etc.)
+    Entering {
+        /// Animation progress from 0.0 to 1.0
+        progress: f32,
+    },
+    /// Element is fully visible (animation complete)
+    Visible,
+    /// Element is exiting (fade-out, scale-out, etc.)
+    Exiting {
+        /// Animation progress from 0.0 to 1.0
+        progress: f32,
+    },
+    /// Element has been removed (exit animation complete)
+    Removed,
+    /// No motion animation found for this key
+    NotFound,
+}
+
+impl MotionAnimationState {
+    /// Check if the animation is still playing (not settled)
+    pub fn is_animating(&self) -> bool {
+        matches!(
+            self,
+            MotionAnimationState::Waiting
+                | MotionAnimationState::Entering { .. }
+                | MotionAnimationState::Exiting { .. }
+        )
+    }
+
+    /// Check if the animation has settled (fully visible)
+    pub fn is_settled(&self) -> bool {
+        matches!(self, MotionAnimationState::Visible)
+    }
+
+    /// Check if the element is entering
+    pub fn is_entering(&self) -> bool {
+        matches!(self, MotionAnimationState::Entering { .. })
+    }
+
+    /// Check if the element is exiting
+    pub fn is_exiting(&self) -> bool {
+        matches!(self, MotionAnimationState::Exiting { .. })
+    }
+
+    /// Get the animation progress (0.0 to 1.0)
+    ///
+    /// Returns 0.0 for Waiting, 1.0 for Visible/Removed, and the actual
+    /// progress for Entering/Exiting states.
+    pub fn progress(&self) -> f32 {
+        match self {
+            MotionAnimationState::Waiting => 0.0,
+            MotionAnimationState::Entering { progress } => *progress,
+            MotionAnimationState::Visible => 1.0,
+            MotionAnimationState::Exiting { progress } => *progress,
+            MotionAnimationState::Removed => 1.0,
+            MotionAnimationState::NotFound => 1.0, // Treat as settled if not found
+        }
+    }
+}
+
+/// Callback for querying motion animation state by stable key
+pub type MotionStateCallback = Arc<dyn Fn(&str) -> MotionAnimationState + Send + Sync>;
+
 /// Type-erased element registry storage
 /// This allows blinc_core to store the registry without depending on blinc_layout
 pub type AnyElementRegistry = Arc<dyn Any + Send + Sync>;
@@ -207,6 +278,8 @@ pub struct BlincContextState {
     /// Type-erased element registry for query API
     /// Stored as `AnyElementRegistry` to avoid circular dependency with blinc_layout
     element_registry: RwLock<Option<AnyElementRegistry>>,
+    /// Callback for querying motion animation state by stable key
+    motion_state_callback: RwLock<Option<MotionStateCallback>>,
 }
 
 impl BlincContextState {
@@ -228,6 +301,7 @@ impl BlincContextState {
             viewport_size: RwLock::new((0.0, 0.0)),
             focused_element: RwLock::new(None),
             element_registry: RwLock::new(None),
+            motion_state_callback: RwLock::new(None),
         };
 
         if CONTEXT_STATE.set(state).is_err() {
@@ -254,6 +328,7 @@ impl BlincContextState {
             viewport_size: RwLock::new((0.0, 0.0)),
             focused_element: RwLock::new(None),
             element_registry: RwLock::new(None),
+            motion_state_callback: RwLock::new(None),
         };
 
         if CONTEXT_STATE.set(state).is_err() {
@@ -563,6 +638,43 @@ impl BlincContextState {
             .as_ref()
             .and_then(|r| r.clone().downcast::<T>().ok())
     }
+
+    // =========================================================================
+    // Motion Animation State Query
+    // =========================================================================
+
+    /// Set the motion state callback
+    ///
+    /// Called by `WindowedApp` to enable motion animation state queries.
+    /// The callback receives a stable motion key and returns its animation state.
+    pub fn set_motion_state_callback(&self, callback: MotionStateCallback) {
+        *self.motion_state_callback.write().unwrap() = Some(callback);
+    }
+
+    /// Query motion animation state by stable key
+    ///
+    /// Returns the current state of a motion animation identified by its stable key.
+    /// This enables components to check if a parent motion is still animating
+    /// before rendering their own content.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use blinc_core::context_state::query_motion;
+    ///
+    /// let state = query_motion("dialog-content");
+    /// if state.is_settled() {
+    ///     // Safe to render hover effects, etc.
+    /// }
+    /// ```
+    pub fn query_motion(&self, key: &str) -> MotionAnimationState {
+        self.motion_state_callback
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|cb| cb(key))
+            .unwrap_or(MotionAnimationState::NotFound)
+    }
 }
 
 // =========================================================================
@@ -639,6 +751,30 @@ pub fn request_rebuild() {
 /// ```
 pub fn query(id: &str) -> Option<u64> {
     BlincContextState::get().query(id)
+}
+
+/// Query motion animation state by stable key
+///
+/// Returns the current state of a motion animation identified by its stable key.
+/// This enables components to check if a parent motion is still animating
+/// before rendering their own content.
+///
+/// # Panics
+///
+/// Panics if `BlincContextState::init()` has not been called.
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_core::context_state::query_motion;
+///
+/// let state = query_motion("dialog-content");
+/// if state.is_settled() {
+///     // Safe to render hover effects, etc.
+/// }
+/// ```
+pub fn query_motion(key: &str) -> MotionAnimationState {
+    BlincContextState::get().query_motion(key)
 }
 
 #[cfg(test)]

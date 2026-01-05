@@ -40,13 +40,25 @@
 //! | Focus state | | ✓ (FSM) |
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use blinc_animation::{AnimationScheduler, SchedulerHandle, Spring, SpringConfig, SpringId};
+use blinc_core::context_state::MotionAnimationState;
 use blinc_core::{Color, Rect, Transform};
 
 use crate::element::{MotionAnimation, MotionKeyframe};
 use crate::tree::LayoutNodeId;
+
+/// Shared motion state for query API access
+///
+/// This stores a snapshot of motion animation states that can be queried
+/// from outside the render loop via the query_motion API.
+pub type SharedMotionStates = Arc<RwLock<HashMap<String, MotionAnimationState>>>;
+
+/// Create a new shared motion state store
+pub fn create_shared_motion_states() -> SharedMotionStates {
+    Arc::new(RwLock::new(HashMap::new()))
+}
 
 // =============================================================================
 // Global pending motion replay queue
@@ -296,6 +308,10 @@ pub struct RenderState {
 
     /// Whether viewport has been set (false = no culling)
     viewport_set: bool,
+
+    /// Shared motion state for query API access
+    /// Updated after each tick to expose motion states to components
+    shared_motion_states: Option<SharedMotionStates>,
 }
 
 impl RenderState {
@@ -314,6 +330,38 @@ impl RenderState {
             last_tick_time: None,
             viewport: Rect::new(0.0, 0.0, 0.0, 0.0),
             viewport_set: false,
+            shared_motion_states: None,
+        }
+    }
+
+    /// Set the shared motion states for query API access
+    ///
+    /// Call this after creating the RenderState to enable motion state queries.
+    pub fn set_shared_motion_states(&mut self, shared: SharedMotionStates) {
+        self.shared_motion_states = Some(shared);
+    }
+
+    /// Sync motion states to the shared store
+    ///
+    /// Call this after tick() to update the shared motion states for query API.
+    pub fn sync_shared_motion_states(&self) {
+        if let Some(ref shared) = self.shared_motion_states {
+            let mut states = shared.write().unwrap();
+            states.clear();
+            for (key, motion) in &self.stable_motions {
+                let state = match &motion.state {
+                    MotionState::Waiting { .. } => MotionAnimationState::Waiting,
+                    MotionState::Entering { progress, .. } => {
+                        MotionAnimationState::Entering { progress: *progress }
+                    }
+                    MotionState::Visible => MotionAnimationState::Visible,
+                    MotionState::Exiting { progress, .. } => {
+                        MotionAnimationState::Exiting { progress: *progress }
+                    }
+                    MotionState::Removed => MotionAnimationState::Removed,
+                };
+                states.insert(key.clone(), state);
+            }
         }
     }
 
@@ -1048,6 +1096,32 @@ impl RenderState {
     /// Get the current motion values for a stable-keyed animation
     pub fn get_stable_motion_values(&self, key: &str) -> Option<&MotionKeyframe> {
         self.stable_motions.get(key).map(|m| &m.current)
+    }
+
+    /// Get the animation state for a stable-keyed motion
+    ///
+    /// Returns the current state of the motion animation as `MotionAnimationState`.
+    /// This is used by the query API to expose animation state to components.
+    pub fn get_stable_motion_state(
+        &self,
+        key: &str,
+    ) -> blinc_core::context_state::MotionAnimationState {
+        use blinc_core::context_state::MotionAnimationState;
+
+        match self.stable_motions.get(key) {
+            Some(motion) => match &motion.state {
+                MotionState::Waiting { .. } => MotionAnimationState::Waiting,
+                MotionState::Entering { progress, .. } => {
+                    MotionAnimationState::Entering { progress: *progress }
+                }
+                MotionState::Visible => MotionAnimationState::Visible,
+                MotionState::Exiting { progress, .. } => {
+                    MotionAnimationState::Exiting { progress: *progress }
+                }
+                MotionState::Removed => MotionAnimationState::Removed,
+            },
+            None => MotionAnimationState::NotFound,
+        }
     }
 
     /// Check if a stable-keyed motion is complete and should be removed

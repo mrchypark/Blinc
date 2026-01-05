@@ -639,6 +639,14 @@ pub struct StatefulInner<S: StateTransitions> {
 
     /// Signal dependencies - when any of these change, refresh props
     pub(crate) deps: Vec<SignalId>,
+
+    /// Ancestor motion key (if inside a motion container)
+    ///
+    /// Set during tree building when the stateful element is inside a Motion.
+    /// Used to check if the ancestor motion is animating before applying
+    /// hover/press state transitions. This allows children to blend with
+    /// the motion animation.
+    pub(crate) ancestor_motion_key: Option<String>,
 }
 
 impl<S: StateTransitions> StatefulInner<S> {
@@ -651,6 +659,7 @@ impl<S: StateTransitions> StatefulInner<S> {
             base_render_props: None,
             node_id: None,
             deps: Vec::new(),
+            ancestor_motion_key: None,
         }
     }
 }
@@ -803,6 +812,7 @@ impl<S: StateTransitions> Stateful<S> {
                 base_render_props: None,
                 node_id: None,
                 deps: Vec::new(),
+                ancestor_motion_key: None,
             })),
             children_cache: RefCell::new(Vec::new()),
             event_handlers_cache: RefCell::new(crate::event_handler::EventHandlers::new()),
@@ -1057,6 +1067,10 @@ impl<S: StateTransitions> Stateful<S> {
     ///
     /// This updates the state, computes new render props via the callback,
     /// and queues an incremental prop update. No tree rebuild is needed.
+    ///
+    /// If this stateful element is inside an animating motion container,
+    /// the state transition is suppressed to allow children to blend with
+    /// the motion animation. State transitions only apply after the motion settles.
     fn handle_event_internal(
         shared: &Arc<Mutex<StatefulInner<S>>>,
         event: u32,
@@ -1067,6 +1081,21 @@ impl<S: StateTransitions> Stateful<S> {
         // Store node_id for future use
         if guard.node_id.is_none() {
             guard.node_id = Some(node_id);
+        }
+
+        // Check if inside an animating motion container
+        // If so, suppress state transitions until motion settles
+        if let Some(ref motion_key) = guard.ancestor_motion_key {
+            let motion_state = blinc_core::query_motion(motion_key);
+            if motion_state.is_animating() {
+                // Ancestor motion is still animating - suppress this state change
+                // The element will respond to events once animation completes
+                tracing::trace!(
+                    "Suppressing state transition: ancestor motion '{}' is animating",
+                    motion_key
+                );
+                return;
+            }
         }
 
         // Check if state transition needed
@@ -2238,6 +2267,13 @@ impl<S: StateTransitions + Default> ElementBuilder for BoundStateful<S> {
 
 impl<S: StateTransitions> ElementBuilder for Stateful<S> {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
+        // Capture ancestor motion key if inside a motion container
+        // This enables deferring visual state updates until motion animation completes
+        {
+            let mut guard = self.shared_state.lock().unwrap();
+            guard.ancestor_motion_key = crate::motion::current_motion_key();
+        }
+
         // Ensure callback has been invoked to populate children
         self.ensure_callback_invoked();
 
@@ -2251,14 +2287,14 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
 
         // Put children back for build() to use
         {
-            let cache = self.children_cache.borrow();
-            let mut inner = self.inner.borrow_mut();
+            let _cache = self.children_cache.borrow();
+            let _inner = self.inner.borrow_mut();
             // We need to clone the children references - but Box<dyn ElementBuilder> isn't Clone
             // So we'll leave them in the cache and manually build them
         }
 
         // Build the inner div's node (without children since we extracted them)
-        let mut inner = self.inner.borrow_mut();
+        let inner = self.inner.borrow_mut();
         let node = tree.create_node(inner.style.clone());
 
         // Build children from the cache and add to tree

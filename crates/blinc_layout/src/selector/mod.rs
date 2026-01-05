@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use blinc_core::BlincContextState;
 
-pub use handle::{ElementEvent, ElementHandle};
+pub use handle::{ElementEvent, ElementHandle, MotionHandle};
 pub use registry::ElementRegistry;
 
 /// Shared element registry for thread-safe access
@@ -71,6 +71,31 @@ pub fn query(id: &str) -> Option<ElementHandle<()>> {
     let ctx = BlincContextState::try_get()?;
     let registry: Arc<ElementRegistry> = ctx.element_registry()?;
     Some(ElementHandle::new(id, registry))
+}
+
+/// Query a motion animation by its stable key
+///
+/// Returns a `MotionHandle` that can be used to check the animation state.
+/// Use this to determine if a parent motion animation has settled before
+/// rendering child content with hover effects.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use blinc_layout::selector::query_motion;
+///
+/// // Inside a Stateful on_state callback:
+/// let motion = query_motion("dialog-content");
+/// if motion.is_settled() {
+///     // Safe to render with hover effects
+///     container.merge(interactive_button());
+/// } else {
+///     // Render static version during animation
+///     container.merge(static_button());
+/// }
+/// ```
+pub fn query_motion(key: &str) -> MotionHandle {
+    MotionHandle::new(key)
 }
 pub use scroll_ref::{PendingScroll, ScrollRef, SharedScrollRefInner, TriggerCallback};
 

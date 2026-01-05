@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use blinc_core::context_state::MotionAnimationState;
 use blinc_core::BlincContextState;
 
 use crate::element::{ElementBounds, RenderProps};
@@ -456,5 +457,99 @@ mod tests {
         handle.on_ready_arc(callback);
 
         assert!(registry.has_pending_on_ready());
+    }
+}
+
+// =============================================================================
+// MotionHandle - Handle for querying motion animation state
+// =============================================================================
+
+/// Handle to a motion animation for querying its state
+///
+/// Returned by `query_motion("motion-key")` for animation state queries.
+/// Use this to check if a parent motion animation has settled before
+/// rendering child content with hover effects, etc.
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_layout::selector::query_motion;
+///
+/// // Inside a Stateful on_state callback:
+/// let motion = query_motion("dialog-content");
+/// if motion.is_settled() {
+///     // Safe to render hover effects
+///     container.merge(button_with_hover());
+/// } else {
+///     // Render without hover effects during animation
+///     container.merge(button_static());
+/// }
+/// ```
+#[derive(Clone, Debug)]
+pub struct MotionHandle {
+    /// The stable key used to query this motion
+    key: String,
+    /// Current animation state
+    state: MotionAnimationState,
+}
+
+impl MotionHandle {
+    /// Create a new motion handle from a stable key
+    ///
+    /// Queries the current animation state via `BlincContextState`.
+    pub fn new(key: impl Into<String>) -> Self {
+        let key = key.into();
+        let state = BlincContextState::try_get()
+            .map(|ctx| ctx.query_motion(&key))
+            .unwrap_or(MotionAnimationState::NotFound);
+        Self { key, state }
+    }
+
+    /// Get the stable key for this motion
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Get the current animation state
+    pub fn state(&self) -> MotionAnimationState {
+        self.state
+    }
+
+    /// Check if the animation is still playing (not settled)
+    ///
+    /// Returns true if the motion is in `Waiting`, `Entering`, or `Exiting` state.
+    pub fn is_animating(&self) -> bool {
+        self.state.is_animating()
+    }
+
+    /// Check if the animation has settled (fully visible)
+    ///
+    /// Returns true if the motion is in `Visible` state.
+    /// This is when it's safe to render child content with hover effects.
+    pub fn is_settled(&self) -> bool {
+        self.state.is_settled()
+    }
+
+    /// Check if the element is entering
+    pub fn is_entering(&self) -> bool {
+        self.state.is_entering()
+    }
+
+    /// Check if the element is exiting
+    pub fn is_exiting(&self) -> bool {
+        self.state.is_exiting()
+    }
+
+    /// Get the animation progress (0.0 to 1.0)
+    ///
+    /// Returns 0.0 for Waiting, 1.0 for Visible/Removed, and the actual
+    /// progress for Entering/Exiting states.
+    pub fn progress(&self) -> f32 {
+        self.state.progress()
+    }
+
+    /// Check if a motion with this key exists
+    pub fn exists(&self) -> bool {
+        !matches!(self.state, MotionAnimationState::NotFound)
     }
 }

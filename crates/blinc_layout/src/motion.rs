@@ -34,10 +34,89 @@
 //! // Later, in drag handler:
 //! offset_y.borrow_mut().set_target(100.0);  // Animates smoothly
 //! ```
+//!
+//! # Motion Context
+//!
+//! When building UI trees, motion containers track their stable key in a thread-local
+//! context. This allows child elements (especially Stateful elements) to detect if
+//! they're inside an animating motion and defer visual updates until the animation
+//! completes.
+//!
+//! ```ignore
+//! // Check if currently inside an animating motion:
+//! if is_inside_animating_motion() {
+//!     // Don't apply hover state yet
+//! }
+//! ```
+
+use std::cell::RefCell;
 
 use crate::div::{ElementBuilder, ElementTypeId};
 use crate::element::{MotionAnimation, MotionKeyframe, RenderProps};
 use crate::key::InstanceKey;
+
+// =============================================================================
+// Motion Context - Tracks ancestor motion during tree building
+// =============================================================================
+
+thread_local! {
+    /// Stack of motion container stable keys currently being built
+    ///
+    /// When a Motion container's build() is called, it pushes its stable key.
+    /// When build() returns, it pops the key. This allows descendants to know
+    /// they're inside a motion container and check its animation state.
+    static MOTION_CONTEXT_STACK: RefCell<Vec<String>> = RefCell::new(Vec::new());
+}
+
+/// Push a motion container's stable key onto the context stack
+///
+/// Call this when entering a Motion's build() method.
+pub fn push_motion_context(key: &str) {
+    MOTION_CONTEXT_STACK.with(|stack| {
+        stack.borrow_mut().push(key.to_string());
+    });
+}
+
+/// Pop the current motion container's key from the context stack
+///
+/// Call this when leaving a Motion's build() method.
+pub fn pop_motion_context() {
+    MOTION_CONTEXT_STACK.with(|stack| {
+        stack.borrow_mut().pop();
+    });
+}
+
+/// Get the stable key of the nearest ancestor motion container
+///
+/// Returns `None` if not inside any motion container.
+pub fn current_motion_key() -> Option<String> {
+    MOTION_CONTEXT_STACK.with(|stack| stack.borrow().last().cloned())
+}
+
+/// Check if currently inside an animating motion container
+///
+/// This queries the motion animation state for the nearest ancestor motion.
+/// If inside a motion that is still animating (Waiting, Entering, or Exiting),
+/// returns true. This is used by Stateful elements to defer visual updates.
+///
+/// # Returns
+///
+/// - `true` if inside a motion container that is currently animating
+/// - `false` if not inside any motion, or if the motion has settled (Visible)
+pub fn is_inside_animating_motion() -> bool {
+    if let Some(key) = current_motion_key() {
+        // Query the motion state via the global query API
+        let state = blinc_core::query_motion(&key);
+        state.is_animating()
+    } else {
+        false
+    }
+}
+
+/// Check if currently inside a motion container (regardless of animation state)
+pub fn is_inside_motion() -> bool {
+    MOTION_CONTEXT_STACK.with(|stack| !stack.borrow().is_empty())
+}
 use crate::tree::{LayoutNodeId, LayoutTree};
 use blinc_animation::{AnimatedValue, AnimationPreset, MultiKeyframeAnimation};
 use blinc_core::Transform;
@@ -1056,6 +1135,12 @@ impl Motion {
 
 impl ElementBuilder for Motion {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
+        // Push motion context so children know they're inside this motion
+        // This enables stateful children to defer visual updates during animation
+        if self.use_stable_key {
+            push_motion_context(self.key.get());
+        }
+
         // Create a container node with the configured style
         let node = tree.create_node(self.style.clone());
 
@@ -1063,6 +1148,11 @@ impl ElementBuilder for Motion {
         for child in &self.children {
             let child_node = child.build(tree);
             tree.add_child(node, child_node);
+        }
+
+        // Pop motion context when done building children
+        if self.use_stable_key {
+            pop_motion_context();
         }
 
         node

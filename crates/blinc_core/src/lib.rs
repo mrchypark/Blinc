@@ -71,7 +71,7 @@ pub use value::{
 // Re-export context types at crate level for convenience
 pub use context::{BlincContext, BlincContextExt};
 pub use context_state::{
-    query, request_rebuild, use_signal_keyed, use_state_keyed, AnyElementRegistry,
-    BlincContextState, Bounds, BoundsCallback, FocusCallback, HookState, QueryCallback,
-    ScrollCallback, SharedHookState, StateKey,
+    query, query_motion, request_rebuild, use_signal_keyed, use_state_keyed, AnyElementRegistry,
+    BlincContextState, Bounds, BoundsCallback, FocusCallback, HookState, MotionAnimationState,
+    MotionStateCallback, QueryCallback, ScrollCallback, SharedHookState, StateKey,
 };
