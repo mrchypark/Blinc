@@ -2195,6 +2195,19 @@ impl WindowedApp {
                                 needs_relayout = true;
                             }
 
+                            // Process pending motion exit starts BEFORE overlay update
+                            // This is critical: when an overlay closes, it queues a motion exit via
+                            // query_motion(key).exit(). The overlay's update() method then checks
+                            // if the motion is done animating. If we don't process the exit queue
+                            // first, the motion won't be in Exiting state yet, and update() will
+                            // incorrectly think the exit animation is complete.
+                            rs.process_global_motion_exit_starts();
+                            rs.process_global_motion_exit_cancels();
+
+                            // Sync motion states to shared store so overlay can query them
+                            // This must happen after processing exits but before overlay update
+                            rs.sync_shared_motion_states();
+
                             // Update overlay manager viewport and state for subtree rebuilds
                             // This must happen BEFORE checking is_dirty() so build_overlay_layer() works correctly
                             windowed_ctx.overlay_manager.set_viewport_with_scale(

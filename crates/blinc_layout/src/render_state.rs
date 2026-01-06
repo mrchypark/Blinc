@@ -987,28 +987,16 @@ impl RenderState {
                     );
                     return;
                 }
-                // Only restart if the motion was previously removed (overlay closed then reopened)
+                // Motion was removed (exit animation completed) - do NOT restart!
+                // The motion should only restart when it's been fully cleaned up from stable_motions
+                // (via end_stable_motion_frame) and then created fresh. This prevents the enter
+                // animation from replaying immediately after exit completes while the overlay
+                // content is still being rendered during the Closing state.
                 MotionState::Removed => {
-                    tracing::debug!("Motion '{}': Was Removed, restarting enter animation", key);
-                    // Reset to initial enter state
-                    existing.config = config.clone();
-                    existing.state = if config.enter_delay_ms > 0 {
-                        MotionState::Waiting {
-                            remaining_delay_ms: config.enter_delay_ms as f32,
-                        }
-                    } else if config.enter_from.is_some() && config.enter_duration_ms > 0 {
-                        MotionState::Entering {
-                            progress: 0.0,
-                            duration_ms: config.enter_duration_ms as f32,
-                        }
-                    } else {
-                        MotionState::Visible
-                    };
-                    existing.current = if matches!(existing.state, MotionState::Visible) {
-                        MotionKeyframe::default()
-                    } else {
-                        config.enter_from.clone().unwrap_or_default()
-                    };
+                    tracing::debug!(
+                        "Motion '{}': Removed state, NOT restarting (wait for cleanup)",
+                        key
+                    );
                     return;
                 }
             }

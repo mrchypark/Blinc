@@ -55,7 +55,7 @@ use blinc_animation::AnimationPreset;
 use blinc_core::context_state::BlincContextState;
 use blinc_core::{Color, State};
 use blinc_layout::element::CursorStyle;
-use blinc_layout::motion::motion;
+use blinc_layout::motion::motion_derived;
 use blinc_layout::overlay_state::get_overlay_manager;
 use blinc_layout::prelude::*;
 use blinc_layout::stateful::{ButtonState, Stateful};
@@ -336,18 +336,25 @@ impl ContextMenuBuilder {
         let menu_key = format!("_context_menu_{}_{}", x as i32, y as i32);
 
         let mgr = get_overlay_manager();
+
+        // Create a unique motion key for this context menu instance
+        // The motion is on the child of the wrapper div, so we need ":child:0" suffix
+        let motion_key_str = format!("ctxmenu_{}", menu_key);
+        let motion_key_with_child = format!("{}:child:0", motion_key_str);
+
         // Use dropdown() instead of context_menu() to get transparent backdrop
         // that dismisses on click outside (same as Select component)
         let handle = mgr
             .dropdown()
             .at(x, y)
             .dismiss_on_escape(true)
+            .motion_key(&motion_key_with_child)
             .content(move || {
                 build_menu_content(
                     &items,
                     width,
                     &handle_state_for_content,
-                    &menu_key,
+                    &motion_key_str,
                     bg,
                     border,
                     text_color,
@@ -601,8 +608,9 @@ fn build_menu_content(
     }
 
     // Wrap menu in motion container for enter/exit animations
+    // Use motion_derived with the key so the overlay can trigger exit animation
     div().child(
-        motion()
+        motion_derived(key)
             .enter_animation(AnimationPreset::context_menu_in(150))
             .exit_animation(AnimationPreset::context_menu_out(100))
             .child(menu),

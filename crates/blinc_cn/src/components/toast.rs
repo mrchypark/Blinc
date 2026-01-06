@@ -69,10 +69,11 @@ use std::sync::Arc;
 
 use blinc_animation::AnimationPreset;
 use blinc_core::Color;
-use blinc_layout::motion::motion;
+use blinc_layout::motion::motion_derived;
 use blinc_layout::overlay_state::get_overlay_manager;
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{Corner, OverlayHandle, OverlayManagerExt};
+use blinc_layout::InstanceKey;
 use blinc_theme::{ColorToken, RadiusToken, ThemeState};
 
 use super::button::{button, ButtonSize, ButtonVariant};
@@ -242,6 +243,7 @@ impl ToastBuilder {
     }
 
     /// Show the toast
+    #[track_caller]
     pub fn show(self) -> OverlayHandle {
         let theme = ThemeState::get();
         let bg = theme.color(ColorToken::Surface);
@@ -265,25 +267,35 @@ impl ToastBuilder {
 
         let mgr = get_overlay_manager();
 
-        let mut toast_builder = mgr.toast().corner(corner).content(move || {
-            build_toast_content(
-                &title,
-                &description,
-                &icon_svg,
-                accent_color,
-                bg,
-                border,
-                text_primary,
-                text_secondary,
-                radius,
-                &action_label,
-                &action_callback,
-                show_close,
-                &body,
-                &custom_content,
-                corner,
-            )
-        });
+        // Create a unique motion key for this toast instance
+        let key = InstanceKey::new("toast");
+        let motion_key_str = format!("toast_{}", key.get());
+        let motion_key_with_child = format!("{}:child:0", motion_key_str);
+
+        let mut toast_builder = mgr
+            .toast()
+            .corner(corner)
+            .motion_key(&motion_key_with_child)
+            .content(move || {
+                build_toast_content(
+                    &title,
+                    &description,
+                    &icon_svg,
+                    accent_color,
+                    bg,
+                    border,
+                    text_primary,
+                    text_secondary,
+                    radius,
+                    &action_label,
+                    &action_callback,
+                    show_close,
+                    &body,
+                    &custom_content,
+                    corner,
+                    &motion_key_str,
+                )
+            });
 
         // Set duration if not persistent
         if duration_ms > 0 {
@@ -336,6 +348,7 @@ fn build_toast_content(
     body: &Option<ToastBodyFn>,
     custom_content: &Option<ToastBodyFn>,
     corner: Corner,
+    motion_key: &str,
 ) -> Div {
     let theme = ThemeState::get();
     let enter_anim = get_enter_animation(corner);
@@ -351,7 +364,7 @@ fn build_toast_content(
             .shadow_lg();
 
         return div().child(
-            motion()
+            motion_derived(motion_key)
                 .enter_animation(enter_anim)
                 .exit_animation(exit_anim)
                 .child(toast),
@@ -452,7 +465,7 @@ fn build_toast_content(
 
     // Wrap in motion for animations
     div().child(
-        motion()
+        motion_derived(motion_key)
             .enter_animation(enter_anim)
             .exit_animation(exit_anim)
             .child(toast),

@@ -338,19 +338,13 @@ impl Combobox {
                 let is_currently_open = open_state_for_click.get();
 
                 if is_currently_open {
-                    // Close the dropdown
+                    // Close the dropdown - state updates are handled by on_close callback
+                    // after the exit animation completes (deferred in overlay manager)
                     if let Some(handle_id) = overlay_handle_for_click.get() {
                         let mgr = get_overlay_manager();
                         mgr.close(OverlayHandle::from_raw(handle_id));
                     }
-                    open_state_for_click.set(false);
-                    overlay_handle_for_click.set(None);
-
-                    // Clear search text
-                    if let Ok(mut data) = search_data_for_click.lock() {
-                        data.value.clear();
-                        data.cursor = 0;
-                    }
+                    // Don't update state here - let on_close callback handle it after animation
                 } else {
                     // Use EventContext bounds which are computed absolutely by the event router
                     let (trigger_x, trigger_y, _trigger_w, trigger_h) = (
@@ -835,20 +829,13 @@ fn build_dropdown_content(
                                 .unwrap_or_default();
                             value_state_for_custom.set(custom_val.clone());
 
-                            // Close the overlay
+                            // Close the overlay - state updates are handled by on_close callback
+                            // after the exit animation completes (deferred in overlay manager)
                             if let Some(handle_id) = handle_state_for_custom.get() {
                                 let mgr = get_overlay_manager();
                                 mgr.close(OverlayHandle::from_raw(handle_id));
                             }
-                            open_state_for_custom.set(false);
-                            handle_state_for_custom.set(None);
-
-                            // Clear search
-                            if let Ok(mut data) = search_data_for_custom.lock() {
-                                data.value.clear();
-                                data.cursor = 0;
-                            }
-                            search_query_for_custom.set(String::new());
+                            // Don't update state here - let on_close callback handle it after animation
 
                             // Call on_change callback
                             if let Some(ref cb) = on_change_for_custom {
@@ -928,20 +915,13 @@ fn build_dropdown_content(
                                 // Set the new value
                                 value_state_for_opt.set(opt_value_for_click.clone());
 
-                                // Close the overlay
+                                // Close the overlay - state updates are handled by on_close callback
+                                // after the exit animation completes (deferred in overlay manager)
                                 if let Some(handle_id) = handle_state_for_opt.get() {
                                     let mgr = get_overlay_manager();
                                     mgr.close(OverlayHandle::from_raw(handle_id));
                                 }
-                                open_state_for_opt.set(false);
-                                handle_state_for_opt.set(None);
-
-                                // Clear search
-                                if let Ok(mut data) = search_data_for_opt.lock() {
-                                    data.value.clear();
-                                    data.cursor = 0;
-                                }
-                                search_query_for_opt.set(String::new());
+                                // Don't update state here - let on_close callback handle it after animation
 
                                 // Call on_change callback
                                 if let Some(ref cb) = on_change_for_opt {

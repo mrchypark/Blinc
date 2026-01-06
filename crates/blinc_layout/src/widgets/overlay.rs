@@ -1004,12 +1004,31 @@ impl OverlayManagerInner {
             }
         }
 
-        // Remove closed overlays
+        // Remove closed overlays and collect their on_close callbacks
+        // We defer calling on_close until AFTER the overlay is fully removed
+        // to prevent state updates from triggering UI rebuilds during exit animation
         let count_before = self.overlays.len();
-        self.overlays.retain(|_, o| o.state != OverlayState::Closed);
+        let mut callbacks_to_invoke = Vec::new();
+        self.overlays.retain(|_, o| {
+            if o.state == OverlayState::Closed {
+                // Collect callback before removing
+                if let Some(cb) = o.on_close.take() {
+                    callbacks_to_invoke.push(cb);
+                }
+                false // Remove this overlay
+            } else {
+                true // Keep this overlay
+            }
+        });
         if self.overlays.len() != count_before {
             // Overlays were removed - content change
             content_dirty = true;
+        }
+
+        // Invoke on_close callbacks AFTER overlay removal is complete
+        // This ensures exit animations play fully before triggering state updates
+        for cb in callbacks_to_invoke {
+            cb();
         }
 
         if content_dirty {
@@ -1254,14 +1273,11 @@ impl OverlayManagerInner {
             .map(|o| o.handle)
         {
             if let Some(overlay) = self.overlays.get_mut(&handle) {
-                // Get callback before mutating
-                let on_close = overlay.on_close.clone();
                 if overlay.transition(overlay_events::ESCAPE) {
-                    self.mark_dirty();
-                    // Invoke on_close callback
-                    if let Some(cb) = on_close {
-                        cb();
-                    }
+                    // Starting close animation - animation dirty, not content
+                    // Using mark_dirty() here would cause content rebuild which restarts motion animations
+                    // Note: on_close callback is deferred until overlay is fully removed in update()
+                    self.mark_animation_dirty();
                     return true;
                 }
             }
@@ -1314,14 +1330,11 @@ impl OverlayManagerInner {
             .map(|o| o.handle)
         {
             if let Some(overlay) = self.overlays.get_mut(&handle) {
-                // Get callback before mutating
-                let on_close = overlay.on_close.clone();
                 if overlay.transition(overlay_events::BACKDROP_CLICK) {
-                    self.mark_dirty();
-                    // Invoke on_close callback
-                    if let Some(cb) = on_close {
-                        cb();
-                    }
+                    // Starting close animation - animation dirty, not content
+                    // Using mark_dirty() here would cause content rebuild which restarts motion animations
+                    // Note: on_close callback is deferred until overlay is fully removed in update()
+                    self.mark_animation_dirty();
                     return true;
                 }
             }
@@ -1565,7 +1578,6 @@ impl OverlayManagerInner {
         let content = if overlay.config.dismiss_on_hover_leave {
             let overlay_handle = overlay.handle;
             let has_close_delay = overlay.config.close_delay_ms.is_some();
-            let on_close_callback = overlay.on_close.clone();
             content.on_hover_leave(move |_| {
                 tracing::debug!("OVERLAY dismiss_on_hover_leave handler fired");
                 if let Some(ctx) = crate::overlay_state::OverlayContext::try_get() {
@@ -1577,11 +1589,9 @@ impl OverlayManagerInner {
                         inner.hover_leave(overlay_handle);
                     } else {
                         // Close immediately (no delay configured)
+                        // The on_close callback is deferred until after the exit animation completes
+                        // (handled in update() when overlay transitions to Closed state)
                         inner.close(overlay_handle);
-                        // Call the on_close callback if provided
-                        if let Some(ref cb) = on_close_callback {
-                            cb();
-                        }
                     }
                 }
             })
@@ -1617,7 +1627,6 @@ impl OverlayManagerInner {
             // Build backdrop div with click-to-dismiss if enabled
             let backdrop_div = if backdrop_config.dismiss_on_click {
                 let overlay_handle = overlay.handle;
-                let on_close_callback = overlay.on_close.clone();
                 let backdrop_key =
                     InstanceKey::explicit(format!("overlay_backdrop_{}", overlay_handle.0));
 
@@ -1632,12 +1641,12 @@ impl OverlayManagerInner {
                     .on_click(move |_| {
                         println!("Backdrop clicked! Dismissing overlay {:?}", overlay_handle);
                         // Close this overlay via the global overlay manager
+                        // The on_close callback is deferred until after the exit animation completes
+                        // (handled in update() when overlay transitions to Closed state)
+                        // Do NOT call on_close here - that would trigger state updates and UI rebuild
+                        // which causes the exit animation to restart/jitter
                         if let Some(ctx) = crate::overlay_state::OverlayContext::try_get() {
                             ctx.overlay_manager().lock().unwrap().close(overlay_handle);
-                        }
-                        // Call the on_close callback if provided
-                        if let Some(ref cb) = on_close_callback {
-                            cb();
                         }
                     })
             } else {
@@ -2122,6 +2131,16 @@ impl ModalBuilder {
         self
     }
 
+    /// Set the motion key for triggering content exit animations
+    ///
+    /// When the overlay transitions to Closing state, it will automatically
+    /// trigger exit animation on the motion with this key. Use the same key
+    /// with `motion_derived(key)` in your content builder.
+    pub fn motion_key(mut self, key: impl Into<String>) -> Self {
+        self.config.motion_key = Some(key.into());
+        self
+    }
+
     /// Show the modal
     pub fn show(self) -> OverlayHandle {
         let content = self.content.unwrap_or_else(|| Box::new(|| div()));
@@ -2239,6 +2258,16 @@ impl ToastBuilder {
         F: Fn() -> Div + Send + Sync + 'static,
     {
         self.content = Some(Box::new(f));
+        self
+    }
+
+    /// Set the motion key for triggering content exit animations
+    ///
+    /// When the overlay transitions to Closing state, it will automatically
+    /// trigger exit animation on the motion with this key. Use the same key
+    /// with `motion_derived(key)` in your content builder.
+    pub fn motion_key(mut self, key: impl Into<String>) -> Self {
+        self.config.motion_key = Some(key.into());
         self
     }
 

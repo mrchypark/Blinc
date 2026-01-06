@@ -40,7 +40,7 @@ use blinc_core::context_state::BlincContextState;
 use blinc_core::State;
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
-use blinc_layout::motion::motion;
+use blinc_layout::motion::motion_derived;
 use blinc_layout::overlay_state::get_overlay_manager;
 use blinc_layout::prelude::*;
 use blinc_layout::stateful::{ButtonState, Stateful};
@@ -283,16 +283,19 @@ impl Select {
                 container.merge(main_container);
             })
             .on_click(move |ctx| {
+                if disabled {
+                    return;
+                }
                 let is_currently_open = open_state_for_click.get();
 
                 if is_currently_open {
-                    // Close the dropdown
+                    // Close the dropdown - state updates are handled by on_close callback
+                    // after the exit animation completes (deferred in overlay manager)
                     if let Some(handle_id) = overlay_handle_for_click.get() {
                         let mgr = get_overlay_manager();
                         mgr.close(OverlayHandle::from_raw(handle_id));
                     }
-                    open_state_for_click.set(false);
-                    overlay_handle_for_click.set(None);
+                    // Don't update state here - let on_close callback handle it after animation
                 } else {
                     // Use EventContext bounds which are computed absolutely by the event router
                     // These are set during hit testing and represent the actual screen position
@@ -326,11 +329,18 @@ impl Select {
 
                     // Show dropdown via overlay manager
                     let mgr = get_overlay_manager();
+
+                    // Create a unique motion key for this select instance
+                    // The motion is on the child of the wrapper div, so we need ":child:0" suffix
+                    let motion_key_str = format!("select_{}", key_for_content);
+                    let motion_key_with_child = format!("{}:child:0", motion_key_str);
+
                     let handle = mgr
                         .dropdown()
                         .at(dropdown_x, dropdown_y)
                         // .size(dropdown_width, estimated_height)
                         .dismiss_on_escape(true)
+                        .motion_key(&motion_key_with_child)
                         .content(move || {
                             build_dropdown_content(
                                 &opts,
@@ -339,7 +349,7 @@ impl Select {
                                 &open_st,
                                 &handle_st,
                                 &on_chg,
-                                &key_for_content,
+                                &motion_key_str,
                                 dw,
                                 font_size,
                                 padding,
@@ -722,8 +732,9 @@ fn build_dropdown_content(
     }
 
     // Wrap dropdown in motion container for enter/exit animations
+    // Use motion_derived with the key so the overlay can trigger exit animation
     div().child(
-        motion()
+        motion_derived(key)
             .enter_animation(AnimationPreset::dropdown_in(150))
             .exit_animation(AnimationPreset::dropdown_out(100))
             .child(dropdown_div),

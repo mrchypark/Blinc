@@ -33,10 +33,11 @@ use std::sync::Arc;
 
 use blinc_animation::{AnimationPreset, MultiKeyframeAnimation};
 use blinc_core::Color;
-use blinc_layout::motion::motion;
+use blinc_layout::motion::motion_derived;
 use blinc_layout::overlay_state::get_overlay_manager;
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{OverlayHandle, OverlayManagerExt};
+use blinc_layout::InstanceKey;
 use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
 
 use super::button::{button, ButtonVariant};
@@ -86,11 +87,13 @@ pub struct DialogBuilder {
     enter_animation: Option<MultiKeyframeAnimation>,
     /// Custom exit animation (defaults to dialog_out)
     exit_animation: Option<MultiKeyframeAnimation>,
-    // key: InstanceKey,
+    /// Unique key for motion animation
+    key: InstanceKey,
 }
 
 impl DialogBuilder {
     /// Create a new dialog builder
+    #[track_caller]
     pub fn new() -> Self {
         Self {
             title: None,
@@ -106,7 +109,7 @@ impl DialogBuilder {
             show_cancel: true,
             enter_animation: None,
             exit_animation: None,
-            // key: InstanceKey::new("dialog")
+            key: InstanceKey::new("dialog"),
         }
     }
 
@@ -256,10 +259,15 @@ impl DialogBuilder {
             .unwrap_or_else(|| AnimationPreset::grow_out(150));
 
         let mgr = get_overlay_manager();
-        // let overlay_key = self.key.derive("overlay_handle");
+
+        // Create a unique motion key for this dialog instance
+        // The motion is on the child of the wrapper div, so we need ":child:0" suffix
+        let motion_key_str = format!("dialog_{}", self.key.get());
+        let motion_key_with_child = format!("{}:child:0", motion_key_str);
 
         mgr.modal()
             .dismiss_on_escape(true)
+            .motion_key(&motion_key_with_child)
             .content(move || {
                 build_dialog_content(
                     &title,
@@ -281,6 +289,7 @@ impl DialogBuilder {
                     show_cancel,
                     &enter_animation,
                     &exit_animation,
+                    &motion_key_str,
                 )
             })
             .show()
@@ -304,6 +313,7 @@ impl Default for DialogBuilder {
 ///     .on_confirm(|| { /* save */ })
 ///     .show();
 /// ```
+#[track_caller]
 pub fn dialog() -> DialogBuilder {
     DialogBuilder::new()
 }
@@ -377,6 +387,7 @@ impl Default for AlertDialogBuilder {
 ///     .confirm_text("OK")
 ///     .show();
 /// ```
+#[track_caller]
 pub fn alert_dialog() -> AlertDialogBuilder {
     AlertDialogBuilder::new()
 }
@@ -403,6 +414,7 @@ fn build_dialog_content(
     show_cancel: bool,
     enter_animation: &MultiKeyframeAnimation,
     exit_animation: &MultiKeyframeAnimation,
+    motion_key: &str,
 ) -> Div {
     // Use theme spacing tokens via helper methods (.p_6(), .gap_2(), .m_4(), etc.)
     let theme = ThemeState::get();
@@ -492,7 +504,9 @@ fn build_dialog_content(
 
     // Wrap inner content in a motion container with fade-in
     // This helps mask visual distortion from the outer scale animation
-    let animated_inner = motion()
+    // Use a derived key based on the outer motion key to ensure stability across rebuilds
+    let inner_motion_key = format!("{}_inner", motion_key);
+    let animated_inner = motion_derived(&inner_motion_key)
         .enter_animation(AnimationPreset::fade_in(150))
         .exit_animation(AnimationPreset::fade_out(100))
         .child(inner_content);
@@ -510,12 +524,12 @@ fn build_dialog_content(
         .child(animated_inner);
 
     // Wrap dialog in outer motion container for scale+fade animations
+    // Use motion_derived with the key so the overlay can trigger exit animation
     div().child(
-        motion()
+        motion_derived(motion_key)
             .enter_animation(enter_animation.clone())
             .exit_animation(exit_animation.clone())
-            .child(dialog)
-            .replay(),
+            .child(dialog),
     )
 }
 

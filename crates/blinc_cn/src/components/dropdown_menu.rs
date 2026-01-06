@@ -52,7 +52,7 @@ use blinc_core::context_state::BlincContextState;
 use blinc_core::{Color, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, ElementBounds, RenderProps};
-use blinc_layout::motion::motion;
+use blinc_layout::motion::motion_derived;
 use blinc_layout::overlay_state::get_overlay_manager;
 use blinc_layout::prelude::*;
 use blinc_layout::stateful::{ButtonState, Stateful};
@@ -371,13 +371,13 @@ impl DropdownMenuBuilder {
 
                 let is_open = open_state_for_trigger_1.get();
                 if is_open {
-                    // Close the menu
+                    // Close the menu - state updates are handled by on_close callback
+                    // after the exit animation completes (deferred in overlay manager)
                     if let Some(handle_id) = overlay_handle_for_trigger.get() {
                         let mgr = get_overlay_manager();
                         mgr.close(OverlayHandle::from_raw(handle_id));
                     }
-                    open_state_for_trigger_1.set(false);
-                    overlay_handle_for_trigger.set(None);
+                    // Don't update state here - let on_close callback handle it after animation
                 } else {
                     // Calculate position based on trigger bounds from event context
                     let (x, y) =
@@ -484,10 +484,17 @@ fn show_dropdown_menu(
     let open_state_for_dismiss = open_state.clone();
 
     let mgr = get_overlay_manager();
+
+    // Create a unique motion key for this dropdown instance
+    // The motion is on the child of the wrapper div, so we need ":child:0" suffix
+    let motion_key_str = format!("dropdown_{}", key);
+    let motion_key_with_child = format!("{}:child:0", motion_key_str);
+
     let handle = mgr
         .dropdown()
         .at(x, y)
         .dismiss_on_escape(true)
+        .motion_key(&motion_key_with_child)
         .on_close(move || {
             open_state_for_dismiss.set(false);
             handle_state_for_close.set(None);
@@ -498,7 +505,7 @@ fn show_dropdown_menu(
                 min_width,
                 &handle_state_for_content,
                 &open_state_for_content,
-                &key,
+                &motion_key_str,
                 bg,
                 border,
                 text_color,
@@ -654,13 +661,13 @@ fn build_dropdown_content(
                         if let Some(ref cb) = item_on_click {
                             cb();
                         }
-                        // Set open_state to false BEFORE closing overlay
-                        // This ensures the trigger's chevron updates correctly
-                        open_state_for_click.set(false);
+                        // Close the overlay - state updates are handled by on_close callback
+                        // after the exit animation completes (deferred in overlay manager)
                         if let Some(handle_id) = handle_state_for_click.get() {
                             let mgr = get_overlay_manager();
                             mgr.close(OverlayHandle::from_raw(handle_id));
                         }
+                        // Don't update state here - let on_close callback handle it after animation
                     }
                 });
 
@@ -669,8 +676,9 @@ fn build_dropdown_content(
     }
 
     // Wrap in motion for animation
+    // Use motion_derived with the key so the overlay can trigger exit animation
     div().child(
-        motion()
+        motion_derived(key)
             .enter_animation(AnimationPreset::dropdown_in(150))
             .exit_animation(AnimationPreset::dropdown_out(100))
             .child(menu),
