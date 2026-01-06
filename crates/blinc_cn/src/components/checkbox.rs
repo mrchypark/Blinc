@@ -179,7 +179,11 @@ impl Checkbox {
             // Build visual update - use merge to preserve existing properties
             let mut visual = div()
                 .bg(bg)
+                .w(box_size)
+                .h(box_size)
                 .border(border_width, current_border)
+                .items_center()
+                .justify_center()
                 .transform(blinc_core::Transform::scale(scale, scale));
 
             // Add checkmark if checked using SVG
@@ -189,6 +193,8 @@ impl Checkbox {
                         .size(checkmark_size, checkmark_size)
                         .tint(check_mark_color),
                 );
+            } else {
+                visual = visual.child(div().w_full().h_full());
             }
 
             container.merge(visual);
