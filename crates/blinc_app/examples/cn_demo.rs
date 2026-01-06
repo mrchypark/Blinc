@@ -9,6 +9,7 @@ use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_cn::prelude::*;
 use blinc_core::Color;
+use blinc_layout::layout_animation::LayoutAnimationConfig;
 use blinc_layout::selector::ScrollRef;
 use blinc_layout::widgets::text_input::text_input_data;
 use blinc_theme::{BlincTheme, ColorScheme, ColorToken, ThemeState};
@@ -28,6 +29,105 @@ fn main() -> Result<()> {
     };
 
     WindowedApp::run(config, |ctx| build_ui(ctx))
+}
+
+/// Test for layout animation - toggles div height on click
+fn layout_animation_test() -> impl ElementBuilder {
+    use blinc_core::context_state::BlincContextState;
+    use blinc_layout::prelude::use_shared_state_with;
+    use blinc_layout::stateful::Stateful;
+
+    let theme = ThemeState::get();
+    let surface = theme.color(ColorToken::Surface);
+    let border = theme.color(ColorToken::Border);
+    let text_primary = theme.color(ColorToken::TextPrimary);
+    let text_secondary = theme.color(ColorToken::TextSecondary);
+
+    // State for toggling - use State<bool> for reactivity
+    let is_expanded: blinc_core::State<bool> =
+        BlincContextState::get().use_state_keyed("layout_anim_test_expanded", || false);
+
+    let signal_id = is_expanded.signal_id();
+    let is_expanded_for_click = is_expanded.clone();
+    let is_expanded_for_state = is_expanded.clone();
+
+    // Use shared state with unit type, deps on the signal
+    let state_handle = use_shared_state_with("layout_anim_test_state", ());
+
+    section_container()
+        .child(section_title("Layout Animation Test"))
+        .child(
+            text("Click the box to add/remove children. The container should animate its height.")
+                .size(14.0)
+                .color(text_secondary),
+        )
+        .child(
+            Stateful::with_shared_state(state_handle)
+                .deps(&[signal_id])
+                .on_state(move |_: &(), container: &mut Div| {
+                    let expanded = is_expanded_for_state.get();
+                    let is_expanded_click = is_expanded_for_click.clone();
+
+                    // The container has layout animation with STABLE KEY
+                    // This key persists across rebuilds so animation can track bounds changes
+                    let mut animated_container = div()
+                        .w(300.0)
+                        .bg(surface)
+                        .border(2.0, border)
+                        .rounded(8.0)
+                        .overflow_clip()
+                        .flex_col()
+                        .gap(8.0)
+                        .p(12.0)
+                        .animate_layout(
+                            LayoutAnimationConfig::height()
+                                .with_key("layout-test-container")
+                                .snappy(),
+                        )
+                        .cursor_pointer()
+                        .on_click(move |_| {
+                            let current = is_expanded_click.get();
+                            is_expanded_click.set(!current);
+                            tracing::info!(
+                                "Layout animation test: toggled to {}",
+                                if !current { "expanded" } else { "collapsed" }
+                            );
+                        });
+
+                    // Always show header
+                    animated_container = animated_container.child(
+                        text("Click me to toggle content")
+                            .size(14.0)
+                            .weight(FontWeight::Medium)
+                            .color(text_primary),
+                    );
+
+                    // Conditionally add more children when expanded
+                    if expanded {
+                        animated_container = animated_container
+                            .child(text("Item 1").size(14.0).color(text_secondary))
+                            .child(text("Item 2").size(14.0).color(text_secondary))
+                            .child(text("Item 3").size(14.0).color(text_secondary))
+                            .child(text("Item 4").size(14.0).color(text_secondary));
+                    }
+
+                    let status = text(format!(
+                        "State: {} ({} children)",
+                        if expanded { "expanded" } else { "collapsed" },
+                        if expanded { 5 } else { 1 }
+                    ))
+                    .size(12.0)
+                    .color(text_secondary);
+
+                    container.merge(
+                        div()
+                            .flex_col()
+                            .gap(12.0)
+                            .child(animated_container)
+                            .child(status),
+                    );
+                }),
+        )
 }
 
 fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
@@ -59,6 +159,10 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .p(theme.spacing().space_6)
                         .flex_col()
                         .gap(theme.spacing().space_8)
+                        // Accordion at top for layout animation testing
+                        .child(accordion_section())
+                        // Test layout animation
+                        .child(layout_animation_test())
                         // Component sections
                         .child(progress_section(ctx, &scroll_ref))
                         .child(buttons_section(ctx))
@@ -76,7 +180,6 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .child(hover_card_section())
                         .child(dialog_section(ctx))
                         .child(tabs_section(ctx))
-                        .child(accordion_section())
                         .child(toast_section(ctx))
                         .child(loading_section(ctx))
                         .child(misc_section()),
@@ -1130,8 +1233,17 @@ fn accordion_section() -> impl ElementBuilder {
     let theme = ThemeState::get();
     let text_secondary = theme.color(ColorToken::TextSecondary);
 
+    // Test layout animation registration
+    let test_animated = div()
+        .h(100.0)
+        .w(200.0)
+        .bg(blinc_core::Color::RED.with_alpha(0.2))
+        .animate_layout(blinc_layout::LayoutAnimationConfig::height())
+        .child(text("Layout animation test"));
+
     section_container()
         .child(section_title("Accordion"))
+        .child(test_animated)
         .child(
             div()
                 .flex_row()

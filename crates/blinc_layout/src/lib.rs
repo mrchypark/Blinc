@@ -33,6 +33,9 @@ pub mod canvas;
 pub mod diff;
 pub mod div;
 pub mod element;
+
+// Layout animation system (FLIP-style bounds animation)
+pub mod layout_animation;
 pub mod element_style;
 pub mod event_handler;
 pub mod event_router;
@@ -141,6 +144,9 @@ pub use stateful::{
 
 // Animation integration
 pub use animated::{AnimatedProperties, AnimationBuilder};
+
+// Layout animation (FLIP-style bounds animation)
+pub use layout_animation::{LayoutAnimation, LayoutAnimationConfig, LayoutAnimationState};
 
 // CSS-like units
 pub use units::{pct, px, sp, Length, Unit};
@@ -308,6 +314,9 @@ pub mod prelude {
 
     // Animation integration
     pub use crate::animated::{AnimatedProperties, AnimationBuilder};
+
+    // Layout animation (FLIP-style bounds animation)
+    pub use crate::layout_animation::{LayoutAnimation, LayoutAnimationConfig};
 
     // Re-export animation types from blinc_animation for convenience
     pub use blinc_animation::{

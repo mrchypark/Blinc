@@ -20,6 +20,7 @@ use crate::css_parser::{ElementState, Stylesheet};
 use crate::diff::{render_props_eq, ChangeCategory, DivHash};
 use crate::div::{ElementBuilder, ElementTypeId};
 use crate::element::{ElementBounds, GlassMaterial, Material, RenderLayer, RenderProps};
+use crate::layout_animation::{LayoutAnimationConfig, LayoutAnimationState};
 use crate::selector::{ElementRegistry, ScrollRef};
 use crate::tree::{LayoutNodeId, LayoutTree};
 
@@ -367,6 +368,23 @@ pub struct RenderTree {
     /// Base styles for elements (before state modifiers)
     /// Used to restore original styles when state changes
     base_styles: HashMap<LayoutNodeId, RenderProps>,
+    /// Layout animation configs for nodes (from element builders)
+    /// Maps node_id to the LayoutAnimationConfig specifying which properties to animate
+    layout_animation_configs: HashMap<LayoutNodeId, LayoutAnimationConfig>,
+    /// Active layout animations (running or recently completed)
+    /// Maps node_id to the active animation state with spring-driven values
+    layout_animations: HashMap<LayoutNodeId, LayoutAnimationState>,
+    /// Previous bounds for layout animation comparison
+    /// Stores the last known layout bounds to detect changes
+    previous_bounds: HashMap<LayoutNodeId, ElementBounds>,
+    /// Stable key to node ID mapping for layout animations
+    /// Used to transfer animation state when nodes are rebuilt with same stable key
+    layout_animation_key_to_node: HashMap<String, LayoutNodeId>,
+    /// Stable key based animations - state tracked by key not node ID
+    /// These animations persist across Stateful rebuilds
+    layout_animations_by_key: HashMap<String, LayoutAnimationState>,
+    /// Previous bounds tracked by stable key
+    previous_bounds_by_key: HashMap<String, ElementBounds>,
 }
 
 /// Result of an incremental update attempt
@@ -413,6 +431,12 @@ impl RenderTree {
             on_ready_callbacks: HashMap::new(),
             stylesheet: None,
             base_styles: HashMap::new(),
+            layout_animation_configs: HashMap::new(),
+            layout_animations: HashMap::new(),
+            previous_bounds: HashMap::new(),
+            layout_animation_key_to_node: HashMap::new(),
+            layout_animations_by_key: HashMap::new(),
+            previous_bounds_by_key: HashMap::new(),
         }
     }
 
@@ -1067,6 +1091,15 @@ impl RenderTree {
         // Register layout bounds storage if element wants bounds updates
         self.register_element_bounds_storage(node_id, element);
 
+        // Register layout animation config if element wants animated layout transitions
+        if let Some(config) = element.layout_animation_config() {
+            tracing::debug!(
+                "collect_render_props: registered layout animation config for {:?}",
+                node_id
+            );
+            self.layout_animation_configs.insert(node_id, config);
+        }
+
         // Register element ID if present (for selector API)
         if let Some(id) = element.element_id() {
             self.element_registry.register(id, node_id);
@@ -1243,6 +1276,15 @@ impl RenderTree {
 
         // Register layout bounds storage if element wants bounds updates
         self.register_element_bounds_storage(node_id, element);
+
+        // Register layout animation config if element wants animated layout transitions
+        if let Some(config) = element.layout_animation_config() {
+            tracing::debug!(
+                "collect_render_props_boxed: registered layout animation config for {:?}",
+                node_id
+            );
+            self.layout_animation_configs.insert(node_id, config);
+        }
 
         // Register element ID if present (for selector API)
         if let Some(id) = element.element_id() {
@@ -1510,6 +1552,11 @@ impl RenderTree {
         // Register layout bounds storage if element wants bounds updates
         self.register_element_bounds_storage(node_id, element);
 
+        // Register layout animation config if element wants animated layout transitions
+        if let Some(config) = element.layout_animation_config() {
+            self.layout_animation_configs.insert(node_id, config);
+        }
+
         // Register element ID if present (for selector API)
         if let Some(id) = element.element_id() {
             self.element_registry.register(id, node_id);
@@ -1739,6 +1786,9 @@ impl RenderTree {
             // Update registered layout bounds storages
             self.update_layout_bounds_storages();
 
+            // Trigger layout animations for elements with changed bounds
+            self.update_layout_animations();
+
             // Cache element bounds for ElementHandle.bounds() queries
             self.cache_element_bounds();
 
@@ -1861,6 +1911,263 @@ impl RenderTree {
                 }
             }
         }
+    }
+
+    /// Update layout animations for nodes with changed bounds
+    ///
+    /// This compares the new layout bounds with the previous bounds and triggers
+    /// spring animations for any changes. Called after layout computation.
+    ///
+    /// Supports two tracking modes:
+    /// 1. **Node ID tracking** (default): Animation tracked by LayoutNodeId
+    /// 2. **Stable key tracking**: Animation tracked by stable key string
+    ///
+    /// Stable key tracking is essential for Stateful components where nodes
+    /// are rebuilt on state change. The stable key allows recognizing that
+    /// a new node represents the same logical element.
+    fn update_layout_animations(&mut self) {
+        // Early exit if no layout animation configs are registered
+        if self.layout_animation_configs.is_empty() {
+            return;
+        }
+
+        tracing::debug!(
+            "update_layout_animations: {} configs registered, {} animations active",
+            self.layout_animation_configs.len(),
+            self.layout_animations_by_key.len()
+        );
+
+        // Get animation scheduler handle
+        let scheduler_handle = if let Some(arc) = self.animations.upgrade() {
+            arc.lock().unwrap().handle()
+        } else if let Some(handle) = crate::render_state::get_global_scheduler() {
+            handle
+        } else {
+            tracing::trace!("update_layout_animations: no scheduler available");
+            return;
+        };
+
+        // Collect updates to avoid borrowing issues
+        // Tuple: (node_id, new_bounds, config, stable_key_option)
+        let mut updates: Vec<(LayoutNodeId, ElementBounds, LayoutAnimationConfig)> = Vec::new();
+
+        // Track which stable keys are still in use this frame
+        let mut active_stable_keys: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for (&node_id, config) in &self.layout_animation_configs {
+            let Some(new_bounds) = self.layout_tree.get_bounds(node_id, (0.0, 0.0)) else {
+                continue;
+            };
+
+            // Track stable key if present
+            if let Some(ref key) = config.stable_key {
+                active_stable_keys.insert(key.clone());
+                // Update key->node mapping
+                self.layout_animation_key_to_node
+                    .insert(key.clone(), node_id);
+            }
+
+            updates.push((node_id, new_bounds, config.clone()));
+        }
+
+        // Process updates
+        for (node_id, new_bounds, config) in updates {
+            if let Some(ref stable_key) = config.stable_key {
+                // ===== STABLE KEY TRACKING =====
+                // Use key-based storage instead of node ID
+                let old_bounds = self.previous_bounds_by_key.get(stable_key).cloned();
+                let is_first_layout = old_bounds.is_none();
+
+                // Store new bounds by key
+                self.previous_bounds_by_key
+                    .insert(stable_key.clone(), new_bounds);
+
+                if is_first_layout {
+                    tracing::debug!(
+                        "Layout animation (keyed): first layout for key='{}', bounds={:?}",
+                        stable_key,
+                        new_bounds
+                    );
+                    continue;
+                }
+
+                let old = old_bounds.unwrap();
+
+                // Check if there's an existing animation for this key
+                if let Some(existing_anim) = self.layout_animations_by_key.get_mut(stable_key) {
+                    // Update existing animation's target
+                    existing_anim.update_target(new_bounds, &config);
+                    tracing::debug!(
+                        "Layout animation (keyed): updating target for key='{}': {:?} -> {:?}",
+                        stable_key,
+                        old,
+                        new_bounds
+                    );
+                } else {
+                    // Try to create new animation
+                    if let Some(anim_state) = LayoutAnimationState::from_bounds_change(
+                        old,
+                        new_bounds,
+                        &config,
+                        scheduler_handle.clone(),
+                    ) {
+                        tracing::info!(
+                            "Layout animation (keyed): triggered for key='{}': {:?} -> {:?}",
+                            stable_key,
+                            old,
+                            new_bounds
+                        );
+                        self.layout_animations_by_key
+                            .insert(stable_key.clone(), anim_state);
+                    }
+                }
+            } else {
+                // ===== NODE ID TRACKING (original behavior) =====
+                let old_bounds = self.previous_bounds.get(&node_id).cloned();
+                let is_first_layout = old_bounds.is_none();
+
+                self.previous_bounds.insert(node_id, new_bounds);
+
+                if is_first_layout {
+                    self.layout_animations.remove(&node_id);
+                    continue;
+                }
+
+                let old = old_bounds.unwrap();
+
+                if let Some(anim_state) = LayoutAnimationState::from_bounds_change(
+                    old,
+                    new_bounds,
+                    &config,
+                    scheduler_handle.clone(),
+                ) {
+                    tracing::trace!(
+                        "Layout animation triggered for {:?}: {:?} -> {:?}",
+                        node_id,
+                        old,
+                        new_bounds
+                    );
+                    self.layout_animations.insert(node_id, anim_state);
+                } else {
+                    if let Some(existing) = self.layout_animations.get(&node_id) {
+                        if !existing.is_animating() {
+                            self.layout_animations.remove(&node_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clean up completed animations (node ID based)
+        // Clean up completed animations (node ID based)
+        self.layout_animations.retain(|_, state| state.is_animating());
+
+        // Clean up completed animations (stable key based)
+        self.layout_animations_by_key
+            .retain(|_, state| state.is_animating());
+    }
+
+    /// Check if any layout animations are currently active
+    pub fn has_active_layout_animations(&self) -> bool {
+        self.layout_animations
+            .values()
+            .any(|state| state.is_animating())
+            || self
+                .layout_animations_by_key
+                .values()
+                .any(|state| state.is_animating())
+    }
+
+    /// Get animated bounds for a node if a layout animation is active
+    ///
+    /// Returns the current animated bounds, or None if no animation is active.
+    /// Checks both node ID based and stable key based animations.
+    pub fn get_animated_bounds(&self, node_id: LayoutNodeId) -> Option<ElementBounds> {
+        // First check node ID based animations
+        if let Some(state) = self.layout_animations.get(&node_id) {
+            return Some(state.current_bounds());
+        }
+
+        // Check stable key based animations
+        // Look up if this node has a config with a stable key
+        if let Some(config) = self.layout_animation_configs.get(&node_id) {
+            if let Some(ref stable_key) = config.stable_key {
+                if let Some(state) = self.layout_animations_by_key.get(stable_key) {
+                    return Some(state.current_bounds());
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Get bounds for rendering, using animated bounds if available
+    ///
+    /// This returns the animated bounds if a layout animation is active,
+    /// otherwise returns the layout bounds from taffy.
+    pub fn get_render_bounds(
+        &self,
+        node_id: LayoutNodeId,
+        parent_offset: (f32, f32),
+    ) -> Option<ElementBounds> {
+        // First try to get animated bounds (node ID based)
+        if let Some(anim_bounds) = self.layout_animations.get(&node_id) {
+            let current = anim_bounds.current_bounds();
+            return Some(ElementBounds {
+                x: current.x + parent_offset.0,
+                y: current.y + parent_offset.1,
+                width: current.width,
+                height: current.height,
+            });
+        }
+
+        // Try stable key based animations
+        if let Some(config) = self.layout_animation_configs.get(&node_id) {
+            if let Some(ref stable_key) = config.stable_key {
+                if let Some(anim_state) = self.layout_animations_by_key.get(stable_key) {
+                    let current = anim_state.current_bounds();
+                    return Some(ElementBounds {
+                        x: current.x + parent_offset.0,
+                        y: current.y + parent_offset.1,
+                        width: current.width,
+                        height: current.height,
+                    });
+                }
+            }
+        }
+
+        // Fall back to layout bounds
+        self.layout_tree.get_bounds(node_id, parent_offset)
+    }
+
+    /// Check if a specific node has an active layout animation
+    pub fn is_layout_animating(&self, node_id: LayoutNodeId) -> bool {
+        // Check node ID based
+        if self
+            .layout_animations
+            .get(&node_id)
+            .map(|s| s.is_animating())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+
+        // Check stable key based
+        if let Some(config) = self.layout_animation_configs.get(&node_id) {
+            if let Some(ref stable_key) = config.stable_key {
+                if self
+                    .layout_animations_by_key
+                    .get(stable_key)
+                    .map(|s| s.is_animating())
+                    .unwrap_or(false)
+                {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Clear all layout bounds storages to force fresh calculations
@@ -3277,6 +3584,10 @@ impl RenderTree {
         self.scroll_refs.remove(&node_id);
         // Unregister from element registry (removes by node_id)
         self.element_registry.unregister(node_id);
+        // Remove layout animation config (but keep stable-key animations running)
+        self.layout_animation_configs.remove(&node_id);
+        self.layout_animations.remove(&node_id);
+        self.previous_bounds.remove(&node_id);
     }
 
     /// Process all pending subtree rebuilds
@@ -3775,9 +4086,14 @@ impl RenderTree {
         render_state: &crate::render_state::RenderState,
         inherited_opacity: f32,
     ) {
-        let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
+        // Use animated bounds if a layout animation is active, otherwise use layout bounds
+        let Some(bounds) = self.get_render_bounds(node, parent_offset) else {
             return;
         };
+
+        // Check if this node has an active layout animation (for clipping children)
+        // Need to check both node ID based and stable key based animations
+        let has_layout_animation = self.is_layout_animating(node);
 
         let Some(render_node) = self.render_nodes.get(&node) else {
             tracing::trace!(
@@ -3907,8 +4223,9 @@ impl RenderTree {
             ctx.set_z_layer(current_z + 1);
         }
 
-        // Push clip if needed
-        let clips_content = render_node.props.clips_content;
+        // Push clip if needed (either from element or from layout animation)
+        // Layout animations need clipping to hide content that exceeds animated bounds
+        let clips_content = render_node.props.clips_content || has_layout_animation;
         if clips_content {
             let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
             let radius = render_node.props.border_radius;

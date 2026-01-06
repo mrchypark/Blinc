@@ -38,6 +38,7 @@ use blinc_core::context_state::BlincContextState;
 use blinc_core::{use_state_keyed, SignalId, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
+use blinc_layout::layout_animation::LayoutAnimationConfig;
 use blinc_layout::motion::{motion, SharedAnimatedValue};
 use blinc_layout::prelude::*;
 use blinc_layout::render_state::get_global_scheduler;
@@ -186,7 +187,7 @@ impl AccordionBuilder {
     {
         // Store item data - don't build yet
         self.items.push(AccordionItem {
-            key: key.into(),
+            key: self.instance_key.derive(&key.into()),
             label: label.into(),
             content: Arc::new(content),
         });
@@ -263,6 +264,7 @@ impl AccordionBuilder {
                 let mut content = div()
                     .flex_col()
                     .w_full()
+                    .h_fit()
                     .rounded(radius)
                     .border(1.0, border_color);
 
@@ -283,13 +285,13 @@ impl AccordionBuilder {
                     let section_is_open = is_open.get();
 
                     // Build content - conditionally shown with proper height
-                    // Note: motion() wrapper removed for now - layout debugging
-                    let collapsible_content = if section_is_open {
-                        content_fn()
-                    } else {
-                        // Empty placeholder when closed
-                        div()
-                    };
+                    // // Note: motion() wrapper removed for now - layout debugging
+                    // let collapsible_content = if section_is_open {
+
+                    // } else {
+                    //     // Empty placeholder when closed
+                    //     div()
+                    // };
 
                     // Build trigger - stateless div since container rebuilds on state change
                     let chevron_svg = if section_is_open {
@@ -337,22 +339,28 @@ impl AccordionBuilder {
                         });
 
                     if !section_is_open {
-                        trigger = trigger
-                            .padding_y(Length::Px(16.0));
+                        trigger = trigger.padding_y(Length::Px(12.0));
                     }
-                    // Combine trigger and collapsible
+
+                    // Combine trigger and collapsible content
+                    // The item_div has animate_layout for smooth height AND y position transitions
+                    // Height animates open/close, Y position animates siblings moving
+                    // Using stable key based on item_key so animation persists across rebuilds
+                    let anim_key = format!("accordion-item-{}", item_key);
                     let mut item_div = div()
                         .padding_x(Length::Px(12.0))
                         .flex_col()
                         .flex_auto()
                         .overflow_clip()
                         .w_full()
-                        .child(trigger)
-                        .child(collapsible_content);
+                        .animate_layout(
+                            LayoutAnimationConfig::all().with_key(anim_key).gentle(), // Use gentle spring for visible animation
+                        )
+                        .child(trigger);
+                    //.child(collapsible_content);
 
                     if section_is_open {
-                        item_div = item_div
-                            .padding_y(Length::Px(16.0));
+                        item_div = item_div.padding_y(Length::Px(16.0)).child(content_fn());
                     }
 
                     content = content.child(item_div);

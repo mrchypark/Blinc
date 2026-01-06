@@ -384,6 +384,8 @@ pub struct Div {
     pub(crate) event_handlers: crate::event_handler::EventHandlers,
     /// Element ID for selector API queries
     pub(crate) element_id: Option<String>,
+    /// Layout animation configuration for FLIP-style bounds animation
+    pub(crate) layout_animation: Option<crate::layout_animation::LayoutAnimationConfig>,
 }
 
 impl Default for Div {
@@ -413,6 +415,7 @@ impl Div {
             is_stack_layer: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
+            layout_animation: None,
         }
     }
 
@@ -439,6 +442,7 @@ impl Div {
             is_stack_layer: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
+            layout_animation: None,
         }
     }
 
@@ -461,6 +465,33 @@ impl Div {
     /// Get the element ID if set
     pub fn element_id(&self) -> Option<&str> {
         self.element_id.as_deref()
+    }
+
+    /// Enable layout animation for this element
+    ///
+    /// When enabled, changes to the element's bounds (position/size) after layout
+    /// computation will be smoothly animated using spring physics instead of
+    /// snapping instantly.
+    ///
+    /// This is useful for accordion/collapsible content, list reordering,
+    /// and any UI where elements change size or position dynamically.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Animate height changes with default spring
+    /// div()
+    ///     .animate_layout(LayoutAnimationConfig::height())
+    ///     .child(content)
+    ///
+    /// // Animate all bounds with custom spring
+    /// div()
+    ///     .animate_layout(LayoutAnimationConfig::all().with_spring(SpringConfig::gentle()))
+    ///     .child(content)
+    /// ```
+    pub fn animate_layout(mut self, config: crate::layout_animation::LayoutAnimationConfig) -> Self {
+        self.layout_animation = Some(config);
+        self
     }
 
     /// Swap this Div with a default, returning the original
@@ -2818,6 +2849,18 @@ pub trait ElementBuilder {
     ) -> Option<std::sync::Arc<dyn Fn(crate::element::ElementBounds) + Send + Sync>> {
         None
     }
+
+    /// Get layout animation configuration for this element
+    ///
+    /// If this element should animate its layout bounds changes (position, size),
+    /// it returns a configuration specifying which properties to animate
+    /// and the spring physics settings.
+    ///
+    /// Layout animation uses FLIP-style animation: layout settles instantly
+    /// while the visual rendering interpolates from old bounds to new bounds.
+    fn layout_animation_config(&self) -> Option<crate::layout_animation::LayoutAnimationConfig> {
+        None
+    }
 }
 
 impl ElementBuilder for Div {
@@ -2883,6 +2926,10 @@ impl ElementBuilder for Div {
 
     fn element_id(&self) -> Option<&str> {
         self.element_id.as_deref()
+    }
+
+    fn layout_animation_config(&self) -> Option<crate::layout_animation::LayoutAnimationConfig> {
+        self.layout_animation.clone()
     }
 }
 

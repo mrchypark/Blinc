@@ -2295,6 +2295,14 @@ impl<S: StateTransitions + Default> ElementBuilder for BoundStateful<S> {
     fn element_type_id(&self) -> ElementTypeId {
         ElementTypeId::Div
     }
+
+    fn layout_animation_config(&self) -> Option<crate::layout_animation::LayoutAnimationConfig> {
+        self.storage
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|s| s.layout_animation_config())
+    }
 }
 
 impl<S: StateTransitions> ElementBuilder for Stateful<S> {
@@ -2404,6 +2412,11 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
 
     fn layout_bounds_callback(&self) -> Option<crate::renderer::LayoutBoundsCallback> {
         self.layout_bounds_cb.clone()
+    }
+
+    fn layout_animation_config(&self) -> Option<crate::layout_animation::LayoutAnimationConfig> {
+        self.ensure_callback_invoked();
+        self.inner.borrow().layout_animation_config()
     }
 }
 
