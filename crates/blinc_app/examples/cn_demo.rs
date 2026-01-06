@@ -33,7 +33,10 @@ fn main() -> Result<()> {
 fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
     eprintln!("build_ui called");
     let theme = ThemeState::get();
-    eprintln!("Current theme platform: {:?}", blinc_theme::platform::Platform::current());
+    eprintln!(
+        "Current theme platform: {:?}",
+        blinc_theme::platform::Platform::current()
+    );
     let bg = theme.color(ColorToken::Background);
 
     // Create scroll ref to track scroll position

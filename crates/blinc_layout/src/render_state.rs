@@ -1003,7 +1003,11 @@ impl RenderState {
         }
 
         // Create new motion
-        tracing::debug!("Motion '{}': Creating new motion (enter_duration={}ms)", key, config.enter_duration_ms);
+        tracing::debug!(
+            "Motion '{}': Creating new motion (enter_duration={}ms)",
+            key,
+            config.enter_duration_ms
+        );
         let initial_state = if config.enter_delay_ms > 0 {
             MotionState::Waiting {
                 remaining_delay_ms: config.enter_delay_ms as f32,
@@ -1346,7 +1350,10 @@ impl RenderState {
                             motion.current = MotionKeyframe::default(); // Start from visible
                         } else {
                             // No exit animation configured, remove immediately
-                            tracing::debug!("Motion '{}': No exit config, removing immediately", key);
+                            tracing::debug!(
+                                "Motion '{}': No exit config, removing immediately",
+                                key
+                            );
                             to_remove.push(key.clone());
                         }
                     }

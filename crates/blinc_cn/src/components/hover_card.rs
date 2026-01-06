@@ -228,8 +228,7 @@ impl HoverCardBuilder {
                             mgr.hover_enter(handle);
                         }
                         // Also cancel any exit animation
-                        let motion =
-                            blinc_layout::selector::query_motion(&full_motion_key);
+                        let motion = blinc_layout::selector::query_motion(&full_motion_key);
                         if motion.is_exiting() {
                             mgr.cancel_close(handle);
                             motion.cancel_exit();
@@ -282,8 +281,11 @@ impl HoverCardBuilder {
                     let mgr = get_overlay_manager();
                     let handle = OverlayHandle::from_raw(handle_id);
 
-                    tracing::debug!("TRIGGER: overlay visible={}, pending_close={}",
-                        mgr.is_visible(handle), mgr.is_pending_close(handle));
+                    tracing::debug!(
+                        "TRIGGER: overlay visible={}, pending_close={}",
+                        mgr.is_visible(handle),
+                        mgr.is_pending_close(handle)
+                    );
 
                     // Only start close delay if overlay is visible and in Open state
                     if mgr.is_visible(handle) && !mgr.is_pending_close(handle) {
@@ -465,7 +467,8 @@ fn show_hover_card_overlay(
                         // Also check if we're in Closing state (exit animation playing)
                         // Use the unique motion key for this hover card
                         // The actual animation is on the child, so we need ":child:0" suffix
-                        let full_motion_key = format!("motion:{}:child:0", motion_key_for_card_enter);
+                        let full_motion_key =
+                            format!("motion:{}:child:0", motion_key_for_card_enter);
                         let motion = blinc_layout::selector::query_motion(&full_motion_key);
                         if motion.is_exiting() {
                             // Cancel close - transitions Closing -> Open

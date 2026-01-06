@@ -196,7 +196,6 @@ impl StateTransitions for OverlayState {
             // Interrupt opening with close
             (Opening, CLOSE) | (Opening, ESCAPE) => Some(Closing),
 
-
             // Cancel close - interrupt exit animation and return to Open state
             // Used when mouse re-enters hover card during exit animation
             (Closing, CANCEL_CLOSE) => Some(Open),
@@ -954,13 +953,13 @@ impl OverlayManagerInner {
                     // 1. Overlay's own exit duration
                     // 2. Motion animation (if motion_key configured) to complete
                     let exit_duration = overlay.config.animation.exit.duration_ms();
-                    let overlay_exit_complete = if let Some(close_started) = overlay.close_started_at_ms
-                    {
-                        let elapsed = current_time_ms.saturating_sub(close_started);
-                        elapsed >= exit_duration as u64
-                    } else {
-                        false
-                    };
+                    let overlay_exit_complete =
+                        if let Some(close_started) = overlay.close_started_at_ms {
+                            let elapsed = current_time_ms.saturating_sub(close_started);
+                            elapsed >= exit_duration as u64
+                        } else {
+                            false
+                        };
 
                     // Check if motion animation has completed (if configured)
                     let motion_exit_complete = if let Some(ref key) = overlay.config.motion_key {

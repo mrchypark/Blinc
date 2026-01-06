@@ -395,7 +395,12 @@ impl EventRouter {
         for hit in &hits {
             self.last_hit_ancestor_bounds.insert(
                 hit.node.to_raw() as u32,
-                (hit.bounds_x, hit.bounds_y, hit.bounds_width, hit.bounds_height),
+                (
+                    hit.bounds_x,
+                    hit.bounds_y,
+                    hit.bounds_width,
+                    hit.bounds_height,
+                ),
             );
             // Also store ancestor bounds from the hit
             for (key, value) in &hit.ancestor_bounds {
@@ -1187,9 +1192,9 @@ impl EventRouter {
         let hit = self.hit_test(tree, x, y)?;
 
         // Check if the point is inside any overlay bounds
-        let in_overlay_bounds = overlay_bounds.iter().any(|&(ox, oy, ow, oh)| {
-            x >= ox && x < ox + ow && y >= oy && y < oy + oh
-        });
+        let in_overlay_bounds = overlay_bounds
+            .iter()
+            .any(|&(ox, oy, ow, oh)| x >= ox && x < ox + ow && y >= oy && y < oy + oh);
 
         // If point is not in any overlay bounds, the hit is valid
         if !in_overlay_bounds {
@@ -1233,9 +1238,9 @@ impl EventRouter {
         let all_hits = self.hit_test_all(tree, x, y);
 
         // Check if the point is inside any overlay bounds
-        let in_overlay_bounds = overlay_bounds.iter().any(|&(ox, oy, ow, oh)| {
-            x >= ox && x < ox + ow && y >= oy && y < oy + oh
-        });
+        let in_overlay_bounds = overlay_bounds
+            .iter()
+            .any(|&(ox, oy, ow, oh)| x >= ox && x < ox + ow && y >= oy && y < oy + oh);
 
         // If point is not in any overlay bounds, all hits are valid
         if !in_overlay_bounds {

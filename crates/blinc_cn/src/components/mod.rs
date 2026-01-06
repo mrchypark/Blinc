@@ -47,9 +47,7 @@ pub use dialog::{alert_dialog, dialog, AlertDialogBuilder, DialogBuilder, Dialog
 pub use dropdown_menu::{
     dropdown_menu, dropdown_menu_custom, DropdownAlign, DropdownMenuBuilder, DropdownPosition,
 };
-pub use hover_card::{
-    hover_card, HoverCard, HoverCardAlign, HoverCardBuilder, HoverCardSide,
-};
+pub use hover_card::{hover_card, HoverCard, HoverCardAlign, HoverCardBuilder, HoverCardSide};
 pub use input::{input, Input, InputBgColors, InputBorderColors, InputSize};
 pub use label::{label, Label, LabelBuilder, LabelSize};
 pub use progress::{progress, progress_animated, AnimatedProgress, Progress, ProgressSize};

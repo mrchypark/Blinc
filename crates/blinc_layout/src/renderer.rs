@@ -4150,7 +4150,14 @@ impl RenderTree {
             );
 
             // Pass 2: Glass - render as Brush::Glass
-            self.render_layer(glass_ctx, root, (0.0, 0.0), RenderLayer::Glass, false, false);
+            self.render_layer(
+                glass_ctx,
+                root,
+                (0.0, 0.0),
+                RenderLayer::Glass,
+                false,
+                false,
+            );
 
             // Pass 3: Foreground (includes children of glass elements)
             self.render_layer(
@@ -4795,8 +4802,7 @@ impl RenderTree {
         let children_inside_foreground = inside_foreground || is_foreground;
 
         // Text inside glass or foreground goes to foreground layer
-        let to_foreground =
-            children_inside_glass || children_inside_foreground;
+        let to_foreground = children_inside_glass || children_inside_foreground;
 
         if let ElementType::Text(text_data) = &render_node.element_type {
             // Absolute position for text
@@ -4851,7 +4857,13 @@ impl RenderTree {
             parent_offset.1 + bounds.y + scroll_offset.1 + motion_offset.1,
         );
         for child_id in self.layout_tree.children(node) {
-            self.render_text_recursive(renderer, child_id, new_offset, children_inside_glass, children_inside_foreground);
+            self.render_text_recursive(
+                renderer,
+                child_id,
+                new_offset,
+                children_inside_glass,
+                children_inside_foreground,
+            );
         }
     }
 
@@ -4937,7 +4949,13 @@ impl RenderTree {
             parent_offset.1 + bounds.y + scroll_offset.1 + motion_offset.1,
         );
         for child_id in self.layout_tree.children(node) {
-            self.render_svg_recursive(renderer, child_id, new_offset, children_inside_glass, children_inside_foreground);
+            self.render_svg_recursive(
+                renderer,
+                child_id,
+                new_offset,
+                children_inside_glass,
+                children_inside_foreground,
+            );
         }
     }
 
