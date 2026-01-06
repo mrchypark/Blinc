@@ -296,7 +296,6 @@ impl DropdownMenuBuilder {
         let button_state = use_button_state(&self.key.derive("button"));
         // Get the key string for use in closures (InstanceKey is not Sync)
         let menu_key = self.key.get().to_string();
-        let menu_key_for_motion_check = menu_key.clone();
 
         // Build trigger element
         let open_state_for_trigger = open_state.clone();
@@ -372,21 +371,19 @@ impl DropdownMenuBuilder {
 
                 let is_open = open_state_for_trigger_1.get();
                 if is_open {
-                    // Check if motion is already animating (exit in progress)
-                    // to avoid double-triggering close
-                    let motion_key_check =
-                        format!("motion:dropdown_{}:child:0", menu_key_for_motion_check);
-                    let motion = blinc_layout::selector::query_motion(&motion_key_check);
-                    if motion.is_animating() {
-                        // Exit animation already in progress, don't trigger again
-                        return;
-                    }
-
                     // Close the menu - state updates are handled by on_close callback
                     // after the exit animation completes (deferred in overlay manager)
                     if let Some(handle_id) = overlay_handle_for_trigger.get() {
                         let mgr = get_overlay_manager();
-                        mgr.close(OverlayHandle::from_raw(handle_id));
+                        let handle = OverlayHandle::from_raw(handle_id);
+
+                        // Check if overlay is already closing (exit animation in progress)
+                        if mgr.is_closing(handle) {
+                            // Exit animation already in progress, don't trigger again
+                            return;
+                        }
+
+                        mgr.close(handle);
                     }
                     // Don't update state here - let on_close callback handle it after animation
                 } else {

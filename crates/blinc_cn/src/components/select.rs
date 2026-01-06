@@ -211,7 +211,6 @@ impl Select {
         let select_btn_state = use_button_state(&format!("{}_btn", instance_key));
         // Clone instance_key for use in closures (it's a &str that needs to outlive 'static)
         let instance_key_owned = instance_key.to_string();
-        let instance_key_for_motion_check = instance_key.to_string();
         // The click handler is on the Stateful itself (not the inner div) so it gets registered
         // Use w_full() to ensure the Stateful takes the same width as its parent container
         let select_element = Stateful::with_shared_state(select_btn_state)
@@ -290,20 +289,19 @@ impl Select {
                 let is_currently_open = open_state_for_click.get();
 
                 if is_currently_open {
-                    // Check if motion is already animating (exit in progress)
-                    // to avoid double-triggering close
-                    let motion_key_check = format!("motion:select_{}:child:0", instance_key_for_motion_check);
-                    let motion = blinc_layout::selector::query_motion(&motion_key_check);
-                    if motion.is_animating() {
-                        // Exit animation already in progress, don't trigger again
-                        return;
-                    }
-
                     // Close the dropdown - state updates are handled by on_close callback
                     // after the exit animation completes (deferred in overlay manager)
                     if let Some(handle_id) = overlay_handle_for_click.get() {
                         let mgr = get_overlay_manager();
-                        mgr.close(OverlayHandle::from_raw(handle_id));
+                        let handle = OverlayHandle::from_raw(handle_id);
+
+                        // Check if overlay is already closing (exit animation in progress)
+                        if mgr.is_closing(handle) {
+                            // Exit animation already in progress, don't trigger again
+                            return;
+                        }
+
+                        mgr.close(handle);
                     }
                     // Don't update state here - let on_close callback handle it after animation
                 } else {
@@ -651,7 +649,6 @@ fn build_dropdown_content(
         let is_opt_disabled = opt.disabled;
 
         let value_state_for_opt = value_state.clone();
-        let open_state_for_opt = open_state.clone();
         let handle_state_for_opt = overlay_handle_state.clone();
         let on_change_for_opt = on_change.clone();
         let opt_value_for_click = opt_value.clone();
@@ -720,16 +717,24 @@ fn build_dropdown_content(
             })
             .on_click(move |_ctx| {
                 if !is_opt_disabled {
-                    // Set the new value
-                    value_state_for_opt.set(opt_value_for_click.clone());
-
-                    // Close the overlay
+                    // Close the overlay - state updates are handled by on_close callback
+                    // after the exit animation completes (deferred in overlay manager)
                     if let Some(handle_id) = handle_state_for_opt.get() {
                         let mgr = get_overlay_manager();
-                        mgr.close(OverlayHandle::from_raw(handle_id));
+                        let handle = OverlayHandle::from_raw(handle_id);
+
+                        // Check if overlay is already closing (exit animation in progress)
+                        if mgr.is_closing(handle) {
+                            // Exit animation already in progress, don't trigger again
+                            return;
+                        }
+
+                        // Set the new value
+                        value_state_for_opt.set(opt_value_for_click.clone());
+
+                        mgr.close(handle);
                     }
-                    open_state_for_opt.set(false);
-                    handle_state_for_opt.set(None);
+                    // Don't update state here - let on_close callback handle it after animation
 
                     // Call on_change callback
                     if let Some(ref cb) = on_change_for_opt {

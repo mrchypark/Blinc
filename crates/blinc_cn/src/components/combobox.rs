@@ -249,7 +249,6 @@ impl Combobox {
         let placeholder_for_content = config.placeholder.clone();
         // Clone instance_key for use in closures (it's a &str that needs to outlive 'static)
         let instance_key_owned = instance_key.to_string();
-        let instance_key_for_motion_check = instance_key.to_string();
 
         // The click handler is on the Stateful itself (not the inner div) so it gets registered
         // Use w_full() to ensure the Stateful takes the same width as its parent container
@@ -339,21 +338,19 @@ impl Combobox {
                 let is_currently_open = open_state_for_click.get();
 
                 if is_currently_open {
-                    // Check if motion is already animating (exit in progress)
-                    // to avoid double-triggering close
-                    let motion_key_check =
-                        format!("motion:combobox_{}:child:0", instance_key_for_motion_check);
-                    let motion = blinc_layout::selector::query_motion(&motion_key_check);
-                    if motion.is_animating() {
-                        // Exit animation already in progress, don't trigger again
-                        return;
-                    }
-
                     // Close the dropdown - state updates are handled by on_close callback
                     // after the exit animation completes (deferred in overlay manager)
                     if let Some(handle_id) = overlay_handle_for_click.get() {
                         let mgr = get_overlay_manager();
-                        mgr.close(OverlayHandle::from_raw(handle_id));
+                        let handle = OverlayHandle::from_raw(handle_id);
+
+                        // Check if overlay is already closing (exit animation in progress)
+                        if mgr.is_closing(handle) {
+                            // Exit animation already in progress, don't trigger again
+                            return;
+                        }
+
+                        mgr.close(handle);
                     }
                     // Don't update state here - let on_close callback handle it after animation
                 } else {
@@ -838,26 +835,34 @@ fn build_dropdown_content(
                             container.merge(content);
                         })
                         .on_click(move |_ctx| {
-                            // Set the custom value
-                            let custom_val = search_data_for_custom
-                                .lock()
-                                .ok()
-                                .map(|d| d.value.clone())
-                                .unwrap_or_default();
-                            value_state_for_custom.set(custom_val.clone());
-
                             // Close the overlay - state updates are handled by on_close callback
                             // after the exit animation completes (deferred in overlay manager)
                             if let Some(handle_id) = handle_state_for_custom.get() {
                                 let mgr = get_overlay_manager();
-                                mgr.close(OverlayHandle::from_raw(handle_id));
+                                let handle = OverlayHandle::from_raw(handle_id);
+
+                                // Check if overlay is already closing (exit animation in progress)
+                                if mgr.is_closing(handle) {
+                                    // Exit animation already in progress, don't trigger again
+                                    return;
+                                }
+
+                                // Set the custom value
+                                let custom_val = search_data_for_custom
+                                    .lock()
+                                    .ok()
+                                    .map(|d| d.value.clone())
+                                    .unwrap_or_default();
+                                value_state_for_custom.set(custom_val.clone());
+
+                                mgr.close(handle);
+
+                                // Call on_change callback
+                                if let Some(ref cb) = on_change_for_custom {
+                                    cb(&custom_val);
+                                }
                             }
                             // Don't update state here - let on_close callback handle it after animation
-
-                            // Call on_change callback
-                            if let Some(ref cb) = on_change_for_custom {
-                                cb(&custom_val);
-                            }
                         });
 
                     options_content = options_content.child(custom_item);
@@ -929,14 +934,22 @@ fn build_dropdown_content(
                         })
                         .on_click(move |_ctx| {
                             if !is_opt_disabled {
-                                // Set the new value
-                                value_state_for_opt.set(opt_value_for_click.clone());
-
                                 // Close the overlay - state updates are handled by on_close callback
                                 // after the exit animation completes (deferred in overlay manager)
                                 if let Some(handle_id) = handle_state_for_opt.get() {
                                     let mgr = get_overlay_manager();
-                                    mgr.close(OverlayHandle::from_raw(handle_id));
+                                    let handle = OverlayHandle::from_raw(handle_id);
+
+                                    // Check if overlay is already closing (exit animation in progress)
+                                    if mgr.is_closing(handle) {
+                                        // Exit animation already in progress, don't trigger again
+                                        return;
+                                    }
+
+                                    // Set the new value
+                                    value_state_for_opt.set(opt_value_for_click.clone());
+
+                                    mgr.close(handle);
                                 }
                                 // Don't update state here - let on_close callback handle it after animation
 

@@ -159,6 +159,11 @@ impl OverlayState {
     pub fn is_pending_close(&self) -> bool {
         matches!(self, OverlayState::PendingClose)
     }
+
+    /// Check if overlay is in closing state (exit animation playing)
+    pub fn is_closing(&self) -> bool {
+        matches!(self, OverlayState::Closing)
+    }
 }
 
 impl StateTransitions for OverlayState {
@@ -1133,6 +1138,14 @@ impl OverlayManagerInner {
             .unwrap_or(false)
     }
 
+    /// Check if overlay is in closing state (exit animation playing)
+    pub fn is_closing(&self, handle: OverlayHandle) -> bool {
+        self.overlays
+            .get(&handle)
+            .map(|o| o.state.is_closing())
+            .unwrap_or(false)
+    }
+
     /// Set the cached content size for an overlay (for hit testing)
     ///
     /// This is typically called from an `on_ready` callback after the overlay
@@ -1847,6 +1860,8 @@ pub trait OverlayManagerExt {
     fn hover_enter(&self, handle: OverlayHandle);
     /// Check if an overlay is in PendingClose state (waiting for close delay)
     fn is_pending_close(&self, handle: OverlayHandle) -> bool;
+    /// Check if an overlay is in Closing state (exit animation playing)
+    fn is_closing(&self, handle: OverlayHandle) -> bool;
     /// Close the topmost overlay
     fn close_top(&self);
     /// Close all overlays of a kind
@@ -1955,6 +1970,10 @@ impl OverlayManagerExt for OverlayManager {
 
     fn is_pending_close(&self, handle: OverlayHandle) -> bool {
         self.lock().unwrap().is_pending_close(handle)
+    }
+
+    fn is_closing(&self, handle: OverlayHandle) -> bool {
+        self.lock().unwrap().is_closing(handle)
     }
 
     fn close_top(&self) {
