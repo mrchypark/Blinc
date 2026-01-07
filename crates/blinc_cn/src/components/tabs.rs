@@ -844,7 +844,7 @@ fn build_tab_trigger(
     let mut trigger = stateful(trigger_btn_state)
         .h(inner_height)
         .padding_x(Length::Px(size.padding_x()))
-        .padding_y(Length::Px(size.padding_x()/2.0))
+        .padding_y(Length::Px(size.padding_x() / 2.0))
         .flex_row()
         .items_center()
         .justify_center()
