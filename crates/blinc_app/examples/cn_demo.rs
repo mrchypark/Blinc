@@ -1251,24 +1251,24 @@ fn accordion_section() -> impl ElementBuilder {
                             cn::accordion()
                                 .default_open("faq-1")
                                 .item("faq-1", "What is Blinc?", || {
-                                    div().w_full().p(4.0).items_start().child(
+                                    div().w_full().p(4.0).items_center().child(
                                         text("Blinc is a Rust UI framework for building beautiful, performant user interfaces with a declarative, GPUI-inspired API.")
                                             .size(14.0)
                                             .color(ThemeState::get().color(ColorToken::TextSecondary)),
                                     )
                                 })
                                 .item("faq-2", "How do animations work?", || {
-                                    div().w_full().p(4.0).items_start().child(
+                                    div().w_full().p(4.0).items_center().child(
                                         text("Blinc uses spring physics animations via the blinc_animation crate. Animations are scheduled through a global scheduler for smooth performance.")
                                             .size(14.0)
                                             .color(ThemeState::get().color(ColorToken::TextSecondary)),
                                     )
                                 })
                                 .item("faq-3", "Is it production ready?", || {
-                                    div().w_full().p(4.0).items_start().child(
+                                    div().w_full().p(4.0).items_center().child(
                                         text("Blinc is under active development. It's suitable for experimentation and side projects, with a growing component library.")
                                             .size(14.0)
-                                            .color(ThemeState::get().color(ColorToken::TextSecondary)),
+                                            .color(ThemeState::get().color(ColorToken::TextSecondary)).v_center(),
                                     )
                                 })
                                 ,

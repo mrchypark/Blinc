@@ -270,7 +270,7 @@ impl AccordionBuilder {
                     .flex_col()
                     .w_full()
                     .rounded(radius)
-                    .shadow_md()
+                    // .shadow_md()
                     .bg(theme.color(ColorToken::SurfaceElevated))
                     .border(1.0, border_color);
 
@@ -350,12 +350,13 @@ impl AccordionBuilder {
                             .flex_col()
                             .w_full()
                             .py(2.0)
-                            .border(1.0, border_color)
+                            .px(1.0)
                             .overflow_clip()
+                            .items_center()
+                            .justify_center()
                             .animate_layout(
-                                LayoutAnimationConfig::height().with_key(anim_key).snappy(),
+                                LayoutAnimationConfig::all().with_key(anim_key).snappy(),
                             )
-                            .pb(3.0) // 12px bottom padding
                             .child(content_fn())
                     } else {
                         // When closed, still render the animated container but empty
@@ -365,11 +366,11 @@ impl AccordionBuilder {
                             .w_full()
                             .py(0.0)
                             .bg(theme.color(ColorToken::Background))
-                            .border(1.0, border_color)
+                            // .border(1.0, border_color)
                             .h(0.0) // Collapsed height
                             .overflow_clip()
                             .animate_layout(
-                                LayoutAnimationConfig::height().with_key(anim_key).snappy(),
+                                LayoutAnimationConfig::all().with_key(anim_key).snappy(),
                             )
                     };
 

@@ -552,87 +552,60 @@ impl<'a> GpuPaintContext<'a> {
             let width = (intersect_max_x - intersect_min_x).max(0.0);
             let height = (intersect_max_y - intersect_min_y).max(0.0);
 
-            // Determine final corner radii based on whether intersection edges match source edges
-            // A corner radius is only preserved if both edges forming that corner match the source
-            let epsilon = 0.5; // Tolerance for floating point comparison
+            // Determine final corner radii based on whether intersection edges are within
+            // the corner radius region of the source. A corner should be rounded if the
+            // intersection boundary is close enough to the source corner that it would
+            // visually clip through the rounded area.
+            //
+            // For each corner, we check if the intersection edge is within (radius + epsilon)
+            // of the source edge. If so, apply the rounded corner to prevent visual clipping.
 
-            let final_radius = if topmost_is_plain_rect {
-                // Topmost is plain rect, but we may need to preserve parent's rounded corners
-                // if the intersection boundary coincides with the parent's boundary
-                let mut radii = [0.0f32; 4];
+            let mut radii = [0.0f32; 4];
 
-                // Top-left: needs min_x and min_y to match source
-                let (r, src_min_x, src_min_y, _, _) = corner_sources[0];
-                if (intersect_min_x - src_min_x).abs() < epsilon
-                    && (intersect_min_y - src_min_y).abs() < epsilon
-                {
-                    radii[0] = r;
+            // Top-left corner: check if intersection is within corner radius region
+            let (r, src_min_x, src_min_y, _, _) = corner_sources[0];
+            if r > 0.0 {
+                let dist_from_left = intersect_min_x - src_min_x;
+                let dist_from_top = intersect_min_y - src_min_y;
+                // If intersection is within the corner radius region, apply rounding
+                if dist_from_left < r && dist_from_top < r {
+                    radii[0] = (r - dist_from_left.max(0.0)).max(0.0).min(r);
                 }
+            }
 
-                // Top-right: needs max_x and min_y to match source
-                let (r, _, src_min_y, src_max_x, _) = corner_sources[1];
-                if (intersect_max_x - src_max_x).abs() < epsilon
-                    && (intersect_min_y - src_min_y).abs() < epsilon
-                {
-                    radii[1] = r;
+            // Top-right corner
+            let (r, _, src_min_y, src_max_x, _) = corner_sources[1];
+            if r > 0.0 {
+                let dist_from_right = src_max_x - intersect_max_x;
+                let dist_from_top = intersect_min_y - src_min_y;
+                if dist_from_right < r && dist_from_top < r {
+                    radii[1] = (r - dist_from_right.max(0.0)).max(0.0).min(r);
                 }
+            }
 
-                // Bottom-right: needs max_x and max_y to match source
-                let (r, _, _, src_max_x, src_max_y) = corner_sources[2];
-                if (intersect_max_x - src_max_x).abs() < epsilon
-                    && (intersect_max_y - src_max_y).abs() < epsilon
-                {
-                    radii[2] = r;
+            // Bottom-right corner
+            let (r, _, _, src_max_x, src_max_y) = corner_sources[2];
+            if r > 0.0 {
+                let dist_from_right = src_max_x - intersect_max_x;
+                let dist_from_bottom = src_max_y - intersect_max_y;
+                if dist_from_right < r && dist_from_bottom < r {
+                    radii[2] = (r - dist_from_right.max(0.0)).max(0.0).min(r);
                 }
+            }
 
-                // Bottom-left: needs min_x and max_y to match source
-                let (r, src_min_x, _, _, src_max_y) = corner_sources[3];
-                if (intersect_min_x - src_min_x).abs() < epsilon
-                    && (intersect_max_y - src_max_y).abs() < epsilon
-                {
-                    radii[3] = r;
+            // Bottom-left corner
+            let (r, src_min_x, _, _, src_max_y) = corner_sources[3];
+            if r > 0.0 {
+                let dist_from_left = intersect_min_x - src_min_x;
+                let dist_from_bottom = src_max_y - intersect_max_y;
+                if dist_from_left < r && dist_from_bottom < r {
+                    radii[3] = (r - dist_from_left.max(0.0)).max(0.0).min(r);
                 }
-
-                radii
-            } else {
-                // Topmost is rounded rect, use the accumulated corner radii
-                // but still check edge alignment
-                let mut radii = [0.0f32; 4];
-
-                let (r, src_min_x, src_min_y, _, _) = corner_sources[0];
-                if (intersect_min_x - src_min_x).abs() < epsilon
-                    && (intersect_min_y - src_min_y).abs() < epsilon
-                {
-                    radii[0] = r;
-                }
-
-                let (r, _, src_min_y, src_max_x, _) = corner_sources[1];
-                if (intersect_max_x - src_max_x).abs() < epsilon
-                    && (intersect_min_y - src_min_y).abs() < epsilon
-                {
-                    radii[1] = r;
-                }
-
-                let (r, _, _, src_max_x, src_max_y) = corner_sources[2];
-                if (intersect_max_x - src_max_x).abs() < epsilon
-                    && (intersect_max_y - src_max_y).abs() < epsilon
-                {
-                    radii[2] = r;
-                }
-
-                let (r, src_min_x, _, _, src_max_y) = corner_sources[3];
-                if (intersect_min_x - src_min_x).abs() < epsilon
-                    && (intersect_max_y - src_max_y).abs() < epsilon
-                {
-                    radii[3] = r;
-                }
-
-                radii
-            };
+            }
 
             return (
                 [intersect_min_x, intersect_min_y, width, height],
-                final_radius,
+                radii,
                 ClipType::Rect,
             );
         }

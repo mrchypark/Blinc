@@ -3908,13 +3908,35 @@ impl RenderTree {
         }
 
         // Push clip if this element clips its children (e.g., scroll containers)
-        // Clip to padding box (full bounds, excludes border but includes padding)
-        // This matches CSS overflow:hidden behavior
+        // Clip to content area (inset by border width so children don't render over border)
+        // This matches CSS overflow:hidden behavior which clips to the padding box
         let clips_content = render_node.props.clips_content;
         if clips_content {
-            let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
-            let clip_shape = if radius.is_uniform() && radius.top_left > 0.0 {
-                ClipShape::rounded_rect(clip_rect, radius)
+            // Calculate border insets from either uniform border or per-side borders
+            let sides = &render_node.props.border_sides;
+            let uniform_border = render_node.props.border_width;
+
+            let left_inset = sides.left.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+            let right_inset = sides.right.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+            let top_inset = sides.top.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+            let bottom_inset = sides.bottom.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+
+            // Inset clip by border width to exclude border area from clipping region
+            let clip_rect = Rect::new(
+                left_inset,
+                top_inset,
+                (bounds.width - left_inset - right_inset).max(0.0),
+                (bounds.height - top_inset - bottom_inset).max(0.0),
+            );
+            // Adjust corner radius for inset - use max border width for corner adjustment
+            let max_border = left_inset.max(right_inset).max(top_inset).max(bottom_inset);
+            let inset_radius = if radius.is_uniform() && radius.top_left > max_border {
+                CornerRadius::uniform((radius.top_left - max_border).max(0.0))
+            } else {
+                CornerRadius::default()
+            };
+            let clip_shape = if inset_radius.top_left > 0.0 {
+                ClipShape::rounded_rect(clip_rect, inset_radius)
             } else {
                 ClipShape::rect(clip_rect)
             };
@@ -4225,6 +4247,8 @@ impl RenderTree {
 
         // Push clip if needed (either from element or from layout animation)
         // Layout animations need clipping to hide content that exceeds animated bounds
+        // NOTE: This clip is for the element itself. Children get an INSET clip pushed later
+        // to prevent them from rendering over the border.
         let clips_content = render_node.props.clips_content || has_layout_animation;
         if clips_content {
             let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
@@ -4408,6 +4432,45 @@ impl RenderTree {
             ctx.push_transform(Transform::translate(scroll_offset.0, scroll_offset.1));
         }
 
+        // Push inset clip for children if this element has borders
+        // This prevents children from rendering over the parent's border
+        let has_border = render_node.props.border_width > 0.0
+            || render_node.props.border_sides.has_any();
+        let push_children_clip = clips_content && has_border;
+        if push_children_clip {
+            // Calculate border insets from either uniform border or per-side borders
+            let sides = &render_node.props.border_sides;
+            let uniform_border = render_node.props.border_width;
+
+            let left_inset = sides.left.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+            let right_inset = sides.right.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+            let top_inset = sides.top.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+            let bottom_inset = sides.bottom.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+
+            let clip_rect = Rect::new(
+                left_inset,
+                top_inset,
+                (bounds.width - left_inset - right_inset).max(0.0),
+                (bounds.height - top_inset - bottom_inset).max(0.0),
+            );
+
+            // Adjust corner radius for inset
+            let radius = render_node.props.border_radius;
+            let max_border = left_inset.max(right_inset).max(top_inset).max(bottom_inset);
+            let inset_radius = if radius.is_uniform() && radius.top_left > max_border {
+                CornerRadius::uniform((radius.top_left - max_border).max(0.0))
+            } else {
+                CornerRadius::default()
+            };
+
+            let clip_shape = if inset_radius.top_left > 0.0 {
+                ClipShape::rounded_rect(clip_rect, inset_radius)
+            } else {
+                ClipShape::rect(clip_rect)
+            };
+            ctx.push_clip(clip_shape);
+        }
+
         // Render children, passing down the effective opacity and layer inheritance
         // This ensures all children inherit the parent motion's opacity and foreground layer
         for child_id in self.layout_tree.children(node) {
@@ -4421,6 +4484,11 @@ impl RenderTree {
                 render_state,
                 motion_opacity, // Pass current opacity to children
             );
+        }
+
+        // Pop children inset clip
+        if push_children_clip {
+            ctx.pop_clip();
         }
 
         // Pop scroll transform
@@ -4609,13 +4677,36 @@ impl RenderTree {
         let children_inside_foreground = inside_foreground || is_foreground;
 
         // Push clip BEFORE rendering content if this element clips its children
-        // Clip to padding box (full bounds) - matches CSS overflow:hidden behavior
+        // Clip to content area (inset by border width so children don't render over border)
+        // This matches CSS overflow:hidden behavior which clips to the padding box
         let clips_content = render_node.props.clips_content;
         if clips_content {
-            let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+            // Calculate border insets from either uniform border or per-side borders
+            let sides = &render_node.props.border_sides;
+            let uniform_border = render_node.props.border_width;
             let radius = render_node.props.border_radius;
-            let clip_shape = if radius.is_uniform() && radius.top_left > 0.0 {
-                ClipShape::rounded_rect(clip_rect, radius)
+
+            let left_inset = sides.left.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+            let right_inset = sides.right.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+            let top_inset = sides.top.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+            let bottom_inset = sides.bottom.as_ref().map(|b| b.width).unwrap_or(uniform_border);
+
+            // Inset clip by border width to exclude border area from clipping region
+            let clip_rect = Rect::new(
+                left_inset,
+                top_inset,
+                (bounds.width - left_inset - right_inset).max(0.0),
+                (bounds.height - top_inset - bottom_inset).max(0.0),
+            );
+            // Adjust corner radius for inset - use max border width for corner adjustment
+            let max_border = left_inset.max(right_inset).max(top_inset).max(bottom_inset);
+            let inset_radius = if radius.is_uniform() && radius.top_left > max_border {
+                CornerRadius::uniform((radius.top_left - max_border).max(0.0))
+            } else {
+                CornerRadius::default()
+            };
+            let clip_shape = if inset_radius.top_left > 0.0 {
+                ClipShape::rounded_rect(clip_rect, inset_radius)
             } else {
                 ClipShape::rect(clip_rect)
             };
@@ -4950,13 +5041,27 @@ impl RenderTree {
         let children_inside_glass = inside_glass || is_glass;
 
         // Push clip BEFORE rendering content if this element clips its children
-        // Clip to padding box (full bounds) - matches CSS overflow:hidden behavior
+        // Clip to content area (inset by border width so children don't render over border)
+        // This matches CSS overflow:hidden behavior which clips to the padding box
         let clips_content = render_node.props.clips_content;
         if clips_content {
-            let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+            // Inset clip by border width to exclude border area from clipping region
+            let border_width = render_node.props.border_width;
             let radius = render_node.props.border_radius;
-            let clip_shape = if radius.is_uniform() && radius.top_left > 0.0 {
-                ClipShape::rounded_rect(clip_rect, radius)
+            let clip_rect = Rect::new(
+                border_width,
+                border_width,
+                (bounds.width - border_width * 2.0).max(0.0),
+                (bounds.height - border_width * 2.0).max(0.0),
+            );
+            // Adjust corner radius for inset - reduce by border width
+            let inset_radius = if radius.is_uniform() && radius.top_left > border_width {
+                CornerRadius::uniform((radius.top_left - border_width).max(0.0))
+            } else {
+                CornerRadius::default()
+            };
+            let clip_shape = if inset_radius.top_left > 0.0 {
+                ClipShape::rounded_rect(clip_rect, inset_radius)
             } else {
                 ClipShape::rect(clip_rect)
             };
