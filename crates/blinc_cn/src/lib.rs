@@ -58,6 +58,7 @@ pub mod cn {
     pub use crate::components::combobox::combobox;
     pub use crate::components::context_menu::context_menu;
     pub use crate::components::dialog::{alert_dialog, dialog};
+    pub use crate::components::drawer::{drawer, drawer_left, drawer_right};
     pub use crate::components::dropdown_menu::{dropdown_menu, dropdown_menu_custom};
     pub use crate::components::hover_card::hover_card;
     pub use crate::components::input::input;
@@ -67,6 +68,7 @@ pub mod cn {
     pub use crate::components::radio::radio_group;
     pub use crate::components::select::select;
     pub use crate::components::separator::separator;
+    pub use crate::components::sheet::{sheet, sheet_bottom, sheet_left, sheet_right, sheet_top};
     pub use crate::components::skeleton::{skeleton, skeleton_circle};
     pub use crate::components::slider::slider;
     pub use crate::components::spinner::spinner;
@@ -103,6 +105,9 @@ pub mod prelude {
     pub use crate::components::dialog::{
         alert_dialog, dialog, AlertDialogBuilder, DialogBuilder, DialogSize,
     };
+    pub use crate::components::drawer::{
+        drawer, drawer_left, drawer_right, DrawerBuilder, DrawerSide, DrawerSize,
+    };
     pub use crate::components::dropdown_menu::{
         dropdown_menu, dropdown_menu_custom, DropdownAlign, DropdownMenuBuilder, DropdownPosition,
     };
@@ -123,6 +128,9 @@ pub mod prelude {
     };
     pub use crate::components::select::{select, Select, SelectBuilder, SelectOption, SelectSize};
     pub use crate::components::separator::{separator, Separator, SeparatorOrientation};
+    pub use crate::components::sheet::{
+        sheet, sheet_bottom, sheet_left, sheet_right, sheet_top, SheetBuilder, SheetSide, SheetSize,
+    };
     pub use crate::components::skeleton::{skeleton, skeleton_circle, Skeleton};
     pub use crate::components::slider::{slider, Slider, SliderBuilder, SliderSize};
     pub use crate::components::spinner::{spinner, Spinner, SpinnerSize};

@@ -82,6 +82,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .child(hover_card_section())
                         .child(tooltip_section())
                         .child(dialog_section(ctx))
+                        .child(sheet_section(ctx))
+                        .child(drawer_section(ctx))
                         .child(tabs_section(ctx))
                         .child(toast_section(ctx))
                         .child(loading_section(ctx))
@@ -1051,6 +1053,349 @@ fn dialog_section(_ctx: &WindowedContext) -> impl ElementBuilder {
                         }),
                 ),
         )
+}
+
+// ============================================================================
+// SHEET SECTION
+// ============================================================================
+
+fn sheet_section(_ctx: &WindowedContext) -> impl ElementBuilder {
+    section_container().child(section_title("Sheets")).child(
+        div()
+            .flex_row()
+            .flex_wrap()
+            .gap(16.0)
+            // Right sheet (default)
+            .child(
+                cn::button("Open Right Sheet")
+                    .variant(ButtonVariant::Outline)
+                    .on_click(move |_| {
+                        cn::sheet()
+                            .side(SheetSide::Right)
+                            .title("Settings")
+                            .description("Configure your preferences.")
+                            .content(|| {
+                                let theme = ThemeState::get();
+                                div()
+                                    .flex_col()
+                                    .gap(16.0)
+                                    .child(
+                                        div().flex_col().gap(8.0).child(cn::label("Name")).child(
+                                            div()
+                                                .w_full()
+                                                .h(36.0)
+                                                .bg(theme.color(ColorToken::SurfaceElevated))
+                                                .border(1.0, theme.color(ColorToken::Border))
+                                                .rounded(6.0),
+                                        ),
+                                    )
+                                    .child(
+                                        div().flex_col().gap(8.0).child(cn::label("Email")).child(
+                                            div()
+                                                .w_full()
+                                                .h(36.0)
+                                                .bg(theme.color(ColorToken::SurfaceElevated))
+                                                .border(1.0, theme.color(ColorToken::Border))
+                                                .rounded(6.0),
+                                        ),
+                                    )
+                                    .child(
+                                        text("Sheet content can contain any elements.")
+                                            .size(theme.typography().text_sm)
+                                            .color(theme.color(ColorToken::TextSecondary)),
+                                    )
+                            })
+                            .footer(|| {
+                                div()
+                                    .flex_row()
+                                    .gap(8.0)
+                                    .justify_end()
+                                    .child(cn::button("Cancel").variant(ButtonVariant::Outline))
+                                    .child(cn::button("Save").variant(ButtonVariant::Primary))
+                            })
+                            .show();
+                    }),
+            )
+            // Left sheet
+            .child(
+                cn::button("Open Left Sheet")
+                    .variant(ButtonVariant::Secondary)
+                    .on_click(move |_| {
+                        cn::sheet_left()
+                            .title("Navigation")
+                            .description("Main menu options")
+                            .content(|| {
+                                div()
+                                    .flex_col()
+                                    .gap(4.0)
+                                    .child(
+                                        div().w_full().child(
+                                            cn::button("Home").variant(ButtonVariant::Ghost),
+                                        ),
+                                    )
+                                    .child(
+                                        div().w_full().child(
+                                            cn::button("Profile").variant(ButtonVariant::Ghost),
+                                        ),
+                                    )
+                                    .child(div().w_full().child(
+                                        cn::button("Settings").variant(ButtonVariant::Ghost),
+                                    ))
+                                    .child(
+                                        div().w_full().child(
+                                            cn::button("Help").variant(ButtonVariant::Ghost),
+                                        ),
+                                    )
+                            })
+                            .show();
+                    }),
+            )
+            // Bottom sheet
+            .child(
+                cn::button("Open Bottom Sheet")
+                    .variant(ButtonVariant::Secondary)
+                    .on_click(move |_| {
+                        cn::sheet_bottom()
+                            .size(SheetSize::Medium)
+                            .title("Share")
+                            .description("Choose how to share this item")
+                            .content(|| {
+                                div()
+                                    .flex_row()
+                                    .gap(16.0)
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .flex_col()
+                                            .items_center()
+                                            .gap(4.0)
+                                            .child(
+                                                div()
+                                                    .w(48.0)
+                                                    .h(48.0)
+                                                    .rounded_full()
+                                                    .bg(Color::rgb(0.2, 0.6, 1.0)),
+                                            )
+                                            .child(text("Twitter").size(12.0)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_col()
+                                            .items_center()
+                                            .gap(4.0)
+                                            .child(
+                                                div()
+                                                    .w(48.0)
+                                                    .h(48.0)
+                                                    .rounded_full()
+                                                    .bg(Color::rgb(0.0, 0.5, 0.0)),
+                                            )
+                                            .child(text("WhatsApp").size(12.0)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_col()
+                                            .items_center()
+                                            .gap(4.0)
+                                            .child(
+                                                div()
+                                                    .w(48.0)
+                                                    .h(48.0)
+                                                    .rounded_full()
+                                                    .bg(Color::rgb(0.9, 0.3, 0.3)),
+                                            )
+                                            .child(text("Email").size(12.0)),
+                                    )
+                            })
+                            .show();
+                    }),
+            )
+            // Large sheet
+            .child(
+                cn::button("Open Large Sheet")
+                    .variant(ButtonVariant::Outline)
+                    .on_click(move |_| {
+                        cn::sheet()
+                            .size(SheetSize::Large)
+                            .title("Large Panel")
+                            .description("A wider sheet for more content")
+                            .content(|| {
+                                let theme = ThemeState::get();
+                                div()
+                                    .flex_col()
+                                    .gap(16.0)
+                                    .child(
+                                        text("This is a larger sheet that can hold more content.")
+                                            .size(theme.typography().text_base)
+                                            .color(theme.color(ColorToken::TextPrimary)),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .h(200.0)
+                                            .bg(theme.color(ColorToken::SurfaceElevated))
+                                            .rounded(8.0)
+                                            .items_center()
+                                            .child(
+                                                text("Content Area")
+                                                    .color(theme.color(ColorToken::TextSecondary)),
+                                            ),
+                                    )
+                            })
+                            .show();
+                    }),
+            ),
+    )
+}
+
+// ============================================================================
+// DRAWER SECTION
+// ============================================================================
+
+fn drawer_section(_ctx: &WindowedContext) -> impl ElementBuilder {
+    section_container().child(section_title("Drawers")).child(
+        div()
+            .flex_row()
+            .flex_wrap()
+            .gap(16.0)
+            // Left drawer (navigation)
+            .child(
+                cn::button("Open Nav Drawer")
+                    .variant(ButtonVariant::Outline)
+                    .on_click(move |_| {
+                        cn::drawer()
+                            .side(DrawerSide::Left)
+                            .title("Menu")
+                            .child(|| {
+                                div()
+                                    .w_full()
+                                    .child(cn::button("Dashboard").variant(ButtonVariant::Ghost))
+                            })
+                            .child(|| {
+                                div()
+                                    .w_full()
+                                    .child(cn::button("Projects").variant(ButtonVariant::Ghost))
+                            })
+                            .child(|| {
+                                div()
+                                    .w_full()
+                                    .child(cn::button("Team").variant(ButtonVariant::Ghost))
+                            })
+                            .child(|| {
+                                div()
+                                    .w_full()
+                                    .child(cn::button("Reports").variant(ButtonVariant::Ghost))
+                            })
+                            .child(|| div().w_full().child(cn::separator()))
+                            .child(|| {
+                                div()
+                                    .w_full()
+                                    .child(cn::button("Settings").variant(ButtonVariant::Ghost))
+                            })
+                            .footer(|| {
+                                div()
+                                    .w_full()
+                                    .child(cn::button("Logout").variant(ButtonVariant::Destructive))
+                            })
+                            .show();
+                    }),
+            )
+            // Right drawer
+            .child(
+                cn::button("Open Right Drawer")
+                    .variant(ButtonVariant::Secondary)
+                    .on_click(move |_| {
+                        cn::drawer_right()
+                            .title("Notifications")
+                            .size(DrawerSize::Wide)
+                            .child(|| {
+                                let theme = ThemeState::get();
+                                div()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(12.0)
+                                    .p(8.0)
+                                    .rounded(8.0)
+                                    .bg(theme.color(ColorToken::SurfaceElevated))
+                                    .child(
+                                        div()
+                                            .w(32.0)
+                                            .h(32.0)
+                                            .rounded_full()
+                                            .bg(theme.color(ColorToken::Primary)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_col()
+                                            .child(text("New message").size(14.0).medium())
+                                            .child(
+                                                text("John sent you a message")
+                                                    .size(12.0)
+                                                    .color(theme.color(ColorToken::TextSecondary)),
+                                            ),
+                                    )
+                            })
+                            .child(|| {
+                                let theme = ThemeState::get();
+                                div()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(12.0)
+                                    .p(8.0)
+                                    .rounded(8.0)
+                                    .child(
+                                        div()
+                                            .w(32.0)
+                                            .h(32.0)
+                                            .rounded_full()
+                                            .bg(theme.color(ColorToken::SuccessBg)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_col()
+                                            .child(text("Task completed").size(14.0).medium())
+                                            .child(
+                                                text("Project X was finished")
+                                                    .size(12.0)
+                                                    .color(theme.color(ColorToken::TextSecondary)),
+                                            ),
+                                    )
+                            })
+                            .show();
+                    }),
+            )
+            // Narrow drawer
+            .child(
+                cn::button("Open Narrow Drawer")
+                    .variant(ButtonVariant::Outline)
+                    .on_click(move |_| {
+                        cn::drawer()
+                            .size(DrawerSize::Narrow)
+                            .title("Quick Actions")
+                            .child(|| {
+                                div()
+                                    .w_full()
+                                    .child(cn::button("New").variant(ButtonVariant::Ghost))
+                            })
+                            .child(|| {
+                                div()
+                                    .w_full()
+                                    .child(cn::button("Open").variant(ButtonVariant::Ghost))
+                            })
+                            .child(|| {
+                                div()
+                                    .w_full()
+                                    .child(cn::button("Save").variant(ButtonVariant::Ghost))
+                            })
+                            .child(|| {
+                                div()
+                                    .w_full()
+                                    .child(cn::button("Export").variant(ButtonVariant::Ghost))
+                            })
+                            .show();
+                    }),
+            ),
+    )
 }
 
 // ============================================================================

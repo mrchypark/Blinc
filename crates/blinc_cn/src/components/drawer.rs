@@ -1,0 +1,469 @@
+//! Drawer component for navigation panels
+//!
+//! A themed navigation drawer that slides in from the left or right edge.
+//! Optimized for navigation menus with a simpler API than Sheet.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use blinc_cn::prelude::*;
+//!
+//! // Basic navigation drawer
+//! cn::drawer()
+//!     .title("Menu")
+//!     .child(cn::button("Home").variant(ButtonVariant::Ghost))
+//!     .child(cn::button("Profile").variant(ButtonVariant::Ghost))
+//!     .child(cn::button("Settings").variant(ButtonVariant::Ghost))
+//!     .show();
+//!
+//! // Drawer from the right
+//! cn::drawer()
+//!     .side(DrawerSide::Right)
+//!     .title("Notifications")
+//!     .show();
+//!
+//! // Drawer with header and footer
+//! cn::drawer()
+//!     .header(|| {
+//!         div().flex_row().gap_2()
+//!             .child(avatar("JD"))
+//!             .child(text("John Doe"))
+//!     })
+//!     .child(navigation_items())
+//!     .footer(|| cn::button("Logout").variant(ButtonVariant::Destructive))
+//!     .show();
+//! ```
+
+use std::sync::Arc;
+
+use blinc_animation::{AnimationPreset, MultiKeyframeAnimation};
+use blinc_core::Color;
+use blinc_layout::motion::motion_derived;
+use blinc_layout::overlay_state::get_overlay_manager;
+use blinc_layout::prelude::*;
+use blinc_layout::widgets::overlay::{BackdropConfig, EdgeSide, OverlayHandle, OverlayManagerExt};
+use blinc_layout::InstanceKey;
+use blinc_theme::{ColorToken, RadiusToken, ThemeState};
+
+/// Drawer side variants
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DrawerSide {
+    /// Slide in from the left edge (default, standard for navigation)
+    #[default]
+    Left,
+    /// Slide in from the right edge
+    Right,
+}
+
+/// Drawer size variants
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DrawerSize {
+    /// Narrow drawer (240px)
+    Narrow,
+    /// Medium drawer (280px)
+    #[default]
+    Medium,
+    /// Wide drawer (320px)
+    Wide,
+}
+
+impl DrawerSize {
+    /// Get the width in pixels
+    pub fn width(&self) -> f32 {
+        match self {
+            DrawerSize::Narrow => 240.0,
+            DrawerSize::Medium => 280.0,
+            DrawerSize::Wide => 320.0,
+        }
+    }
+}
+
+/// Builder for creating and showing drawers
+pub struct DrawerBuilder {
+    side: DrawerSide,
+    size: DrawerSize,
+    title: Option<String>,
+    header: Option<Arc<dyn Fn() -> Div + Send + Sync>>,
+    children: Vec<Arc<dyn Fn() -> Div + Send + Sync>>,
+    footer: Option<Arc<dyn Fn() -> Div + Send + Sync>>,
+    show_close: bool,
+    on_close: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Animation duration in ms
+    animation_duration: u32,
+    /// Unique key for motion animation
+    key: InstanceKey,
+}
+
+impl DrawerBuilder {
+    /// Create a new drawer builder
+    #[track_caller]
+    pub fn new() -> Self {
+        Self {
+            side: DrawerSide::Left,
+            size: DrawerSize::Medium,
+            title: None,
+            header: None,
+            children: Vec::new(),
+            footer: None,
+            show_close: true,
+            on_close: None,
+            animation_duration: 250,
+            key: InstanceKey::new("drawer"),
+        }
+    }
+
+    /// Set which side the drawer slides from
+    pub fn side(mut self, side: DrawerSide) -> Self {
+        self.side = side;
+        self
+    }
+
+    /// Set the drawer size
+    pub fn size(mut self, size: DrawerSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// Set the drawer title (shown in header)
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    /// Set custom header content (replaces title)
+    pub fn header<F>(mut self, header: F) -> Self
+    where
+        F: Fn() -> Div + Send + Sync + 'static,
+    {
+        self.header = Some(Arc::new(header));
+        self
+    }
+
+    /// Add a child element to the drawer body
+    pub fn child<F>(mut self, child: F) -> Self
+    where
+        F: Fn() -> Div + Send + Sync + 'static,
+    {
+        self.children.push(Arc::new(child));
+        self
+    }
+
+    /// Add a child element builder directly (for Button, etc.)
+    pub fn child_builder<B: ElementBuilder + Clone + Send + Sync + 'static>(
+        mut self,
+        builder: B,
+    ) -> Self {
+        self.children
+            .push(Arc::new(move || div().child(builder.clone())));
+        self
+    }
+
+    /// Set custom footer content
+    pub fn footer<F>(mut self, footer: F) -> Self
+    where
+        F: Fn() -> Div + Send + Sync + 'static,
+    {
+        self.footer = Some(Arc::new(footer));
+        self
+    }
+
+    /// Show or hide the close button
+    pub fn show_close(mut self, show: bool) -> Self {
+        self.show_close = show;
+        self
+    }
+
+    /// Set the callback for when the drawer is closed
+    pub fn on_close<F>(mut self, callback: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.on_close = Some(Arc::new(callback));
+        self
+    }
+
+    /// Set animation duration in milliseconds
+    pub fn animation_duration(mut self, duration_ms: u32) -> Self {
+        self.animation_duration = duration_ms;
+        self
+    }
+
+    /// Get the enter animation for this drawer's side
+    fn get_enter_animation(&self) -> MultiKeyframeAnimation {
+        let distance = self.size.width();
+        match self.side {
+            DrawerSide::Left => AnimationPreset::slide_in_left(self.animation_duration, distance),
+            DrawerSide::Right => AnimationPreset::slide_in_right(self.animation_duration, distance),
+        }
+    }
+
+    /// Get the exit animation for this drawer's side
+    fn get_exit_animation(&self) -> MultiKeyframeAnimation {
+        let exit_duration = (self.animation_duration as f32 * 0.7) as u32;
+        let distance = self.size.width();
+        match self.side {
+            DrawerSide::Left => AnimationPreset::slide_out_left(exit_duration, distance),
+            DrawerSide::Right => AnimationPreset::slide_out_right(exit_duration, distance),
+        }
+    }
+
+    /// Show the drawer
+    pub fn show(self) -> OverlayHandle {
+        let theme = ThemeState::get();
+        let bg = theme.color(ColorToken::Surface);
+        let border = theme.color(ColorToken::Border);
+        let text_primary = theme.color(ColorToken::TextPrimary);
+        let text_secondary = theme.color(ColorToken::TextSecondary);
+
+        // Get animations before moving other fields
+        let enter_animation = self.get_enter_animation();
+        let exit_animation = self.get_exit_animation();
+
+        let side = self.side;
+        let size = self.size;
+        let title = self.title;
+        let header = self.header;
+        let children = self.children;
+        let footer = self.footer;
+        let show_close = self.show_close;
+        let on_close = self.on_close;
+
+        let mgr = get_overlay_manager();
+
+        // Create a unique motion key for this drawer instance
+        let motion_key_str = format!("drawer_{}", self.key.get());
+        let motion_key_with_child = format!("{}:child:0", motion_key_str);
+
+        // Convert DrawerSide to EdgeSide for overlay positioning
+        let edge_side = match side {
+            DrawerSide::Left => EdgeSide::Left,
+            DrawerSide::Right => EdgeSide::Right,
+        };
+
+        // Drawer panel size: width is fixed, height fills viewport
+        let drawer_width = size.width();
+
+        mgr.modal()
+            .dismiss_on_escape(true)
+            .backdrop(BackdropConfig::dark().dismiss_on_click(true))
+            .edge_position(edge_side)
+            .size(drawer_width, 10000.0) // Large height to fill viewport
+            .motion_key(&motion_key_with_child)
+            .content(move || {
+                build_drawer_content(
+                    side,
+                    size,
+                    &title,
+                    &header,
+                    &children,
+                    &footer,
+                    show_close,
+                    &on_close,
+                    bg,
+                    border,
+                    text_primary,
+                    text_secondary,
+                    &enter_animation,
+                    &exit_animation,
+                    &motion_key_str,
+                )
+            })
+            .show()
+    }
+}
+
+impl Default for DrawerBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Create a new drawer builder
+///
+/// # Example
+///
+/// ```ignore
+/// cn::drawer()
+///     .title("Navigation")
+///     .child(|| cn::button("Home").variant(ButtonVariant::Ghost))
+///     .child(|| cn::button("Settings").variant(ButtonVariant::Ghost))
+///     .show();
+/// ```
+#[track_caller]
+pub fn drawer() -> DrawerBuilder {
+    DrawerBuilder::new()
+}
+
+/// Build the drawer content
+#[allow(clippy::too_many_arguments)]
+fn build_drawer_content(
+    side: DrawerSide,
+    size: DrawerSize,
+    title: &Option<String>,
+    header: &Option<Arc<dyn Fn() -> Div + Send + Sync>>,
+    children: &[Arc<dyn Fn() -> Div + Send + Sync>],
+    footer: &Option<Arc<dyn Fn() -> Div + Send + Sync>>,
+    show_close: bool,
+    on_close: &Option<Arc<dyn Fn() + Send + Sync>>,
+    bg: Color,
+    border: Color,
+    text_primary: Color,
+    text_secondary: Color,
+    enter_animation: &MultiKeyframeAnimation,
+    exit_animation: &MultiKeyframeAnimation,
+    motion_key: &str,
+) -> Div {
+    let theme = ThemeState::get();
+    let radius = theme.radius(RadiusToken::Lg);
+
+    // Determine rounded corners based on side
+    let border_radius = match side {
+        DrawerSide::Left => (0.0, radius, radius, 0.0), // Right corners rounded
+        DrawerSide::Right => (radius, 0.0, 0.0, radius), // Left corners rounded
+    };
+
+    // Build drawer panel
+    let mut drawer = div()
+        .w(size.width())
+        .h_full()
+        .bg(bg)
+        .border(1.0, border)
+        .shadow_xl()
+        .flex_col()
+        .overflow_clip();
+
+    // Apply rounded corners
+    let (tl, tr, br, bl) = border_radius;
+    drawer = drawer.rounded_corners(tl, tr, br, bl);
+
+    // Header section
+    let has_header = header.is_some() || title.is_some() || show_close;
+    if has_header {
+        let mut header_div = div()
+            .w_full()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .p_4();
+
+        // Custom header or title
+        if let Some(ref header_fn) = header {
+            header_div = header_div.child(header_fn());
+        } else if let Some(ref title_text) = title {
+            header_div = header_div.child(
+                text(title_text)
+                    .size(theme.typography().text_lg)
+                    .color(text_primary)
+                    .semibold(),
+            );
+        } else {
+            // Empty spacer for alignment when only close button
+            header_div = header_div.child(div());
+        }
+
+        // Close button
+        if show_close {
+            let close_icon = r#"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>"#;
+
+            let on_close_clone = on_close.clone();
+            header_div = header_div.child(
+                div()
+                    .w(32.0)
+                    .h(32.0)
+                    .items_center()
+                    .rounded(theme.radius(RadiusToken::Sm))
+                    .cursor_pointer()
+                    .on_click(move |_| {
+                        if let Some(ref cb) = on_close_clone {
+                            cb();
+                        }
+                        get_overlay_manager().close_top();
+                    })
+                    .child(svg(close_icon).size(18.0, 18.0).color(text_secondary)),
+            );
+        }
+
+        drawer = drawer.child(header_div);
+
+        // Separator under header
+        drawer = drawer.child(div().w_full().h(1.0).bg(border));
+    }
+
+    // Body section with children (scrollable)
+    if !children.is_empty() {
+        let mut body = div()
+            .flex_1()
+            .w_full()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .overflow_scroll();
+
+        for child_fn in children {
+            body = body.child(child_fn());
+        }
+
+        drawer = drawer.child(body);
+    }
+
+    // Footer section
+    if let Some(ref footer_fn) = footer {
+        // Push footer to bottom with spacer if no children
+        if children.is_empty() {
+            drawer = drawer.child(div().flex_1());
+        }
+
+        drawer = drawer.child(div().w_full().h(1.0).bg(border)); // Separator
+        drawer = drawer.child(div().w_full().p_4().child(footer_fn()));
+    }
+
+    // Wrap drawer panel in motion for slide animations
+    // The overlay system handles positioning via Edge position type
+    div().child(
+        motion_derived(motion_key)
+            .enter_animation(enter_animation.clone())
+            .exit_animation(exit_animation.clone())
+            .child(drawer),
+    )
+}
+
+/// Convenience function for a left-side drawer (navigation)
+#[track_caller]
+pub fn drawer_left() -> DrawerBuilder {
+    drawer().side(DrawerSide::Left)
+}
+
+/// Convenience function for a right-side drawer
+#[track_caller]
+pub fn drawer_right() -> DrawerBuilder {
+    drawer().side(DrawerSide::Right)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_drawer_builder() {
+        let builder = drawer()
+            .side(DrawerSide::Right)
+            .size(DrawerSize::Wide)
+            .title("Test");
+
+        assert_eq!(builder.side, DrawerSide::Right);
+        assert_eq!(builder.size, DrawerSize::Wide);
+        assert_eq!(builder.title, Some("Test".to_string()));
+    }
+
+    #[test]
+    fn test_drawer_sizes() {
+        assert_eq!(DrawerSize::Narrow.width(), 240.0);
+        assert_eq!(DrawerSize::Medium.width(), 280.0);
+        assert_eq!(DrawerSize::Wide.width(), 320.0);
+    }
+
+    #[test]
+    fn test_drawer_sides() {
+        assert_eq!(DrawerSide::default(), DrawerSide::Left);
+    }
+}

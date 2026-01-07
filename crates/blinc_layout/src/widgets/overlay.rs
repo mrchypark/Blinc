@@ -229,6 +229,22 @@ pub enum OverlayPosition {
         offset_x: f32,
         offset_y: f32,
     },
+    /// Position at an edge of the viewport (sheets, drawers)
+    Edge(EdgeSide),
+}
+
+/// Edge sides for sheet/drawer overlays
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum EdgeSide {
+    /// Left edge of viewport
+    #[default]
+    Left,
+    /// Right edge of viewport
+    Right,
+    /// Top edge of viewport
+    Top,
+    /// Bottom edge of viewport
+    Bottom,
 }
 
 impl Default for OverlayPosition {
@@ -1213,6 +1229,15 @@ impl OverlayManagerInner {
                         // We don't have anchor bounds here - return None
                         return None;
                     }
+                    OverlayPosition::Edge(side) => {
+                        // Edge positioning for sheets/drawers
+                        match side {
+                            EdgeSide::Left => (0.0, 0.0),
+                            EdgeSide::Right => (vp_width - w, 0.0),
+                            EdgeSide::Top => (0.0, 0.0),
+                            EdgeSide::Bottom => (0.0, vp_height - h),
+                        }
+                    }
                 };
 
                 // Adjust position based on anchor direction
@@ -1433,6 +1458,16 @@ impl OverlayManagerInner {
                     // For anchor-based positioning, use offset as position
                     // (Anchor lookup not yet implemented, so treat as point)
                     (*offset_x, *offset_y)
+                }
+                OverlayPosition::Edge(side) => {
+                    // Edge positioning for sheets/drawers
+                    // Content is placed at the edge, spanning the full viewport in the perpendicular direction
+                    match side {
+                        EdgeSide::Left => (0.0, 0.0),
+                        EdgeSide::Right => (vp_w - content_w, 0.0),
+                        EdgeSide::Top => (0.0, 0.0),
+                        EdgeSide::Bottom => (0.0, vp_h - content_h),
+                    }
                 }
             };
 
@@ -1857,6 +1892,36 @@ impl OverlayManagerInner {
                     .h(vp_height)
                     .pointer_events_none()
                     .child(content.ml(*offset_x).mt(*offset_y))
+            }
+
+            OverlayPosition::Edge(side) => {
+                // Edge positioning for sheets/drawers
+                // The content is rendered at its natural size, positioned at the edge
+                // pointer_events_none allows backdrop clicks to pass through the wrapper
+                let container = div().w(vp_width).h(vp_height).pointer_events_none();
+
+                match side {
+                    EdgeSide::Left => container
+                        .flex_row()
+                        .items_start()
+                        .justify_start()
+                        .child(content),
+                    EdgeSide::Right => container
+                        .flex_row()
+                        .items_start()
+                        .justify_end()
+                        .child(content),
+                    EdgeSide::Top => container
+                        .flex_col()
+                        .items_start()
+                        .justify_start()
+                        .child(content),
+                    EdgeSide::Bottom => container
+                        .flex_col()
+                        .items_start()
+                        .justify_end()
+                        .child(content),
+                }
             }
         }
     }
@@ -2286,6 +2351,25 @@ impl ModalBuilder {
     /// with `motion_derived(key)` in your content builder.
     pub fn motion_key(mut self, key: impl Into<String>) -> Self {
         self.config.motion_key = Some(key.into());
+        self
+    }
+
+    /// Set edge position for sheets and drawers
+    ///
+    /// This positions the overlay content at an edge of the viewport.
+    /// Use with `.size()` to set the actual content dimensions for
+    /// proper backdrop click detection.
+    ///
+    /// # Example
+    /// ```ignore
+    /// overlay_manager.modal()
+    ///     .edge_position(EdgeSide::Right)
+    ///     .size(320.0, viewport_height) // Sheet panel dimensions
+    ///     .content(|| sheet_panel)
+    ///     .show()
+    /// ```
+    pub fn edge_position(mut self, side: EdgeSide) -> Self {
+        self.config.position = OverlayPosition::Edge(side);
         self
     }
 

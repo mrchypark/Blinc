@@ -79,8 +79,8 @@ Modal and overlay components.
 | Component | Primitives Used | Status |
 |-----------|-----------------|--------|
 | **Dialog** | overlay, motion | ✅ Done |
-| **Sheet** | overlay, motion | Planned |
-| **Drawer** | overlay, motion | Planned |
+| **Sheet** | overlay, motion | ✅ Done |
+| **Drawer** | overlay, motion | ✅ Done |
 | **Dropdown Menu** | overlay, scroll | ✅ Done |
 | **Context Menu** | overlay, scroll | ✅ Done |
 | **Menubar** | div, overlay | ✅ Done |

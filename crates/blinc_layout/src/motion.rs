@@ -442,6 +442,11 @@ pub struct Motion {
         note = "Use query_motion(key).exit() to explicitly trigger motion exit"
     )]
     is_exiting: bool,
+
+    /// Whether this motion container should be transparent to pointer events.
+    /// When true, clicks that don't hit a child will pass through to siblings.
+    /// Useful for overlay wrappers that should let backdrop clicks through.
+    pointer_events_none: bool,
 }
 
 /// Convert a MotionKeyframe to KeyframeProperties for animation system integration
@@ -520,6 +525,7 @@ pub fn motion() -> Motion {
         // Motion exit is now triggered explicitly via MotionHandle.exit()
         // The is_exiting field is deprecated and always false
         is_exiting: false,
+        pointer_events_none: false,
     }
 }
 
@@ -577,6 +583,7 @@ pub fn motion_derived(parent_key: &str) -> Motion {
         // Motion exit is now triggered explicitly via MotionHandle.exit()
         // The is_exiting field is deprecated and always false
         is_exiting: false,
+        pointer_events_none: false,
     }
 }
 
@@ -1130,6 +1137,28 @@ impl Motion {
         self.suspended
     }
 
+    /// Make this motion container transparent to pointer events.
+    ///
+    /// When enabled, clicks that don't hit a child element will pass through
+    /// to siblings (like the backdrop layer). This is essential for overlays
+    /// like sheets and drawers where the motion wrapper shouldn't block
+    /// backdrop click-to-dismiss behavior.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Sheet content with motion that allows backdrop clicks
+    /// motion_derived(motion_key)
+    ///     .pointer_events_none()
+    ///     .enter_animation(slide_in)
+    ///     .exit_animation(slide_out)
+    ///     .child(sheet_panel)
+    /// ```
+    pub fn pointer_events_none(mut self) -> Self {
+        self.pointer_events_none = true;
+        self
+    }
+
     /// Register a callback to be invoked when the motion container is ready
     ///
     /// The callback fires once after the motion is laid out for the first time.
@@ -1540,7 +1569,10 @@ impl ElementBuilder for Motion {
     fn render_props(&self) -> RenderProps {
         // Motion with animated bindings uses motion_bindings() instead of static props.
         // Return default props - the actual transform/opacity will be sampled at render time.
-        RenderProps::default()
+        RenderProps {
+            pointer_events_none: self.pointer_events_none,
+            ..RenderProps::default()
+        }
     }
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {

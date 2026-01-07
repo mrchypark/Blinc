@@ -17,6 +17,7 @@ pub mod collapsible;
 pub mod combobox;
 pub mod context_menu;
 pub mod dialog;
+pub mod drawer;
 pub mod dropdown_menu;
 pub mod hover_card;
 pub mod input;
@@ -26,6 +27,7 @@ pub mod progress;
 pub mod radio;
 pub mod select;
 pub mod separator;
+pub mod sheet;
 pub mod skeleton;
 pub mod slider;
 pub mod spinner;
@@ -52,6 +54,7 @@ pub use checkbox::{checkbox, Checkbox, CheckboxSize};
 pub use combobox::{combobox, Combobox, ComboboxBuilder, ComboboxOption, ComboboxSize};
 pub use context_menu::{context_menu, ContextMenuBuilder, ContextMenuItem, SubmenuBuilder};
 pub use dialog::{alert_dialog, dialog, AlertDialogBuilder, DialogBuilder, DialogSize};
+pub use drawer::{drawer, drawer_left, drawer_right, DrawerBuilder, DrawerSide, DrawerSize};
 pub use dropdown_menu::{
     dropdown_menu, dropdown_menu_custom, DropdownAlign, DropdownMenuBuilder, DropdownPosition,
 };
@@ -66,6 +69,9 @@ pub use progress::{progress, progress_animated, AnimatedProgress, Progress, Prog
 pub use radio::{radio_group, RadioGroup, RadioGroupBuilder, RadioLayout, RadioSize};
 pub use select::{select, Select, SelectBuilder, SelectOption, SelectSize};
 pub use separator::{separator, Separator, SeparatorOrientation};
+pub use sheet::{
+    sheet, sheet_bottom, sheet_left, sheet_right, sheet_top, SheetBuilder, SheetSide, SheetSize,
+};
 pub use skeleton::{skeleton, skeleton_circle, Skeleton};
 pub use slider::{slider, Slider, SliderSize};
 pub use spinner::{spinner, Spinner, SpinnerSize};

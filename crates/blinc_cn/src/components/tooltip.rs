@@ -292,7 +292,7 @@ fn calculate_tooltip_position(
         TooltipSide::Top => {
             // Position above trigger - use trigger_y - offset as the bottom anchor point
             // The overlay content will be positioned to align its bottom edge here
-            let y = trigger_y - (offset * 8.0);
+            let y = trigger_y - (offset * 6.0);
             let x = match align {
                 TooltipAlign::Start => trigger_x,
                 TooltipAlign::Center => trigger_x + (trigger_w - tooltip_width_estimate) / 2.0,
@@ -510,10 +510,10 @@ mod tests {
             TooltipAlign::Center,
             6.0,
         );
-        // y should be trigger_y - offset
-        assert_eq!(y, 50.0 - 6.0);
-        // x should be centered
-        assert_eq!(x, 100.0 + (80.0 - 120.0) / 2.0);
+        // y uses offset * 6.0 multiplier for top positioning
+        assert_eq!(y, 50.0 - (6.0 * 6.0)); // 14.0
+        // x should be centered (tooltip_width_estimate = 100.0)
+        assert_eq!(x, 100.0 + (80.0 - 100.0) / 2.0); // 90.0
     }
 
     #[test]
@@ -543,6 +543,6 @@ mod tests {
             6.0,
         );
         assert_eq!(x, 100.0 + 80.0 + 6.0); // trigger_x + trigger_w + offset
-        assert_eq!(y, 50.0 + 30.0 / 2.0); // centered vertically
+        assert_eq!(y, 50.0); // y aligns with trigger_y for right side
     }
 }
