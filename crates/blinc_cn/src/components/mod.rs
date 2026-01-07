@@ -19,9 +19,9 @@ pub mod context_menu;
 pub mod dialog;
 pub mod dropdown_menu;
 pub mod hover_card;
-pub mod menubar;
 pub mod input;
 pub mod label;
+pub mod menubar;
 pub mod progress;
 pub mod radio;
 pub mod select;
@@ -56,9 +56,12 @@ pub use dropdown_menu::{
     dropdown_menu, dropdown_menu_custom, DropdownAlign, DropdownMenuBuilder, DropdownPosition,
 };
 pub use hover_card::{hover_card, HoverCard, HoverCardAlign, HoverCardBuilder, HoverCardSide};
-pub use menubar::{menubar, Menubar, MenubarBuilder, MenubarMenu, MenubarTrigger, MenuTriggerMode, MenuTriggerStyle};
 pub use input::{input, Input, InputBgColors, InputBorderColors, InputSize};
 pub use label::{label, Label, LabelBuilder, LabelSize};
+pub use menubar::{
+    menubar, MenuTriggerMode, MenuTriggerStyle, Menubar, MenubarBuilder, MenubarMenu,
+    MenubarTrigger,
+};
 pub use progress::{progress, progress_animated, AnimatedProgress, Progress, ProgressSize};
 pub use radio::{radio_group, RadioGroup, RadioGroupBuilder, RadioLayout, RadioSize};
 pub use select::{select, Select, SelectBuilder, SelectOption, SelectSize};

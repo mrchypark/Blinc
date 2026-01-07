@@ -305,7 +305,12 @@ impl Button {
 
         // Build content with icon + label or just label
         let mut content = blinc_layout::div::div().flex_row().items_center().gap(6.0);
-        let label_text = text(&label).size(font_size).color(initial_fg).no_wrap().v_center().no_cursor();
+        let label_text = text(&label)
+            .size(font_size)
+            .color(initial_fg)
+            .no_wrap()
+            .v_center()
+            .no_cursor();
 
         if let Some(ref icon_str) = icon {
             let icon_text = svg(icon_str).size(font_size, font_size).color(initial_fg);
