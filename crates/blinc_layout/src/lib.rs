@@ -93,7 +93,7 @@ pub use event_handler::{EventCallback, EventContext, EventHandlers, HandlerRegis
 pub use event_router::{EventRouter, HitTestResult, MouseButton};
 pub use interactive::{DirtyTracker, InteractiveContext, NodeState};
 pub use style::LayoutStyle;
-pub use tree::{LayoutNodeId, LayoutTree};
+pub use tree::{LayoutNodeId, LayoutTree, TextMeasureContext};
 
 // Material system
 pub use element::{

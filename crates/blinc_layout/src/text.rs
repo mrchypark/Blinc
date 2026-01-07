@@ -421,23 +421,24 @@ impl Text {
         // Store actual ascender from font metrics for baseline alignment
         self.ascender = metrics.ascender;
 
-        // Text sizing for flex layouts:
-        // Use measured width as basis, constrained by max_width: 100%
-        // This allows:
-        // - Short text to be centered by flexbox (takes natural width)
-        // - Long text to wrap at parent boundary (max 100%)
-        // - text_center() to center within text bounds
-        self.style.size.width = Dimension::Length(metrics.width);
-
-        // Use a standardized height based on font_size * line_height for layout purposes.
-        // This ensures all text at the same font size has consistent height regardless
-        // of font weight/style (regular vs bold fonts have different internal metrics).
-        // The actual rendering uses font metrics, but layout should be consistent.
-        let standardized_height = self.font_size * self.line_height;
-        self.style.size.height = Dimension::Length(standardized_height);
-        self.style.max_size.width = Dimension::Percent(1.0);
-
-        if !self.wrap {
+        if self.wrap {
+            // For wrapping text, we want Taffy to call our measure function
+            // with the actual available width to calculate the correct height.
+            //
+            // Set width to Auto so Taffy queries the measure function,
+            // max_width to 100% so text doesn't overflow parent,
+            // and height to Auto so it's determined by measurement.
+            self.style.size.width = Dimension::Auto;
+            self.style.size.height = Dimension::Auto;
+            self.style.max_size.width = Dimension::Percent(1.0);
+            // Allow text to shrink if needed
+            self.style.flex_shrink = 1.0;
+        } else {
+            // For non-wrapping text, use fixed dimensions based on measurement
+            self.style.size.width = Dimension::Length(metrics.width);
+            let standardized_height = self.font_size * self.line_height;
+            self.style.size.height = Dimension::Length(standardized_height);
+            self.style.max_size.width = Dimension::Percent(1.0);
             // No wrapping: don't shrink, keep natural size
             self.style.flex_shrink = 0.0;
         }
@@ -553,7 +554,26 @@ impl Text {
 
 impl ElementBuilder for Text {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        tree.create_node(self.style.clone())
+        use crate::tree::TextMeasureContext;
+
+        // For wrapping text, use a measure context so Taffy can calculate
+        // the correct multi-line height based on available width
+        if self.wrap {
+            let context = TextMeasureContext {
+                content: self.content.clone(),
+                font_size: self.font_size,
+                line_height: self.line_height,
+                wrap: true,
+                font_name: self.font_family.name.clone(),
+                generic_font: self.font_family.generic,
+                font_weight: self.weight.weight(),
+                italic: self.italic,
+            };
+            tree.create_text_node(self.style.clone(), context)
+        } else {
+            // Non-wrapping text can use fixed dimensions
+            tree.create_node(self.style.clone())
+        }
     }
 
     #[allow(deprecated)]

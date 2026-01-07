@@ -332,8 +332,9 @@ impl TextRenderingContext {
             text, font_size, color, &options, font_name, generic, weight, italic,
         )?;
 
-        // Calculate glyph extent (the actual height of glyphs without leading)
-        let glyph_extent = prepared.ascender - prepared.descender;
+        // For centering calculations, use the total prepared text height
+        // (which accounts for multiple lines) rather than single-line ascender/descender
+        let total_text_height = prepared.height;
 
         let y_offset = match anchor {
             TextAnchor::Top => {
@@ -341,8 +342,9 @@ impl TextRenderingContext {
                 // This ensures items_center() on parent works correctly - text is
                 // centered within its bounding box regardless of font metrics.
                 if let Some(lh) = layout_height {
-                    // Center glyphs within the actual layout height
-                    y + (lh - glyph_extent) / 2.0
+                    // Center text within the actual layout height
+                    // Use total_text_height for proper multi-line centering
+                    y + (lh - total_text_height) / 2.0
                 } else {
                     // No layout height provided - render glyphs at top without centering.
                     // This is used for baseline alignment where we want the natural
@@ -354,7 +356,7 @@ impl TextRenderingContext {
                 // Center text so the visual center of glyphs aligns with y.
                 // User provides y at the vertical center of the bounding box.
                 // We want glyph center to align with that.
-                y - glyph_extent / 2.0
+                y - total_text_height / 2.0
             }
             TextAnchor::Baseline => {
                 // Position text so its baseline aligns EXACTLY with user's y.
@@ -441,18 +443,18 @@ impl TextRenderingContext {
             generic,
         )?;
 
-        // Calculate glyph extent (the actual height of glyphs without leading)
-        let glyph_extent = prepared.ascender - prepared.descender;
+        // Use total prepared text height for centering (handles multi-line properly)
+        let total_text_height = prepared.height;
 
         let y_offset = match anchor {
             TextAnchor::Top => {
                 if let Some(lh) = layout_height {
-                    y + (lh - glyph_extent) / 2.0
+                    y + (lh - total_text_height) / 2.0
                 } else {
                     y // No centering for baseline alignment
                 }
             }
-            TextAnchor::Center => y - glyph_extent / 2.0,
+            TextAnchor::Center => y - total_text_height / 2.0,
             TextAnchor::Baseline => y - prepared.ascender,
         };
 

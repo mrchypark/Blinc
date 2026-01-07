@@ -1268,7 +1268,7 @@ fn accordion_section() -> impl ElementBuilder {
                                     div().w_full().p(4.0).items_center().child(
                                         text("Blinc is under active development. It's suitable for experimentation and side projects, with a growing component library.")
                                             .size(14.0)
-                                            .color(ThemeState::get().color(ColorToken::TextSecondary)).v_center(),
+                                            .color(ThemeState::get().color(ColorToken::TextSecondary)),
                                     )
                                 })
                                 ,

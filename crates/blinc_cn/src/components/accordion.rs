@@ -270,9 +270,9 @@ impl AccordionBuilder {
                     .flex_col()
                     .w_full()
                     .rounded(radius)
-                    // .shadow_md()
+                    .shadow_md()
                     .bg(theme.color(ColorToken::SurfaceElevated))
-                    .border(1.0, border_color);
+                    .border(1.5, border_color);
 
                 for (index, (item, item_state)) in items_with_state.iter().enumerate() {
                     let is_open = item_state.is_open.clone();
