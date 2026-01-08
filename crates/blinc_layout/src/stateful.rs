@@ -691,6 +691,10 @@ pub struct StatefulInner<S: StateTransitions> {
     /// hover/press state transitions. This allows children to blend with
     /// the motion animation.
     pub(crate) ancestor_motion_key: Option<String>,
+
+    /// Current event being processed (set during event handler invocation)
+    /// This allows `StateContext::event()` to access the triggering event.
+    pub(crate) current_event: Option<crate::event_handler::EventContext>,
 }
 
 impl<S: StateTransitions> StatefulInner<S> {
@@ -705,6 +709,7 @@ impl<S: StateTransitions> StatefulInner<S> {
             node_id: None,
             deps: Vec::new(),
             ancestor_motion_key: None,
+            current_event: None,
         }
     }
 }
@@ -901,6 +906,10 @@ pub struct StateContext<S: StateTransitions> {
 
     /// Signal dependencies registered via .deps()
     deps: Vec<blinc_core::SignalId>,
+
+    /// The event that triggered this callback (if any)
+    /// None when triggered by dependency changes, Some when triggered by user events.
+    event: Option<crate::event_handler::EventContext>,
 }
 
 impl<S: StateTransitions> StateContext<S> {
@@ -912,6 +921,7 @@ impl<S: StateTransitions> StateContext<S> {
         shared_state: SharedState<S>,
         parent_key: Option<Arc<String>>,
         deps: Vec<blinc_core::SignalId>,
+        event: Option<crate::event_handler::EventContext>,
     ) -> Self {
         Self {
             state,
@@ -921,12 +931,36 @@ impl<S: StateTransitions> StateContext<S> {
             shared_state,
             parent_key,
             deps,
+            event,
         }
     }
 
     /// Get the current state for pattern matching
     pub fn state(&self) -> S {
         self.state
+    }
+
+    /// Get the event that triggered this callback (if any)
+    ///
+    /// Returns `Some(EventContext)` when the callback was triggered by a user event
+    /// (click, hover, key press, etc.), or `None` when triggered by dependency changes.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// stateful::<ButtonState>()
+    ///     .on_state(|ctx| {
+    ///         if let Some(event) = ctx.event() {
+    ///             match event.event_type {
+    ///                 POINTER_UP => println!("Clicked at ({}, {})", event.local_x, event.local_y),
+    ///                 _ => {}
+    ///             }
+    ///         }
+    ///         div()
+    ///     })
+    /// ```
+    pub fn event(&self) -> Option<&crate::event_handler::EventContext> {
+        self.event.as_ref()
     }
 
     /// Get the stable key for this stateful container
@@ -1314,6 +1348,13 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         // Create the legacy-style callback wrapper
         let legacy_callback: StateCallback<S> =
             Arc::new(move |state: &S, div: &mut crate::div::Div| {
+                // Get current event from shared state (if any)
+                let current_event = shared_state_clone
+                    .lock()
+                    .unwrap()
+                    .current_event
+                    .clone();
+
                 // Create StateContext for this invocation
                 let ctx = StateContext::new(
                     *state, // S is Copy, so dereference works
@@ -1322,6 +1363,7 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
                     shared_state_clone.clone(),
                     parent_key_clone.clone(),
                     deps_clone.clone(),
+                    current_event,
                 );
 
                 // Reset counter for deterministic key generation
@@ -1492,6 +1534,7 @@ impl<S: StateTransitions> Stateful<S> {
                 node_id: None,
                 deps: Vec::new(),
                 ancestor_motion_key: None,
+                current_event: None,
             })),
             children_cache: RefCell::new(Vec::new()),
             event_handlers_cache: RefCell::new(crate::event_handler::EventHandlers::new()),
@@ -1701,7 +1744,11 @@ impl<S: StateTransitions> Stateful<S> {
         {
             let shared_clone = Arc::clone(&shared);
             cache.on_hover_enter(move |ctx| {
-                Self::handle_event_internal(&shared_clone, event_types::POINTER_ENTER, ctx.node_id);
+                Self::handle_event_internal(
+                    &shared_clone,
+                    event_types::POINTER_ENTER,
+                    Some(ctx.clone()),
+                );
             });
         }
 
@@ -1709,7 +1756,11 @@ impl<S: StateTransitions> Stateful<S> {
         {
             let shared_clone = Arc::clone(&shared);
             cache.on_hover_leave(move |ctx| {
-                Self::handle_event_internal(&shared_clone, event_types::POINTER_LEAVE, ctx.node_id);
+                Self::handle_event_internal(
+                    &shared_clone,
+                    event_types::POINTER_LEAVE,
+                    Some(ctx.clone()),
+                );
             });
         }
 
@@ -1717,7 +1768,11 @@ impl<S: StateTransitions> Stateful<S> {
         {
             let shared_clone = Arc::clone(&shared);
             cache.on_mouse_down(move |ctx| {
-                Self::handle_event_internal(&shared_clone, event_types::POINTER_DOWN, ctx.node_id);
+                Self::handle_event_internal(
+                    &shared_clone,
+                    event_types::POINTER_DOWN,
+                    Some(ctx.clone()),
+                );
             });
         }
 
@@ -1725,7 +1780,11 @@ impl<S: StateTransitions> Stateful<S> {
         {
             let shared_clone = Arc::clone(&shared);
             cache.on_mouse_up(move |ctx| {
-                Self::handle_event_internal(&shared_clone, event_types::POINTER_UP, ctx.node_id);
+                Self::handle_event_internal(
+                    &shared_clone,
+                    event_types::POINTER_UP,
+                    Some(ctx.clone()),
+                );
             });
         }
 
@@ -1733,7 +1792,7 @@ impl<S: StateTransitions> Stateful<S> {
         {
             let shared_clone = Arc::clone(&shared);
             cache.on_drag(move |ctx| {
-                Self::handle_event_internal(&shared_clone, event_types::DRAG, ctx.node_id);
+                Self::handle_event_internal(&shared_clone, event_types::DRAG, Some(ctx.clone()));
             });
         }
 
@@ -1741,7 +1800,11 @@ impl<S: StateTransitions> Stateful<S> {
         {
             let shared_clone = Arc::clone(&shared);
             cache.on_drag_end(move |ctx| {
-                Self::handle_event_internal(&shared_clone, event_types::DRAG_END, ctx.node_id);
+                Self::handle_event_internal(
+                    &shared_clone,
+                    event_types::DRAG_END,
+                    Some(ctx.clone()),
+                );
             });
         }
     }
@@ -1757,13 +1820,15 @@ impl<S: StateTransitions> Stateful<S> {
     fn handle_event_internal(
         shared: &Arc<Mutex<StatefulInner<S>>>,
         event: u32,
-        node_id: LayoutNodeId,
+        event_context: Option<crate::event_handler::EventContext>,
     ) {
         let mut guard = shared.lock().unwrap();
 
-        // Store node_id for future use
+        // Store node_id for future use (from event context if available)
         if guard.node_id.is_none() {
-            guard.node_id = Some(node_id);
+            if let Some(ref ctx) = event_context {
+                guard.node_id = Some(ctx.node_id);
+            }
         }
 
         // Check if inside an animating motion container
@@ -1787,9 +1852,10 @@ impl<S: StateTransitions> Stateful<S> {
             _ => return,
         };
 
-        // Update state
+        // Update state and store current event for callback access
         guard.state = new_state;
         guard.needs_visual_update = true;
+        guard.current_event = event_context;
 
         // Compute new props via callback and queue the update
         if let Some(ref callback) = guard.state_callback {
@@ -1825,6 +1891,9 @@ impl<S: StateTransitions> Stateful<S> {
                     queue_visual_subtree_rebuild(nid, temp_div);
                 }
             }
+
+            // Clear current event after callback completes
+            shared.lock().unwrap().current_event = None;
         }
 
         // Just request redraw, not rebuild

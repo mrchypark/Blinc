@@ -159,6 +159,15 @@ The callback receives a `StateContext` with these methods:
     // Get current state
     let state = ctx.state();
 
+    // Get triggering event (if any)
+    if let Some(event) = ctx.event() {
+        // Handle specific event types
+        match event.event_type {
+            POINTER_UP => println!("Clicked!"),
+            _ => {}
+        }
+    }
+
     // Create scoped signals
     let counter = ctx.use_signal("counter", || 0);
 

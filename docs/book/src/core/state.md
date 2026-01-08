@@ -88,12 +88,70 @@ stateful::<ButtonState>()
 | Method | Description |
 |--------|-------------|
 | `ctx.state()` | Get the current state value |
+| `ctx.event()` | Get the event that triggered this callback (if any) |
 | `ctx.use_signal(name, init)` | Create/retrieve a scoped signal |
 | `ctx.use_animated_value(name, initial)` | Create/retrieve an animated value |
 | `ctx.use_timeline(name)` | Create/retrieve an animated timeline |
 | `ctx.dep::<T>(index)` | Get dependency value by index |
 | `ctx.dep_as_state::<T>(index)` | Get dependency as State<T> handle |
 | `ctx.dispatch(event)` | Trigger a state transition |
+
+---
+
+## Event Access
+
+Use `ctx.event()` to access the event that triggered the callback:
+
+```rust
+use blinc_core::events::event_types::*;
+
+stateful::<ButtonState>()
+    .on_state(|ctx| {
+        // ctx.event() returns Some(EventContext) when triggered by user event
+        // Returns None when triggered by dependency changes
+        if let Some(event) = ctx.event() {
+            match event.event_type {
+                POINTER_UP => {
+                    println!("Clicked at ({}, {})", event.local_x, event.local_y);
+                }
+                POINTER_ENTER => {
+                    println!("Mouse entered!");
+                }
+                KEY_DOWN => {
+                    if event.ctrl && event.key_code == 83 {  // Ctrl+S
+                        println!("Save shortcut pressed!");
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let bg = match ctx.state() {
+            ButtonState::Idle => Color::BLUE,
+            ButtonState::Hovered => Color::CYAN,
+            ButtonState::Pressed => Color::DARK_BLUE,
+            _ => Color::GRAY,
+        };
+
+        div().bg(bg)
+    })
+```
+
+### EventContext Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event_type` | `u32` | Event type (POINTER_UP, POINTER_ENTER, etc.) |
+| `node_id` | `LayoutNodeId` | The node that received the event |
+| `mouse_x`, `mouse_y` | `f32` | Absolute mouse position |
+| `local_x`, `local_y` | `f32` | Position relative to element bounds |
+| `bounds_x`, `bounds_y` | `f32` | Element position (top-left corner) |
+| `bounds_width`, `bounds_height` | `f32` | Element dimensions |
+| `scroll_delta_x`, `scroll_delta_y` | `f32` | Scroll delta (for SCROLL events) |
+| `drag_delta_x`, `drag_delta_y` | `f32` | Drag offset (for DRAG events) |
+| `key_char` | `Option<char>` | Character (for TEXT_INPUT events) |
+| `key_code` | `u32` | Key code (for KEY_DOWN/KEY_UP events) |
+| `shift`, `ctrl`, `alt`, `meta` | `bool` | Modifier key states |
 
 ---
 
