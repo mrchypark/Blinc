@@ -7,6 +7,7 @@ Blinc uses **Finite State Machines (FSM)** to manage interactive UI state. This 
 ### Core Concepts
 
 An FSM defines:
+
 - **States**: Discrete conditions the element can be in
 - **Events**: Inputs that trigger transitions
 - **Transitions**: Rules mapping (state, event) -> new_state
@@ -67,8 +68,9 @@ For type-safe state definitions, implement `StateTransitions`:
 use blinc_layout::stateful::StateTransitions;
 use blinc_core::events::event_types::*;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 enum ButtonState {
+    #[default]
     Idle,
     Hovered,
     Pressed,
@@ -120,50 +122,63 @@ DRAG_END         // Drag completed
 ### Creating Stateful Elements
 
 ```rust
-use blinc_layout::stateful::stateful;
+use blinc_layout::prelude::*;
 
-fn interactive_card(ctx: &WindowedContext) -> impl ElementBuilder {
-    let handle = ctx.use_state(ButtonState::Idle);
-
-    stateful(handle)
+fn interactive_card() -> impl ElementBuilder {
+    stateful::<ButtonState>()
         .w(200.0)
         .h(120.0)
         .rounded(12.0)
-        .on_state(|state, div| {
-            let bg = match state {
+        .on_state(|ctx| {
+            let bg = match ctx.state() {
                 ButtonState::Idle => Color::rgba(0.15, 0.15, 0.2, 1.0),
                 ButtonState::Hovered => Color::rgba(0.18, 0.18, 0.25, 1.0),
                 ButtonState::Pressed => Color::rgba(0.12, 0.12, 0.16, 1.0),
                 ButtonState::Disabled => Color::rgba(0.1, 0.1, 0.12, 0.5),
             };
-            div.set_bg(bg);
+            div().bg(bg).child(text("Hover me").color(Color::WHITE))
         })
-        .child(text("Hover me").color(Color::WHITE))
 }
 ```
 
 ### How It Works
 
-1. **Handle creation**: `ctx.use_state()` creates a persistent state handle
-2. **Element creation**: `stateful(handle)` creates a Stateful wrapper
+1. **Builder creation**: `stateful::<S>()` creates a StatefulBuilder for state type S
+2. **Key generation**: Automatic key based on call site location
 3. **Event routing**: Pointer/keyboard events are routed to the FSM
 4. **State transition**: FSM computes new state from (current_state, event)
-5. **Callback invocation**: `on_state` callback runs with new state
-6. **Visual update**: Callback updates the element's appearance
+5. **Callback invocation**: `on_state` callback runs with StateContext
+6. **Visual update**: Returned Div is merged onto container
 
-### Keyed State for Reusable Components
+### StateContext API
 
-When using stateful elements in loops or reusable components:
+The callback receives a `StateContext` with these methods:
 
 ```rust
-fn list_item(ctx: &WindowedContext, id: &str) -> impl ElementBuilder {
-    // Use id as key to avoid state collisions
-    let handle = ctx.use_state_for(id, ButtonState::Idle);
+.on_state(|ctx| {
+    // Get current state
+    let state = ctx.state();
 
-    stateful(handle)
-        .on_state(|state, div| { /* ... */ })
-        .child(text(id).color(Color::WHITE))
-}
+    // Create scoped signals
+    let counter = ctx.use_signal("counter", || 0);
+
+    // Create animated values (spring physics)
+    let opacity = ctx.use_animated_value("opacity", 1.0);
+
+    // Create animated timelines (keyframe sequences)
+    let timeline = ctx.use_timeline("fade");
+
+    // Access dependency values by index
+    let value: i32 = ctx.dep(0).unwrap_or_default();
+
+    // Get dependency as State handle
+    let state_handle = ctx.dep_as_state::<i32>(0);
+
+    // Dispatch events
+    ctx.dispatch(CUSTOM_EVENT);
+
+    div()
+})
 ```
 
 ---
@@ -182,10 +197,23 @@ enum ButtonState {
 ```
 
 Transitions:
+
 - Idle → Hovered (pointer enter)
 - Hovered → Idle (pointer leave)
 - Hovered → Pressed (pointer down)
 - Pressed → Hovered (pointer up)
+
+### NoState
+
+For elements that only need dependency tracking:
+
+```rust
+stateful::<NoState>()
+    .deps([signal.signal_id()])
+    .on_state(|_ctx| {
+        div().child(text("Rebuilds on signal change"))
+    })
+```
 
 ### ToggleState
 
@@ -197,6 +225,7 @@ enum ToggleState {
 ```
 
 Transitions:
+
 - Off → On (click)
 - On → Off (click)
 
@@ -241,63 +270,102 @@ enum ScrollState {
 Stateful elements can depend on external signals using `.deps()`:
 
 ```rust
-fn counter_display(ctx: &WindowedContext, count: State<i32>) -> impl ElementBuilder {
-    let handle = ctx.use_state(ButtonState::Idle);
-
-    stateful(handle)
-        .deps(&[count.signal_id()])  // Re-run on_state when count changes
-        .on_state(move |_state, container| {
+fn counter_display(count: State<i32>) -> impl ElementBuilder {
+    stateful::<ButtonState>()
+        .deps([count.signal_id()])  // Re-run on_state when count changes
+        .on_state(move |ctx| {
+            // Access via captured variable
             let value = count.get();
-            container.merge(
-                div().child(
-                    text(&format!("Count: {}", value)).color(Color::WHITE)
-                )
-            );
+
+            // Or via context by index
+            let value_alt: i32 = ctx.dep(0).unwrap_or_default();
+
+            div().child(
+                text(&format!("Count: {}", value)).color(Color::WHITE)
+            )
         })
 }
 ```
 
+### Accessing Dependencies
+
+Two patterns for accessing dependency values:
+
+```rust
+// Pattern 1: Capture in closure
+let my_signal = use_state(|| 42);
+
+stateful::<ButtonState>()
+    .deps([my_signal.signal_id()])
+    .on_state(move |ctx| {
+        let value = my_signal.get();  // Via captured variable
+        div()
+    })
+
+// Pattern 2: Access via context
+stateful::<ButtonState>()
+    .deps([my_signal.signal_id()])
+    .on_state(|ctx| {
+        let value: i32 = ctx.dep(0).unwrap_or_default();  // Via index
+        div()
+    })
+```
+
 ### When to Use `.deps()`
 
-Use `.deps()` when your `on_state` callback reads from signals:
-
 | Without `.deps()` | With `.deps()` |
-|-------------------|----------------|
+| ----------------- | -------------- |
 | Only runs on state transitions | Also runs when dependencies change |
 | Hover/press only | External data + hover/press |
 
 ---
 
-## Updating in on_state
+## Scoped State Management
 
-### Pattern 1: Direct Setters (Recommended)
+StateContext provides scoped utilities that persist across rebuilds:
+
+### Scoped Signals
 
 ```rust
-.on_state(|state, div| {
-    let bg = match state {
-        ButtonState::Idle => Color::BLUE,
-        ButtonState::Hovered => Color::CYAN,
-        _ => Color::BLUE,
-    };
-    div.set_bg(bg);
-    div.set_transform(Transform::scale(1.0, 1.0));
-})
+stateful::<ButtonState>()
+    .on_state(|ctx| {
+        // Signal keyed as "{stateful_key}:signal:click_count"
+        let clicks = ctx.use_signal("click_count", || 0);
+
+        div()
+            .child(text(&format!("Clicks: {}", clicks.get())))
+            .on_click(move |_| clicks.update(|n| n + 1))
+    })
 ```
 
-### Pattern 2: Merge with Children
+### Animated Values
 
 ```rust
-.on_state(move |state, container| {
-    let label = match state {
-        ToggleState::Off => "Off",
-        ToggleState::On => "On",
-    };
-    container.merge(
-        div()
-            .bg(color_for_state(state))
-            .child(text(label).color(Color::WHITE))
-    );
-})
+stateful::<ButtonState>()
+    .on_state(|ctx| {
+        // Spring-animated value keyed to this stateful
+        let scale = ctx.use_animated_value("scale", 1.0);
+
+        // With custom spring config
+        let opacity = ctx.use_animated_value_with_config(
+            "opacity",
+            1.0,
+            SpringConfig::bouncy(),
+        );
+
+        // Set target based on state
+        match ctx.state() {
+            ButtonState::Hovered => {
+                scale.lock().unwrap().set_target(1.1);
+            }
+            _ => {
+                scale.lock().unwrap().set_target(1.0);
+            }
+        }
+
+        let s = scale.lock().unwrap().get();
+        div().transform(Transform::scale(s, s))
+    })
 ```
 
 ---
@@ -307,8 +375,9 @@ Use `.deps()` when your `on_state` callback reads from signals:
 For complex interactions, define your own states:
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 enum DragState {
+    #[default]
     Idle,
     Hovering,
     Pressing,
@@ -328,6 +397,19 @@ impl StateTransitions for DragState {
         }
     }
 }
+
+fn draggable_element() -> impl ElementBuilder {
+    stateful::<DragState>()
+        .on_state(|ctx| {
+            let bg = match ctx.state() {
+                DragState::Idle => Color::BLUE,
+                DragState::Hovering => Color::CYAN,
+                DragState::Pressing => Color::YELLOW,
+                DragState::Dragging => Color::GREEN,
+            };
+            div().w(100.0).h(100.0).bg(bg)
+        })
+}
 ```
 
 ---
@@ -336,7 +418,7 @@ impl StateTransitions for DragState {
 
 ### Event Flow
 
-```
+```text
 Platform Event (pointer, keyboard)
     │
     ├── Hit test: which element?
@@ -371,7 +453,7 @@ Handlers receive event details:
 ### Why FSM Over Signals?
 
 | Signals for visual state | FSM for visual state |
-|--------------------------|----------------------|
+| ------------------------ | -------------------- |
 | Triggers full rebuild | Updates only affected element |
 | Creates new VDOM | Mutates existing element |
 | O(tree size) | O(1) |
@@ -382,10 +464,12 @@ Stateful elements only update their own RenderProps:
 
 ```rust
 // State change only affects this element
-div.set_bg(new_color);  // Updates RenderProps
-// No layout recomputation
-// No tree diff
-// Just visual update
+.on_state(|ctx| {
+    div().bg(new_color)  // Updates RenderProps
+    // No layout recomputation
+    // No tree diff
+    // Just visual update
+})
 ```
 
 ### Queued Updates
@@ -396,8 +480,8 @@ State changes queue updates efficiently:
 static PENDING_PROP_UPDATES: Vec<(NodeId, RenderProps)>;
 
 // Stateful callback queues update
-fn on_state(state, div) {
-    div.set_bg(color);
+fn on_state(ctx) -> Div {
+    div().bg(color)
     // Queues: (node_id, updated_props)
 }
 

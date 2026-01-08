@@ -232,6 +232,8 @@ pub mod prelude {
         NoState,
         ScrollContainer,
         ScrollState,
+        SharedAnimatedTimeline,
+        SharedAnimatedValue,
         SharedState,
         StateContext,
         StateTransitions,
@@ -335,8 +337,7 @@ pub mod prelude {
     // Motion container for entry/exit animations
     pub use crate::motion::{
         current_motion_key, is_inside_animating_motion, is_inside_motion, motion, motion_derived,
-        ElementAnimation, Motion, MotionBindings, SharedAnimatedValue, SlideDirection,
-        StaggerConfig, StaggerDirection,
+        ElementAnimation, Motion, MotionBindings, SlideDirection, StaggerConfig, StaggerDirection,
     };
 
     // Text selection for clipboard support

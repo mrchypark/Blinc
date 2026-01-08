@@ -5,11 +5,12 @@ For complex interactions beyond hover/press, define custom state types with the 
 ## Defining Custom States
 
 ```rust
-use blinc_layout::stateful::{stateful, StateTransitions};
+use blinc_layout::stateful::StateTransitions;
 use blinc_core::events::event_types::*;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 enum PlayerState {
+    #[default]
     Stopped,
     Playing,
     Paused,
@@ -31,23 +32,22 @@ impl StateTransitions for PlayerState {
 ## Using Custom States
 
 ```rust
-fn player_button(ctx: &WindowedContext) -> impl ElementBuilder {
-    let handle = ctx.use_state(PlayerState::Stopped);
+use blinc_layout::prelude::*;
 
-    stateful(handle)
+fn player_button() -> impl ElementBuilder {
+    stateful::<PlayerState>()
         .w(60.0)
         .h(60.0)
         .rounded_full()
         .flex_center()
-        .on_state(|state, div| {
-            let bg = match state {
+        .on_state(|ctx| {
+            let bg = match ctx.state() {
                 PlayerState::Stopped => Color::rgba(0.3, 0.3, 0.35, 1.0),
                 PlayerState::Playing => Color::rgba(0.2, 0.8, 0.4, 1.0),
                 PlayerState::Paused => Color::rgba(0.9, 0.6, 0.2, 1.0),
             };
-            div.set_bg(bg);
+            div().bg(bg).child(text("▶").color(Color::WHITE))
         })
-        .child(text("▶").color(Color::WHITE))
 }
 ```
 
@@ -81,8 +81,9 @@ DRAG_END         // Drag completed
 ### Drag State Machine
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 enum DragPhase {
+    #[default]
     Idle,
     Hovering,
     Pressing,
@@ -110,13 +111,30 @@ impl StateTransitions for DragPhase {
         }
     }
 }
+
+fn draggable_card() -> impl ElementBuilder {
+    stateful::<DragPhase>()
+        .w(120.0)
+        .h(80.0)
+        .rounded(8.0)
+        .on_state(|ctx| {
+            let (bg, cursor) = match ctx.state() {
+                DragPhase::Idle => (Color::BLUE, "default"),
+                DragPhase::Hovering => (Color::CYAN, "grab"),
+                DragPhase::Pressing => (Color::YELLOW, "grabbing"),
+                DragPhase::Dragging => (Color::GREEN, "grabbing"),
+            };
+            div().bg(bg).cursor(cursor)
+        })
+}
 ```
 
 ### Focus State Machine
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 enum InputFocus {
+    #[default]
     Idle,
     Hovered,
     Focused,
@@ -143,6 +161,22 @@ impl StateTransitions for InputFocus {
         }
     }
 }
+
+fn focusable_input() -> impl ElementBuilder {
+    stateful::<InputFocus>()
+        .w(200.0)
+        .h(40.0)
+        .rounded(4.0)
+        .on_state(|ctx| {
+            let (border_color, border_width) = match ctx.state() {
+                InputFocus::Idle => (Color::GRAY, 1.0),
+                InputFocus::Hovered => (Color::LIGHT_GRAY, 1.0),
+                InputFocus::Focused => (Color::BLUE, 2.0),
+                InputFocus::FocusedHovered => (Color::BLUE, 2.0),
+            };
+            div().border(border_width, border_color)
+        })
+}
 ```
 
 ## Combining with External State
@@ -150,22 +184,21 @@ impl StateTransitions for InputFocus {
 Use `.deps()` to combine state machine transitions with external signals:
 
 ```rust
-fn smart_button(ctx: &WindowedContext) -> impl ElementBuilder {
-    let enabled = ctx.use_state_keyed("enabled", || true);
-    let handle = ctx.use_state(ButtonState::Idle);
+fn smart_button() -> impl ElementBuilder {
+    let enabled = use_state_keyed("enabled", || true);
 
-    stateful(handle)
+    stateful::<ButtonState>()
         .px(16.0)
         .py(8.0)
         .rounded(8.0)
-        .deps(&[enabled.signal_id()])
-        .on_state(move |state, div| {
+        .deps([enabled.signal_id()])
+        .on_state(move |ctx| {
             let is_enabled = enabled.get();
 
             let bg = if !is_enabled {
                 Color::rgba(0.2, 0.2, 0.25, 0.5)  // Disabled
             } else {
-                match state {
+                match ctx.state() {
                     ButtonState::Idle => Color::rgba(0.3, 0.5, 0.9, 1.0),
                     ButtonState::Hovered => Color::rgba(0.4, 0.6, 1.0, 1.0),
                     ButtonState::Pressed => Color::rgba(0.2, 0.4, 0.8, 1.0),
@@ -173,9 +206,73 @@ fn smart_button(ctx: &WindowedContext) -> impl ElementBuilder {
                 }
             };
 
-            div.set_bg(bg);
+            div().bg(bg).child(text("Submit").color(Color::WHITE))
         })
-        .child(text("Submit").color(Color::WHITE))
+}
+```
+
+## Accessing Dependencies via Context
+
+Use `ctx.dep()` for cleaner dependency access:
+
+```rust
+fn counter_button(count: State<i32>) -> impl ElementBuilder {
+    stateful::<ButtonState>()
+        .deps([count.signal_id()])
+        .on_state(|ctx| {
+            // Access by index - no need to capture in closure
+            let value: i32 = ctx.dep(0).unwrap_or_default();
+
+            // Or get a State handle for reading/writing
+            if let Some(count_state) = ctx.dep_as_state::<i32>(0) {
+                // count_state.set(value + 1);
+            }
+
+            let bg = match ctx.state() {
+                ButtonState::Hovered => Color::CYAN,
+                _ => Color::BLUE,
+            };
+
+            div()
+                .bg(bg)
+                .child(text(&format!("Count: {}", value)))
+        })
+}
+```
+
+## Using Scoped State
+
+StateContext provides scoped signals and animated values:
+
+```rust
+fn interactive_counter() -> impl ElementBuilder {
+    stateful::<ButtonState>()
+        .on_state(|ctx| {
+            // Scoped signal - persists across rebuilds
+            let clicks = ctx.use_signal("clicks", || 0);
+
+            // Scoped animated value with spring physics
+            let scale = ctx.use_animated_value("scale", 1.0);
+
+            // Animate based on state
+            match ctx.state() {
+                ButtonState::Pressed => {
+                    scale.lock().unwrap().set_target(0.95);
+                }
+                _ => {
+                    scale.lock().unwrap().set_target(1.0);
+                }
+            }
+
+            let s = scale.lock().unwrap().get();
+
+            div()
+                .transform(Transform::scale(s, s))
+                .child(text(&format!("Clicks: {}", clicks.get())))
+                .on_click(move |_| {
+                    clicks.update(|n| n + 1);
+                })
+        })
 }
 ```
 
@@ -200,6 +297,48 @@ impl StateTransitions for MyState {
 }
 ```
 
+## Setting Initial State
+
+Use `.initial()` when you need a non-default starting state:
+
+```rust
+fn initially_disabled_button(disabled: bool) -> impl ElementBuilder {
+    stateful::<ButtonState>()
+        .initial(if disabled { ButtonState::Disabled } else { ButtonState::Idle })
+        .on_state(|ctx| {
+            let bg = match ctx.state() {
+                ButtonState::Disabled => Color::GRAY,
+                ButtonState::Idle => Color::BLUE,
+                ButtonState::Hovered => Color::CYAN,
+                ButtonState::Pressed => Color::DARK_BLUE,
+            };
+            div().bg(bg)
+        })
+}
+```
+
+## NoState for Dependency-Only Containers
+
+When you only need dependency tracking without state transitions:
+
+```rust
+fn data_display(data: State<Vec<String>>) -> impl ElementBuilder {
+    stateful::<NoState>()
+        .deps([data.signal_id()])
+        .on_state(|ctx| {
+            // Access data via context
+            let items: Vec<String> = ctx.dep(0).unwrap_or_default();
+
+            div()
+                .flex_col()
+                .gap(4.0)
+                .children(items.iter().map(|item| {
+                    div().child(text(item))
+                }))
+        })
+}
+```
+
 ## Best Practices
 
 1. **Keep states minimal** - Only include states you need to distinguish visually.
@@ -212,4 +351,12 @@ impl StateTransitions for MyState {
 
 5. **Test transitions** - Verify all state paths work as expected.
 
-6. **Combine with .deps()** - For states that depend on external signals.
+6. **Use `.deps()` for external dependencies** - When combining with signals.
+
+7. **Use `ctx.dep()` over closures** - Cleaner access to dependency values.
+
+8. **Implement Default** - Mark the default state with `#[default]` attribute.
+
+9. **Use scoped signals** - `ctx.use_signal()` for state local to the stateful.
+
+10. **Use animated values** - `ctx.use_animated_value()` for smooth transitions.

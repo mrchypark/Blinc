@@ -30,6 +30,7 @@ pub use keyframe::{
 };
 pub use presets::AnimationPreset;
 pub use scheduler::{
+    get_scheduler, is_scheduler_initialized, set_global_scheduler, try_get_scheduler,
     AnimatedKeyframe, AnimatedTimeline, AnimatedValue, AnimationScheduler, KeyframeId,
     SchedulerHandle, SpringId, TimelineId,
 };

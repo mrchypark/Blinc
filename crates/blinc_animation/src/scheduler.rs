@@ -13,9 +13,65 @@ use crate::timeline::Timeline;
 use blinc_core::AnimationAccess;
 use slotmap::{new_key_type, SlotMap};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+// ============================================================================
+// Global Animation Scheduler State
+// ============================================================================
+
+/// Global scheduler handle for access from anywhere in the application
+static GLOBAL_SCHEDULER: OnceLock<SchedulerHandle> = OnceLock::new();
+
+/// Set the global animation scheduler handle
+///
+/// This should be called once at app startup after creating the AnimationScheduler.
+/// Typically called from `WindowedApp::run()` after the scheduler is configured.
+///
+/// # Panics
+///
+/// Panics if called more than once.
+pub fn set_global_scheduler(handle: SchedulerHandle) {
+    if GLOBAL_SCHEDULER.set(handle).is_err() {
+        panic!("set_global_scheduler() called more than once");
+    }
+}
+
+/// Get the global animation scheduler handle
+///
+/// Returns the scheduler handle for creating animated values, keyframes, and timelines.
+/// This enables components to create animations without needing explicit context passing.
+///
+/// # Panics
+///
+/// Panics if `set_global_scheduler()` has not been called.
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_animation::{get_scheduler, AnimatedValue, SpringConfig};
+///
+/// let handle = get_scheduler();
+/// let mut opacity = AnimatedValue::new(handle.clone(), 1.0, SpringConfig::stiff());
+/// opacity.set_target(0.5);
+/// ```
+pub fn get_scheduler() -> SchedulerHandle {
+    GLOBAL_SCHEDULER
+        .get()
+        .expect("Animation scheduler not initialized. Call set_global_scheduler() at app startup.")
+        .clone()
+}
+
+/// Try to get the global scheduler (returns None if not initialized)
+pub fn try_get_scheduler() -> Option<SchedulerHandle> {
+    GLOBAL_SCHEDULER.get().cloned()
+}
+
+/// Check if the global scheduler has been initialized
+pub fn is_scheduler_initialized() -> bool {
+    GLOBAL_SCHEDULER.get().is_some()
+}
 
 new_key_type! {
     /// Handle to a registered spring animation

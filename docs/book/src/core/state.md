@@ -9,162 +9,268 @@ Blinc uses **Stateful elements** as the primary way to manage UI state. Stateful
 ### Basic Usage
 
 ```rust
-use blinc_layout::stateful::stateful;
+use blinc_layout::prelude::*;
 
-fn feature_card(ctx: &WindowedContext, label: &str, accent: Color) -> impl ElementBuilder {
-    // Create persistent state handle (keyed by label for reusable components)
-    let handle = ctx.use_state_for(label, ButtonState::Idle);
+fn feature_card(label: &str, accent: Color) -> impl ElementBuilder {
+    let label = label.to_string();
 
-    stateful(handle)
+    stateful::<ButtonState>()
         .w_fit()
         .p(4.0)
         .rounded(14.0)
-        .on_state(move |state, div| match state {
-            ButtonState::Idle => {
-                div.set_bg(accent);
-                div.set_rounded(14.0);
-            }
-            ButtonState::Hovered => {
-                let hover_color = Color::rgba(
+        .on_state(move |ctx| {
+            let bg = match ctx.state() {
+                ButtonState::Idle => accent,
+                ButtonState::Hovered => Color::rgba(
                     (accent.r * 1.15).min(1.0),
                     (accent.g * 1.15).min(1.0),
                     (accent.b * 1.15).min(1.0),
                     accent.a,
-                );
-                div.set_bg(hover_color);
-                div.set_transform(Transform::scale(1.05, 1.05));
-            }
-            ButtonState::Pressed => {
-                div.set_bg(Color::rgba(accent.r * 0.85, accent.g * 0.85, accent.b * 0.85, accent.a));
-                div.set_transform(Transform::scale(0.95, 0.95));
-            }
-            ButtonState::Disabled => {
-                div.set_bg(Color::GRAY);
-            }
+                ),
+                ButtonState::Pressed => Color::rgba(
+                    accent.r * 0.85,
+                    accent.g * 0.85,
+                    accent.b * 0.85,
+                    accent.a,
+                ),
+                ButtonState::Disabled => Color::GRAY,
+            };
+
+            div()
+                .bg(bg)
+                .on_click({
+                    let label = label.clone();
+                    move |_| println!("'{}' clicked!", label)
+                })
+                .child(text(&label).color(Color::WHITE))
         })
-        .on_click(move |_| println!("'{}' clicked!", label))
-        .child(text(label).color(Color::WHITE))
 }
 ```
 
 ### How It Works
 
-1. `ctx.use_state(InitialState)` creates a persistent state handle
-2. `stateful(handle)` creates a Stateful element from the handle
+1. `stateful::<S>()` creates a StatefulBuilder for state type S
+2. `.on_state(|ctx| ...)` defines the callback that receives a `StateContext`
 3. Events (hover, click, etc.) trigger automatic state transitions
-4. `on_state` callback is called when state changes
-5. Use `div.set_*()` methods or `div.swap()` to update the element
+4. `ctx.state()` returns the current state for pattern matching
+5. Return a `Div` from the callback - it's merged onto the container
 
 ---
 
-## State Handle Functions
+## StateContext
 
-Blinc provides two ways to create state handles:
-
-### `use_state()` - Auto-keyed
-
-For unique call sites (not in loops or reusable components):
+The `StateContext` provides access to state and scoped utilities within your callback:
 
 ```rust
-fn image_showcase(ctx: &WindowedContext) -> impl ElementBuilder {
-    // Auto-keyed by source location - works for unique call sites
-    let handle = ctx.use_state(ButtonState::Idle);
+stateful::<ButtonState>()
+    .on_state(|ctx| {
+        // Get current state
+        let state = ctx.state();
 
-    stateful(handle)
-        .on_state(|state, div| {
-            match state {
-                ButtonState::Idle | ButtonState::Disabled => {
-                    div.set_shadow(Shadow::new(0.0, 4.0, 8.0, Color::rgba(0.0, 0.0, 0.0, 0.2)));
-                }
-                ButtonState::Hovered | ButtonState::Pressed => {
-                    div.set_shadow(Shadow::new(0.0, 12.0, 24.0, Color::rgba(0.4, 0.6, 1.0, 0.5)));
-                    div.set_transform(Transform::scale(1.03, 1.03));
-                }
-            }
-        })
-        .child(img("path/to/image.webp").w(200.0).h(150.0))
-}
+        // Create scoped signals (persist across rebuilds)
+        let counter = ctx.use_signal("counter", || 0);
+
+        // Create scoped animated values
+        let opacity = ctx.use_animated_value("opacity", 1.0);
+
+        // Access dependency values
+        let value: i32 = ctx.dep(0).unwrap_or_default();
+
+        // Dispatch events to trigger state transitions
+        // ctx.dispatch(CUSTOM_EVENT);
+
+        div().bg(color_for_state(state))
+    })
 ```
 
-### `use_state_for()` - Explicit key
+### StateContext Methods
 
-For reusable components or loops where you need unique keys:
-
-```rust
-fn item_list(ctx: &WindowedContext, items: &[String]) -> impl ElementBuilder {
-    div()
-        .flex_col()
-        .gap(4.0)
-        .child(
-            items.iter().map(|item| {
-                // Clone item for the key (use_state_for takes ownership)
-                let handle = ctx.use_state_for(item.clone(), ButtonState::Idle);
-
-                stateful(handle)
-                    .p(12.0)
-                    .rounded(8.0)
-                    .on_state(|state, div| {
-                        let bg = match state {
-                            ButtonState::Idle => Color::rgba(0.15, 0.15, 0.2, 1.0),
-                            ButtonState::Hovered => Color::rgba(0.2, 0.2, 0.28, 1.0),
-                            ButtonState::Pressed => Color::rgba(0.3, 0.5, 0.9, 1.0),
-                            _ => Color::rgba(0.15, 0.15, 0.2, 1.0),
-                        };
-                        div.set_bg(bg);
-                    })
-                    .child(text(item).color(Color::WHITE))
-            })
-        )
-}
-```
+| Method | Description |
+|--------|-------------|
+| `ctx.state()` | Get the current state value |
+| `ctx.use_signal(name, init)` | Create/retrieve a scoped signal |
+| `ctx.use_animated_value(name, initial)` | Create/retrieve an animated value |
+| `ctx.use_timeline(name)` | Create/retrieve an animated timeline |
+| `ctx.dep::<T>(index)` | Get dependency value by index |
+| `ctx.dep_as_state::<T>(index)` | Get dependency as State<T> handle |
+| `ctx.dispatch(event)` | Trigger a state transition |
 
 ---
 
-## Updating State in `on_state`
+## Setting Initial State
 
-There are two patterns for updating the div in the `on_state` callback:
-
-### Pattern 1: Direct setters (Recommended)
-
-Use `div.set_*()` methods for individual property updates:
+Use `.initial()` to set the initial state:
 
 ```rust
-.on_state(|state, div| {
-    match state {
-        ButtonState::Idle => {
-            div.set_bg(Color::BLUE);
-            div.set_rounded(8.0);
-            div.set_shadow(Shadow::new(0.0, 2.0, 4.0, Color::rgba(0.0, 0.0, 0.0, 0.2)));
-        }
-        ButtonState::Hovered => {
-            div.set_bg(Color::CYAN);
-            div.set_rounded(12.0);
-            div.set_transform(Transform::scale(1.05, 1.05));
-        }
+stateful::<ButtonState>()
+    .initial(if disabled { ButtonState::Disabled } else { ButtonState::Idle })
+    .on_state(|ctx| {
         // ...
-    }
-})
+        div()
+    })
 ```
 
-### Pattern 2: Merge
+---
 
-Use `container.merge()` to apply partial updates with children:
+## Signal Dependencies with `.deps()`
+
+When a Stateful element needs to react to external signal changes (not just hover/press events), use `.deps()` to declare dependencies:
 
 ```rust
-.on_state(move |state, container| {
-    let bg = match state {
-        ButtonState::Idle => Color::BLUE,
-        ButtonState::Hovered => Color::CYAN,
-        _ => Color::BLUE,
-    };
-    // merge() can also add/update children
-    container.merge(
-        div()
-            .bg(bg)
-            .child(text(&format!("Count: {}", count.get())).color(Color::WHITE))
-    );
-})
+fn direction_toggle() -> impl ElementBuilder {
+    // External state that affects the element's appearance
+    let direction = use_state_keyed("direction", || Direction::Horizontal);
+
+    stateful::<ButtonState>()
+        .w(120.0)
+        .h(40.0)
+        .rounded(8.0)
+        // Declare dependency - on_state re-runs when this signal changes
+        .deps([direction.signal_id()])
+        .on_state(move |ctx| {
+            // Read the current direction value
+            let dir = direction.get();
+            let label = match dir {
+                Direction::Horizontal => "Horizontal",
+                Direction::Vertical => "Vertical",
+            };
+
+            let bg = match ctx.state() {
+                ButtonState::Idle => Color::rgba(0.3, 0.5, 0.9, 1.0),
+                ButtonState::Hovered => Color::rgba(0.4, 0.6, 1.0, 1.0),
+                _ => Color::rgba(0.3, 0.5, 0.9, 1.0),
+            };
+
+            div()
+                .bg(bg)
+                .on_click(move |_| {
+                    // Toggle direction
+                    direction.update(|d| match d {
+                        Direction::Horizontal => Direction::Vertical,
+                        Direction::Vertical => Direction::Horizontal,
+                    });
+                })
+                .child(text(label).color(Color::WHITE))
+        })
+}
 ```
+
+### Accessing Dependencies via StateContext
+
+You can access dependency values directly from the context using `ctx.dep()`:
+
+```rust
+let count_signal: State<i32> = use_state(|| 0);
+let name_signal: State<String> = use_state(|| "".to_string());
+
+stateful::<ButtonState>()
+    .deps([count_signal.signal_id(), name_signal.signal_id()])
+    .on_state(|ctx| {
+        // Access by index (matches order in .deps())
+        let count: i32 = ctx.dep(0).unwrap_or_default();
+        let name: String = ctx.dep(1).unwrap_or_default();
+
+        // Or get a full State<T> handle for reading and writing
+        if let Some(count_state) = ctx.dep_as_state::<i32>(0) {
+            let value = count_state.get();
+            // count_state.set(value + 1);
+        }
+
+        div().child(text(&format!("{}: {}", name, count)))
+    })
+```
+
+### When to Use `.deps()`
+
+Use `.deps()` when your `on_state` callback reads values from signals that can change independently of the element's internal state transitions.
+
+Without `.deps()`, the `on_state` callback only runs when:
+- The element's state changes (Idle → Hovered, etc.)
+
+With `.deps()`, it also runs when:
+- Any of the declared signal dependencies change
+
+---
+
+## Scoped Signals
+
+Use `ctx.use_signal()` for state that's scoped to the stateful container:
+
+```rust
+stateful::<ButtonState>()
+    .on_state(|ctx| {
+        // This signal is keyed to this specific stateful container
+        // Format: "{stateful_key}:signal:click_count"
+        let click_count = ctx.use_signal("click_count", || 0);
+
+        div()
+            .child(text(&format!("Clicks: {}", click_count.get())))
+            .on_click(move |_| {
+                click_count.update(|n| n + 1);
+            })
+    })
+```
+
+---
+
+## Animated Values
+
+Use `ctx.use_animated_value()` for spring-physics animations scoped to the container:
+
+```rust
+stateful::<ButtonState>()
+    .on_state(|ctx| {
+        // Persisted animated value with spring physics
+        let scale = ctx.use_animated_value("scale", 1.0);
+
+        // Optionally use custom spring config
+        let opacity = ctx.use_animated_value_with_config(
+            "opacity",
+            1.0,
+            SpringConfig::bouncy(),
+        );
+
+        // Set target (animates automatically)
+        match ctx.state() {
+            ButtonState::Hovered => {
+                scale.lock().unwrap().set_target(1.1);
+            }
+            _ => {
+                scale.lock().unwrap().set_target(1.0);
+            }
+        }
+
+        let current_scale = scale.lock().unwrap().get();
+        div().transform(Transform::scale(current_scale, current_scale))
+    })
+```
+
+---
+
+## Animated Timelines
+
+Use `ctx.use_timeline()` for complex multi-property animations with keyframes:
+
+```rust
+stateful::<ButtonState>()
+    .on_state(|ctx| {
+        // Persisted timeline scoped to this stateful
+        let timeline = ctx.use_timeline("pulse");
+
+        // Configure on first use, get existing entry IDs on subsequent calls
+        let opacity_id = timeline.lock().unwrap().configure(|t| {
+            let id = t.add(0, 1000, 0.5, 1.0);  // 0ms offset, 1000ms duration
+            t.set_loop(-1);  // Loop forever
+            t.start();
+            id
+        });
+
+        let opacity = timeline.lock().unwrap().get(opacity_id);
+        div().opacity(opacity)
+    })
+```
+
+The `configure()` method is idempotent - it only runs the configuration closure on the first call and returns existing entry IDs on subsequent calls.
 
 ---
 
@@ -187,65 +293,17 @@ Transitions:
 - `Hovered` → `Pressed` (on pointer down)
 - `Pressed` → `Hovered` (on pointer up)
 
-### ToggleState
+### NoState
+
+For containers that only need dependency tracking without state transitions:
 
 ```rust
-ToggleState::Off   // Toggle is off
-ToggleState::On    // Toggle is on
-```
-
-Transitions:
-- `Off` → `On` (on click)
-- `On` → `Off` (on click)
-
-### CheckboxState
-
-```rust
-CheckboxState::UncheckedIdle
-CheckboxState::UncheckedHovered
-CheckboxState::CheckedIdle
-CheckboxState::CheckedHovered
-```
-
-### TextFieldState
-
-```rust
-TextFieldState::Idle
-TextFieldState::Hovered
-TextFieldState::Focused
-TextFieldState::FocusedHovered
-TextFieldState::Disabled
-```
-
-### ScrollState
-
-```rust
-ScrollState::Idle
-ScrollState::Scrolling
-ScrollState::Decelerating
-ScrollState::Bouncing
-```
-
----
-
-## Shorthand Constructors
-
-For simple cases without persistent state:
-
-```rust
-use blinc_layout::stateful::{stateful_button, toggle, stateful_checkbox};
-
-// Creates Stateful<ButtonState> starting at Idle
-stateful_button()
-    .on_state(|state, div| { /* ... */ })
-
-// Creates Stateful<ToggleState>
-toggle(false)  // Start in Off state
-    .on_state(|state, div| { /* ... */ })
-
-// Creates Stateful<CheckboxState>
-stateful_checkbox(false)  // Start unchecked
-    .on_state(|state, div| { /* ... */ })
+stateful::<NoState>()
+    .deps([some_signal.signal_id()])
+    .on_state(|_ctx| {
+        // Rebuilds when dependencies change
+        div().child(text("Content"))
+    })
 ```
 
 ---
@@ -255,11 +313,12 @@ stateful_checkbox(false)  // Start unchecked
 Define your own state enum for complex interactions:
 
 ```rust
-use blinc_layout::stateful::{Stateful, StateTransitions};
+use blinc_layout::stateful::StateTransitions;
 use blinc_core::events::event_types::*;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 enum DragState {
+    #[default]
     Idle,
     Hovering,
     Dragging,
@@ -277,87 +336,30 @@ impl StateTransitions for DragState {
     }
 }
 
-fn draggable_item(ctx: &WindowedContext) -> impl ElementBuilder {
-    let handle = ctx.use_state(DragState::Idle);
-
-    stateful(handle)
+fn draggable_item() -> impl ElementBuilder {
+    stateful::<DragState>()
         .w(100.0)
         .h(100.0)
         .rounded(8.0)
-        .on_state(|state, div| {
-            let bg = match state {
+        .on_state(|ctx| {
+            let bg = match ctx.state() {
                 DragState::Idle => Color::BLUE,
                 DragState::Hovering => Color::CYAN,
                 DragState::Dragging => Color::GREEN,
             };
-            div.set_bg(bg);
+            div().bg(bg)
         })
 }
 ```
 
 ---
 
-## Signal Dependencies with `.deps()`
-
-When a Stateful element needs to react to external signal changes (not just hover/press events), use `.deps()` to declare dependencies:
-
-```rust
-fn direction_toggle(ctx: &WindowedContext) -> impl ElementBuilder {
-    // External state that affects the element's appearance
-    let direction = ctx.use_state_keyed("direction", || Direction::Horizontal);
-    let button_handle = ctx.use_state(ButtonState::Idle);
-
-    stateful(button_handle)
-        .w(120.0)
-        .h(40.0)
-        .rounded(8.0)
-        // Declare dependency - on_state re-runs when this signal changes
-        .deps(&[direction.signal_id()])
-        .on_state(move |state, div| {
-            // Read the current direction value
-            let dir = direction.get();
-            let label = match dir {
-                Direction::Horizontal => "Horizontal",
-                Direction::Vertical => "Vertical",
-            };
-
-            let bg = match state {
-                ButtonState::Idle => Color::rgba(0.3, 0.5, 0.9, 1.0),
-                ButtonState::Hovered => Color::rgba(0.4, 0.6, 1.0, 1.0),
-                _ => Color::rgba(0.3, 0.5, 0.9, 1.0),
-            };
-
-            div.set_bg(bg);
-        })
-        .on_click(move |_| {
-            // Toggle direction
-            direction.update(|d| match d {
-                Direction::Horizontal => Direction::Vertical,
-                Direction::Vertical => Direction::Horizontal,
-            });
-        })
-        .child(text("Toggle Direction").color(Color::WHITE))
-}
-```
-
-### When to Use `.deps()`
-
-Use `.deps()` when your `on_state` callback reads values from signals or keyed state that can change independently of the element's internal state transitions.
-
-Without `.deps()`, the `on_state` callback only runs when:
-- The element's state changes (Idle → Hovered, etc.)
-
-With `.deps()`, it also runs when:
-- Any of the declared signal dependencies change
-
----
-
-## Keyed State
+## Keyed State (Global Signals)
 
 For state persisted across UI rebuilds with a string key:
 
 ```rust
-let is_expanded = ctx.use_state_keyed("sidebar_expanded", || false);
+let is_expanded = use_state_keyed("sidebar_expanded", || false);
 
 // Read
 let expanded = is_expanded.get();
@@ -374,16 +376,18 @@ let signal_id = is_expanded.signal_id();
 
 ## Best Practices
 
-1. **Use `stateful(handle)` with `use_state()`** - This is the primary pattern for stateful UI elements.
+1. **Use `stateful::<S>()` builder** - This is the primary pattern for stateful UI elements.
 
-2. **Use `use_state_for(key, ...)` in loops** - When creating multiple stateful elements in a loop, use explicit keys.
+2. **Return Div from callbacks** - The new API expects you to return a Div, not mutate a container.
 
-3. **Use `div.set_*()` or `div.swap()`** - Both patterns work; choose based on your preference.
+3. **Use `.initial()` for non-default states** - Set initial state explicitly when needed.
 
-4. **Keep state close to usage** - Define state handles in the component that needs them.
+4. **Use `ctx.use_signal()` for local state** - Scoped signals are automatically keyed.
 
-5. **Prefer built-in state types** - They have correct transitions already defined.
+5. **Use `ctx.dep()` for dependency access** - Cleaner than capturing signals in closures.
 
-6. **Custom states for complex flows** - Define your own when built-in types don't fit.
+6. **Prefer built-in state types** - They have correct transitions already defined.
 
-7. **Use `.deps()` for external dependencies** - When `on_state` reads from other signals.
+7. **Custom states for complex flows** - Define your own when built-in types don't fit.
+
+8. **Use `.deps()` for external dependencies** - When `on_state` needs to react to signal changes.

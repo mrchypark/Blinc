@@ -57,14 +57,30 @@
 //! mutable reference to the inner `Div` for full mutation capability.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
+use blinc_animation::{AnimatedTimeline, AnimatedValue, SchedulerHandle, SpringConfig};
 use crate::div::{Div, ElementBuilder, ElementRef, ElementTypeId};
 use crate::element::RenderProps;
 use crate::tree::{LayoutNodeId, LayoutTree};
 use blinc_core::reactive::SignalId;
+
+/// Re-export SharedAnimatedValue from motion module
+pub use crate::motion::SharedAnimatedValue;
+
+/// Shared animated timeline that can be cloned and accessed from multiple places
+pub type SharedAnimatedTimeline = Arc<Mutex<AnimatedTimeline>>;
+
+/// Global storage for persisted animated values keyed by stateful context
+static PERSISTED_ANIMATED_VALUES: LazyLock<RwLock<HashMap<String, SharedAnimatedValue>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Global storage for persisted animated timelines keyed by stateful context
+static PERSISTED_ANIMATED_TIMELINES: LazyLock<RwLock<HashMap<String, SharedAnimatedTimeline>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 // =========================================================================
 // Global Redraw Flag
@@ -882,6 +898,9 @@ pub struct StateContext<S: StateTransitions> {
 
     /// Parent context key for hierarchical nesting
     parent_key: Option<Arc<String>>,
+
+    /// Signal dependencies registered via .deps()
+    deps: Vec<blinc_core::SignalId>,
 }
 
 impl<S: StateTransitions> StateContext<S> {
@@ -892,6 +911,7 @@ impl<S: StateTransitions> StateContext<S> {
         reactive: blinc_core::context_state::SharedReactiveGraph,
         shared_state: SharedState<S>,
         parent_key: Option<Arc<String>>,
+        deps: Vec<blinc_core::SignalId>,
     ) -> Self {
         Self {
             state,
@@ -900,6 +920,7 @@ impl<S: StateTransitions> StateContext<S> {
             reactive,
             shared_state,
             parent_key,
+            deps,
         }
     }
 
@@ -998,25 +1019,195 @@ impl<S: StateTransitions> StateContext<S> {
         &self.reactive
     }
 
-    // Future: use_animated_value() for persistent spring animations
-    //
-    // This would require access to SchedulerHandle from the animation system.
-    // The pattern would be:
-    //
-    // ```ignore
-    // pub fn use_animated_value(
-    //     &self,
-    //     name: &str,
-    //     initial: f32,
-    //     handle: SchedulerHandle,
-    // ) -> SharedAnimatedValue {
-    //     let anim_key = format!("{}:anim:{}", self.full_key(), name);
-    //     // Get or create persistent animated value
-    // }
-    // ```
-    //
-    // For now, users can create animated values manually and store them
-    // using use_signal() if persistence is needed.
+    /// Create/retrieve a persistent animated value scoped to this stateful
+    ///
+    /// The animated value is keyed with format: `{stateful_key}:anim:{name}`
+    /// This ensures the animation persists across rebuilds with the same key.
+    ///
+    /// Uses the global animation scheduler (must be initialized via
+    /// `blinc_animation::set_global_scheduler()` at app startup).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let opacity = ctx.use_animated_value("opacity", 1.0);
+    /// opacity.lock().unwrap().set_target(0.5);
+    /// let current = opacity.lock().unwrap().get();
+    /// ```
+    pub fn use_animated_value(&self, name: &str, initial: f32) -> SharedAnimatedValue {
+        self.use_animated_value_with_config(name, initial, SpringConfig::stiff())
+    }
+
+    /// Create/retrieve a persistent animated value with custom spring config
+    ///
+    /// Like `use_animated_value()` but allows specifying a custom spring configuration.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let scale = ctx.use_animated_value_with_config(
+    ///     "scale",
+    ///     1.0,
+    ///     SpringConfig::bouncy(),
+    /// );
+    /// ```
+    pub fn use_animated_value_with_config(
+        &self,
+        name: &str,
+        initial: f32,
+        config: SpringConfig,
+    ) -> SharedAnimatedValue {
+        let anim_key = format!("{}:anim:{}", self.full_key(), name);
+
+        // Check if we already have this animated value
+        {
+            let values = PERSISTED_ANIMATED_VALUES.read().unwrap();
+            if let Some(existing) = values.get(&anim_key) {
+                return Arc::clone(existing);
+            }
+        }
+
+        // Create a new animated value
+        let handle = blinc_animation::get_scheduler();
+        let animated = AnimatedValue::new(handle, initial, config);
+        let shared = Arc::new(Mutex::new(animated));
+
+        // Store it for future lookups
+        {
+            let mut values = PERSISTED_ANIMATED_VALUES.write().unwrap();
+            values.insert(anim_key, Arc::clone(&shared));
+        }
+
+        shared
+    }
+
+    /// Create/retrieve a persistent animated timeline scoped to this stateful
+    ///
+    /// The timeline is keyed with format: `{stateful_key}:timeline:{name}`
+    /// This ensures the timeline persists across rebuilds with the same key.
+    ///
+    /// Uses the global animation scheduler (must be initialized via
+    /// `blinc_animation::set_global_scheduler()` at app startup).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let timeline = ctx.use_timeline("fade_sequence");
+    ///
+    /// // Configure on first use, get existing entry IDs on subsequent calls
+    /// let entry_id = timeline.lock().unwrap().configure(|t| {
+    ///     let id = t.add(0, 500, 0.0, 1.0);
+    ///     t.set_loop(-1);  // Loop forever
+    ///     t.start();
+    ///     id
+    /// });
+    ///
+    /// let opacity = timeline.lock().unwrap().get(entry_id);
+    /// ```
+    pub fn use_timeline(&self, name: &str) -> SharedAnimatedTimeline {
+        let timeline_key = format!("{}:timeline:{}", self.full_key(), name);
+
+        // Check if we already have this timeline
+        {
+            let timelines = PERSISTED_ANIMATED_TIMELINES.read().unwrap();
+            if let Some(existing) = timelines.get(&timeline_key) {
+                return Arc::clone(existing);
+            }
+        }
+
+        // Create a new timeline
+        let handle = blinc_animation::get_scheduler();
+        let timeline = AnimatedTimeline::new(handle);
+        let shared = Arc::new(Mutex::new(timeline));
+
+        // Store it for future lookups
+        {
+            let mut timelines = PERSISTED_ANIMATED_TIMELINES.write().unwrap();
+            timelines.insert(timeline_key, Arc::clone(&shared));
+        }
+
+        shared
+    }
+
+    /// Access a dependent signal's value by its index in the deps array
+    ///
+    /// This allows reading external signal values that were registered via `.deps()`.
+    /// The index corresponds to the order in which signals were passed to `.deps()`.
+    ///
+    /// Returns `None` if the index is out of bounds or the signal value cannot be retrieved.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let direction_signal: State<String> = use_state(|| "down".to_string());
+    ///
+    /// stateful::<NoState>()
+    ///     .deps([direction_signal.signal_id()])
+    ///     .on_state(|ctx| {
+    ///         // Access the dependency value by index
+    ///         let direction: String = ctx.dep(0).unwrap_or_default();
+    ///         div().child(text(&format!("Direction: {}", direction)))
+    ///     })
+    /// ```
+    pub fn dep<T: Clone + Send + Default + 'static>(&self, index: usize) -> Option<T> {
+        let signal_id = self.deps.get(index)?;
+        // Reconstruct a Signal<T> from the SignalId and get its value
+        let signal = blinc_core::Signal::from_id(*signal_id);
+        self.reactive.lock().unwrap().get(signal)
+    }
+
+    /// Get a `State<T>` handle for a dependent signal by its index
+    ///
+    /// This returns a full `State<T>` handle that supports `.get()`, `.set()`, etc.
+    /// Useful when you need to both read and modify the dependent signal.
+    ///
+    /// Returns `None` if the index is out of bounds.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let counter: State<i32> = use_state(|| 0);
+    ///
+    /// stateful::<ButtonState>()
+    ///     .deps([counter.signal_id()])
+    ///     .on_state(|ctx| {
+    ///         let counter_state: State<i32> = ctx.dep_as_state(0).unwrap();
+    ///         let value = counter_state.get();
+    ///         div()
+    ///             .child(text(&format!("Count: {}", value)))
+    ///             .on_click(move |_| {
+    ///                 counter_state.set(value + 1);
+    ///             })
+    ///     })
+    /// ```
+    pub fn dep_as_state<T: Clone + Send + 'static>(&self, index: usize) -> Option<blinc_core::State<T>> {
+        let signal_id = self.deps.get(index)?;
+        let signal = blinc_core::Signal::from_id(*signal_id);
+        let dirty_flag = blinc_core::context_state::BlincContextState::get()
+            .dirty_flag()
+            .clone();
+        Some(blinc_core::State::new(signal, self.reactive.clone(), dirty_flag))
+    }
+
+    /// Get the SignalId of a dependency by index
+    ///
+    /// Returns `None` if the index is out of bounds.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// stateful::<NoState>()
+    ///     .deps([signal_a.signal_id(), signal_b.signal_id()])
+    ///     .on_state(|ctx| {
+    ///         if let Some(id) = ctx.dep_signal_id(0) {
+    ///             // Use the signal ID for comparison or other purposes
+    ///         }
+    ///         div()
+    ///     })
+    /// ```
+    pub fn dep_signal_id(&self, index: usize) -> Option<blinc_core::SignalId> {
+        self.deps.get(index).copied()
+    }
 }
 
 // =========================================================================
@@ -1117,6 +1308,9 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         let reactive_clone = reactive.clone();
         let shared_state_clone = shared_state.clone();
 
+        // Clone deps for use inside callback
+        let deps_clone = deps.clone();
+
         // Create the legacy-style callback wrapper
         let legacy_callback: StateCallback<S> =
             Arc::new(move |state: &S, div: &mut crate::div::Div| {
@@ -1127,6 +1321,7 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
                     reactive_clone.clone(),
                     shared_state_clone.clone(),
                     parent_key_clone.clone(),
+                    deps_clone.clone(),
                 );
 
                 // Reset counter for deterministic key generation

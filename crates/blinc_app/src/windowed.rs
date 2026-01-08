@@ -1312,6 +1312,13 @@ impl WindowedApp {
         scheduler.set_wake_callback(move || wake_proxy.wake());
         scheduler.start_background();
         let animations: SharedAnimationScheduler = Arc::new(Mutex::new(scheduler));
+
+        // Set global scheduler handle for StateContext and component access
+        {
+            let scheduler_handle = animations.lock().unwrap().handle();
+            blinc_animation::set_global_scheduler(scheduler_handle);
+        }
+
         // Shared element registry for query API
         let element_registry: SharedElementRegistry =
             Arc::new(blinc_layout::selector::ElementRegistry::new());
