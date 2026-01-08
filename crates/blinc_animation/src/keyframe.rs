@@ -747,7 +747,9 @@ pub struct KeyframeTrack {
     iterations: i32,
     current_iteration: i32,
     reversed: bool,
+    #[allow(dead_code)] // Reserved for future delay support
     delay_ms: u32,
+    #[allow(dead_code)] // Reserved for future fill mode support
     fill_mode: FillMode,
     duration_ms: u32,
 }

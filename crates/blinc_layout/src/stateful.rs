@@ -2046,11 +2046,7 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         // This ensures the callback re-runs while springs are animating
         let anim_keys = stateful.shared_state.lock().unwrap().animation_keys.clone();
         if !anim_keys.is_empty() {
-            register_stateful_animation(
-                stateful_key,
-                anim_keys,
-                Arc::clone(&refresh_callback),
-            );
+            register_stateful_animation(stateful_key, anim_keys, Arc::clone(&refresh_callback));
         }
 
         stateful

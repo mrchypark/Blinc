@@ -207,7 +207,7 @@ fn pulsing_ring() -> impl ElementBuilder {
             .rounded(16.0)
             .flex_col()
             .items_center()
-             .p(8.0)
+            .p(8.0)
             .gap_px(8.0)
             .cursor_pointer()
             // Label
@@ -280,7 +280,7 @@ fn sliding_bars() -> impl ElementBuilder {
             .rounded(16.0)
             .flex_col()
             .items_center()
-             .p(8.0)
+            .p(8.0)
             .gap_px(8.0)
             // Label
             .child(

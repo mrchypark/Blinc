@@ -82,7 +82,13 @@ impl Timeline {
         start_value: f32,
         end_value: f32,
     ) -> TimelineEntryId {
-        self.add_with_easing(offset_ms, duration_ms, start_value, end_value, Easing::Linear)
+        self.add_with_easing(
+            offset_ms,
+            duration_ms,
+            start_value,
+            end_value,
+            Easing::Linear,
+        )
     }
 
     /// Add an animation with a specific easing function
@@ -325,12 +331,7 @@ impl<'a> StaggerBuilder<'a> {
     }
 
     /// Add an entry with automatically calculated stagger offset
-    pub fn add(
-        &mut self,
-        duration_ms: u32,
-        start_value: f32,
-        end_value: f32,
-    ) -> TimelineEntryId {
+    pub fn add(&mut self, duration_ms: u32, start_value: f32, end_value: f32) -> TimelineEntryId {
         self.add_with_easing(duration_ms, start_value, end_value, Easing::Linear)
     }
 
