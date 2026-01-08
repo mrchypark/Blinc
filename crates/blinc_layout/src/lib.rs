@@ -207,10 +207,13 @@ pub mod prelude {
     pub use crate::stateful::{
         // Internal scroll events for FSM transitions
         scroll_events,
-        // Low-level constructor functions for custom styling
+        // New StateContext API (recommended)
         stateful,
         stateful_button,
         stateful_checkbox,
+        // Low-level constructor functions for custom styling (legacy)
+        stateful_from_handle,
+        stateful_with_key,
         text_field,
         toggle,
         // Utility functions for persistent shared state
@@ -224,11 +227,14 @@ pub mod prelude {
         ButtonState,
         Checkbox as StatefulCheckbox,
         CheckboxState as StatefulCheckboxState,
+        ChildKeyCounter,
         ScrollContainer,
         ScrollState,
         SharedState,
+        StateContext,
         StateTransitions,
         Stateful,
+        StatefulBuilder,
         StatefulInner,
         TextField,
         TextFieldState,

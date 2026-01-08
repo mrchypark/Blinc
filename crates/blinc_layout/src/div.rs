@@ -386,6 +386,11 @@ pub struct Div {
     pub(crate) element_id: Option<String>,
     /// Layout animation configuration for FLIP-style bounds animation
     pub(crate) layout_animation: Option<crate::layout_animation::LayoutAnimationConfig>,
+    /// Ancestor stateful context key for automatic key derivation
+    ///
+    /// When set, motion containers and layout animations will use this key
+    /// as a prefix for auto-generated stable keys.
+    pub(crate) stateful_context_key: Option<String>,
 }
 
 impl Default for Div {
@@ -416,6 +421,7 @@ impl Div {
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
             layout_animation: None,
+            stateful_context_key: None,
         }
     }
 
@@ -443,6 +449,7 @@ impl Div {
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
             layout_animation: None,
+            stateful_context_key: None,
         }
     }
 
@@ -465,6 +472,21 @@ impl Div {
     /// Get the element ID if set
     pub fn element_id(&self) -> Option<&str> {
         self.element_id.as_deref()
+    }
+
+    /// Set the stateful context key for automatic key derivation
+    ///
+    /// This is typically set automatically by `stateful()` callbacks.
+    /// When set, motion containers and layout animations will use this key
+    /// as a prefix for auto-generated stable keys.
+    pub(crate) fn with_stateful_context(mut self, key: impl Into<String>) -> Self {
+        self.stateful_context_key = Some(key.into());
+        self
+    }
+
+    /// Get the stateful context key if set
+    pub fn stateful_context_key(&self) -> Option<&str> {
+        self.stateful_context_key.as_deref()
     }
 
     /// Enable layout animation for this element
@@ -493,8 +515,49 @@ impl Div {
         mut self,
         config: crate::layout_animation::LayoutAnimationConfig,
     ) -> Self {
+        // Auto-apply stable key if inside a stateful context
+        let config = if let Some(ref ctx_key) = self.stateful_context_key {
+            if config.stable_key.is_none() {
+                let auto_key = format!("{}:layout_anim", ctx_key);
+                config.with_key(auto_key)
+            } else {
+                config
+            }
+        } else {
+            config
+        };
         self.layout_animation = Some(config);
         self
+    }
+
+    /// Wrap this Div in a Motion container with automatic key derivation
+    ///
+    /// If this Div is inside a stateful context (has `stateful_context_key` set),
+    /// the Motion will use an auto-derived stable key. Otherwise, it falls back
+    /// to a location-based key.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// stateful::<AccordionState>()
+    ///     .on_state(|ctx| {
+    ///         // This motion gets an auto-derived key like "stateful:...:motion"
+    ///         div()
+    ///             .motion()  // Auto-keyed!
+    ///             .fade_in(200)
+    ///             .child(content)
+    ///     })
+    /// ```
+    #[track_caller]
+    pub fn motion(self) -> crate::motion::Motion {
+        if let Some(ref ctx_key) = self.stateful_context_key {
+            // Auto-derive key from stateful context
+            let motion_key = format!("{}:motion", ctx_key);
+            crate::motion::motion_derived(&motion_key).child(self)
+        } else {
+            // Fallback to normal motion with location-based key
+            crate::motion::motion().child(self)
+        }
     }
 
     /// Swap this Div with a default, returning the original
@@ -746,6 +809,11 @@ impl Div {
         // Merge children - if other has children, replace ours
         if !other.children.is_empty() {
             self.children = other.children;
+        }
+
+        // Merge stateful context key - take other's if set
+        if other.stateful_context_key.is_some() {
+            self.stateful_context_key = other.stateful_context_key;
         }
 
         // Note: event_handlers are NOT merged - they're set on the base element

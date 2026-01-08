@@ -764,6 +764,439 @@ where
     }
 }
 
+// =========================================================================
+// StateContext API (New Stateful Container Design)
+// =========================================================================
+
+/// Counter for generating stable child keys within a stateful context
+///
+/// This tracks how many elements of each type have been created,
+/// enabling deterministic key generation for motion/animation stability.
+#[derive(Default)]
+pub struct ChildKeyCounter {
+    /// Counts by element type: "div" -> 0, 1, 2...
+    counters: std::collections::HashMap<&'static str, usize>,
+    /// Current hierarchy path for nested contexts
+    path: Vec<String>,
+}
+
+impl ChildKeyCounter {
+    /// Create a new counter
+    pub fn new() -> Self {
+        Self {
+            counters: std::collections::HashMap::new(),
+            path: Vec::new(),
+        }
+    }
+
+    /// Get the next index for an element type and increment the counter
+    pub fn next(&mut self, element_type: &'static str) -> usize {
+        let index = self.counters.entry(element_type).or_insert(0);
+        let current = *index;
+        *index += 1;
+        current
+    }
+
+    /// Reset all counters (called before each callback invocation)
+    pub fn reset(&mut self) {
+        self.counters.clear();
+        self.path.clear();
+    }
+
+    /// Push a hierarchy level
+    pub fn push(&mut self, segment: String) {
+        self.path.push(segment);
+    }
+
+    /// Pop a hierarchy level
+    pub fn pop(&mut self) {
+        self.path.pop();
+    }
+
+    /// Get the current path as a string
+    pub fn path_string(&self) -> String {
+        self.path.join("->")
+    }
+}
+
+/// Context for stateful elements providing scoped state management
+///
+/// `StateContext` is the core innovation of the new stateful API. It provides:
+/// - Current state value for pattern matching
+/// - Scoped signal/store factories that persist across rebuilds
+/// - Automatic child key derivation for stable motion animations
+/// - Dispatch method for triggering state transitions
+///
+/// # Example
+///
+/// ```ignore
+/// stateful::<AccordionState>()
+///     .on_state(|ctx| {
+///         // Get current state for pattern matching
+///         match ctx.state() {
+///             AccordionState::Collapsed => div().h(0.0),
+///             AccordionState::Expanded => div().h_auto(),
+///         }
+///     })
+/// ```
+#[derive(Clone)]
+pub struct StateContext<S: StateTransitions> {
+    /// Current state value
+    state: S,
+
+    /// Stable key for this stateful container
+    key: Arc<String>,
+
+    /// Counter for child key derivation (shared across clones)
+    child_counter: Arc<RefCell<ChildKeyCounter>>,
+
+    /// Access to reactive graph for signals/effects
+    reactive: blinc_core::context_state::SharedReactiveGraph,
+
+    /// Shared state handle for mutations
+    shared_state: SharedState<S>,
+
+    /// Parent context key for hierarchical nesting
+    parent_key: Option<Arc<String>>,
+}
+
+impl<S: StateTransitions> StateContext<S> {
+    /// Create a new StateContext
+    pub(crate) fn new(
+        state: S,
+        key: String,
+        reactive: blinc_core::context_state::SharedReactiveGraph,
+        shared_state: SharedState<S>,
+        parent_key: Option<Arc<String>>,
+    ) -> Self {
+        Self {
+            state,
+            key: Arc::new(key),
+            child_counter: Arc::new(RefCell::new(ChildKeyCounter::new())),
+            reactive,
+            shared_state,
+            parent_key,
+        }
+    }
+
+    /// Get the current state for pattern matching
+    pub fn state(&self) -> S {
+        self.state
+    }
+
+    /// Get the stable key for this stateful container
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Get the full key including parent hierarchy
+    pub fn full_key(&self) -> String {
+        match &self.parent_key {
+            Some(parent) => format!("{}:{}", parent, self.key),
+            None => self.key.to_string(),
+        }
+    }
+
+    /// Dispatch an event to trigger a state transition
+    ///
+    /// This updates the shared state and triggers a visual update.
+    pub fn dispatch(&self, event: u32) {
+        let mut inner = self.shared_state.lock().unwrap();
+        if let Some(new_state) = inner.state.on_event(event) {
+            inner.state = new_state;
+            inner.needs_visual_update = true;
+            drop(inner);
+            request_redraw();
+        }
+    }
+
+    /// Create/retrieve a persistent signal scoped to this stateful
+    ///
+    /// The signal is keyed with format: `{stateful_key}:signal:{name}`
+    /// This ensures the signal persists across rebuilds.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let scroll_pos = ctx.use_signal("scroll", || 0.0);
+    /// scroll_pos.set(100.0);
+    /// ```
+    pub fn use_signal<T, F>(&self, name: &str, init: F) -> blinc_core::State<T>
+    where
+        T: Clone + Send + 'static,
+        F: FnOnce() -> T,
+    {
+        let signal_key = format!("{}:signal:{}", self.full_key(), name);
+        blinc_core::context_state::use_state_keyed(&signal_key, init)
+    }
+
+    /// Derive a stable key for a child element
+    ///
+    /// Format: `{stateful_key}:{element_type}:{index}`
+    /// or with path: `{stateful_key}:{path}->{element_type}:{index}`
+    ///
+    /// This is called automatically by motion containers when inside
+    /// a stateful context with auto-keying enabled.
+    pub fn derive_child_key(&self, element_type: &'static str) -> String {
+        let mut counter = self.child_counter.borrow_mut();
+        let index = counter.next(element_type);
+        let path = counter.path_string();
+
+        if path.is_empty() {
+            format!("{}:{}:{}", self.full_key(), element_type, index)
+        } else {
+            format!("{}:{}->{}:{}", self.full_key(), path, element_type, index)
+        }
+    }
+
+    /// Push a hierarchy level for nested child key derivation
+    pub fn push_hierarchy(&self, segment: &str) {
+        self.child_counter.borrow_mut().push(segment.to_string());
+    }
+
+    /// Pop a hierarchy level
+    pub fn pop_hierarchy(&self) {
+        self.child_counter.borrow_mut().pop();
+    }
+
+    /// Reset the child counter (called before each callback invocation)
+    pub(crate) fn reset_counter(&self) {
+        self.child_counter.borrow_mut().reset();
+    }
+
+    /// Get the shared state handle (for internal use)
+    pub(crate) fn shared_state(&self) -> &SharedState<S> {
+        &self.shared_state
+    }
+
+    /// Get the reactive graph (for internal use)
+    pub(crate) fn reactive(&self) -> &blinc_core::context_state::SharedReactiveGraph {
+        &self.reactive
+    }
+
+    // Future: use_animated_value() for persistent spring animations
+    //
+    // This would require access to SchedulerHandle from the animation system.
+    // The pattern would be:
+    //
+    // ```ignore
+    // pub fn use_animated_value(
+    //     &self,
+    //     name: &str,
+    //     initial: f32,
+    //     handle: SchedulerHandle,
+    // ) -> SharedAnimatedValue {
+    //     let anim_key = format!("{}:anim:{}", self.full_key(), name);
+    //     // Get or create persistent animated value
+    // }
+    // ```
+    //
+    // For now, users can create animated values manually and store them
+    // using use_signal() if persistence is needed.
+}
+
+// =========================================================================
+// StatefulBuilder - New API Entry Point
+// =========================================================================
+
+/// Type alias for the new-style stateful callback that receives StateContext
+pub type StateContextCallback<S> =
+    Arc<dyn Fn(&StateContext<S>) -> crate::div::Div + Send + Sync + 'static>;
+
+/// Builder for creating stateful containers with the new StateContext API
+///
+/// This builder creates a `Stateful<S>` that uses `StateContext` internally,
+/// providing automatic key derivation and scoped state management.
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_layout::prelude::*;
+///
+/// stateful::<ButtonState>()
+///     .on_state(|ctx| {
+///         match ctx.state() {
+///             ButtonState::Idle => div().bg(gray),
+///             ButtonState::Hovered => div().bg(blue),
+///         }
+///     })
+/// ```
+pub struct StatefulBuilder<S: StateTransitions> {
+    /// Instance key for this stateful container
+    key: crate::InstanceKey,
+    /// Signal dependencies for refresh
+    deps: Vec<blinc_core::reactive::SignalId>,
+    /// Initial state (if explicitly set)
+    initial_state: Option<S>,
+    /// Parent context key (for nested statefuls)
+    parent_key: Option<Arc<String>>,
+}
+
+impl<S: StateTransitions + Default> StatefulBuilder<S> {
+    /// Create a new StatefulBuilder with auto-generated key
+    #[track_caller]
+    pub fn new() -> Self {
+        Self {
+            key: crate::InstanceKey::new("stateful"),
+            deps: Vec::new(),
+            initial_state: None,
+            parent_key: None,
+        }
+    }
+
+    /// Set signal dependencies for refresh
+    ///
+    /// When any of these signals change, the stateful callback will be re-invoked.
+    pub fn deps(mut self, deps: impl IntoIterator<Item = blinc_core::reactive::SignalId>) -> Self {
+        self.deps = deps.into_iter().collect();
+        self
+    }
+
+    /// Set initial state (defaults to `S::default()`)
+    pub fn initial(mut self, state: S) -> Self {
+        self.initial_state = Some(state);
+        self
+    }
+
+    /// Set parent context key for hierarchical nesting
+    pub fn parent_key(mut self, key: Arc<String>) -> Self {
+        self.parent_key = Some(key);
+        self
+    }
+
+    /// Build the stateful element with a StateContext callback
+    ///
+    /// The callback receives a `&StateContext<S>` and returns a `Div`.
+    /// The returned Div is merged onto the base container.
+    pub fn on_state<F>(self, callback: F) -> Stateful<S>
+    where
+        F: Fn(&StateContext<S>) -> crate::div::Div + Send + Sync + 'static,
+    {
+        let initial = self.initial_state.unwrap_or_default();
+        let key_str = self.key.get().to_string();
+        let parent_key = self.parent_key;
+        let deps = self.deps;
+
+        // Get or create persistent SharedState using the key
+        let shared_state = use_shared_state_with::<S>(&key_str, initial);
+
+        // Get the reactive graph from context
+        let reactive = blinc_core::context_state::BlincContextState::get()
+            .reactive()
+            .clone();
+
+        // Wrap the callback to use StateContext
+        let callback = Arc::new(callback);
+        let callback_clone = callback.clone();
+        let key_str_clone = key_str.clone();
+        let parent_key_clone = parent_key.clone();
+        let reactive_clone = reactive.clone();
+        let shared_state_clone = shared_state.clone();
+
+        // Create the legacy-style callback wrapper
+        let legacy_callback: StateCallback<S> =
+            Arc::new(move |state: &S, div: &mut crate::div::Div| {
+                // Create StateContext for this invocation
+                let ctx = StateContext::new(
+                    *state, // S is Copy, so dereference works
+                    key_str_clone.clone(),
+                    reactive_clone.clone(),
+                    shared_state_clone.clone(),
+                    parent_key_clone.clone(),
+                );
+
+                // Reset counter for deterministic key generation
+                ctx.reset_counter();
+
+                // Call user callback and get the returned Div
+                let user_div = callback_clone(&ctx);
+
+                // Set the stateful context key on the returned Div for auto-keying
+                let user_div = user_div.with_stateful_context(ctx.full_key());
+
+                // Merge the returned Div onto the base container
+                div.merge(user_div);
+            });
+
+        // Create Stateful using the existing infrastructure
+        let mut stateful = Stateful::with_shared_state(shared_state);
+
+        // Set the callback
+        stateful.shared_state.lock().unwrap().state_callback = Some(legacy_callback);
+        stateful.shared_state.lock().unwrap().needs_visual_update = true;
+
+        // Set dependencies
+        if !deps.is_empty() {
+            stateful.shared_state.lock().unwrap().deps = deps;
+        }
+
+        stateful
+    }
+}
+
+impl<S: StateTransitions + Default> Default for StatefulBuilder<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Create a new stateful container with automatic key generation
+///
+/// This is the recommended way to create stateful elements. The returned
+/// `StatefulBuilder` provides a fluent API for configuration.
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_layout::prelude::*;
+///
+/// // Simple usage with pattern matching
+/// stateful::<ButtonState>()
+///     .on_state(|ctx| {
+///         match ctx.state() {
+///             ButtonState::Idle => div().bg(Color::GRAY),
+///             ButtonState::Hovered => div().bg(Color::BLUE),
+///         }
+///     })
+///
+/// // With initial state and dependencies
+/// stateful::<TabsState>()
+///     .initial(TabsState::Tab1)
+///     .deps([some_signal.id()])
+///     .on_state(|ctx| {
+///         let counter = ctx.use_signal("counter", || 0);
+///         div().child(text(&format!("Count: {}", counter.get())))
+///     })
+/// ```
+#[track_caller]
+pub fn stateful<S: StateTransitions + Default>() -> StatefulBuilder<S> {
+    StatefulBuilder::new()
+}
+
+/// Create a stateful container with an explicit key
+///
+/// Use this when you need deterministic key generation, such as in loops
+/// or dynamic contexts where the auto-generated key might not be stable.
+///
+/// # Example
+///
+/// ```ignore
+/// for (i, item) in items.iter().enumerate() {
+///     stateful_with_key::<ItemState>(&format!("item_{}", i))
+///         .on_state(|ctx| { /* ... */ })
+/// }
+/// ```
+pub fn stateful_with_key<S: StateTransitions + Default>(
+    key: impl Into<String>,
+) -> StatefulBuilder<S> {
+    StatefulBuilder {
+        key: crate::InstanceKey::explicit(key),
+        deps: Vec::new(),
+        initial_state: None,
+        parent_key: None,
+    }
+}
+
 /// Trigger a refresh of the stateful element's props (internal use)
 ///
 /// This re-runs the `on_state` callback and queues a prop update.
@@ -2443,17 +2876,31 @@ pub type ScrollContainer = Stateful<ScrollState>;
 // Convenience Constructors
 // =========================================================================
 
-/// Create a stateful element from a shared state handle
+/// Create a stateful element from a shared state handle (legacy API)
 ///
-/// This is the primary way to create stateful elements with persistent state:
+/// **Deprecated**: Use the new `stateful::<S>()` builder API instead, which
+/// provides automatic key management and `StateContext`.
 ///
 /// ```ignore
-/// let handle = ctx.use_state(ButtonState::Idle);
-/// stateful(handle)
+/// // Old API (deprecated):
+/// let handle = use_shared_state::<ButtonState>("my-button");
+/// stateful_from_handle(handle)
 ///     .on_state(|state, div| { ... })
-///     .child(text("Click me"))
+///
+/// // New API (recommended):
+/// stateful::<ButtonState>()
+///     .on_state(|ctx| {
+///         match ctx.state() {
+///             ButtonState::Idle => div().bg(gray),
+///             ButtonState::Hovered => div().bg(blue),
+///         }
+///     })
 /// ```
-pub fn stateful<S: StateTransitions>(handle: SharedState<S>) -> Stateful<S> {
+#[deprecated(
+    since = "0.5.0",
+    note = "Use stateful::<S>().on_state(|ctx| ...) instead"
+)]
+pub fn stateful_from_handle<S: StateTransitions>(handle: SharedState<S>) -> Stateful<S> {
     Stateful::with_shared_state(handle)
 }
 
