@@ -193,7 +193,10 @@ fn build_values_display(
 }
 
 /// Build the form section with text area
-fn build_form_section(_ctx: &WindowedContext, message: &SharedTextAreaState) -> impl ElementBuilder {
+fn build_form_section(
+    _ctx: &WindowedContext,
+    message: &SharedTextAreaState,
+) -> impl ElementBuilder {
     div()
         .flex_col()
         .gap(16.0)

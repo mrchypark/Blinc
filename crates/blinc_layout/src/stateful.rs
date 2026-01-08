@@ -62,10 +62,10 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
-use blinc_animation::{AnimatedTimeline, AnimatedValue, SchedulerHandle, SpringConfig};
 use crate::div::{Div, ElementBuilder, ElementRef, ElementTypeId};
 use crate::element::RenderProps;
 use crate::tree::{LayoutNodeId, LayoutTree};
+use blinc_animation::{AnimatedTimeline, AnimatedValue, SchedulerHandle, SpringConfig};
 use blinc_core::reactive::SignalId;
 
 /// Re-export SharedAnimatedValue from motion module
@@ -1284,13 +1284,20 @@ impl<S: StateTransitions> StateContext<S> {
     ///             })
     ///     })
     /// ```
-    pub fn dep_as_state<T: Clone + Send + 'static>(&self, index: usize) -> Option<blinc_core::State<T>> {
+    pub fn dep_as_state<T: Clone + Send + 'static>(
+        &self,
+        index: usize,
+    ) -> Option<blinc_core::State<T>> {
         let signal_id = self.deps.get(index)?;
         let signal = blinc_core::Signal::from_id(*signal_id);
         let dirty_flag = blinc_core::context_state::BlincContextState::get()
             .dirty_flag()
             .clone();
-        Some(blinc_core::State::new(signal, self.reactive.clone(), dirty_flag))
+        Some(blinc_core::State::new(
+            signal,
+            self.reactive.clone(),
+            dirty_flag,
+        ))
     }
 
     /// Get the SignalId of a dependency by index
@@ -1353,7 +1360,11 @@ impl<S: StateTransitions> StateContext<S> {
 
         // Add to deps
         inner.deps.push(signal_id);
-        tracing::info!("use_effect: registered signal {:?}, total deps: {}", signal_id, inner.deps.len());
+        tracing::info!(
+            "use_effect: registered signal {:?}, total deps: {}",
+            signal_id,
+            inner.deps.len()
+        );
 
         // Get the refresh callback and current deps
         let refresh_callback = inner.refresh_callback.clone();
@@ -1365,12 +1376,11 @@ impl<S: StateTransitions> StateContext<S> {
         // Re-register with updated deps
         if let Some(callback) = refresh_callback {
             let stateful_key = Arc::as_ptr(&self.shared_state) as u64;
-            tracing::debug!("use_effect: re-registering deps for stateful_key={}", stateful_key);
-            register_stateful_deps(
-                stateful_key,
-                deps,
-                Arc::new(move || callback()),
+            tracing::debug!(
+                "use_effect: re-registering deps for stateful_key={}",
+                stateful_key
             );
+            register_stateful_deps(stateful_key, deps, Arc::new(move || callback()));
         } else {
             tracing::warn!("use_effect: no refresh_callback available!");
         }
@@ -1482,11 +1492,7 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         let legacy_callback: StateCallback<S> =
             Arc::new(move |state: &S, div: &mut crate::div::Div| {
                 // Get current event from shared state (if any)
-                let current_event = shared_state_clone
-                    .lock()
-                    .unwrap()
-                    .current_event
-                    .clone();
+                let current_event = shared_state_clone.lock().unwrap().current_event.clone();
 
                 // Create StateContext for this invocation
                 let ctx = StateContext::new(
@@ -1537,7 +1543,8 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         });
 
         // Store refresh callback in StatefulInner for use_effect
-        stateful.shared_state.lock().unwrap().refresh_callback = Some(Arc::clone(&refresh_callback));
+        stateful.shared_state.lock().unwrap().refresh_callback =
+            Some(Arc::clone(&refresh_callback));
 
         // Apply initial state callback to set up visual state
         // This may call use_signal() which needs the refresh_callback above
@@ -1548,7 +1555,11 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         let current_deps = stateful.shared_state.lock().unwrap().deps.clone();
         if !current_deps.is_empty() {
             let stateful_key = Arc::as_ptr(&shared) as u64;
-            register_stateful_deps(stateful_key, current_deps, Arc::new(move || refresh_callback()));
+            register_stateful_deps(
+                stateful_key,
+                current_deps,
+                Arc::new(move || refresh_callback()),
+            );
         }
 
         stateful

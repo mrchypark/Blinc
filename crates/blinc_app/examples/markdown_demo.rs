@@ -262,7 +262,6 @@ fn build_preview_panel(
     width: f32,
     height: f32,
 ) -> impl ElementBuilder {
-
     div()
         .w(width)
         .h(height)
@@ -303,9 +302,8 @@ fn build_preview_panel(
                         .direction(ScrollDirection::Vertical)
                         .child(
                             div().h_fit().w_full().justify_center().p(4.0).child(
-                                stateful::<NoState>()
-                                    .deps([change_signal_id])
-                                    .on_state(move |_ctx| {
+                                stateful::<NoState>().deps([change_signal_id]).on_state(
+                                    move |_ctx| {
                                         // Get the state value inside the reactive callback
                                         let text_state = text_state_handle.get();
                                         let markdown_content = text_state
@@ -317,7 +315,8 @@ fn build_preview_panel(
                                             .w_full()
                                             .flex_grow()
                                             .child(markdown_light(&markdown_content))
-                                    }),
+                                    },
+                                ),
                             ),
                         ),
                 )
