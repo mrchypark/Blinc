@@ -72,15 +72,13 @@ use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
 use blinc_layout::motion::motion_derived;
 use blinc_layout::prelude::*;
-use blinc_layout::stateful::Stateful;
+use blinc_layout::stateful::{stateful_with_key, ButtonState, NoState};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_theme::{ColorScheme, ColorToken, RadiusToken, ThemeState};
 
 use blinc_layout::selector::query_motion;
 use blinc_layout::stateful::request_redraw;
 use blinc_layout::InstanceKey;
-
-use crate::button::use_button_state;
 
 // =============================================================================
 // Tab Transition Tracking (simple cross-fade)
@@ -585,24 +583,14 @@ impl TabsBuilder {
         let on_change = config.on_change.clone();
         let transition = config.transition;
 
-        let unique_state_component_key = use_button_state(self.key.get());
-
         let trigger_key = self.key.derive("tab_triggers");
         // Create motion base key for triggering animations from tab buttons (already a String)
         let motion_base_key_str = self.key.derive("motion");
+        let button_area_key = self.key.derive("button_area");
 
-        let tab_button_area = Stateful::with_shared_state(unique_state_component_key)
-            .deps(&[config.state.signal_id()])
-            .h(size.height())
-            .w_full()
-            .bg(tab_list_bg)
-            .rounded(radius)
-            .padding(Length::Px(4.0))
-            .flex_row()
-            .items_center()
-            .gap(4.0)
-            .border(1.0, border)
-            .on_state(move |_state, container: &mut Div| {
+        let tab_button_area = stateful_with_key::<NoState>(&button_area_key)
+            .deps([config.state.signal_id()])
+            .on_state(move |_ctx| {
                 let active_value = state_for_buttons.get();
 
                 let mut buttons = div()
@@ -640,7 +628,7 @@ impl TabsBuilder {
                     buttons = buttons.child(tab_trigger);
                 }
 
-                container.merge(buttons);
+                buttons
             });
 
         // ========================================
@@ -652,14 +640,11 @@ impl TabsBuilder {
         // Clone the base key for deriving motion keys inside on_state
         let motion_base_key = self.key.derive("motion");
         let tabs_id = self.key.get().to_string();
+        let content_area_key = self.key.derive("content_area");
 
-        let content_area_state = use_shared_state(&self.key.derive("content_area"));
-        let tab_content_area = Stateful::with_shared_state(content_area_state)
-            .deps(&[config.state.signal_id()])
-            .w_full()
-            .flex_grow()
-            .mt(content_margin)
-            .on_state(move |_state: &(), container: &mut Div| {
+        let tab_content_area = stateful_with_key::<NoState>(&content_area_key)
+            .deps([config.state.signal_id()])
+            .on_state(move |ctx| {
                 let active_value = state_for_content.get();
 
                 // Update transition tracking (triggers exit animation if tab changed)
@@ -669,6 +654,9 @@ impl TabsBuilder {
                 let exiting_tab = check_and_clear_exiting_tab(&tabs_id, &motion_base_key);
 
                 // Helper to build content for a specific tab
+                // Note: We use motion_derived with explicit key rather than ctx.motion()
+                // because build_tab_trigger queries motion using motion_base_key from outside
+                // this stateful context, and the keys must match.
                 let build_tab_content = |tab_value: &str, is_exiting: bool| -> Option<Div> {
                     tabs_for_content
                         .iter()
@@ -676,6 +664,7 @@ impl TabsBuilder {
                         .map(|tab| {
                             let content = (tab.content)();
                             if transition != TabsTransition::None {
+                                // Use explicit key that matches query in build_tab_trigger
                                 let tab_motion_key = format!("{}:{}", motion_base_key, tab_value);
                                 let mut m = motion_derived(&tab_motion_key);
 
@@ -720,24 +709,22 @@ impl TabsBuilder {
                         content_stack = content_stack.child(current_content);
                     }
 
-                    container.merge(
+                    div()
+                        .w_full()
+                        .mt(content_margin)
+                        .flex_grow()
+                        .relative()
+                        .child(content_stack)
+                } else {
+                    // No transition - just render current tab
+                    if let Some(current_content) = build_tab_content(&active_value, false) {
                         div()
                             .w_full()
                             .mt(content_margin)
                             .flex_grow()
-                            .relative()
-                            .child(content_stack),
-                    );
-                } else {
-                    // No transition - just render current tab
-                    if let Some(current_content) = build_tab_content(&active_value, false) {
-                        container.merge(
-                            div()
-                                .w_full()
-                                .mt(content_margin)
-                                .flex_grow()
-                                .child(current_content),
-                        );
+                            .child(current_content)
+                    } else {
+                        div().w_full().flex_grow()
                     }
                 }
             });
@@ -763,7 +750,7 @@ fn build_tab_trigger(
     tab_state: State<String>,
     on_change: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     motion_key: Option<String>,
-) -> Stateful<ButtonState> {
+) -> impl ElementBuilder {
     let theme = ThemeState::get();
     let text_primary = theme.color(ColorToken::TextPrimary);
     let text_secondary = theme.color(ColorToken::TextSecondary);
@@ -776,92 +763,107 @@ fn build_tab_trigger(
     // Calculate inner height (tab list height minus padding)
     let inner_height = size.height() - 16.0;
 
-    // Determine colors based on state
-    // Use TextPrimary for active, TextSecondary for inactive (better contrast on muted bg)
-    let text_color = if disabled {
-        text_secondary.with_alpha(0.5)
-    } else if is_active {
-        text_primary
-    } else {
-        text_secondary
-    };
+    // Clone menu_item data for closure
+    let icon_svg = menu_item.icon.clone();
+    let label_text = menu_item.label.clone();
+    let badge_text = menu_item.badge.clone();
+    let trigger_state_key = format!("{}:{}", trigger_key, value);
 
-    let bg = if is_active && !disabled {
-        surface
-    } else {
-        blinc_core::Color::TRANSPARENT
-    };
+    let mut trigger = stateful_with_key::<ButtonState>(&trigger_state_key)
+        .on_state(move |ctx| {
+            let state = ctx.state();
+            let theme = ThemeState::get();
 
-    // Build content
-    let mut content = div().flex_row().items_center().gap(theme.spacing().space_2);
+            // Determine colors based on active and hover state
+            let is_hovered = matches!(state, ButtonState::Hovered | ButtonState::Pressed);
 
-    // Add icon if present
-    if let Some(ref icon_svg) = menu_item.icon {
-        content = content.child(
-            svg(icon_svg)
-                .size(size.icon_size(), size.icon_size())
-                .color(text_color),
-        );
-    }
+            let text_color = if disabled {
+                text_secondary.with_alpha(0.5)
+            } else if is_active {
+                text_primary
+            } else if is_hovered {
+                text_primary.with_alpha(0.8)
+            } else {
+                text_secondary
+            };
 
-    // Add label if present
-    if let Some(ref label) = menu_item.label {
-        content = content.child(
-            text(label)
-                .size(size.font_size())
-                .color(text_color)
-                .weight(if is_active {
-                    FontWeight::Medium
-                } else {
-                    FontWeight::Normal
-                })
-                .no_cursor(),
-        );
-    }
+            let bg = if is_active && !disabled {
+                surface
+            } else if is_hovered && !disabled {
+                surface.with_alpha(0.5)
+            } else {
+                Color::TRANSPARENT
+            };
 
-    // Add badge if present
-    if let Some(ref badge_text) = menu_item.badge {
-        let primary = theme.color(ColorToken::Primary);
-        content = content.child(
-            div()
-                .px(theme.spacing().space_1_5)
-                .py(1.0)
-                .bg(primary)
-                .rounded(theme.radius(RadiusToken::Full))
-                .child(
-                    text(badge_text)
-                        .size(size.badge_font_size())
-                        .color(theme.color(ColorToken::PrimaryActive))
-                        .medium()
+            // Build content
+            let mut content = div().flex_row().items_center().gap(theme.spacing().space_2);
+
+            // Add icon if present
+            if let Some(ref icon) = icon_svg {
+                content = content.child(
+                    svg(icon)
+                        .size(size.icon_size(), size.icon_size())
+                        .color(text_color),
+                );
+            }
+
+            // Add label if present
+            if let Some(ref label) = label_text {
+                content = content.child(
+                    text(label)
+                        .size(size.font_size())
+                        .color(text_color)
+                        .weight(if is_active {
+                            FontWeight::Medium
+                        } else {
+                            FontWeight::Normal
+                        })
                         .no_cursor(),
-                ),
-        );
-    }
+                );
+            }
 
-    let trigger_btn_state = use_button_state(&format!("{}:{}", trigger_key, value));
+            // Add badge if present
+            if let Some(ref badge) = badge_text {
+                let primary = theme.color(ColorToken::Primary);
+                content = content.child(
+                    div()
+                        .px(theme.spacing().space_1_5)
+                        .py(1.0)
+                        .bg(primary)
+                        .rounded(theme.radius(RadiusToken::Full))
+                        .child(
+                            text(badge)
+                                .size(size.badge_font_size())
+                                .color(theme.color(ColorToken::PrimaryActive))
+                                .medium()
+                                .no_cursor(),
+                        ),
+                );
+            }
 
-    // Build the trigger div (using deprecated API for external state access)
-    #[allow(deprecated)]
-    let mut trigger = stateful_from_handle(trigger_btn_state)
-        .h(inner_height)
-        .padding_x(Length::Px(size.padding_x()))
-        .padding_y(Length::Px(size.padding_x() / 2.0))
-        .flex_row()
-        .items_center()
-        .justify_center()
-        .rounded(radius)
-        .bg(bg.clone())
-        .cursor(if disabled {
-            CursorStyle::Default
-        } else {
-            CursorStyle::Pointer
-        })
-        .child(content);
+            let mut trigger_div = div()
+                .h(inner_height)
+                .padding_x(Length::Px(size.padding_x()))
+                .padding_y(Length::Px(size.padding_x() / 2.0))
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .rounded(radius)
+                .bg(bg)
+                .cursor(if disabled {
+                    CursorStyle::Default
+                } else {
+                    CursorStyle::Pointer
+                })
+                .child(content);
 
-    // Add shadow for active tab
-    if is_active && !disabled {
-        trigger = trigger.shadow_sm();
-    }
+            // Add shadow for active tab
+            if is_active && !disabled {
+                trigger_div = trigger_div.shadow_sm();
+            }
+
+            trigger_div
+        });
 
     // Add click handler if not disabled and not active
     if !disabled && !is_active {

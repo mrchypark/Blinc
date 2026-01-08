@@ -46,7 +46,7 @@ use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
 use blinc_layout::motion::motion;
 use blinc_layout::prelude::*;
-use blinc_layout::stateful::StateTransitions;
+use blinc_layout::stateful::{stateful_with_key, NoState, StateTransitions};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_macros::BlincComponent;
 use blinc_theme::{ColorToken, RadiusToken, ThemeState};
@@ -274,9 +274,10 @@ impl Slider {
         // Thumb element - uses Stateful with deps on is_dragging to show visual feedback
         // Since motion.translate_x() uses visual transform, hit testing misses the thumb,
         // but we can still react to the is_dragging state signal for visual changes.
-        let thumb = Stateful::<()>::new(())
-            .deps(&[is_dragging.signal_id()])
-            .on_state(move |_state: &(), container: &mut Div| {
+        let thumb_key = format!("{}_thumb", instance_key);
+        let thumb = stateful_with_key::<NoState>(&thumb_key)
+            .deps([is_dragging.signal_id()])
+            .on_state(move |_ctx| {
                 let dragging = is_dragging_for_thumb.get();
                 let mut thumb_div = div()
                     .w(thumb_size)
@@ -291,7 +292,7 @@ impl Slider {
                     thumb_div = thumb_div.border(2.0, thumb_border_dragging).shadow_md();
                 }
 
-                container.merge(thumb_div);
+                thumb_div
             });
 
         // Filled portion of track
@@ -503,9 +504,10 @@ impl Slider {
                     let step_for_display = config.step;
 
                     // Use Stateful with deps to make value text reactive
-                    let value_display = Stateful::<()>::new(())
-                        .deps(&[config.value_state.signal_id()])
-                        .on_state(move |_state: &(), container: &mut Div| {
+                    let value_display_key = format!("{}_value_display", instance_key);
+                    let value_display = stateful_with_key::<NoState>(&value_display_key)
+                        .deps([config.value_state.signal_id()])
+                        .on_state(move |_ctx| {
                             let current_value = value_state_for_display.get();
                             let value_text =
                                 if step_for_display.is_some() && step_for_display.unwrap() >= 1.0 {
@@ -513,9 +515,7 @@ impl Slider {
                                 } else {
                                     format!("{:.2}", current_value)
                                 };
-                            container.merge(
-                                div().child(text(&value_text).size(14.0).color(value_color)),
-                            );
+                            div().child(text(&value_text).size(14.0).color(value_color))
                         });
                     header = header.child(value_display);
                 }
