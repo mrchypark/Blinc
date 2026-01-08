@@ -213,12 +213,23 @@ impl Sidebar {
                 }
 
                 for (section_idx, section) in sections.iter().enumerate() {
-                    // Section title - ONLY show when expanded
-
+                    // Section title - animate height to 0 when collapsed
                     if let Some(ref title) = section.title {
-                        if !collapsed.get() {
-                            items_container = items_container.child(
-                                div().px(3.0).py(2.0).w_fit().relative().child(
+                        let is_collapsed = collapsed.get();
+                        let title_anim_key =
+                            format!("{}_section_{}_title", ctx.key(), section_idx);
+
+                        // Always render title, but height animates to 0 when collapsed
+                        let mut title_div = div()
+                            .w_fit()
+                            .overflow_clip()
+                            .animate_layout(
+                                LayoutAnimationConfig::height()
+                                    .with_key(&title_anim_key)
+                                    .snappy(),
+                            )
+                            .child(
+                                div().px(3.0).py(2.0).child(
                                     text(&title.to_uppercase())
                                         .size(11.0)
                                         .color(text_tertiary)
@@ -227,7 +238,13 @@ impl Sidebar {
                                         .no_wrap(),
                                 ),
                             );
+
+                        // Set height based on collapsed state
+                        if is_collapsed {
+                            title_div = title_div.h(0.0);
                         }
+
+                        items_container = items_container.child(title_div);
                     }
 
                     // Items - conditionally render icon-only (collapsed) or icon+label (expanded)
@@ -276,9 +293,9 @@ impl Sidebar {
                                     .bg(bg)
                                     .cursor(CursorStyle::Pointer)
                                     .animate_layout(
-                                        LayoutAnimationConfig::position()
+                                        LayoutAnimationConfig::all()
                                             .with_key(&item_anim_key)
-                                            .snappy(),
+                                            .gentle(),
                                     )
                                     .child(
                                         div().flex_shrink_0().child(
