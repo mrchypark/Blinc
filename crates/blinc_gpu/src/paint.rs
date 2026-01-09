@@ -81,6 +81,30 @@ impl Default for TransformState {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Layer Stack
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// State for a single layer in the stack
+///
+/// Tracks the configuration and rendering state when a layer is pushed,
+/// so it can be properly restored when the layer is popped.
+#[derive(Clone, Debug)]
+struct LayerState {
+    /// The layer configuration
+    config: LayerConfig,
+    /// Starting primitive index when this layer was pushed
+    primitive_start: usize,
+    /// Starting foreground primitive index
+    foreground_primitive_start: usize,
+    /// Starting path vertex index
+    path_start: usize,
+    /// Starting foreground path vertex index
+    foreground_path_start: usize,
+    /// Parent state stack indices (transform, opacity, blend, clip)
+    parent_state_indices: (usize, usize, usize, usize),
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GPU Paint Context
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -111,6 +135,8 @@ pub struct GpuPaintContext<'a> {
     is_foreground: bool,
     /// Current z-layer for interleaved rendering (used by Stack for proper z-ordering)
     z_layer: u32,
+    /// Stack of active layers for offscreen rendering
+    layer_stack: Vec<LayerState>,
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -128,6 +154,7 @@ impl<'a> GpuPaintContext<'a> {
             text_ctx: None,
             is_foreground: false,
             z_layer: 0,
+            layer_stack: Vec::new(),
         }
     }
 
@@ -157,6 +184,7 @@ impl<'a> GpuPaintContext<'a> {
             text_ctx: Some(text_ctx),
             is_foreground: false,
             z_layer: 0,
+            layer_stack: Vec::new(),
         }
     }
 
@@ -698,6 +726,7 @@ impl<'a> GpuPaintContext<'a> {
         self.opacity_stack = vec![1.0];
         self.blend_mode_stack = vec![BlendMode::Normal];
         self.clip_stack.clear();
+        self.layer_stack.clear();
         self.is_3d = false;
         self.camera = None;
     }
@@ -1564,17 +1593,66 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         self.camera = old_camera;
     }
 
-    fn push_layer(&mut self, _config: LayerConfig) {
-        // Layer management would require offscreen render targets
-        // This is a placeholder for now
+    fn push_layer(&mut self, config: LayerConfig) {
+        // Record current state indices for restoration on pop
+        let state = LayerState {
+            config: config.clone(),
+            primitive_start: self.batch.primitive_count(),
+            foreground_primitive_start: self.batch.foreground_primitive_count(),
+            path_start: self.batch.path_vertex_count(),
+            foreground_path_start: self.batch.foreground_path_vertex_count(),
+            parent_state_indices: (
+                self.transform_stack.len(),
+                self.opacity_stack.len(),
+                self.blend_mode_stack.len(),
+                self.clip_stack.len(),
+            ),
+        };
+        self.layer_stack.push(state);
+
+        // Apply layer's blend mode if not Normal
+        if config.blend_mode != BlendMode::Normal {
+            self.blend_mode_stack.push(config.blend_mode);
+        }
+
+        // Apply layer's opacity if less than 1.0
+        if config.opacity < 1.0 {
+            self.opacity_stack.push(config.opacity);
+        }
+
+        // Note: Actual offscreen rendering will be implemented in Phase 2/3
+        // For now, this tracks the layer hierarchy and applies blend/opacity
     }
 
     fn pop_layer(&mut self) {
-        // Layer management placeholder
+        if let Some(state) = self.layer_stack.pop() {
+            // Restore parent state by trimming stacks to their saved indices
+            let (transform_idx, opacity_idx, blend_idx, clip_idx) = state.parent_state_indices;
+
+            // Only truncate if we pushed additional state for this layer
+            // (don't go below the base state)
+            if self.transform_stack.len() > transform_idx {
+                self.transform_stack.truncate(transform_idx.max(1));
+            }
+            if self.opacity_stack.len() > opacity_idx {
+                self.opacity_stack.truncate(opacity_idx.max(1));
+            }
+            if self.blend_mode_stack.len() > blend_idx {
+                self.blend_mode_stack.truncate(blend_idx.max(1));
+            }
+            if self.clip_stack.len() > clip_idx {
+                self.clip_stack.truncate(clip_idx);
+            }
+
+            // Note: Actual layer composition (rendering to texture, blending)
+            // will be implemented in Phase 3. For now, primitives drawn within
+            // the layer are just part of the main batch with applied opacity/blend.
+        }
     }
 
     fn sample_layer(&mut self, _id: LayerId, _source_rect: Rect, _dest_rect: Rect) {
-        // Layer sampling placeholder
+        // Layer sampling will be implemented in Phase 4
+        // Requires offscreen render targets (Phase 2) and layer textures
     }
 
     fn viewport_size(&self) -> Size {
@@ -1863,5 +1941,87 @@ mod tests {
         ctx.execute_commands(&commands);
 
         assert_eq!(ctx.batch().primitive_count(), 1);
+    }
+
+    #[test]
+    fn test_layer_stack_tracking() {
+        let mut ctx = GpuPaintContext::new(800.0, 600.0);
+
+        // Initial state
+        assert_eq!(ctx.layer_stack.len(), 0);
+        assert_eq!(ctx.current_opacity(), 1.0);
+        assert_eq!(ctx.current_blend_mode(), BlendMode::Normal);
+
+        // Push a layer with opacity and blend mode
+        let config = LayerConfig {
+            id: None,
+            size: None,
+            blend_mode: BlendMode::Multiply,
+            opacity: 0.5,
+            depth: false,
+        };
+        ctx.push_layer(config);
+
+        // Layer should be tracked
+        assert_eq!(ctx.layer_stack.len(), 1);
+        // Blend mode and opacity should be applied
+        assert_eq!(ctx.current_opacity(), 0.5);
+        assert_eq!(ctx.current_blend_mode(), BlendMode::Multiply);
+
+        // Draw something within the layer
+        ctx.fill_rect(
+            Rect::new(10.0, 10.0, 100.0, 100.0),
+            0.0.into(),
+            Color::RED.into(),
+        );
+
+        // Pop the layer
+        ctx.pop_layer();
+
+        // State should be restored
+        assert_eq!(ctx.layer_stack.len(), 0);
+        assert_eq!(ctx.current_opacity(), 1.0);
+        assert_eq!(ctx.current_blend_mode(), BlendMode::Normal);
+    }
+
+    #[test]
+    fn test_nested_layers() {
+        let mut ctx = GpuPaintContext::new(800.0, 600.0);
+
+        // Push first layer
+        let config1 = LayerConfig {
+            id: None,
+            size: None,
+            blend_mode: BlendMode::Normal,
+            opacity: 0.8,
+            depth: false,
+        };
+        ctx.push_layer(config1);
+        assert_eq!(ctx.layer_stack.len(), 1);
+        assert_eq!(ctx.current_opacity(), 0.8);
+
+        // Push second layer (nested)
+        let config2 = LayerConfig {
+            id: None,
+            size: None,
+            blend_mode: BlendMode::Screen,
+            opacity: 0.5,
+            depth: false,
+        };
+        ctx.push_layer(config2);
+        assert_eq!(ctx.layer_stack.len(), 2);
+        // Opacity should be combined: 0.8 * 0.5 = 0.4
+        assert!((ctx.current_opacity() - 0.4).abs() < 0.001);
+        assert_eq!(ctx.current_blend_mode(), BlendMode::Screen);
+
+        // Pop second layer
+        ctx.pop_layer();
+        assert_eq!(ctx.layer_stack.len(), 1);
+        assert_eq!(ctx.current_opacity(), 0.8);
+
+        // Pop first layer
+        ctx.pop_layer();
+        assert_eq!(ctx.layer_stack.len(), 0);
+        assert_eq!(ctx.current_opacity(), 1.0);
     }
 }
