@@ -643,7 +643,9 @@ pub fn extract_brush_info(brush: &Brush) -> PathBrushInfo {
             let needs_texture = stops.len() > 2;
 
             match gradient {
-                Gradient::Linear { start, end, stops, .. } => {
+                Gradient::Linear {
+                    start, end, stops, ..
+                } => {
                     tracing::debug!(
                         "Linear gradient: start=({}, {}), end=({}, {}), stops={}, colors=({:?} -> {:?})",
                         start.x,
@@ -661,11 +663,20 @@ pub fn extract_brush_info(brush: &Brush) -> PathBrushInfo {
                         end_color,
                         gradient_params: [start.x, start.y, end.x, end.y],
                         needs_gradient_texture: needs_texture,
-                        gradient_stops: if needs_texture { Some(stops.clone()) } else { None },
+                        gradient_stops: if needs_texture {
+                            Some(stops.clone())
+                        } else {
+                            None
+                        },
                         ..Default::default()
                     }
                 }
-                Gradient::Radial { center, radius, stops, .. } => {
+                Gradient::Radial {
+                    center,
+                    radius,
+                    stops,
+                    ..
+                } => {
                     tracing::debug!(
                         "Radial gradient: center=({}, {}), radius={}, stops={}, colors=({:?} -> {:?})",
                         center.x,
@@ -682,11 +693,20 @@ pub fn extract_brush_info(brush: &Brush) -> PathBrushInfo {
                         end_color,
                         gradient_params: [center.x, center.y, *radius, 0.0],
                         needs_gradient_texture: needs_texture,
-                        gradient_stops: if needs_texture { Some(stops.clone()) } else { None },
+                        gradient_stops: if needs_texture {
+                            Some(stops.clone())
+                        } else {
+                            None
+                        },
                         ..Default::default()
                     }
                 }
-                Gradient::Conic { center, start_angle, stops, .. } => {
+                Gradient::Conic {
+                    center,
+                    start_angle,
+                    stops,
+                    ..
+                } => {
                     // Treat conic as radial for now
                     PathBrushInfo {
                         brush_type: PathBrushType::RadialGradient,
@@ -695,7 +715,11 @@ pub fn extract_brush_info(brush: &Brush) -> PathBrushInfo {
                         end_color,
                         gradient_params: [center.x, center.y, 100.0, *start_angle],
                         needs_gradient_texture: needs_texture,
-                        gradient_stops: if needs_texture { Some(stops.clone()) } else { None },
+                        gradient_stops: if needs_texture {
+                            Some(stops.clone())
+                        } else {
+                            None
+                        },
                         ..Default::default()
                     }
                 }
@@ -707,7 +731,12 @@ pub fn extract_brush_info(brush: &Brush) -> PathBrushInfo {
 /// Extract gradient info from brush (legacy function for backward compatibility)
 fn extract_gradient_info(brush: &Brush) -> (u32, Color, Color, [f32; 4]) {
     let info = extract_brush_info(brush);
-    (info.gradient_type, info.start_color, info.end_color, info.gradient_params)
+    (
+        info.gradient_type,
+        info.start_color,
+        info.end_color,
+        info.gradient_params,
+    )
 }
 
 /// Tessellate a path for filling

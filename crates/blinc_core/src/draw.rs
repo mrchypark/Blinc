@@ -890,10 +890,7 @@ pub trait DrawContext {
     ) {
         // Default: draw fill then stroke (suboptimal but works)
         self.fill_rect(rect, corner_radius, brush);
-        let max_border = border_widths
-            .iter()
-            .cloned()
-            .fold(0.0f32, |a, b| a.max(b));
+        let max_border = border_widths.iter().cloned().fold(0.0f32, |a, b| a.max(b));
         if max_border > 0.0 {
             let stroke = Stroke::new(max_border);
             self.stroke_rect(rect, corner_radius, &stroke, Brush::Solid(border_color));

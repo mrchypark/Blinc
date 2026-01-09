@@ -4382,15 +4382,39 @@ impl RenderTree {
 
             // Collect border widths - fall back to uniform border
             let top_width = sides.top.as_ref().map(|b| b.width).unwrap_or(uniform_width);
-            let right_width = sides.right.as_ref().map(|b| b.width).unwrap_or(uniform_width);
-            let bottom_width = sides.bottom.as_ref().map(|b| b.width).unwrap_or(uniform_width);
-            let left_width = sides.left.as_ref().map(|b| b.width).unwrap_or(uniform_width);
+            let right_width = sides
+                .right
+                .as_ref()
+                .map(|b| b.width)
+                .unwrap_or(uniform_width);
+            let bottom_width = sides
+                .bottom
+                .as_ref()
+                .map(|b| b.width)
+                .unwrap_or(uniform_width);
+            let left_width = sides
+                .left
+                .as_ref()
+                .map(|b| b.width)
+                .unwrap_or(uniform_width);
 
             // Collect colors - fall back to uniform border color
             let top_color = sides.top.as_ref().map(|b| b.color).unwrap_or(uniform_color);
-            let right_color = sides.right.as_ref().map(|b| b.color).unwrap_or(uniform_color);
-            let bottom_color = sides.bottom.as_ref().map(|b| b.color).unwrap_or(uniform_color);
-            let left_color = sides.left.as_ref().map(|b| b.color).unwrap_or(uniform_color);
+            let right_color = sides
+                .right
+                .as_ref()
+                .map(|b| b.color)
+                .unwrap_or(uniform_color);
+            let bottom_color = sides
+                .bottom
+                .as_ref()
+                .map(|b| b.color)
+                .unwrap_or(uniform_color);
+            let left_color = sides
+                .left
+                .as_ref()
+                .map(|b| b.color)
+                .unwrap_or(uniform_color);
 
             // Check if all borders have the same color
             let colors = [top_color, right_color, bottom_color, left_color];
@@ -4407,7 +4431,13 @@ impl RenderTree {
                     .background
                     .clone()
                     .unwrap_or(Brush::Solid(Color::TRANSPARENT));
-                ctx.fill_rect_with_per_side_border(rect, radius, brush, border_widths, border_color);
+                ctx.fill_rect_with_per_side_border(
+                    rect,
+                    radius,
+                    brush,
+                    border_widths,
+                    border_color,
+                );
             } else {
                 // Different colors per side - fall back to rectangle approach
                 let has_radius = radius.top_left > 0.0
@@ -5118,7 +5148,11 @@ impl RenderTree {
         // Render children, passing down the effective opacity and layer inheritance
         // When we pushed an opacity layer, pass 1.0 to children (layer handles the opacity)
         // Otherwise, pass the combined opacity for brush-based fallback
-        let child_inherited_opacity = if has_opacity_layer { 1.0 } else { motion_opacity };
+        let child_inherited_opacity = if has_opacity_layer {
+            1.0
+        } else {
+            motion_opacity
+        };
         for child_id in self.layout_tree.children(node) {
             self.render_layer_with_motion(
                 ctx,

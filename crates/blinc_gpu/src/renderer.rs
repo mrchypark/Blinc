@@ -331,9 +331,11 @@ impl LayerTextureCache {
         }
 
         // Look for a texture that's larger (wasteful but avoids allocation)
-        if let Some(index) = self.pool.iter().position(|t| {
-            t.size.0 >= size.0 && t.size.1 >= size.1 && t.has_depth == with_depth
-        }) {
+        if let Some(index) = self
+            .pool
+            .iter()
+            .position(|t| t.size.0 >= size.0 && t.size.1 >= size.1 && t.has_depth == with_depth)
+        {
             return self.pool.swap_remove(index);
         }
 
@@ -2086,7 +2088,11 @@ impl GpuRenderer {
             clip_bounds: batch.paths.clip_bounds,
             clip_radius: batch.paths.clip_radius,
             clip_type: batch.paths.clip_type,
-            use_gradient_texture: if batch.paths.use_gradient_texture { 1 } else { 0 },
+            use_gradient_texture: if batch.paths.use_gradient_texture {
+                1
+            } else {
+                0
+            },
             use_image_texture: if batch.paths.use_image_texture { 1 } else { 0 },
             use_glass_effect: if batch.paths.use_glass_effect { 1 } else { 0 },
             image_uv_bounds: batch.paths.image_uv_bounds,
@@ -3705,7 +3711,8 @@ impl GpuRenderer {
         });
 
         // Create bind group
-        let bind_group = self.create_layer_composite_bind_group(&uniform_buffer, &layer.view, &sampler);
+        let bind_group =
+            self.create_layer_composite_bind_group(&uniform_buffer, &layer.view, &sampler);
 
         // Create render pass and draw
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -3754,7 +3761,12 @@ impl GpuRenderer {
 
         let uniforms = crate::primitives::LayerCompositeUniforms::with_source_rect(
             source_uv,
-            [dest_rect.x(), dest_rect.y(), dest_rect.width(), dest_rect.height()],
+            [
+                dest_rect.x(),
+                dest_rect.y(),
+                dest_rect.width(),
+                dest_rect.height(),
+            ],
             (self.viewport_size.0 as f32, self.viewport_size.1 as f32),
             opacity,
             blend_mode,
@@ -3779,7 +3791,8 @@ impl GpuRenderer {
             ..Default::default()
         });
 
-        let bind_group = self.create_layer_composite_bind_group(&uniform_buffer, &layer.view, &sampler);
+        let bind_group =
+            self.create_layer_composite_bind_group(&uniform_buffer, &layer.view, &sampler);
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Layer Composite Pass"),

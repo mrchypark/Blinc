@@ -33,7 +33,7 @@ fn main() -> Result<()> {
 fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
     eprintln!("build_ui called");
     let theme = ThemeState::get();
-   
+
     eprintln!(
         "Current theme platform: {:?}",
         blinc_theme::platform::Platform::current()
@@ -319,13 +319,13 @@ fn header(ctx: &WindowedContext) -> impl ElementBuilder {
                         .color(text_secondary),
                 ),
         )
-        // .child(
-        //     // cn::switch(&is_dark, scheduler)
-        //     //     .label("Dark Mode")
-        //     //     .on_change(|_| {
-        //     //         ThemeState::get().toggle_scheme();
-        //     //     }),
-        // )
+    // .child(
+    //     // cn::switch(&is_dark, scheduler)
+    //     //     .label("Dark Mode")
+    //     //     .on_change(|_| {
+    //     //         ThemeState::get().toggle_scheme();
+    //     //     }),
+    // )
 }
 
 /// Section title helper
@@ -571,11 +571,7 @@ fn toggles_section(ctx: &WindowedContext) -> impl ElementBuilder {
                     .gap(12.0)
                     .child(cn::switch(&switch1).label("Notifications"))
                     .child(cn::switch(&switch2).label("Dark mode"))
-                    .child(
-                        cn::switch(&switch3)
-                            .label("Disabled")
-                            .disabled(true),
-                    ),
+                    .child(cn::switch(&switch3).label("Disabled").disabled(true)),
             ),
     )
 }
