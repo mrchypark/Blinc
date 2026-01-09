@@ -292,7 +292,7 @@ impl EventRouter {
         // Send BLUR to old focused element AND bubble to its ancestors
         if let Some(old_focused) = self.focused {
             if Some(old_focused) != node {
-                tracing::info!(
+                tracing::debug!(
                     "EventRouter: sending BLUR to old_focused {:?}, new focus will be {:?}",
                     old_focused,
                     node
@@ -307,10 +307,10 @@ impl EventRouter {
                     }
                 }
             } else {
-                tracing::info!("EventRouter: focus unchanged at {:?}", node);
+                tracing::debug!("EventRouter: focus unchanged at {:?}", node);
             }
         } else {
-            tracing::info!(
+            tracing::debug!(
                 "EventRouter: no previous focus, setting focus to {:?}",
                 node
             );

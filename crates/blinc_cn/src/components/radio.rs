@@ -261,7 +261,7 @@ fn build_radio_button(
             // Build with label
             let mut visual = div()
                 .flex_row()
-                .gap(theme.spacing_value(SpacingToken::Space4))
+                .gap_px(theme.spacing_value(SpacingToken::Space4))
                 .items_center()
                 .cursor_pointer()
                 .child(circle)

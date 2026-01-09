@@ -374,6 +374,7 @@ fn show_tooltip_overlay(
         .at(x, y)
         .anchor_direction(anchor_dir)
         .motion_key(&motion_key_with_child)
+        .follows_scroll(true)
         .content(move || {
             // Styled tooltip container
             // px/py take units that are scaled by 4, so convert raw pixels

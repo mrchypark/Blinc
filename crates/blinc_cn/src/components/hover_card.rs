@@ -402,6 +402,7 @@ fn show_hover_card_overlay(
         .at(x, y)
         .anchor_direction(anchor_dir)
         .motion_key(&motion_key_with_child)
+        .follows_scroll(true)
         .content(move || {
             let user_content = (content_fn)();
 

@@ -79,6 +79,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .child(context_menu_section())
                         .child(dropdown_menu_section())
                         .child(hover_card_section())
+                        .child(popover_section())
                         .child(tooltip_section())
                         .child(dialog_section(ctx))
                         .child(sheet_section(ctx))
@@ -90,6 +91,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .child(sidebar_section(ctx))
                         .child(toast_section(ctx))
                         .child(loading_section(ctx))
+                        .child(kbd_section())
                         .child(misc_section()),
                 ),
         )
@@ -2311,6 +2313,187 @@ fn hover_card_section() -> impl ElementBuilder {
 }
 
 // ============================================================================
+// Popover Section
+// ============================================================================
+
+fn popover_section() -> impl ElementBuilder {
+    let theme = ThemeState::get();
+    let text_primary = theme.color(ColorToken::TextPrimary);
+    let text_secondary = theme.color(ColorToken::TextSecondary);
+
+    section_container()
+        .child(section_title("Popover"))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                // Basic popover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            text("Basic Popover")
+                                .size(14.0)
+                                .medium()
+                                .color(text_primary),
+                        )
+                        .child(
+                            cn::popover(|is_open| {
+                                div().w_fit().child(
+                                    cn::button(if is_open { "Close" } else { "Open Popover" })
+                                        .variant(ButtonVariant::Outline),
+                                )
+                            })
+                            .content(move || {
+                                let theme = ThemeState::get();
+                                div()
+                                    .flex_col()
+                                    .gap(8.0)
+                                    .child(
+                                        text("Popover Content")
+                                            .size(14.0)
+                                            .medium()
+                                            .color(theme.color(ColorToken::TextPrimary)),
+                                    )
+                                    .child(
+                                        text("This is some content inside the popover. Click outside or press Escape to close.")
+                                            .size(13.0)
+                                            .color(theme.color(ColorToken::TextSecondary)),
+                                    )
+                            }),
+                        ),
+                )
+                // Popover with form content
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            text("With Form Content")
+                                .size(14.0)
+                                .medium()
+                                .color(text_primary),
+                        )
+                        .child(
+                            cn::popover(|_is_open| {
+                                div().w_fit().child(
+                                    cn::button("Edit Settings")
+                                        .variant(ButtonVariant::Secondary),
+                                )
+                            })
+                            .content(move || {
+                                let theme = ThemeState::get();
+                                div()
+                                    .flex_col()
+                                    .gap(12.0)
+                                    .w(240.0)
+                                    .child(
+                                        text("Settings")
+                                            .size(14.0)
+                                            .medium()
+                                            .color(theme.color(ColorToken::TextPrimary)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_col()
+                                            .gap(4.0)
+                                            .child(cn::label("Width"))
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .h(32.0)
+                                                    .bg(theme.color(ColorToken::SurfaceElevated))
+                                                    .border(1.0, theme.color(ColorToken::Border))
+                                                    .rounded(6.0),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_col()
+                                            .gap(4.0)
+                                            .child(cn::label("Height"))
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .h(32.0)
+                                                    .bg(theme.color(ColorToken::SurfaceElevated))
+                                                    .border(1.0, theme.color(ColorToken::Border))
+                                                    .rounded(6.0),
+                                            ),
+                                    )
+                            }),
+                        ),
+                )
+                // Positioned to the right
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            text("Positioned Right")
+                                .size(14.0)
+                                .medium()
+                                .color(text_primary),
+                        )
+                        .child(
+                            cn::popover(|_is_open| {
+                                div().w_fit().child(
+                                    cn::button("Open Right")
+                                        .variant(ButtonVariant::Ghost),
+                                )
+                            })
+                            .side(cn::PopoverSide::Right)
+                            .content(move || {
+                                let theme = ThemeState::get();
+                                div()
+                                    .flex_col()
+                                    .gap(4.0)
+                                    .child(
+                                        text("Right-positioned popover")
+                                            .size(13.0)
+                                            .color(theme.color(ColorToken::TextSecondary)),
+                                    )
+                            }),
+                        ),
+                )
+                // Positioned to the top
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            text("Positioned Top")
+                                .size(14.0)
+                                .medium()
+                                .color(text_primary),
+                        )
+                        .child(
+                            cn::popover(|_is_open| {
+                                div().w_fit().child(
+                                    cn::button("Open Top")
+                                        .variant(ButtonVariant::Ghost),
+                                )
+                            })
+                            .side(cn::PopoverSide::Top)
+                            .content(move || {
+                                let theme = ThemeState::get();
+                                div()
+                                    .flex_col()
+                                    .gap(4.0)
+                                    .child(
+                                        text("Top-positioned popover")
+                                            .size(13.0)
+                                            .color(theme.color(ColorToken::TextSecondary)),
+                                    )
+                            }),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
 // Tooltip Section
 // ============================================================================
 
@@ -2417,6 +2600,127 @@ fn tooltip_section() -> impl ElementBuilder {
                     ),
             ),
     )
+}
+
+fn kbd_section() -> impl ElementBuilder {
+    let theme = ThemeState::get();
+    let text_secondary = theme.color(ColorToken::TextSecondary);
+
+    section_container()
+        .child(section_title("Keyboard Shortcuts"))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // Basic keyboard shortcut example
+                .child(
+                    div()
+                        .flex_row()
+                        .items_center()
+                        .gap_px(8.0)
+                        .child(text("Press").size(14.0).color(text_secondary))
+                        .child(cn::kbd("⌘"))
+                        .child(text("+").size(14.0).color(text_secondary))
+                        .child(cn::kbd("K"))
+                        .child(
+                            text("to open command palette")
+                                .size(14.0)
+                                .color(text_secondary),
+                        ),
+                )
+                // Size variants
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            div()
+                                .flex_row()
+                                .items_center()
+                                .gap_px(8.0)
+                                .child(text("Small:").size(14.0).color(text_secondary))
+                                .child(cn::kbd("Ctrl").size(KbdSize::Small))
+                                .child(cn::kbd("S").size(KbdSize::Small)),
+                        )
+                        .child(
+                            div()
+                                .flex_row()
+                                .items_center()
+                                .gap_px(8.0)
+                                .child(text("Medium:").size(14.0).color(text_secondary))
+                                .child(cn::kbd("Ctrl"))
+                                .child(cn::kbd("S")),
+                        )
+                        .child(
+                            div()
+                                .flex_row()
+                                .items_center()
+                                .gap_px(8.0)
+                                .child(text("Large:").size(14.0).color(text_secondary))
+                                .child(cn::kbd("Ctrl").size(KbdSize::Large))
+                                .child(cn::kbd("S").size(KbdSize::Large)),
+                        ),
+                )
+                // Common shortcuts
+                .child(
+                    div()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap(16.0)
+                        .child(
+                            div()
+                                .flex_row()
+                                .items_center()
+                                .gap_px(4.0)
+                                .child(cn::kbd("⌘"))
+                                .child(cn::kbd("C"))
+                                .child(text(" - Copy").size(12.0).color(text_secondary)),
+                        )
+                        .child(
+                            div()
+                                .flex_row()
+                                .items_center()
+                                .gap_px(4.0)
+                                .child(cn::kbd("⌘"))
+                                .child(cn::kbd("V"))
+                                .child(text(" - Paste").size(12.0).color(text_secondary)),
+                        )
+                        .child(
+                            div()
+                                .flex_row()
+                                .items_center()
+                                .gap_px(4.0)
+                                .child(cn::kbd("⌘"))
+                                .child(cn::kbd("Z"))
+                                .child(text(" - Undo").size(12.0).color(text_secondary)),
+                        )
+                        .child(
+                            div()
+                                .flex_row()
+                                .items_center()
+                                .gap_px(4.0)
+                                .child(cn::kbd("⇧"))
+                                .child(cn::kbd("⌘"))
+                                .child(cn::kbd("Z"))
+                                .child(text(" - Redo").size(12.0).color(text_secondary)),
+                        ),
+                )
+                // Special keys
+                .child(
+                    div()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_px(8.0)
+                        .child(cn::kbd("Enter"))
+                        .child(cn::kbd("Tab"))
+                        .child(cn::kbd("Esc"))
+                        .child(cn::kbd("Space"))
+                        .child(cn::kbd("←"))
+                        .child(cn::kbd("→"))
+                        .child(cn::kbd("↑"))
+                        .child(cn::kbd("↓")),
+                ),
+        )
 }
 
 fn misc_section() -> impl ElementBuilder {

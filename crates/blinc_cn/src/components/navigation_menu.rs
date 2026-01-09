@@ -128,6 +128,7 @@ impl NavigationMenu {
                                         .flex_row()
                                         .items_center()
                                         .h_fit()
+                                        
                                         .px(3.0)
                                         .py(2.0)
                                         .rounded(radius)
@@ -198,6 +199,7 @@ impl NavigationMenu {
                                         .flex_row()
                                         .items_center()
                                         .h_fit()
+                                        
                                         .gap(1.0)
                                         .px(3.0)
                                         .py(2.0)
@@ -275,6 +277,7 @@ impl NavigationMenu {
                                     // Start close delay when leaving trigger
                                     if let Some(handle_id) = overlay_handle_for_leave.get() {
                                         let mgr = get_overlay_manager();
+                                        mgr.close_all_of(blinc_layout::widgets::overlay::OverlayKind::Tooltip);
                                         let handle = OverlayHandle::from_raw(handle_id);
 
                                         // Only start close if overlay is visible and not already closing
@@ -543,6 +546,7 @@ impl NavigationLink {
 
                 let mut content = div()
                     .flex_col()
+                    .w_full()
                     .gap(1.0)
                     .px(3.0) // Horizontal padding on item
                     .py(2.0) // Vertical padding on item

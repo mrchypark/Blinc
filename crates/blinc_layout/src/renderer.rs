@@ -1130,7 +1130,8 @@ impl RenderTree {
         if let Some(config) = element.visual_animation_config() {
             tracing::trace!(
                 "[VISUAL_ANIM] collect_render_props: registering config for {:?}, key={:?}",
-                node_id, config.key
+                node_id,
+                config.key
             );
             self.register_visual_animation_config(node_id, config);
         }
@@ -1325,7 +1326,8 @@ impl RenderTree {
         if let Some(config) = element.visual_animation_config() {
             tracing::trace!(
                 "[VISUAL_ANIM] collect_render_props_boxed: registering config for {:?}, key={:?}",
-                node_id, config.key
+                node_id,
+                config.key
             );
             self.register_visual_animation_config(node_id, config);
         }
@@ -2434,7 +2436,8 @@ impl RenderTree {
 
         tracing::trace!(
             "[VISUAL_ANIM] Registering config: node={:?}, key={}",
-            node_id, key
+            node_id,
+            key
         );
 
         self.visual_animation_configs.insert(key.clone(), config);

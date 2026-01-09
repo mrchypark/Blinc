@@ -70,7 +70,7 @@ User feedback components.
 | **Alert** | div, text, icon | ✅ Done |
 | **Toast** | overlay, motion | ✅ Done |
 | **Tooltip** | overlay, motion | ✅ Done |
-| **Popover** | overlay | Planned |
+| **Popover** | overlay | ✅ Done |
 
 ### 5. Overlays (Priority: Medium)
 
@@ -117,7 +117,7 @@ Text components.
 | Component | Primitives Used | Status |
 |-----------|-----------------|--------|
 | **Typography** | text, rich_text | Planned |
-| **Kbd** | div, text | Planned |
+| **Kbd** | div, text | ✅ Done |
 
 ### 9. Icons (Priority: High)
 
