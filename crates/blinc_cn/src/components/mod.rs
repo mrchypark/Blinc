@@ -22,10 +22,12 @@ pub mod drawer;
 pub mod dropdown_menu;
 pub mod hover_card;
 pub mod input;
+pub mod kbd;
 pub mod label;
 pub mod menubar;
 pub mod navigation_menu;
 pub mod pagination;
+pub mod popover;
 pub mod progress;
 pub mod radio;
 pub mod select;
@@ -67,6 +69,7 @@ pub use dropdown_menu::{
 };
 pub use hover_card::{hover_card, HoverCard, HoverCardAlign, HoverCardBuilder, HoverCardSide};
 pub use input::{input, Input, InputBgColors, InputBorderColors, InputSize};
+pub use kbd::{kbd, Kbd, KbdBuilder, KbdSize};
 pub use label::{label, Label, LabelBuilder, LabelSize};
 pub use menubar::{
     menubar, MenuTriggerMode, MenuTriggerStyle, Menubar, MenubarBuilder, MenubarMenu,
@@ -77,6 +80,7 @@ pub use navigation_menu::{
     NavigationMenuBuilder,
 };
 pub use pagination::{pagination, Pagination, PaginationBuilder, PaginationSize};
+pub use popover::{popover, Popover, PopoverAlign, PopoverBuilder, PopoverSide};
 pub use progress::{progress, progress_animated, AnimatedProgress, Progress, ProgressSize};
 pub use radio::{radio_group, RadioGroup, RadioGroupBuilder, RadioLayout, RadioSize};
 pub use select::{select, Select, SelectBuilder, SelectOption, SelectSize};

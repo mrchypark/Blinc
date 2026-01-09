@@ -63,10 +63,12 @@ pub mod cn {
     pub use crate::components::dropdown_menu::{dropdown_menu, dropdown_menu_custom};
     pub use crate::components::hover_card::hover_card;
     pub use crate::components::input::input;
+    pub use crate::components::kbd::{kbd, KbdSize};
     pub use crate::components::label::label;
     pub use crate::components::menubar::{menubar, MenuTriggerMode, MenuTriggerStyle};
     pub use crate::components::navigation_menu::{navigation_link, navigation_menu};
     pub use crate::components::pagination::pagination;
+    pub use crate::components::popover::{popover, PopoverAlign, PopoverSide};
     pub use crate::components::progress::{progress, progress_animated};
     pub use crate::components::radio::radio_group;
     pub use crate::components::select::select;
@@ -123,6 +125,7 @@ pub mod prelude {
         hover_card, HoverCard, HoverCardAlign, HoverCardBuilder, HoverCardSide,
     };
     pub use crate::components::input::{input, Input, InputBgColors, InputBorderColors, InputSize};
+    pub use crate::components::kbd::{kbd, Kbd, KbdBuilder, KbdSize};
     pub use crate::components::label::{label, Label, LabelBuilder, LabelSize};
     pub use crate::components::menubar::{
         menubar, MenuTriggerMode, MenuTriggerStyle, Menubar, MenubarBuilder, MenubarMenu,
@@ -134,6 +137,9 @@ pub mod prelude {
     };
     pub use crate::components::pagination::{
         pagination, Pagination, PaginationBuilder, PaginationSize,
+    };
+    pub use crate::components::popover::{
+        popover, Popover, PopoverAlign, PopoverBuilder, PopoverSide,
     };
     pub use crate::components::progress::{
         progress, progress_animated, AnimatedProgress, Progress, ProgressSize,

@@ -34,7 +34,7 @@ use blinc_animation::{
 };
 use blinc_core::context_state::{BlincContextState, HookState, SharedHookState, StateKey};
 use blinc_core::reactive::{Derived, ReactiveGraph, Signal, SignalId, State, StatefulDepsCallback};
-use blinc_layout::overlay_state::OverlayContext;
+use blinc_layout::overlay_state::{get_overlay_manager, OverlayContext};
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager, OverlayManagerExt};
 use blinc_platform::{
@@ -2007,11 +2007,14 @@ impl WindowedApp {
                             // from the same event as gesture_ended is the last finger movement,
                             // not momentum, but we still want to ignore it for instant snap-back
                             //
-                            // Also skip scroll when an overlay with backdrop is open to prevent
+                            // Also skip scroll when an overlay with an actual backdrop is open to prevent
                             // background content from scrolling while dropdown/modal is visible.
+                            // Note: We only check has_blocking_overlay(), not has_dismissable_overlay(),
+                            // because overlays with dismiss_on_click_outside (like popovers) should allow
+                            // scroll events to pass through to content behind them.
                             let has_overlay_backdrop = ctx
                                 .as_ref()
-                                .map(|c| c.overlay_manager.has_blocking_overlay() || c.overlay_manager.has_dismissable_overlay())
+                                .map(|c| c.overlay_manager.has_blocking_overlay())
                                 .unwrap_or(false);
 
                             if let Some((mouse_x, mouse_y, delta_x, delta_y)) = scroll_info {
@@ -2026,6 +2029,22 @@ impl WindowedApp {
                                         "Scroll dispatch: pos=({:.1}, {:.1}) delta=({:.1}, {:.1})",
                                         mouse_x, mouse_y, delta_x, delta_y
                                     );
+
+                                    // Update overlay positions for overlays with follows_scroll enabled
+                                    // Use the singleton overlay manager since components use get_overlay_manager()
+                                    if OverlayContext::is_initialized() {
+                                        let mgr = get_overlay_manager();
+                                        if mgr.handle_scroll(delta_y) {
+                                            // Apply scroll offsets to render tree for visual movement
+                                            for (element_id, offset_y) in mgr.get_scroll_offsets() {
+                                                if let Some(node_id) = tree.query_by_id(&element_id) {
+                                                    tree.set_scroll_offset(node_id, 0.0, offset_y);
+                                                }
+                                            }
+                                            window.request_redraw();
+                                        }
+                                    }
+
                                     // Re-do hit test with mutable borrow to get ancestor chain
                                     // Then use dispatch_scroll_chain for proper nested scroll handling
                                     if let Some(ref mut windowed_ctx) = ctx {

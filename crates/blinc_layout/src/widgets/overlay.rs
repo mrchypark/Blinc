@@ -430,6 +430,26 @@ pub struct OverlayConfig {
     pub animation: OverlayAnimation,
     /// Close on Escape key press
     pub dismiss_on_escape: bool,
+    /// Close when clicking outside the overlay content (without needing a backdrop)
+    ///
+    /// This enables click-outside detection without adding a backdrop element,
+    /// allowing scroll events to pass through to content behind the overlay.
+    /// Useful for popovers and dropdowns that should dismiss on outside click
+    /// but not block scrolling.
+    pub dismiss_on_click_outside: bool,
+    /// Close when scroll events occur
+    ///
+    /// When enabled, any scroll event will dismiss the overlay. This is useful
+    /// for popovers that are positioned relative to a trigger element - when
+    /// the trigger scrolls, the popover should close rather than staying in
+    /// place disconnected from its trigger.
+    pub dismiss_on_scroll: bool,
+    /// Move with scroll events instead of staying fixed
+    ///
+    /// When enabled, the overlay position will be updated by the scroll delta,
+    /// keeping it attached to its trigger element as the page scrolls.
+    /// This is useful for popovers that should track their trigger position.
+    pub follows_scroll: bool,
     /// Close when mouse leaves the overlay content (for hover cards)
     pub dismiss_on_hover_leave: bool,
     /// Auto-dismiss after duration (for toasts)
@@ -473,6 +493,9 @@ impl OverlayConfig {
             backdrop: Some(BackdropConfig::default()),
             animation: OverlayAnimation::modal(),
             dismiss_on_escape: true,
+            dismiss_on_click_outside: false, // Modal uses backdrop for dismiss
+            dismiss_on_scroll: false,        // Modals don't dismiss on scroll
+            follows_scroll: false,           // Modals don't follow scroll
             dismiss_on_hover_leave: false,
             auto_dismiss_ms: None,
             close_delay_ms: None,
@@ -500,6 +523,9 @@ impl OverlayConfig {
             backdrop: None,
             animation: OverlayAnimation::context_menu(),
             dismiss_on_escape: true,
+            dismiss_on_click_outside: true, // Context menus dismiss on click outside
+            dismiss_on_scroll: true,        // Context menus dismiss on scroll
+            follows_scroll: false,          // Context menus dismiss rather than follow
             dismiss_on_hover_leave: false,
             auto_dismiss_ms: None,
             close_delay_ms: None,
@@ -519,6 +545,9 @@ impl OverlayConfig {
             backdrop: None,
             animation: OverlayAnimation::toast(),
             dismiss_on_escape: false,
+            dismiss_on_click_outside: false, // Toasts don't dismiss on click outside
+            dismiss_on_scroll: false,        // Toasts don't dismiss on scroll
+            follows_scroll: false,           // Toasts stay in fixed corner position
             dismiss_on_hover_leave: false,
             auto_dismiss_ms: Some(3000),
             close_delay_ms: None,
@@ -543,6 +572,9 @@ impl OverlayConfig {
             }),
             animation: OverlayAnimation::dropdown(),
             dismiss_on_escape: true,
+            dismiss_on_click_outside: false, // Dropdown uses backdrop for dismiss
+            dismiss_on_scroll: false,        // Dropdown uses backdrop which blocks scroll
+            follows_scroll: false,           // Dropdown uses backdrop which blocks scroll
             dismiss_on_hover_leave: false,
             auto_dismiss_ms: None,
             close_delay_ms: None,
@@ -567,6 +599,9 @@ impl OverlayConfig {
             backdrop: None,
             animation: OverlayAnimation::dropdown(),
             dismiss_on_escape: true,
+            dismiss_on_click_outside: false, // Hover cards dismiss on hover leave instead
+            dismiss_on_scroll: false,        // Default off, but can be enabled for popovers
+            follows_scroll: false,           // Default off, but can be enabled for popovers
             dismiss_on_hover_leave: true,
             auto_dismiss_ms: Some(5000), // Auto-dismiss after 5 seconds as fallback
             close_delay_ms: Some(300),   // 300ms delay before closing on mouse leave
@@ -638,6 +673,9 @@ pub struct ActiveOverlay {
     /// Flag: start close delay when Opening -> Open transition completes
     /// Used when hover_leave is called during Opening state
     pending_close_on_open: bool,
+    /// Accumulated scroll offset for follows_scroll overlays
+    /// Applied as a visual transform during rendering without layout rebuild
+    scroll_offset_y: f32,
 }
 
 impl ActiveOverlay {
@@ -851,6 +889,7 @@ impl OverlayManagerInner {
             cached_size: None,
             on_close,
             pending_close_on_open: false,
+            scroll_offset_y: 0.0,
         };
 
         self.overlays.insert(handle, overlay);
@@ -1190,6 +1229,46 @@ impl OverlayManagerInner {
         }
     }
 
+    /// Update positions of overlays that follow scroll
+    ///
+    /// This is called from the scroll handler to update positions of overlays
+    /// with `follows_scroll: true`. The delta is subtracted from the y position
+    /// since scrolling down means content moves up.
+    ///
+    /// Returns true if any overlay positions were updated.
+    pub fn handle_scroll(&mut self, delta_y: f32) -> bool {
+        let mut updated = false;
+
+        for overlay in self.overlays.values_mut() {
+            if overlay.config.follows_scroll && overlay.state.is_visible() {
+                // Accumulate scroll offset - scrolling down (positive delta) moves content up
+                overlay.scroll_offset_y += delta_y;
+                updated = true;
+            }
+        }
+
+        if updated {
+            self.mark_animation_dirty();
+        }
+
+        updated
+    }
+
+    /// Get scroll offsets for all visible overlays with follows_scroll enabled
+    ///
+    /// Returns a list of (element_id, offset_y) pairs for rendering.
+    /// The element_id is the unique wrapper ID for each overlay's content.
+    pub fn get_scroll_offsets(&self) -> Vec<(String, f32)> {
+        self.overlays
+            .iter()
+            .filter(|(_, o)| o.config.follows_scroll && o.state.is_visible())
+            .map(|(handle, overlay)| {
+                let element_id = format!("overlay_scroll_{}", handle.id());
+                (element_id, overlay.scroll_offset_y)
+            })
+            .collect()
+    }
+
     /// Get bounds of all visible overlays for occlusion testing
     ///
     /// Returns a list of (x, y, width, height) rectangles for all visible overlay content.
@@ -1257,6 +1336,9 @@ impl OverlayManagerInner {
                         }
                     }
                 }
+
+                // Add scroll offset for overlays that follow scroll
+                y += overlay.scroll_offset_y;
 
                 tracing::debug!(
                     "get_visible_overlay_bounds: kind={:?} pos={:?} dir={:?} bounds=({}, {}, {}, {})",
@@ -1349,37 +1431,39 @@ impl OverlayManagerInner {
         })
     }
 
-    /// Check if any overlay with dismiss-on-click backdrop is visible
+    /// Check if any overlay with dismiss-on-click-outside behavior is visible
     ///
-    /// This includes dropdowns, context menus, and other non-blocking overlays
+    /// This includes dropdowns, context menus, popovers, and other overlays
     /// that should be dismissed when clicking outside.
     pub fn has_dismissable_overlay(&self) -> bool {
         self.overlays.values().any(|o| {
             o.state.is_open()
-                && o.config
-                    .backdrop
-                    .as_ref()
-                    .map(|b| b.dismiss_on_click)
-                    .unwrap_or(false)
+                && (o.config.dismiss_on_click_outside
+                    || o.config
+                        .backdrop
+                        .as_ref()
+                        .map(|b| b.dismiss_on_click)
+                        .unwrap_or(false))
         })
     }
 
-    /// Handle backdrop click - close topmost overlay if it has dismiss_on_backdrop_click
+    /// Handle backdrop click - close topmost overlay if it has dismiss-on-click behavior
     ///
     /// Returns true if a click was handled (overlay closed), false otherwise.
     /// The caller should call this when a mouse click is detected and there's a blocking overlay.
     pub fn handle_backdrop_click(&mut self) -> bool {
-        // Find topmost open overlay with backdrop that allows dismissal
+        // Find topmost open overlay with click-outside dismiss behavior
         if let Some(handle) = self
             .overlays
             .values()
             .filter(|o| {
                 o.state.is_open()
-                    && o.config
-                        .backdrop
-                        .as_ref()
-                        .map(|b| b.dismiss_on_click)
-                        .unwrap_or(false)
+                    && (o.config.dismiss_on_click_outside
+                        || o.config
+                            .backdrop
+                            .as_ref()
+                            .map(|b| b.dismiss_on_click)
+                            .unwrap_or(false))
             })
             .max_by_key(|o| o.config.z_priority)
             .map(|o| o.handle)
@@ -1409,17 +1493,19 @@ impl OverlayManagerInner {
     /// # Returns
     /// True if the click is on a backdrop (outside content), false if on content or no overlay
     pub fn is_backdrop_click(&self, x: f32, y: f32) -> bool {
-        // Find topmost overlay with backdrop dismiss enabled
+        // Find topmost overlay with click-outside dismiss enabled
+        // This includes both backdrop.dismiss_on_click AND dismiss_on_click_outside
         if let Some(overlay) = self
             .overlays
             .values()
             .filter(|o| {
                 o.state.is_open()
-                    && o.config
-                        .backdrop
-                        .as_ref()
-                        .map(|b| b.dismiss_on_click)
-                        .unwrap_or(false)
+                    && (o.config.dismiss_on_click_outside
+                        || o.config
+                            .backdrop
+                            .as_ref()
+                            .map(|b| b.dismiss_on_click)
+                            .unwrap_or(false))
             })
             .max_by_key(|o| o.config.z_priority)
         {
@@ -1437,8 +1523,12 @@ impl OverlayManagerInner {
                     ((vp_w - content_w) / 2.0, (vp_h - content_h) / 2.0)
                 }
                 OverlayPosition::AtPoint { x: px, y: py } => {
-                    // Content is positioned at the specified point
-                    (*px, *py)
+                    // Content is positioned at (x, y) as the top-left corner
+                    // This matches the rendering in position_content which uses .left(x).top(y)
+                    // Note: anchor_direction is used for occlusion testing in get_visible_overlay_bounds,
+                    // but here we need to match actual rendering position for hit testing
+                    // Add scroll_offset_y for overlays that follow scroll
+                    (*px, *py + overlay.scroll_offset_y)
                 }
                 OverlayPosition::Corner(corner) => {
                     // Position in corner with margin
@@ -1872,7 +1962,14 @@ impl OverlayManagerInner {
 
             OverlayPosition::AtPoint { x, y } => {
                 // Position content at specific point using absolute positioning within viewport
-                content.absolute().left(*x).top(*y)
+                // Wrap in a container with unique ID for scroll offset application
+                let wrapper_id = format!("overlay_scroll_{}", overlay.handle.id());
+                div()
+                    .id(&wrapper_id)
+                    .absolute()
+                    .left(*x)
+                    .top(*y)
+                    .child(content)
             }
 
             OverlayPosition::Corner(corner) => {
@@ -2095,6 +2192,14 @@ pub trait OverlayManagerExt {
     fn needs_redraw(&self) -> bool;
     /// Set the cached content size for an overlay (for hit testing)
     fn set_content_size(&self, handle: OverlayHandle, width: f32, height: f32);
+    /// Handle scroll event - updates positions of overlays with follows_scroll enabled
+    ///
+    /// Returns true if any overlay positions were updated.
+    fn handle_scroll(&self, delta_y: f32) -> bool;
+    /// Get scroll offsets for all follows_scroll overlays
+    ///
+    /// Returns (element_id, offset_y) pairs for rendering.
+    fn get_scroll_offsets(&self) -> Vec<(String, f32)>;
     /// Mark overlay content as dirty (triggers full rebuild)
     ///
     /// Call this when state used in overlay content changes and needs to be reflected.
@@ -2260,6 +2365,14 @@ impl OverlayManagerExt for OverlayManager {
 
     fn set_content_size(&self, handle: OverlayHandle, width: f32, height: f32) {
         self.lock().unwrap().set_content_size(handle, width, height);
+    }
+
+    fn handle_scroll(&self, delta_y: f32) -> bool {
+        self.lock().unwrap().handle_scroll(delta_y)
+    }
+
+    fn get_scroll_offsets(&self) -> Vec<(String, f32)> {
+        self.lock().unwrap().get_scroll_offsets()
     }
 
     fn mark_content_dirty(&self) {
@@ -2581,6 +2694,65 @@ impl DropdownBuilder {
         if dismiss {
             self.config.backdrop = None;
         }
+        self
+    }
+
+    /// Enable dismiss when clicking outside the overlay content (without a backdrop)
+    ///
+    /// This allows the overlay to be dismissed by clicking outside its content area
+    /// WITHOUT adding a backdrop element. This means scroll events and other
+    /// interactions pass through to the content behind the overlay.
+    ///
+    /// Useful for popovers that should dismiss on outside click but not block scrolling.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// mgr.hover_card()
+    ///     .dismiss_on_hover_leave(false)  // Disable hover dismiss
+    ///     .dismiss_on_click_outside(true) // Enable click outside dismiss
+    ///     .content(|| popover_content())
+    ///     .show()
+    /// ```
+    pub fn dismiss_on_click_outside(mut self, dismiss: bool) -> Self {
+        self.config.dismiss_on_click_outside = dismiss;
+        self
+    }
+
+    /// Make the overlay follow scroll events
+    ///
+    /// When enabled, the overlay position will be updated by the scroll delta,
+    /// keeping it attached to its trigger element as the page scrolls.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// mgr.hover_card()
+    ///     .at(x, y)
+    ///     .follows_scroll(true)  // Follow scroll instead of staying fixed
+    ///     .content(|| popover_content())
+    ///     .show()
+    /// ```
+    pub fn follows_scroll(mut self, follows: bool) -> Self {
+        self.config.follows_scroll = follows;
+        self
+    }
+
+    /// Set auto-dismiss timeout in milliseconds
+    ///
+    /// When set, the overlay will automatically close after this duration.
+    /// Set to None to disable auto-dismiss (overlay stays open until explicitly closed).
+    pub fn auto_dismiss(mut self, ms: Option<u32>) -> Self {
+        self.config.auto_dismiss_ms = ms;
+        self
+    }
+
+    /// Set close delay in milliseconds
+    ///
+    /// When set, there's a delay after mouse leaves before the overlay closes.
+    /// Set to None to disable close delay.
+    pub fn close_delay(mut self, ms: Option<u32>) -> Self {
+        self.config.close_delay_ms = ms;
         self
     }
 
