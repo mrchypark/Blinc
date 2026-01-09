@@ -268,6 +268,7 @@ impl Select {
                     .rounded(radius)
                     .child(content_wrapper)
                     .flex_shrink_0()
+                    .shadow_sm()
                     .child(
                         svg(chevron_svg)
                             .size(16.0, 16.0)

@@ -877,6 +877,29 @@ pub trait DrawContext {
     /// Fill a rectangle (convenience method)
     fn fill_rect(&mut self, rect: Rect, corner_radius: CornerRadius, brush: Brush);
 
+    /// Fill a rectangle with per-side borders (all same color)
+    /// Border format: [top, right, bottom, left]
+    /// Default implementation draws fill then strokes with max border width
+    fn fill_rect_with_per_side_border(
+        &mut self,
+        rect: Rect,
+        corner_radius: CornerRadius,
+        brush: Brush,
+        border_widths: [f32; 4],
+        border_color: Color,
+    ) {
+        // Default: draw fill then stroke (suboptimal but works)
+        self.fill_rect(rect, corner_radius, brush);
+        let max_border = border_widths
+            .iter()
+            .cloned()
+            .fold(0.0f32, |a, b| a.max(b));
+        if max_border > 0.0 {
+            let stroke = Stroke::new(max_border);
+            self.stroke_rect(rect, corner_radius, &stroke, Brush::Solid(border_color));
+        }
+    }
+
     /// Stroke a rectangle (convenience method)
     fn stroke_rect(
         &mut self,

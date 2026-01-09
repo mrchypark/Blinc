@@ -200,7 +200,7 @@ fn erf(x: f32) -> f32 {
     return s * y;
 }
 
-// Gaussian shadow for rectangle
+// Gaussian shadow for rectangle (without corner radii - legacy)
 fn shadow_rect(p: vec2<f32>, origin: vec2<f32>, size: vec2<f32>, sigma: f32) -> f32 {
     if sigma < 0.001 {
         // No blur - use hard edge
@@ -217,6 +217,22 @@ fn shadow_rect(p: vec2<f32>, origin: vec2<f32>, size: vec2<f32>, sigma: f32) -> 
     let y = 0.5 * (erf((half.y - rel.y) / d) + erf((half.y + rel.y) / d));
 
     return x * y;
+}
+
+// Gaussian shadow for rounded rectangle - uses SDF for proper corner handling
+fn shadow_rounded_rect(p: vec2<f32>, origin: vec2<f32>, size: vec2<f32>, corner_radius: vec4<f32>, sigma: f32) -> f32 {
+    // Get signed distance to the rounded rectangle
+    let sdf_dist = sd_rounded_rect(p, origin, size, corner_radius);
+
+    if sigma < 0.001 {
+        // No blur - use hard edge
+        return select(0.0, 1.0, sdf_dist < 0.0);
+    }
+
+    // Gaussian falloff based on SDF distance
+    // Same approach as shadow_circle: 1 inside, Gaussian falloff outside
+    let d = 0.5 * sqrt(2.0) * sigma;
+    return 0.5 * (1.0 + erf(-sdf_dist / d));
 }
 
 // Gaussian shadow for circle - radially symmetric blur
@@ -307,7 +323,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let shadow_origin = origin + shadow_offset - vec2<f32>(spread);
         let shadow_size = size + vec2<f32>(spread * 2.0);
 
-        let shadow_alpha = shadow_rect(p, shadow_origin, shadow_size, blur);
+        // Adjust corner radii for spread (expand corners proportionally)
+        let shadow_radii = prim.corner_radius + vec4<f32>(spread);
+
+        let shadow_alpha = shadow_rounded_rect(p, shadow_origin, shadow_size, shadow_radii, blur);
         let shadow_color = prim.shadow_color * shadow_alpha;
 
         // Premultiply and blend
@@ -328,10 +347,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             d = sd_ellipse(p, center, size * 0.5);
         }
         case PRIM_SHADOW: {
-            // Shadow-only primitive - mask out the shape area so shadow doesn't render under it
+            // Shadow-only primitive - mask out the shape interior
+            // Shadow should be visible starting from the shape boundary (d >= 0)
+            // Use fwidth-based AA to match fill rendering and prevent gaps at corners
             let shape_d = sd_rounded_rect(p, origin, size, prim.corner_radius);
             let aa_width = fwidth(shape_d) * 0.5;
-            let shape_mask = smoothstep(-aa_width, aa_width, shape_d); // 0 inside shape, 1 outside
+            let shape_mask = smoothstep(-aa_width, aa_width, shape_d); // 0 inside, 1 outside, AA at edge
             result.a *= shape_mask;
             result.a *= clip_alpha;
             return result;
@@ -382,9 +403,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let shadow_alpha = shadow_circle(p, shadow_center, shadow_radius, blur);
 
             // Mask out the circle area so shadow doesn't render under it
+            // Use fwidth-based AA to match fill rendering and prevent gaps at edges
             let circle_d = sd_circle(p, center, radius);
             let aa_width = fwidth(circle_d) * 0.5;
-            let shape_mask = smoothstep(-aa_width, aa_width, circle_d); // 0 inside, 1 outside
+            let shape_mask = smoothstep(-aa_width, aa_width, circle_d); // 0 inside, 1 outside, AA at edge
 
             var circle_result = prim.shadow_color * shadow_alpha;
             circle_result.a *= shape_mask * clip_alpha;
@@ -509,12 +531,46 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Handle border with stable anti-aliasing
-    // The border is the ring between the outer shape edge and the inner edge (inset by border_width)
-    let border_width = prim.border.x;
-    if border_width > 0.0 {
-        // Distance to inner edge (positive inside the inner area)
-        let inner_d = d + border_width;
+    // Handle border with proper inner corner radii
+    // The border is the ring between the outer shape edge and an inner shape with reduced corner radii
+    // prim.border = [top, right, bottom, left] for per-side borders, or [uniform, 0, 0, 0] for uniform
+    let border_top = prim.border.x;
+    let border_right = prim.border.y;
+    let border_bottom = prim.border.z;
+    let border_left = prim.border.w;
+
+    // Check if any border is present (using max of all sides)
+    let max_border = max(max(border_top, border_right), max(border_bottom, border_left));
+    if max_border > 0.0 {
+        // For uniform border (legacy: only .x set), use it for all sides
+        let bt = select(border_top, border_top, border_right > 0.0 || border_bottom > 0.0 || border_left > 0.0);
+        let br = select(border_top, border_right, border_right > 0.0 || border_bottom > 0.0 || border_left > 0.0);
+        let bb = select(border_top, border_bottom, border_right > 0.0 || border_bottom > 0.0 || border_left > 0.0);
+        let bl = select(border_top, border_left, border_right > 0.0 || border_bottom > 0.0 || border_left > 0.0);
+
+        // Calculate proper inner corner radii
+        // Each corner radius is reduced by the max of adjacent border widths
+        // to ensure consistent border thickness around curved corners
+        let min_inner_r = 0.25;
+        let inner_radius = vec4<f32>(
+            max(prim.corner_radius.x - max(bt, bl), min_inner_r),  // top_left
+            max(prim.corner_radius.y - max(bt, br), min_inner_r),  // top_right
+            max(prim.corner_radius.z - max(bb, br), min_inner_r),  // bottom_right
+            max(prim.corner_radius.w - max(bb, bl), min_inner_r)   // bottom_left
+        );
+
+        // Calculate inner shape with asymmetric insets
+        let inner_origin = origin + vec2<f32>(bl, bt);
+        let inner_size = size - vec2<f32>(bl + br, bt + bb);
+
+        // Only calculate inner SDF if inner shape has positive size
+        var inner_d: f32;
+        if inner_size.x > 0.0 && inner_size.y > 0.0 {
+            inner_d = sd_rounded_rect(p, inner_origin, inner_size, inner_radius);
+        } else {
+            // Border is wider than half the shape - entire shape is border
+            inner_d = 1000.0;  // Always outside inner (full border)
+        }
 
         // For thin borders, use a fixed aa_width to avoid fwidth instability.
         // The fwidth approach causes jitter on scroll because screen-space derivatives
@@ -524,25 +580,33 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Inner coverage using stable anti-aliasing (0 outside inner, 1 inside inner)
         let inner_coverage = 1.0 - smoothstep(-stable_aa, stable_aa, inner_d);
 
-        // The border occupies the region between outer edge (d < 0) and inner edge (inner_d < 0).
-        // We want to blend the border color in this ring.
         // border_blend = 1 when in the border ring, 0 when inside the inner area
-        // Using the stable inner edge prevents jitter
         let border_blend = 1.0 - inner_coverage;
 
         // Only apply border color where we're actually inside the shape (fill_alpha > 0)
-        // Use smoothstep clamping to avoid harsh transitions
         fill_color = mix(fill_color, prim.border_color, border_blend * step(0.001, fill_alpha));
     }
 
-    fill_color.a *= fill_alpha;
-
-    // Apply clip alpha to both shadow and fill
-    fill_color.a *= clip_alpha;
+    // Apply clip alpha to shadow
     result.a *= clip_alpha;
 
-    // Blend over shadow (assuming premultiplied alpha)
-    result = fill_color + result * (1.0 - fill_color.a);
+    // Mask shadow strictly outside the shape boundary
+    // Use the same aa_width as fill_alpha to prevent gaps at corners
+    // The shadow should render only where d > 0 (outside the shape)
+    if result.a > 0.0 {
+        // Use matching AA width to ensure shadow and fill meet seamlessly
+        let shadow_mask = smoothstep(-aa_width, aa_width, d);
+        result.a *= shadow_mask;
+    }
+
+    // Blend fill over shadow at FULL opacity first (fill fully covers shadow)
+    // This ensures no shadow bleeds through the shape regardless of edge AA
+    let full_fill = vec4<f32>(fill_color.rgb, fill_color.a * clip_alpha);
+    result = full_fill + result * (1.0 - full_fill.a);
+
+    // NOW apply outer edge anti-aliasing to the combined result
+    // This gives smooth edges against the background without shadow bleed
+    result.a *= fill_alpha;
 
     return result;
 }

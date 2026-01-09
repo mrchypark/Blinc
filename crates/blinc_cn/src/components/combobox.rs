@@ -318,6 +318,7 @@ impl Combobox {
                     .rounded(radius)
                     .child(display_content)
                     .flex_shrink_0()
+                    .shadow_sm()
                     .child(
                         svg(chevron_svg)
                             .size(16.0, 16.0)

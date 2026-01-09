@@ -362,6 +362,7 @@ impl AccordionBuilder {
                         .flex_col()
                         .w_full()
                         .bg(theme.color(ColorToken::Background))
+                        .border_top(1.0, border_color)
                         .overflow_clip()
                         .animate_bounds(
                             blinc_layout::visual_animation::VisualAnimationConfig::height()

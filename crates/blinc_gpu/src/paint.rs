@@ -241,6 +241,25 @@ impl<'a> GpuPaintContext<'a> {
         )
     }
 
+    /// Scale corner radius by the current transform's average scale factor
+    fn scale_corner_radius(&self, corner_radius: CornerRadius) -> CornerRadius {
+        let affine = self.current_affine();
+        let a = affine.elements[0];
+        let b = affine.elements[1];
+        let c = affine.elements[2];
+        let d = affine.elements[3];
+        let scale_x = (a * a + b * b).sqrt();
+        let scale_y = (c * c + d * d).sqrt();
+        let avg_scale = (scale_x + scale_y) / 2.0;
+
+        CornerRadius::new(
+            corner_radius.top_left * avg_scale,
+            corner_radius.top_right * avg_scale,
+            corner_radius.bottom_right * avg_scale,
+            corner_radius.bottom_left * avg_scale,
+        )
+    }
+
     /// Transform gradient parameters by the current transform
     /// For linear gradients, transforms (x1, y1, x2, y2) to screen space
     /// For radial gradients, transforms (cx, cy, radius, 0) to screen space
@@ -987,6 +1006,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
 
     fn fill_rect(&mut self, rect: Rect, corner_radius: CornerRadius, brush: Brush) {
         let transformed = self.transform_rect(rect);
+        let scaled_radius = self.scale_corner_radius(corner_radius);
 
         // Handle glass brush specially - push to glass primitives
         if let Brush::Glass(style) = &brush {
@@ -997,10 +1017,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 transformed.height(),
             )
             .with_corner_radius_per_corner(
-                corner_radius.top_left,
-                corner_radius.top_right,
-                corner_radius.bottom_right,
-                corner_radius.bottom_left,
+                scaled_radius.top_left,
+                scaled_radius.top_right,
+                scaled_radius.bottom_right,
+                scaled_radius.bottom_left,
             )
             .with_blur(style.blur)
             .with_tint(style.tint.r, style.tint.g, style.tint.b, style.tint.a)
@@ -1081,15 +1101,95 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 transformed.height(),
             ],
             corner_radius: [
-                corner_radius.top_left,
-                corner_radius.top_right,
-                corner_radius.bottom_right,
-                corner_radius.bottom_left,
+                scaled_radius.top_left,
+                scaled_radius.top_right,
+                scaled_radius.bottom_right,
+                scaled_radius.bottom_left,
             ],
             color,
             color2,
             border: [0.0; 4],
             border_color: [0.0; 4],
+            shadow: [0.0; 4],
+            shadow_color: [0.0; 4],
+            clip_bounds,
+            clip_radius,
+            gradient_params: transformed_gradient_params,
+            type_info: [
+                PrimitiveType::Rect as u32,
+                fill_type as u32,
+                clip_type as u32,
+                self.z_layer,
+            ],
+        };
+
+        if self.is_foreground {
+            self.batch.push_foreground(primitive);
+        } else {
+            self.batch.push(primitive);
+        }
+    }
+
+    fn fill_rect_with_per_side_border(
+        &mut self,
+        rect: Rect,
+        corner_radius: CornerRadius,
+        brush: Brush,
+        border_widths: [f32; 4],
+        border_color: Color,
+    ) {
+        let transformed = self.transform_rect(rect);
+        let scaled_radius = self.scale_corner_radius(corner_radius);
+        let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
+        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+
+        // Scale border widths by transform
+        let affine = self.current_affine();
+        let a = affine.elements[0];
+        let b = affine.elements[1];
+        let c = affine.elements[2];
+        let d = affine.elements[3];
+        let scale_x = (a * a + b * b).sqrt();
+        let scale_y = (c * c + d * d).sqrt();
+
+        let scaled_borders = [
+            border_widths[0] * scale_y, // top (vertical scale)
+            border_widths[1] * scale_x, // right (horizontal scale)
+            border_widths[2] * scale_y, // bottom (vertical scale)
+            border_widths[3] * scale_x, // left (horizontal scale)
+        ];
+
+        // Transform gradient params to screen space
+        let is_radial = fill_type == FillType::RadialGradient;
+        let transformed_gradient_params = if fill_type != FillType::Solid {
+            self.transform_gradient_params(gradient_params, is_radial)
+        } else {
+            gradient_params
+        };
+
+        let opacity = self.combined_opacity();
+        let primitive = GpuPrimitive {
+            bounds: [
+                transformed.x(),
+                transformed.y(),
+                transformed.width(),
+                transformed.height(),
+            ],
+            corner_radius: [
+                scaled_radius.top_left,
+                scaled_radius.top_right,
+                scaled_radius.bottom_right,
+                scaled_radius.bottom_left,
+            ],
+            color,
+            color2,
+            border: scaled_borders,
+            border_color: [
+                border_color.r,
+                border_color.g,
+                border_color.b,
+                border_color.a * opacity,
+            ],
             shadow: [0.0; 4],
             shadow_color: [0.0; 4],
             clip_bounds,
@@ -1118,6 +1218,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         brush: Brush,
     ) {
         let transformed = self.transform_rect(rect);
+        let scaled_radius = self.scale_corner_radius(corner_radius);
         let (color, _color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
@@ -1129,10 +1230,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 transformed.height(),
             ],
             corner_radius: [
-                corner_radius.top_left,
-                corner_radius.top_right,
-                corner_radius.bottom_right,
-                corner_radius.bottom_left,
+                scaled_radius.top_left,
+                scaled_radius.top_right,
+                scaled_radius.bottom_right,
+                scaled_radius.bottom_left,
             ],
             color: [0.0, 0.0, 0.0, 0.0], // Transparent fill
             color2: [0.0, 0.0, 0.0, 0.0],
@@ -1356,6 +1457,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
 
     fn draw_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow) {
         let transformed = self.transform_rect(rect);
+        let scaled_radius = self.scale_corner_radius(corner_radius);
         let opacity = self.combined_opacity();
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
@@ -1367,10 +1469,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 transformed.height(),
             ],
             corner_radius: [
-                corner_radius.top_left,
-                corner_radius.top_right,
-                corner_radius.bottom_right,
-                corner_radius.bottom_left,
+                scaled_radius.top_left,
+                scaled_radius.top_right,
+                scaled_radius.bottom_right,
+                scaled_radius.bottom_left,
             ],
             color: [0.0, 0.0, 0.0, 0.0], // Shadow is not filled
             color2: [0.0, 0.0, 0.0, 0.0],
@@ -1403,6 +1505,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
 
     fn draw_inner_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow) {
         let transformed = self.transform_rect(rect);
+        let scaled_radius = self.scale_corner_radius(corner_radius);
         let opacity = self.combined_opacity();
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
@@ -1414,10 +1517,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 transformed.height(),
             ],
             corner_radius: [
-                corner_radius.top_left,
-                corner_radius.top_right,
-                corner_radius.bottom_right,
-                corner_radius.bottom_left,
+                scaled_radius.top_left,
+                scaled_radius.top_right,
+                scaled_radius.bottom_right,
+                scaled_radius.bottom_left,
             ],
             color: [0.0, 0.0, 0.0, 0.0], // Inner shadow is not filled
             color2: [0.0, 0.0, 0.0, 0.0],
