@@ -4360,6 +4360,15 @@ impl RenderTree {
             // Draw individual border sides as filled rectangles
             let sides = &render_node.props.border_sides;
 
+            // Clip to rounded rect if there's a border radius
+            let has_radius = radius.top_left > 0.0
+                || radius.top_right > 0.0
+                || radius.bottom_left > 0.0
+                || radius.bottom_right > 0.0;
+            if has_radius {
+                ctx.push_clip(ClipShape::rounded_rect(rect, radius));
+            }
+
             // Left border
             if let Some(ref border) = sides.left {
                 if border.is_visible() {
@@ -4416,6 +4425,10 @@ impl RenderTree {
                         Brush::Solid(border.color),
                     );
                 }
+            }
+
+            if has_radius {
+                ctx.pop_clip();
             }
         } else if render_node.props.border_width > 0.0 {
             // Fall back to uniform border
@@ -4880,6 +4893,15 @@ impl RenderTree {
                     }
                 };
 
+                // Clip to rounded rect if there's a border radius
+                let has_radius = radius.top_left > 0.0
+                    || radius.top_right > 0.0
+                    || radius.bottom_left > 0.0
+                    || radius.bottom_right > 0.0;
+                if has_radius {
+                    ctx.push_clip(ClipShape::rounded_rect(rect, radius));
+                }
+
                 // Left border
                 if let Some(ref border) = sides.left {
                     if border.is_visible() {
@@ -4936,6 +4958,10 @@ impl RenderTree {
                             Brush::Solid(apply_motion(border.color)),
                         );
                     }
+                }
+
+                if has_radius {
+                    ctx.pop_clip();
                 }
             } else if render_node.props.border_width > 0.0 {
                 if let Some(ref border_color) = render_node.props.border_color {
@@ -5337,6 +5363,15 @@ impl RenderTree {
             if render_node.props.border_sides.has_any() {
                 let sides = &render_node.props.border_sides;
 
+                // Clip to rounded rect if there's a border radius
+                let has_radius = radius.top_left > 0.0
+                    || radius.top_right > 0.0
+                    || radius.bottom_left > 0.0
+                    || radius.bottom_right > 0.0;
+                if has_radius {
+                    ctx.push_clip(ClipShape::rounded_rect(rect, radius));
+                }
+
                 if let Some(ref border) = sides.left {
                     if border.is_visible() {
                         let border_rect = Rect::new(0.0, 0.0, border.width, rect.height());
@@ -5386,6 +5421,10 @@ impl RenderTree {
                             Brush::Solid(border.color),
                         );
                     }
+                }
+
+                if has_radius {
+                    ctx.pop_clip();
                 }
             } else if render_node.props.border_width > 0.0 {
                 if let Some(ref border_color) = render_node.props.border_color {
@@ -5685,6 +5724,15 @@ impl RenderTree {
                     if render_node.props.border_sides.has_any() {
                         let sides = &render_node.props.border_sides;
 
+                        // Clip to rounded rect if there's a border radius
+                        let has_radius = radius.top_left > 0.0
+                            || radius.top_right > 0.0
+                            || radius.bottom_left > 0.0
+                            || radius.bottom_right > 0.0;
+                        if has_radius {
+                            ctx.push_clip(ClipShape::rounded_rect(rect, radius));
+                        }
+
                         if let Some(ref border) = sides.left {
                             if border.is_visible() {
                                 let border_rect = Rect::new(0.0, 0.0, border.width, rect.height());
@@ -5734,6 +5782,10 @@ impl RenderTree {
                                     Brush::Solid(border.color),
                                 );
                             }
+                        }
+
+                        if has_radius {
+                            ctx.pop_clip();
                         }
                     } else if render_node.props.border_width > 0.0 {
                         if let Some(ref border_color) = render_node.props.border_color {
