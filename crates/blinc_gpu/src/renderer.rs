@@ -15,7 +15,8 @@ use crate::primitives::{
     Uniforms,
 };
 use crate::shaders::{
-    COMPOSITE_SHADER, GLASS_SHADER, IMAGE_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER,
+    COMPOSITE_SHADER, GLASS_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, PATH_SHADER, SDF_SHADER,
+    TEXT_SHADER,
 };
 
 /// Error type for renderer operations
@@ -105,6 +106,8 @@ struct Pipelines {
     path: wgpu::RenderPipeline,
     /// Pipeline for tessellated path overlay (1x sampled)
     path_overlay: wgpu::RenderPipeline,
+    /// Pipeline for layer composition (blend modes)
+    layer_composite: wgpu::RenderPipeline,
 }
 
 /// Cached MSAA pipelines for dynamic sample counts
@@ -466,6 +469,8 @@ struct BindGroupLayouts {
     #[allow(dead_code)]
     composite: wgpu::BindGroupLayout,
     path: wgpu::BindGroupLayout,
+    /// Layout for layer composition shader
+    layer_composite: wgpu::BindGroupLayout,
 }
 
 impl GpuRenderer {
@@ -685,6 +690,11 @@ impl GpuRenderer {
             source: wgpu::ShaderSource::Wgsl(PATH_SHADER.into()),
         });
 
+        let layer_composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Layer Composite Shader"),
+            source: wgpu::ShaderSource::Wgsl(LAYER_COMPOSITE_SHADER.into()),
+        });
+
         // Create pipelines
         let pipelines = Self::create_pipelines(
             &device,
@@ -694,6 +704,7 @@ impl GpuRenderer {
             &text_shader,
             &composite_shader,
             &path_shader,
+            &layer_composite_shader,
             texture_format,
             config.sample_count,
         );
@@ -1116,12 +1127,49 @@ impl GpuRenderer {
             ],
         });
 
+        // Layer composite bind group layout (for compositing offscreen layers)
+        let layer_composite = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Layer Composite Bind Group Layout"),
+            entries: &[
+                // Uniforms (source_rect, dest_rect, viewport_size, opacity, blend_mode)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Layer texture
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Layer sampler
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
         BindGroupLayouts {
             sdf,
             glass,
             text,
             composite,
             path,
+            layer_composite,
         }
     }
 
@@ -1133,6 +1181,7 @@ impl GpuRenderer {
         text_shader: &wgpu::ShaderModule,
         composite_shader: &wgpu::ShaderModule,
         path_shader: &wgpu::ShaderModule,
+        layer_composite_shader: &wgpu::ShaderModule,
         texture_format: wgpu::TextureFormat,
         sample_count: u32,
     ) -> Pipelines {
@@ -1480,6 +1529,62 @@ impl GpuRenderer {
             cache: None,
         });
 
+        // Layer composite pipeline - for compositing offscreen layers with blend modes
+        let layer_composite_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Layer Composite Pipeline Layout"),
+                bind_group_layouts: &[&layouts.layer_composite],
+                push_constant_ranges: &[],
+            });
+
+        // Use premultiplied alpha blending for layer composition
+        let premultiplied_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+
+        let layer_composite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Layer Composite Pipeline"),
+            layout: Some(&layer_composite_layout),
+            vertex: wgpu::VertexState {
+                module: layer_composite_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[], // No vertex buffers - quad generated in shader
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: layer_composite_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: texture_format,
+                    blend: Some(premultiplied_blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: overlay_multisample_state, // 1x sampled - layers are resolved
+            multiview: None,
+            cache: None,
+        });
+
         Pipelines {
             sdf,
             sdf_overlay,
@@ -1490,6 +1595,7 @@ impl GpuRenderer {
             composite_overlay,
             path,
             path_overlay,
+            layer_composite,
         }
     }
 
@@ -3521,6 +3627,178 @@ impl GpuRenderer {
     /// Release a layer texture back to the cache pool
     pub fn release_layer_texture(&mut self, texture: LayerTexture) {
         self.layer_texture_cache.release(texture);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Layer Composition
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /// Create a bind group for layer composition
+    fn create_layer_composite_bind_group(
+        &self,
+        uniform_buffer: &wgpu::Buffer,
+        layer_view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Layer Composite Bind Group"),
+            layout: &self.bind_group_layouts.layer_composite,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(layer_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        })
+    }
+
+    /// Composite a layer texture onto a target
+    ///
+    /// Uses the LAYER_COMPOSITE_SHADER to blend the layer onto the target
+    /// with the specified blend mode and opacity.
+    pub fn composite_layer(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        layer: &LayerTexture,
+        dest_x: f32,
+        dest_y: f32,
+        opacity: f32,
+        blend_mode: blinc_core::BlendMode,
+    ) {
+        // Create uniform buffer for this composition
+        let uniforms = crate::primitives::LayerCompositeUniforms::new(
+            layer.size,
+            dest_x,
+            dest_y,
+            (self.viewport_size.0 as f32, self.viewport_size.1 as f32),
+            opacity,
+            blend_mode,
+        );
+
+        let uniform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Layer Composite Uniforms"),
+                contents: bytemuck::bytes_of(&uniforms),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+
+        // Create sampler
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Layer Composite Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Create bind group
+        let bind_group = self.create_layer_composite_bind_group(&uniform_buffer, &layer.view, &sampler);
+
+        // Create render pass and draw
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Layer Composite Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load, // Preserve existing content
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        render_pass.set_pipeline(&self.pipelines.layer_composite);
+        render_pass.set_bind_group(0, &bind_group, &[]);
+        render_pass.draw(0..6, 0..1); // 6 vertices for quad (2 triangles)
+    }
+
+    /// Composite a layer with source/dest rectangle mapping
+    ///
+    /// Allows sampling a sub-region of the layer texture and placing it
+    /// at a specific destination in the target.
+    pub fn composite_layer_region(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        layer: &LayerTexture,
+        source_rect: blinc_core::Rect,
+        dest_rect: blinc_core::Rect,
+        opacity: f32,
+        blend_mode: blinc_core::BlendMode,
+    ) {
+        // Convert source rect to normalized UV coordinates
+        let layer_w = layer.size.0 as f32;
+        let layer_h = layer.size.1 as f32;
+        let source_uv = [
+            source_rect.x() / layer_w,
+            source_rect.y() / layer_h,
+            source_rect.width() / layer_w,
+            source_rect.height() / layer_h,
+        ];
+
+        let uniforms = crate::primitives::LayerCompositeUniforms::with_source_rect(
+            source_uv,
+            [dest_rect.x(), dest_rect.y(), dest_rect.width(), dest_rect.height()],
+            (self.viewport_size.0 as f32, self.viewport_size.1 as f32),
+            opacity,
+            blend_mode,
+        );
+
+        let uniform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Layer Composite Uniforms"),
+                contents: bytemuck::bytes_of(&uniforms),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Layer Composite Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let bind_group = self.create_layer_composite_bind_group(&uniform_buffer, &layer.view, &sampler);
+
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Layer Composite Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        render_pass.set_pipeline(&self.pipelines.layer_composite);
+        render_pass.set_bind_group(0, &bind_group, &[]);
+        render_pass.draw(0..6, 0..1);
     }
 }
 
