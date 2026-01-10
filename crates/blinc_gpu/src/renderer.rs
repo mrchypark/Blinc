@@ -354,12 +354,30 @@ impl LayerTextureCache {
 
     /// Release a texture back to the pool
     ///
-    /// If the pool is full, the texture is dropped.
+    /// If the pool is full or the texture is too large, it's dropped.
+    /// This prevents memory bloat from holding onto oversized textures.
     pub fn release(&mut self, texture: LayerTexture) {
+        // Don't pool textures larger than 512x512 - they're likely viewport-sized
+        // and we want to encourage tight-fit texture reuse
+        const MAX_POOL_TEXTURE_SIZE: u32 = 512;
+
+        if texture.size.0 > MAX_POOL_TEXTURE_SIZE || texture.size.1 > MAX_POOL_TEXTURE_SIZE {
+            // Drop oversized textures instead of pooling them
+            return;
+        }
+
         if self.pool.len() < self.max_pool_size {
             self.pool.push(texture);
         }
         // Otherwise let the texture be dropped
+    }
+
+    /// Clear oversized textures from the pool
+    ///
+    /// Call this at frame start to evict any large textures that accumulated.
+    pub fn evict_oversized(&mut self) {
+        const MAX_POOL_TEXTURE_SIZE: u32 = 512;
+        self.pool.retain(|t| t.size.0 <= MAX_POOL_TEXTURE_SIZE && t.size.1 <= MAX_POOL_TEXTURE_SIZE);
     }
 
     /// Store a texture with a layer ID for later retrieval
@@ -2363,6 +2381,10 @@ impl GpuRenderer {
         batch: &PrimitiveBatch,
         clear_color: [f64; 4],
     ) {
+        // Evict oversized textures from the pool at frame start
+        // This prevents memory bloat from accumulated large textures
+        self.layer_texture_cache.evict_oversized();
+
         // Check if we have layer commands with effects that need processing
         let has_layer_effects = batch.layer_commands.iter().any(|entry| {
             if let crate::primitives::LayerCommand::Push { config } = &entry.command {
