@@ -3166,22 +3166,24 @@ impl GpuRenderer {
     pub fn render_to_backdrop(
         &mut self,
         backdrop: &wgpu::TextureView,
-        backdrop_size: (u32, u32),
+        _backdrop_size: (u32, u32),
         batch: &PrimitiveBatch,
     ) {
         if batch.primitives.is_empty() {
             return;
         }
 
-        // Update uniforms for backdrop (typically half resolution)
-        let backdrop_uniforms = Uniforms {
-            viewport_size: [backdrop_size.0 as f32, backdrop_size.1 as f32],
+        // Use full viewport size for coordinate mapping, even though texture is smaller.
+        // GPU automatically maps NDC space to the texture size, ensuring primitives
+        // appear at correct relative positions for glass sampling.
+        let main_uniforms = Uniforms {
+            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
             _padding: [0.0; 2],
         };
         self.queue.write_buffer(
             &self.buffers.uniforms,
             0,
-            bytemuck::bytes_of(&backdrop_uniforms),
+            bytemuck::bytes_of(&main_uniforms),
         );
 
         // Update primitives buffer
@@ -3222,17 +3224,7 @@ impl GpuRenderer {
 
         // Submit commands
         self.queue.submit(std::iter::once(encoder.finish()));
-
-        // Restore main viewport uniforms
-        let main_uniforms = Uniforms {
-            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
-            _padding: [0.0; 2],
-        };
-        self.queue.write_buffer(
-            &self.buffers.uniforms,
-            0,
-            bytemuck::bytes_of(&main_uniforms),
-        );
+        // Note: No need to restore uniforms since we're already using main_uniforms
     }
 
     /// Render glass frame with backdrop and glass primitives in a single encoder submission.
@@ -3246,16 +3238,11 @@ impl GpuRenderer {
         &mut self,
         target: &wgpu::TextureView,
         backdrop: &wgpu::TextureView,
-        backdrop_size: (u32, u32),
+        _backdrop_size: (u32, u32), // Not used - we render with full viewport coords
         batch: &PrimitiveBatch,
     ) {
-        // Update uniforms for backdrop (half resolution)
-        let backdrop_uniforms = Uniforms {
-            viewport_size: [backdrop_size.0 as f32, backdrop_size.1 as f32],
-            _padding: [0.0; 2],
-        };
-
-        // Update uniforms for main rendering
+        // Update uniforms for rendering (always use full viewport size)
+        // The GPU maps NDC space to actual texture size automatically
         let main_uniforms = Uniforms {
             viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
             _padding: [0.0; 2],
@@ -3371,11 +3358,15 @@ impl GpuRenderer {
             });
 
         // Pass 1: Render background primitives to backdrop texture (at half resolution)
+        // NOTE: We use main_uniforms (full viewport size) for coordinate mapping,
+        // even though the texture is half resolution. The GPU automatically maps
+        // NDC space to the texture size. This ensures primitives appear at correct
+        // relative positions for glass sampling.
         {
             self.queue.write_buffer(
                 &self.buffers.uniforms,
                 0,
-                bytemuck::bytes_of(&backdrop_uniforms),
+                bytemuck::bytes_of(&main_uniforms),
             );
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
