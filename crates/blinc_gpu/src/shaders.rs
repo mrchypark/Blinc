@@ -2457,3 +2457,165 @@ fn fs_drop_shadow(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(result_rgb, result_a);
 }
 "#;
+
+/// Glow effect shader for layer effects
+///
+/// Creates a radial glow around the shape by:
+/// 1. Finding distance to nearest opaque pixel
+/// 2. Applying smooth radial falloff based on blur + range
+/// 3. Compositing glow behind original content
+pub const GLOW_SHADER: &str = r#"
+// ============================================================================
+// Glow Effect Shader (Layer Effects)
+// ============================================================================
+//
+// Creates an outer glow around shapes by:
+// 1. Sampling to find distance to nearest opaque pixel
+// 2. Applying Gaussian-like falloff from the shape edge
+// 3. Compositing glow behind the original content
+
+struct GlowUniforms {
+    // Glow color (RGBA)
+    color: vec4<f32>,
+    // Blur softness (affects falloff smoothness)
+    blur: f32,
+    // Glow range (how far the glow extends)
+    range: f32,
+    // Glow opacity (0-1)
+    opacity: f32,
+    // Padding for alignment
+    _pad0: f32,
+    // Texture size for distance calculation
+    texel_size: vec2<f32>,
+    // Padding
+    _pad1: vec2<f32>,
+}
+
+@group(0) @binding(0) var<uniform> uniforms: GlowUniforms;
+@group(0) @binding(1) var source_texture: texture_2d<f32>;
+@group(0) @binding(2) var source_sampler: sampler;
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+// Full-screen quad vertices
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>( 1.0,  1.0),
+        vec2<f32>(-1.0,  1.0),
+    );
+
+    var uvs = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, 0.0),
+    );
+
+    var out: VertexOutput;
+    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    out.uv = uvs[vertex_index];
+    return out;
+}
+
+// Find minimum distance to an opaque pixel within search_radius
+fn find_edge_distance(uv: vec2<f32>, search_radius: f32, texel_size: vec2<f32>) -> f32 {
+    // Check center first - if opaque, distance is 0
+    let center = textureSample(source_texture, source_sampler, uv);
+    if (center.a > 0.5) {
+        return 0.0;
+    }
+
+    // Sample in concentric rings to find nearest opaque pixel
+    var min_dist = search_radius + 1.0;  // Start with "not found" value
+
+    // Sample at multiple distances and angles
+    // More rings for accurate distance, fewer angles for speed
+    let num_angles = 16;
+    let num_rings = 12;  // More rings for accurate glow
+
+    for (var ring = 1; ring <= num_rings; ring++) {
+        let dist = (f32(ring) / f32(num_rings)) * search_radius;
+        let pixel_dist = dist;
+
+        for (var i = 0; i < num_angles; i++) {
+            let angle = f32(i) * 6.28318530718 / f32(num_angles);
+            let offset = vec2<f32>(cos(angle), sin(angle)) * pixel_dist * texel_size;
+            let sample_uv = clamp(uv + offset, vec2<f32>(0.0), vec2<f32>(1.0));
+            let s = textureSample(source_texture, source_sampler, sample_uv);
+
+            if (s.a > 0.5) {
+                min_dist = min(min_dist, dist);
+            }
+        }
+
+        // Early exit if we found an opaque pixel in this ring
+        if (min_dist <= dist) {
+            break;
+        }
+    }
+
+    return min_dist;
+}
+
+@fragment
+fn fs_glow(in: VertexOutput) -> @location(0) vec4<f32> {
+    // Total search distance = blur + range
+    let search_radius = uniforms.blur + uniforms.range;
+
+    // Find distance to nearest opaque pixel
+    let dist = find_edge_distance(in.uv, search_radius, uniforms.texel_size);
+
+    // Calculate glow alpha with Gaussian-like falloff
+    // - At distance 0: we're inside the shape, no glow needed (original shows)
+    // - At distance <= range: full glow intensity
+    // - At distance > range: fade out over 'blur' distance
+    var glow_alpha = 0.0;
+
+    if (dist > 0.0 && dist <= search_radius) {
+        // Distance from the extended glow edge
+        // If dist <= range, we're in the "full glow" zone
+        // If dist > range, we're in the "fade" zone
+        if (dist <= uniforms.range) {
+            // Inside the glow range - full intensity
+            glow_alpha = 1.0;
+        } else {
+            // Fade zone: distance beyond range, fading over 'blur' distance
+            let fade_dist = dist - uniforms.range;
+            // Smooth Gaussian-like falloff
+            let sigma = uniforms.blur * 0.5;
+            glow_alpha = exp(-(fade_dist * fade_dist) / (2.0 * sigma * sigma));
+        }
+    }
+
+    // Apply opacity
+    glow_alpha *= uniforms.opacity * uniforms.color.a;
+
+    // Sample original content
+    let original = textureSample(source_texture, source_sampler, in.uv);
+
+    // Glow color (premultiplied)
+    let glow_rgb = uniforms.color.rgb;
+
+    // Composite glow behind original using porter-duff "over"
+    // Result = Original + Glow * (1 - Original.a)
+    let result_a = original.a + glow_alpha * (1.0 - original.a);
+
+    if (result_a < 0.001) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+
+    let result_rgb = (original.rgb * original.a + glow_rgb * glow_alpha * (1.0 - original.a)) / result_a;
+
+    return vec4<f32>(result_rgb, result_a);
+}
+"#;

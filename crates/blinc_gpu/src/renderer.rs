@@ -16,7 +16,7 @@ use crate::primitives::{
 };
 use crate::shaders::{
     BLUR_SHADER, COLOR_MATRIX_SHADER, COMPOSITE_SHADER, DROP_SHADOW_SHADER, GLASS_SHADER,
-    IMAGE_SHADER, LAYER_COMPOSITE_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER,
+    GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER,
 };
 
 /// Error type for renderer operations
@@ -114,6 +114,8 @@ struct Pipelines {
     color_matrix: wgpu::RenderPipeline,
     /// Pipeline for drop shadow effect
     drop_shadow: wgpu::RenderPipeline,
+    /// Pipeline for glow effect
+    glow: wgpu::RenderPipeline,
 }
 
 /// Cached MSAA pipelines for dynamic sample counts
@@ -486,6 +488,8 @@ struct BindGroupLayouts {
     color_matrix: wgpu::BindGroupLayout,
     /// Layout for drop shadow effect shader
     drop_shadow: wgpu::BindGroupLayout,
+    /// Layout for glow effect shader
+    glow: wgpu::BindGroupLayout,
 }
 
 impl GpuRenderer {
@@ -726,6 +730,11 @@ impl GpuRenderer {
             source: wgpu::ShaderSource::Wgsl(DROP_SHADOW_SHADER.into()),
         });
 
+        let glow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Glow Effect Shader"),
+            source: wgpu::ShaderSource::Wgsl(GLOW_SHADER.into()),
+        });
+
         // Create pipelines
         let pipelines = Self::create_pipelines(
             &device,
@@ -739,6 +748,7 @@ impl GpuRenderer {
             &blur_shader,
             &color_matrix_shader,
             &drop_shadow_shader,
+            &glow_shader,
             texture_format,
             config.sample_count,
         );
@@ -1316,6 +1326,42 @@ impl GpuRenderer {
             ],
         });
 
+        // Glow effect bind group layout
+        let glow = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Glow Effect Bind Group Layout"),
+            entries: &[
+                // GlowUniforms
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Source texture
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Input sampler
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
         BindGroupLayouts {
             sdf,
             glass,
@@ -1326,6 +1372,7 @@ impl GpuRenderer {
             blur,
             color_matrix,
             drop_shadow,
+            glow,
         }
     }
 
@@ -1341,6 +1388,7 @@ impl GpuRenderer {
         blur_shader: &wgpu::ShaderModule,
         color_matrix_shader: &wgpu::ShaderModule,
         drop_shadow_shader: &wgpu::ShaderModule,
+        glow_shader: &wgpu::ShaderModule,
         texture_format: wgpu::TextureFormat,
         sample_count: u32,
     ) -> Pipelines {
@@ -1869,6 +1917,42 @@ impl GpuRenderer {
             cache: None,
         });
 
+        // Glow effect pipeline
+        let glow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Glow Effect Pipeline Layout"),
+            bind_group_layouts: &[&layouts.glow],
+            push_constant_ranges: &[],
+        });
+
+        // Glow also outputs final composited result (glow behind original)
+        let glow_targets = &[Some(wgpu::ColorTargetState {
+            format: texture_format,
+            blend: None, // No blending - shader outputs final result
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+
+        let glow = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Glow Effect Pipeline"),
+            layout: Some(&glow_layout),
+            vertex: wgpu::VertexState {
+                module: glow_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: glow_shader,
+                entry_point: Some("fs_glow"),
+                targets: glow_targets,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: effect_primitive_state,
+            depth_stencil: None,
+            multisample: overlay_multisample_state, // 1x sampled
+            multiview: None,
+            cache: None,
+        });
+
         Pipelines {
             sdf,
             sdf_overlay,
@@ -1883,6 +1967,7 @@ impl GpuRenderer {
             blur,
             color_matrix,
             drop_shadow,
+            glow,
         }
     }
 
@@ -4999,6 +5084,89 @@ impl GpuRenderer {
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
+    /// Apply glow effect to a texture
+    ///
+    /// Creates a radial glow around the shape by finding distance to nearest opaque pixels
+    /// and applying a smooth falloff based on blur and range parameters.
+    pub fn apply_glow(
+        &mut self,
+        input: &wgpu::TextureView,
+        output: &wgpu::TextureView,
+        size: (u32, u32),
+        color: [f32; 4],
+        blur: f32,
+        range: f32,
+        opacity: f32,
+    ) {
+        use crate::primitives::GlowUniforms;
+
+        let uniforms = GlowUniforms {
+            color,
+            blur,
+            range,
+            opacity,
+            _pad0: 0.0,
+            texel_size: [1.0 / size.0 as f32, 1.0 / size.1 as f32],
+            _pad1: [0.0, 0.0],
+        };
+
+        let uniform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Glow Uniforms Buffer"),
+                contents: bytemuck::cast_slice(&[uniforms]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Glow Effect Bind Group"),
+            layout: &self.bind_group_layouts.glow,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(input),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
+                },
+            ],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Glow Pass Encoder"),
+            });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Glow Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: output,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.glow);
+            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
     /// Helper to create common color matrices
     pub fn grayscale_matrix() -> [f32; 20] {
         // Luminance weights (ITU-R BT.709)
@@ -5247,18 +5415,17 @@ impl GpuRenderer {
                     range,
                     opacity,
                 } => {
-                    // Use distance-based glow - no blur pass needed
-                    // The shader samples the original texture to find shape edges
+                    // Use dedicated glow shader with proper radial falloff
+                    // The shader finds distance to opaque pixels and creates smooth glow
                     let temp = self.layer_texture_cache.acquire(&self.device, size, false);
-                    self.apply_drop_shadow(
-                        &current.view, // Not used for distance sampling
-                        &current.view, // Original texture for shape detection
+                    self.apply_glow(
+                        &current.view,
                         &temp.view,
                         size,
-                        (0.0, 0.0), // No offset for glow
+                        [color.r, color.g, color.b, color.a],
                         *blur,
                         *range,
-                        [color.r, color.g, color.b, color.a * opacity],
+                        *opacity,
                     );
                     self.layer_texture_cache.release(current);
                     current = temp;

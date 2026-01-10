@@ -1017,6 +1017,50 @@ impl Default for DropShadowUniforms {
     }
 }
 
+/// Uniforms for the glow effect shader
+///
+/// Memory layout:
+/// - color: `vec4<f32>` (16 bytes) - glow color RGBA
+/// - blur: `f32` (4 bytes) - blur softness
+/// - range: `f32` (4 bytes) - glow range
+/// - opacity: `f32` (4 bytes) - glow opacity
+/// - _pad0: `f32` (4 bytes) - padding
+/// - texel_size: `vec2<f32>` (8 bytes) - inverse texture size
+/// - _pad1: `vec2<f32>` (8 bytes) - padding for alignment
+/// Total: 48 bytes
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GlowUniforms {
+    /// Glow color (RGBA)
+    pub color: [f32; 4],
+    /// Blur softness (affects falloff smoothness)
+    pub blur: f32,
+    /// Glow range (how far the glow extends)
+    pub range: f32,
+    /// Glow opacity (0-1)
+    pub opacity: f32,
+    /// Padding for alignment
+    pub _pad0: f32,
+    /// Inverse texture size (1/width, 1/height)
+    pub texel_size: [f32; 2],
+    /// Padding for 16-byte alignment
+    pub _pad1: [f32; 2],
+}
+
+impl Default for GlowUniforms {
+    fn default() -> Self {
+        Self {
+            color: [1.0, 1.0, 1.0, 1.0], // White glow
+            blur: 8.0,
+            range: 4.0,
+            opacity: 1.0,
+            _pad0: 0.0,
+            texel_size: [1.0 / 800.0, 1.0 / 600.0],
+            _pad1: [0.0, 0.0],
+        }
+    }
+}
+
 /// A batch of tessellated path geometry
 #[derive(Clone, Default)]
 pub struct PathBatch {

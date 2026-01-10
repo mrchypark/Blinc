@@ -34,14 +34,14 @@ pub use path::{
 };
 pub use primitives::{
     BlurUniforms, ClipType, ColorMatrixUniforms, CompositeUniforms, DropShadowUniforms, FillType,
-    GlassType, GlassUniforms, GpuGlassPrimitive, GpuGlyph, GpuPrimitive, LayerCommand,
+    GlassType, GlassUniforms, GlowUniforms, GpuGlassPrimitive, GpuGlyph, GpuPrimitive, LayerCommand,
     LayerCommandEntry, LayerCompositeUniforms, PathBatch, PathUniforms, PrimitiveBatch,
     PrimitiveType, Uniforms,
 };
 pub use renderer::{GpuRenderer, LayerTexture, LayerTextureCache, RendererConfig};
 pub use shaders::{
     BLUR_SHADER, COLOR_MATRIX_SHADER, COMPOSITE_SHADER, DROP_SHADOW_SHADER, GLASS_SHADER,
-    IMAGE_SHADER, LAYER_COMPOSITE_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER,
+    GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, PATH_SHADER, SDF_SHADER, TEXT_SHADER,
 };
 pub use text::TextRenderingContext;
 
