@@ -2392,7 +2392,8 @@ fn sample_min_distance(uv: vec2<f32>, radius: f32, texel_size: vec2<f32>) -> f32
     var min_dist = radius + 1.0;
 
     // Sample at multiple distances and angles
-    let num_angles = 16;
+    // Balanced for performance (8x8 = 64 samples max, with early exit)
+    let num_angles = 8;
     let num_rings = 8;
 
     for (var ring = 1; ring <= num_rings; ring++) {
@@ -2539,9 +2540,9 @@ fn find_edge_distance(uv: vec2<f32>, search_radius: f32, texel_size: vec2<f32>) 
     var min_dist = search_radius + 1.0;  // Start with "not found" value
 
     // Sample at multiple distances and angles
-    // More rings for accurate distance, fewer angles for speed
-    let num_angles = 16;
-    let num_rings = 12;  // More rings for accurate glow
+    // Balanced for performance (8x8 = 64 samples max, with early exit)
+    let num_angles = 8;
+    let num_rings = 8;
 
     for (var ring = 1; ring <= num_rings; ring++) {
         let dist = (f32(ring) / f32(num_rings)) * search_radius;
