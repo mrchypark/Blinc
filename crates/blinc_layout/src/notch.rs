@@ -239,6 +239,42 @@ pub struct CenterBulge {
     pub corner_radius: f32,
 }
 
+/// Configuration for a centered V-cut (sharp inward notch) on an edge
+///
+/// This creates a sharp V-shaped cut in the center of an edge.
+/// The angle is determined by the ratio of width to depth.
+///
+/// ```text
+/// ─────────╲    ╱─────────
+///           ╲  ╱
+///            ╲╱   ← sharp point at depth
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CenterCut {
+    /// Width of the cut at the edge
+    pub width: f32,
+    /// Depth of the cut (how far it goes inward)
+    pub depth: f32,
+}
+
+/// Configuration for a centered V-peak (sharp outward point) on an edge
+///
+/// This creates a sharp V-shaped peak protruding from the center of an edge.
+/// The angle is determined by the ratio of width to height.
+///
+/// ```text
+///            ╱╲   ← sharp point at height
+///           ╱  ╲
+/// ─────────╱    ╲─────────
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CenterPeak {
+    /// Width of the peak at the base
+    pub width: f32,
+    /// Height of the peak (how far it protrudes outward)
+    pub height: f32,
+}
+
 // =============================================================================
 // Notch Element
 // =============================================================================
@@ -261,6 +297,14 @@ pub struct Notch {
     // Center bulge configuration (for active menu highlighting)
     pub(crate) top_center_bulge: Option<CenterBulge>,
     pub(crate) bottom_center_bulge: Option<CenterBulge>,
+
+    // Center cut configuration (for sharp V-shaped inward cuts)
+    pub(crate) top_center_cut: Option<CenterCut>,
+    pub(crate) bottom_center_cut: Option<CenterCut>,
+
+    // Center peak configuration (for sharp V-shaped outward peaks)
+    pub(crate) top_center_peak: Option<CenterPeak>,
+    pub(crate) bottom_center_peak: Option<CenterPeak>,
 
     // Layout
     pub(crate) style: Style,
@@ -291,6 +335,10 @@ impl Notch {
             bottom_center_scoop: None,
             top_center_bulge: None,
             bottom_center_bulge: None,
+            top_center_cut: None,
+            bottom_center_cut: None,
+            top_center_peak: None,
+            bottom_center_peak: None,
             style: Style::default(),
             children: Vec::new(),
             background: None,
@@ -705,6 +753,82 @@ impl Notch {
             height,
             corner_radius,
         });
+        self
+    }
+
+    // =========================================================================
+    // Center Cuts (Sharp V-shaped Inward)
+    // =========================================================================
+
+    /// Add a center V-cut on the top edge
+    ///
+    /// Creates a sharp V-shaped cut in the center of the top edge.
+    /// The cut goes INWARD (downward into the shape).
+    ///
+    /// ```text
+    /// ─────────╲    ╱─────────
+    ///           ╲  ╱
+    ///            ╲╱   ← sharp point at depth
+    /// ```
+    ///
+    /// The angle is determined by the width/depth ratio:
+    /// - Narrow width + deep = steep angle
+    /// - Wide width + shallow = gentle angle
+    pub fn center_cut_top(mut self, width: f32, depth: f32) -> Self {
+        self.top_center_cut = Some(CenterCut { width, depth });
+        self
+    }
+
+    /// Add a center V-cut on the bottom edge
+    ///
+    /// Creates a sharp V-shaped cut in the center of the bottom edge.
+    /// The cut goes INWARD (upward into the shape).
+    ///
+    /// ```text
+    ///            ╱╲   ← sharp point at depth
+    ///           ╱  ╲
+    /// ─────────╱    ╲─────────
+    /// ```
+    pub fn center_cut_bottom(mut self, width: f32, depth: f32) -> Self {
+        self.bottom_center_cut = Some(CenterCut { width, depth });
+        self
+    }
+
+    // =========================================================================
+    // Center Peaks (Sharp V-shaped Outward)
+    // =========================================================================
+
+    /// Add a center V-peak on the top edge
+    ///
+    /// Creates a sharp V-shaped peak protruding from the center of the top edge.
+    /// The peak goes OUTWARD (upward out of the shape).
+    ///
+    /// ```text
+    ///            ╱╲   ← sharp point at height
+    ///           ╱  ╲
+    /// ─────────╱    ╲─────────
+    /// ```
+    ///
+    /// The angle is determined by the width/height ratio:
+    /// - Narrow width + tall = steep angle
+    /// - Wide width + short = gentle angle
+    pub fn center_peak_top(mut self, width: f32, height: f32) -> Self {
+        self.top_center_peak = Some(CenterPeak { width, height });
+        self
+    }
+
+    /// Add a center V-peak on the bottom edge
+    ///
+    /// Creates a sharp V-shaped peak protruding from the center of the bottom edge.
+    /// The peak goes OUTWARD (downward out of the shape).
+    ///
+    /// ```text
+    /// ─────────╲    ╱─────────
+    ///           ╲  ╱
+    ///            ╲╱   ← sharp point at height
+    /// ```
+    pub fn center_peak_bottom(mut self, width: f32, height: f32) -> Self {
+        self.bottom_center_peak = Some(CenterPeak { width, height });
         self
     }
 
@@ -1329,17 +1453,21 @@ impl Default for Notch {
 // Path Building for Complex Notchs
 // =============================================================================
 
-/// Build the path for a shape with configurable corners, scoops, and bulges
+/// Build the path for a shape with configurable corners, scoops, bulges, cuts, and peaks
 ///
 /// This handles convex (standard rounding), concave curves, step notches,
-/// center scoops (Dynamic Island-style centered indentations), and
-/// center bulges (outward protrusions for active menu highlighting).
+/// center scoops (Dynamic Island-style centered indentations),
+/// center bulges (outward protrusions for active menu highlighting),
+/// center cuts (sharp V-shaped inward notches), and
+/// center peaks (sharp V-shaped outward points).
 /// The path is built clockwise starting from the top-left corner.
 ///
 /// For convex corners: the curve stays inside the bounds
 /// For concave corners: the curve bows outward, extending beyond the bounds
 /// For center scoops: the curve bows inward, staying inside the bounds
 /// For center bulges: the curve protrudes outward, extending beyond the bounds
+/// For center cuts: sharp V going inward
+/// For center peaks: sharp V going outward
 fn build_shape_path(
     bounds: Rect,
     corners: &CornersConfig,
@@ -1347,6 +1475,10 @@ fn build_shape_path(
     bottom_center_scoop: Option<&CenterScoop>,
     top_center_bulge: Option<&CenterBulge>,
     bottom_center_bulge: Option<&CenterBulge>,
+    top_center_cut: Option<&CenterCut>,
+    bottom_center_cut: Option<&CenterCut>,
+    top_center_peak: Option<&CenterPeak>,
+    bottom_center_peak: Option<&CenterPeak>,
 ) -> Path {
     let w = bounds.width();
     let h = bounds.height();
@@ -1581,6 +1713,42 @@ fn build_shape_path(
             // Line to top edge end
             path = path.line_to(top_end_x, y);
         }
+    } else if let Some(cut) = top_center_cut {
+        // Draw top center V-cut - sharp V going DOWNWARD into the shape
+        let center_x = x + w / 2.0;
+        let cut_start_x = center_x - cut.width / 2.0;
+        let cut_end_x = center_x + cut.width / 2.0;
+        let cut_point_y = y + cut.depth; // Point goes downward (into shape)
+
+        // Line to cut start
+        path = path.line_to(cut_start_x, y);
+
+        // Line down to the V point
+        path = path.line_to(center_x, cut_point_y);
+
+        // Line up to cut end
+        path = path.line_to(cut_end_x, y);
+
+        // Line to top edge end
+        path = path.line_to(top_end_x, y);
+    } else if let Some(peak) = top_center_peak {
+        // Draw top center V-peak - sharp V pointing UPWARD out of the shape
+        let center_x = x + w / 2.0;
+        let peak_start_x = center_x - peak.width / 2.0;
+        let peak_end_x = center_x + peak.width / 2.0;
+        let peak_point_y = y - peak.height; // Point goes upward (out of shape)
+
+        // Line to peak start
+        path = path.line_to(peak_start_x, y);
+
+        // Line up to the V point
+        path = path.line_to(center_x, peak_point_y);
+
+        // Line down to peak end
+        path = path.line_to(peak_end_x, y);
+
+        // Line to top edge end
+        path = path.line_to(top_end_x, y);
     } else {
         path = path.line_to(top_end_x, y);
     }
@@ -1832,6 +2000,44 @@ fn build_shape_path(
             // Line to bottom edge end
             path = path.line_to(bottom_end_x, y + h);
         }
+    } else if let Some(cut) = bottom_center_cut {
+        // Draw bottom center V-cut - sharp V going UPWARD into the shape
+        // Path goes right-to-left on bottom edge
+        let center_x = x + w / 2.0;
+        let cut_start_x = center_x + cut.width / 2.0; // Start from right
+        let cut_end_x = center_x - cut.width / 2.0; // End at left
+        let cut_point_y = y + h - cut.depth; // Point goes upward (into shape)
+
+        // Line to cut start (from right)
+        path = path.line_to(cut_start_x, y + h);
+
+        // Line up to the V point
+        path = path.line_to(center_x, cut_point_y);
+
+        // Line down to cut end
+        path = path.line_to(cut_end_x, y + h);
+
+        // Line to bottom edge end
+        path = path.line_to(bottom_end_x, y + h);
+    } else if let Some(peak) = bottom_center_peak {
+        // Draw bottom center V-peak - sharp V pointing DOWNWARD out of the shape
+        // Path goes right-to-left on bottom edge
+        let center_x = x + w / 2.0;
+        let peak_start_x = center_x + peak.width / 2.0; // Start from right
+        let peak_end_x = center_x - peak.width / 2.0; // End at left
+        let peak_point_y = y + h + peak.height; // Point goes downward (out of shape)
+
+        // Line to peak start (from right)
+        path = path.line_to(peak_start_x, y + h);
+
+        // Line down to the V point
+        path = path.line_to(center_x, peak_point_y);
+
+        // Line up to peak end
+        path = path.line_to(peak_end_x, y + h);
+
+        // Line to bottom edge end
+        path = path.line_to(bottom_end_x, y + h);
     } else {
         path = path.line_to(bottom_end_x, y + h);
     }
@@ -2077,14 +2283,19 @@ impl ElementBuilder for Notch {
     }
 
     fn render_props(&self) -> RenderProps {
-        // If we have concave curves, step corners, center scoops, OR center bulges,
+        // If we have concave curves, step corners, center scoops, bulges, cuts, or peaks,
         // we need custom canvas rendering. Otherwise use standard div rendering.
         let has_center_scoop =
             self.top_center_scoop.is_some() || self.bottom_center_scoop.is_some();
         let has_center_bulge =
             self.top_center_bulge.is_some() || self.bottom_center_bulge.is_some();
-        let needs_custom =
-            self.corners.needs_custom_rendering() || has_center_scoop || has_center_bulge;
+        let has_center_cut = self.top_center_cut.is_some() || self.bottom_center_cut.is_some();
+        let has_center_peak = self.top_center_peak.is_some() || self.bottom_center_peak.is_some();
+        let needs_custom = self.corners.needs_custom_rendering()
+            || has_center_scoop
+            || has_center_bulge
+            || has_center_cut
+            || has_center_peak;
 
         if needs_custom {
             // For shapes with custom corners/scoops, we'll set background to None here
@@ -2125,14 +2336,19 @@ impl ElementBuilder for Notch {
     }
 
     fn element_type_id(&self) -> ElementTypeId {
-        // If we have custom corners, center scoops, OR center bulges, use Canvas type
+        // If we have custom corners, center scoops, bulges, cuts, or peaks, use Canvas type
         // Otherwise, use Div for standard rendering
         let has_center_scoop =
             self.top_center_scoop.is_some() || self.bottom_center_scoop.is_some();
         let has_center_bulge =
             self.top_center_bulge.is_some() || self.bottom_center_bulge.is_some();
-        let needs_custom =
-            self.corners.needs_custom_rendering() || has_center_scoop || has_center_bulge;
+        let has_center_cut = self.top_center_cut.is_some() || self.bottom_center_cut.is_some();
+        let has_center_peak = self.top_center_peak.is_some() || self.bottom_center_peak.is_some();
+        let needs_custom = self.corners.needs_custom_rendering()
+            || has_center_scoop
+            || has_center_bulge
+            || has_center_cut
+            || has_center_peak;
         if needs_custom {
             ElementTypeId::Canvas
         } else {
@@ -2145,13 +2361,18 @@ impl ElementBuilder for Notch {
     }
 
     fn canvas_render_info(&self) -> Option<CanvasRenderFn> {
-        // Only provide canvas render if we have custom corners, scoops, or bulges
+        // Only provide canvas render if we have custom corners, scoops, bulges, cuts, or peaks
         let has_center_scoop =
             self.top_center_scoop.is_some() || self.bottom_center_scoop.is_some();
         let has_center_bulge =
             self.top_center_bulge.is_some() || self.bottom_center_bulge.is_some();
-        let needs_custom =
-            self.corners.needs_custom_rendering() || has_center_scoop || has_center_bulge;
+        let has_center_cut = self.top_center_cut.is_some() || self.bottom_center_cut.is_some();
+        let has_center_peak = self.top_center_peak.is_some() || self.bottom_center_peak.is_some();
+        let needs_custom = self.corners.needs_custom_rendering()
+            || has_center_scoop
+            || has_center_bulge
+            || has_center_cut
+            || has_center_peak;
         if !needs_custom {
             return None;
         }
@@ -2161,6 +2382,10 @@ impl ElementBuilder for Notch {
         let bottom_center_scoop = self.bottom_center_scoop;
         let top_center_bulge = self.top_center_bulge;
         let bottom_center_bulge = self.bottom_center_bulge;
+        let top_center_cut = self.top_center_cut;
+        let bottom_center_cut = self.bottom_center_cut;
+        let top_center_peak = self.top_center_peak;
+        let bottom_center_peak = self.bottom_center_peak;
         let background = self.background.clone();
         let border_color = self.border_color;
         let border_width = self.border_width;
@@ -2189,7 +2414,7 @@ impl ElementBuilder for Notch {
                     } else {
                         0.0
                     };
-                // Top offset: concave corners extend upward, bulges also protrude upward
+                // Top offset: concave corners extend upward, bulges and peaks also protrude upward
                 let top_offset = {
                     let corner_offset =
                         if corners.top_left.is_concave() || corners.top_right.is_concave() {
@@ -2198,10 +2423,11 @@ impl ElementBuilder for Notch {
                             0.0
                         };
                     let bulge_offset = top_center_bulge.map(|b| b.height).unwrap_or(0.0);
-                    corner_offset.max(bulge_offset)
+                    let peak_offset = top_center_peak.map(|p| p.height).unwrap_or(0.0);
+                    corner_offset.max(bulge_offset).max(peak_offset)
                 };
 
-                // Bottom offset: concave corners extend downward, bulges also protrude downward
+                // Bottom offset: concave corners extend downward, bulges and peaks also protrude downward
                 let bottom_offset = {
                     let corner_offset =
                         if corners.bottom_left.is_concave() || corners.bottom_right.is_concave() {
@@ -2210,14 +2436,14 @@ impl ElementBuilder for Notch {
                             0.0
                         };
                     let bulge_offset = bottom_center_bulge.map(|b| b.height).unwrap_or(0.0);
-                    corner_offset.max(bulge_offset)
+                    let peak_offset = bottom_center_peak.map(|p| p.height).unwrap_or(0.0);
+                    corner_offset.max(bulge_offset).max(peak_offset)
                 };
 
-                // NOTE: Center scoops do NOT add to the rect offset like concave corners.
-                // The scoop curves INTO the shape (not outward), so the rect stays at bounds origin.
-                // However, bulges DO protrude outward and need offset space.
+                // NOTE: Center scoops and cuts do NOT add to the rect offset - they go INWARD.
+                // Bulges and peaks DO protrude outward and need offset space.
 
-                // Create the rect with offsets so concave curves and bulges stay within bounds
+                // Create the rect with offsets so concave curves, bulges, and peaks stay within bounds
                 let rect = Rect::new(
                     left_offset,
                     top_offset,
@@ -2225,7 +2451,7 @@ impl ElementBuilder for Notch {
                     bounds.height - top_offset - bottom_offset,
                 );
 
-                // Build the path for any combination of corner types, scoops, and bulges
+                // Build the path for any combination of corner types, scoops, bulges, cuts, and peaks
                 let path = build_shape_path(
                     rect,
                     &corners,
@@ -2233,6 +2459,10 @@ impl ElementBuilder for Notch {
                     bottom_center_scoop.as_ref(),
                     top_center_bulge.as_ref(),
                     bottom_center_bulge.as_ref(),
+                    top_center_cut.as_ref(),
+                    bottom_center_cut.as_ref(),
+                    top_center_peak.as_ref(),
+                    bottom_center_peak.as_ref(),
                 );
 
                 // Draw shadow first (behind the fill)

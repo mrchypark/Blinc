@@ -220,8 +220,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .flex_grow()
                     .flex_col()
                     .items_center()
-                    .justify_center()
-                    .gap(24.0)
+                    .justify_start()
+                    .gap(6.0)
                     .child(
                         text("Hover over the icons in the menu bar above")
                             .size(16.0)
@@ -232,13 +232,26 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         div()
                             .flex_col()
                             .items_center()
-                            .gap(8.0)
+                            .gap(4.0)
                             .child(
                                 text("Navigation Bar with Bulge Active Indicator")
                                     .size(12.0)
                                     .color(theme.color(ColorToken::TextSecondary)),
                             )
                             .child(active_nav_bar()),
+                    )
+                    // Sharp angle cut/peak examples
+                    .child(
+                        div()
+                            .flex_col()
+                            .items_center()
+                            .gap(4.0)
+                            .child(
+                                text("Sharp Angle Cuts & Peaks (V-shapes)")
+                                    .size(12.0)
+                                    .color(theme.color(ColorToken::TextSecondary)),
+                            )
+                            .child(sharp_angle_demo()),
                     ),
             )
             // Bottom dock bar with center scoop
@@ -542,6 +555,101 @@ fn active_nav_bar() -> impl ElementBuilder {
                     .child(svg(SETTINGS_SVG).square(22.0).color(icon_color)),
             ),
     )
+}
+
+/// Demo showing sharp V-shaped cuts and peaks
+fn sharp_angle_demo() -> impl ElementBuilder {
+    let bar_bg = Color::from_hex(0x374151); // Gray-700
+    let peak_bg = Color::from_hex(0x059669); // Emerald-600
+    let cut_bg = Color::from_hex(0xdc2626); // Red-600
+    let icon_color = Color::WHITE.with_alpha(0.9);
+
+    div()
+        .flex_row()
+        .items_end()
+        .gap(24.0)
+        // V-Cut example (sharp inward cut)
+        .child(
+            div()
+                .flex_col()
+                .items_center()
+                .gap(4.0)
+                .child(text("V-Cut (60° angle)").size(10.0).color(Color::GRAY))
+                .child(
+                    notch()
+                        .center_cut_top(40.0, 16.0) // Width 40, depth 16 (creates ~60° angle)
+                        .rounded(12.0)
+                        .bg(cut_bg)
+                        .w(160.0)
+                        .h(44.0)
+                        .flex_row()
+                        .items_center()
+                        .justify_center()
+                        .gap(32.0)
+                        .child(svg(HOME_SVG).square(20.0).color(icon_color))
+                        .child(svg(SETTINGS_SVG).square(20.0).color(icon_color)),
+                ),
+        )
+        // V-Peak example (sharp outward peak)
+        .child(
+            div()
+                .flex_col()
+                .items_center()
+                .gap(4.0)
+                .child(text("V-Peak (pointing up)").size(10.0).color(Color::GRAY))
+                .child(
+                    div().h(20.0).child(
+                        // Extra height container for the peak
+                        notch()
+                            .center_peak_top(50.0, 18.0) // Width 50, height 18
+                            .rounded(12.0)
+                            .bg(peak_bg)
+                            .w(180.0)
+                            .h(52.0 + 18.0) // Base height + peak height
+                            .flex_row()
+                            .items_end()
+                            .justify_center()
+                            .pb(8.0)
+                            .gap(16.0)
+                            .child(svg(HOME_SVG).square(20.0).color(icon_color))
+                            .child(
+                                // Active indicator at peak position
+                                div()
+                                    .w(36.0)
+                                    .h(36.0)
+                                    .rounded_full()
+                                    .bg(Color::WHITE)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(svg(PLUS_SVG).square(20.0).color(peak_bg)),
+                            )
+                            .child(svg(SETTINGS_SVG).square(20.0).color(icon_color)),
+                    ),
+                ),
+        )
+        // Steep cut example (narrow V)
+        .child(
+            div()
+                .flex_col()
+                .items_center()
+                .gap(4.0)
+                .child(text("Steep Cut (30° angle)").size(10.0).color(Color::GRAY))
+                .child(
+                    notch()
+                        .center_cut_top(20.0, 20.0) // Width 20, depth 20 (creates ~30° angle)
+                        .rounded(12.0)
+                        .bg(bar_bg)
+                        .w(140.0)
+                        .h(44.0)
+                        .flex_row()
+                        .items_center()
+                        .justify_center()
+                        .gap(40.0)
+                        .child(svg(SEARCH_SVG).square(20.0).color(icon_color))
+                        .child(svg(USER_SVG).square(20.0).color(icon_color)),
+                ),
+        )
 }
 
 /// Bottom dock bar with Dynamic Island-style center scoop
