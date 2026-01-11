@@ -26,6 +26,7 @@
 //! ```
 
 pub mod capture;
+pub mod replay;
 pub mod server;
 pub mod session;
 pub mod testing;
@@ -47,6 +48,10 @@ pub use server::{
 pub use session::{
     RecordingConfig, RecordingExport, RecordingSession, SessionState, SessionStats,
     SharedRecordingSession,
+};
+pub use replay::{
+    EventSimulator, FrameUpdate, ReplayConfig, ReplayPlayer, ReplayState, SimulatedInput,
+    VirtualClock,
 };
 
 use parking_lot::RwLock;
