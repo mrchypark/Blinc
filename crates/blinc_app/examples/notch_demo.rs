@@ -164,7 +164,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         let top_radius = NOTCH_RADIUS;
 
         // Bottom radius: no animation, just use full radius when open
-        let bottom_radius = NOTCH_RADIUS;
+        let bottom_radius = NOTCH_RADIUS - 16.0;
 
         let menu_bar_bg = Color::BLACK;
 
@@ -467,10 +467,10 @@ fn bottom_dock_bar(_width: f32) -> impl ElementBuilder {
             // Path-based shadow that follows the curved shape
             .shadow(blinc_core::Shadow {
                 offset_x: 0.0,
-                offset_y: -2.0,
-                blur: 1.0,
-                spread: 4.0,
-                color: Color::GRAY.with_alpha(0.4),
+                offset_y: -1.0,
+                blur: 8.0,
+                spread: 2.0,
+                color: Color::BLACK.with_alpha(0.2),
             })
             // Padding for scoop is automatically applied by the notch implementation
             .child(
