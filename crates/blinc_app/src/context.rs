@@ -344,6 +344,13 @@ impl RenderContext {
                 );
             }
 
+            // Render background paths with MSAA for smooth edges on curved shapes like notch
+            // (render_glass_frame uses 1x sampled path rendering, so we need MSAA overlay)
+            if use_msaa_overlay && bg_batch.has_paths() {
+                self.renderer
+                    .render_paths_overlay_msaa(target, &bg_batch, self.sample_count);
+            }
+
             // Step 4: Render background-layer images to target (separate for now - images use different pipeline)
             self.render_images_ref(target, &bg_images);
 
@@ -418,6 +425,12 @@ impl RenderContext {
             // Use opaque black clear - transparent clear can cause issues with window surfaces
             self.renderer
                 .render_with_clear(target, &bg_batch, [0.0, 0.0, 0.0, 1.0]);
+
+            // Render background paths with MSAA for smooth edges on curved shapes like notch
+            if use_msaa_overlay && bg_batch.has_paths() {
+                self.renderer
+                    .render_paths_overlay_msaa(target, &bg_batch, self.sample_count);
+            }
 
             // Render images after background primitives
             self.render_images(target, &images, width as f32, height as f32);
@@ -2037,6 +2050,13 @@ impl RenderContext {
                 );
             }
 
+            // Render paths with MSAA for smooth edges on curved shapes like notch
+            // (render_glass_frame uses 1x sampled path rendering)
+            if use_msaa_overlay && batch.has_paths() {
+                self.renderer
+                    .render_paths_overlay_msaa(target, &batch, self.sample_count);
+            }
+
             self.render_images_ref(target, &bg_images);
             self.render_images_ref(target, &fg_images);
 
@@ -2087,6 +2107,12 @@ impl RenderContext {
                 self.renderer
                     .render_with_clear(target, &z0_batch, [0.0, 0.0, 0.0, 1.0]);
 
+                // Render paths with MSAA for smooth edges on curved shapes like notch
+                if use_msaa_overlay && z0_batch.has_paths() {
+                    self.renderer
+                        .render_paths_overlay_msaa(target, &z0_batch, self.sample_count);
+                }
+
                 // Render z=0 text and decorations
                 if let Some(glyphs) = glyphs_by_layer.get(&0) {
                     if !glyphs.is_empty() {
@@ -2126,6 +2152,12 @@ impl RenderContext {
                 // No z-layers, use original fast path
                 self.renderer
                     .render_with_clear(target, &batch, [0.0, 0.0, 0.0, 1.0]);
+
+                // Render paths with MSAA for smooth edges on curved shapes like notch
+                if use_msaa_overlay && batch.has_paths() {
+                    self.renderer
+                        .render_paths_overlay_msaa(target, &batch, self.sample_count);
+                }
 
                 self.render_images(target, &images, width as f32, height as f32);
 
