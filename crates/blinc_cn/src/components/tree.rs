@@ -314,7 +314,7 @@ impl TreeViewBuilder {
         let inner = Stateful::with_shared_state(container_state)
             .deps(&all_signal_ids)
             .on_state(move |_state: &(), container: &mut Div| {
-                let mut tree_container = div().flex_col().w_full().flex_shrink_0();
+                let mut tree_container = div().flex_col().flex_shrink_0();
 
                 // Build tree recursively
                 fn build_node(
@@ -380,7 +380,6 @@ impl TreeViewBuilder {
                     let mut row = div()
                         .flex_row()
                         .items_center()
-                        .w_full()
                         .flex_shrink_0()
                         .h(28.0)
                         .pl(indent + 4.0)
@@ -452,14 +451,14 @@ impl TreeViewBuilder {
                     );
 
                     // Build node container with optional children
-                    let mut node_div = div().flex_col().w_full().flex_shrink_0().child(row);
+                    let mut node_div = div().flex_col().flex_shrink_0().child(row);
 
                     // Children (if expanded)
                     if has_children && is_expanded {
                         let anim_key = format!("tree-children-{}", node.key);
 
                         let mut children_container =
-                            div().flex_col().w_full().flex_shrink_0().overflow_clip().animate_bounds(
+                            div().flex_col().flex_shrink_0().overflow_clip().animate_bounds(
                                 blinc_layout::visual_animation::VisualAnimationConfig::height()
                                     .with_key(&anim_key)
                                     .clip_to_animated()
