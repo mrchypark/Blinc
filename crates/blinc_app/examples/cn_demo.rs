@@ -356,7 +356,7 @@ fn section_container() -> Div {
         .bg(surface)
         .rounded(radius)
         .border(1.5, border)
-        .p(theme.spacing().space_5)
+        .p(theme.spacing().space_2)
         .flex_col()
         .gap(theme.spacing().space_4)
 }
@@ -673,15 +673,14 @@ fn select_section(ctx: &WindowedContext) -> impl ElementBuilder {
 
     section_container().child(section_title("Select")).child(
         div()
-            .flex_row()
+            .flex_col()
+            .w_full()
             .flex_wrap()
-            .items_start()
             .h_fit() // Prevent height stretching
             .gap(4.0)
             // Basic select with placeholder
             .child(
-                div().w(200.0).child(
-                    cn::select(&fruit)
+              cn::select(&fruit)
                         .label("Favorite Fruit")
                         .placeholder("Choose a fruit...")
                         .option("apple", "Apple")
@@ -689,29 +688,24 @@ fn select_section(ctx: &WindowedContext) -> impl ElementBuilder {
                         .option("cherry", "Cherry")
                         .option("date", "Date")
                         .option("elderberry", "Elderberry")
-                        .on_change(|v| tracing::info!("Selected fruit: {}", v)),
-                ),
+                        .on_change(|v| tracing::info!("Selected fruit: {}", v))
             )
             // Select with pre-selected value
             .child(
-                div().w(200.0).child(
-                    cn::select(&size)
+               cn::select(&size)
                         .label("Size")
                         .option("small", "Small")
                         .option("medium", "Medium")
                         .option("large", "Large")
-                        .option("xl", "Extra Large"),
-                ),
+                        .option("xl", "Extra Large")
             )
             // Disabled select
             .child(
-                div().w(200.0).child(
-                    cn::select(&disabled_select)
+                cn::select(&disabled_select)
                         .label("Disabled")
                         .option("option1", "Option 1")
                         .option("option2", "Option 2")
-                        .disabled(true),
-                ),
+                        .disabled(true)
             ),
     )
 }
@@ -728,14 +722,14 @@ fn combobox_section(ctx: &WindowedContext) -> impl ElementBuilder {
     section_container().child(section_title("Combobox")).child(
         div()
             .flex_row()
-            .flex_wrap()
+            .overflow_clip()
             .items_start() // Prevent height stretching
-            .gap(10.0)
+            .gap(4.0)
             .h_fit()
+            .w_full()
             // Basic searchable combobox
             .child(
-                div().w(220.0).child(
-                    cn::combobox(&country)
+                cn::combobox(&country)
                         .label("Country")
                         .placeholder("Search countries...")
                         .option("us", "United States")
@@ -746,13 +740,11 @@ fn combobox_section(ctx: &WindowedContext) -> impl ElementBuilder {
                         .option("au", "Australia")
                         .option("ca", "Canada")
                         .option("br", "Brazil")
-                        .on_change(|v| tracing::info!("Selected country: {}", v)),
-                ),
+                        .on_change(|v| tracing::info!("Selected country: {}", v))
             )
             // Combobox with more options
             .child(
-                div().w(220.0).child(
-                    cn::combobox(&framework)
+               cn::combobox(&framework)
                         .label("Framework")
                         .placeholder("Search frameworks...")
                         .option("react", "React")
@@ -762,21 +754,18 @@ fn combobox_section(ctx: &WindowedContext) -> impl ElementBuilder {
                         .option("solid", "SolidJS")
                         .option("qwik", "Qwik")
                         .option("astro", "Astro")
-                        .on_change(|v| tracing::info!("Selected framework: {}", v)),
-                ),
+                        .on_change(|v| tracing::info!("Selected framework: {}", v))
             )
             // Combobox with custom values allowed
             .child(
-                div().w(220.0).child(
-                    cn::combobox(&custom_value)
+                cn::combobox(&custom_value)
                         .label("Custom Allowed")
                         .placeholder("Type anything...")
                         .option("preset1", "Preset Option 1")
                         .option("preset2", "Preset Option 2")
                         .option("preset3", "Preset Option 3")
                         .allow_custom(true)
-                        .on_change(|v| tracing::info!("Custom value: {}", v)),
-                ),
+                        .on_change(|v| tracing::info!("Custom value: {}", v))
             ),
     )
 }
@@ -3353,7 +3342,7 @@ fn icon_gallery_section() -> impl ElementBuilder {
         .child(
             div()
                 .flex_col()
-                .gap(24.0)
+                .gap_px(24.0)
                 // Size variants
                 .child(
                     div()

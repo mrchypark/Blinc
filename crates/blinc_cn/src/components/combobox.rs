@@ -328,13 +328,7 @@ impl Combobox {
                     )
                     .cursor_pointer();
 
-                div()
-                    .relative()
-                    .w_full()
-                    .w_full()
-                    .h(height)
-                    .cursor_pointer()
-                    .child(trigger)
+                trigger
             })
             .on_click(move |ctx| {
                 let is_currently_open = open_state_for_click.get();
@@ -412,6 +406,7 @@ impl Combobox {
                                 &search_data,
                                 &search_query_for_dropdown,
                                 dw,
+                                height,
                                 font_size,
                                 padding,
                                 radius,
@@ -687,6 +682,7 @@ fn build_dropdown_content(
     search_data: &SharedTextInputData,
     search_query_state: &State<String>,
     width: f32,
+    height: f32,
     font_size: f32,
     padding: f32,
     radius: f32,
@@ -724,8 +720,9 @@ fn build_dropdown_content(
     // This prevents the input from shrinking when focused
     let search_input = blinc_layout::widgets::text_input::text_input(search_data)
         .w_full()
-        .h(36.0)
+        .h(height)
         .text_size(font_size)
+        .rounded(theme.radii().radius_sm)
         .placeholder(search_placeholder)
         .idle_border_color(theme.color(ColorToken::Border))
         .hover_border_color(theme.color(ColorToken::BorderFocus))

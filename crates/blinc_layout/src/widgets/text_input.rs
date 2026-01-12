@@ -1334,7 +1334,7 @@ impl TextInput {
                     .collect();
                 if !selected.is_empty() {
                     text_container = text_container.child(
-                        div().bg(selection_color).rounded(2.0).child(
+                        div().bg(selection_color).rounded(config.corner_radius).child(
                             text(&selected)
                                 .size(config.font_size)
                                 .color(text_color)
