@@ -108,8 +108,9 @@ Specialized slider for timeline scrubbing:
 2. **Tree View** - Blocks Tree Panel functionality
 3. **Charts** - Low priority, can use canvas directly
 
-## Notes
+## Documentation
 
-- The debugger scaffold uses `DebuggerColors` and `DebuggerTokens` for theming
-- All panels implement `ElementBuilder` for integration
-- The timeline panel uses existing `Slider` concepts but needs marker support
+For API reference, always consult:
+
+- `docs/book/` - Blinc documentation
+- `blinc_cn` crate - Component API examples and patterns

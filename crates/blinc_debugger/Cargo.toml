@@ -14,6 +14,7 @@ blinc_app = { path = "../blinc_app" }
 blinc_layout = { path = "../blinc_layout" }
 blinc_theme = { path = "../blinc_theme" }
 blinc_cn = { path = "../blinc_cn" }
+blinc_icons = { path = "../blinc_icons" }
 blinc_recorder = { path = "../blinc_recorder" }
 blinc_animation = { path = "../blinc_animation" }
 blinc_core = { path = "../blinc_core" }

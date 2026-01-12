@@ -14,6 +14,7 @@ mod panels;
 mod theme;
 
 use anyhow::Result;
+use blinc_theme::{ColorScheme, ThemeState};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -43,6 +44,10 @@ struct Args {
 fn main() -> Result<()> {
     // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Initialize theme with dark mode for debugger
+    ThemeState::init_default();
+    ThemeState::get().set_scheme(ColorScheme::Dark);
 
     let args = Args::parse();
 

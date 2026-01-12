@@ -496,14 +496,14 @@ impl EventRouter {
             let delta_exceeds = self.drag_delta_x.abs() > DRAG_THRESHOLD
                 || self.drag_delta_y.abs() > DRAG_THRESHOLD;
 
-            tracing::trace!(
+            tracing::debug!(
                 "Drag check: target={:?}, delta=({:.1}, {:.1}), threshold_exceeded={}, is_dragging={}",
                 target, self.drag_delta_x, self.drag_delta_y, delta_exceeds, self.is_dragging
             );
 
             if !self.is_dragging && delta_exceeds {
                 self.is_dragging = true;
-                tracing::info!(
+                tracing::debug!(
                     "DRAG started: target={:?}, delta=({:.1}, {:.1})",
                     target,
                     self.drag_delta_x,
@@ -513,7 +513,7 @@ impl EventRouter {
 
             // Emit DRAG event to the pressed target
             if self.is_dragging {
-                tracing::info!(
+                tracing::debug!(
                     "Emitting DRAG to {:?}, delta=({:.1}, {:.1})",
                     target,
                     self.drag_delta_x,

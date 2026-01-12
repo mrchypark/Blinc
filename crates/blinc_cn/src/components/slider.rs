@@ -39,9 +39,9 @@
 //!     .disabled(true)
 //! ```
 
-use blinc_animation::{AnimationContext, SpringConfig};
+use blinc_animation::{get_scheduler, AnimationContext, SpringConfig};
 use blinc_core::events::event_types;
-use blinc_core::{BlincContext, Color, State};
+use blinc_core::{BlincContext, BlincContextState, Color, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
 use blinc_layout::motion::motion;
@@ -50,7 +50,7 @@ use blinc_layout::stateful::{stateful_with_key, NoState, StateTransitions};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_macros::BlincComponent;
 use blinc_theme::{ColorToken, RadiusToken, ThemeState};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::label::{label, LabelSize};
 use blinc_layout::InstanceKey;
@@ -167,20 +167,15 @@ impl Slider {
     /// cn::slider(&volume).build_final(ctx)
     /// ```
     #[track_caller]
-    pub fn new<C: BlincContext + AnimationContext>(ctx: &C, value_state: &State<f32>) -> Self {
+    pub fn new(value_state: &State<f32>) -> Self {
         Self::with_config(
-            ctx,
             InstanceKey::new("slider"),
             SliderConfig::new(value_state.clone()),
         )
     }
 
     /// Create from a full configuration
-    fn with_config<C: BlincContext + AnimationContext>(
-        ctx: &C,
-        key: InstanceKey,
-        config: SliderConfig,
-    ) -> Self {
+    fn with_config(key: InstanceKey, config: SliderConfig) -> Self {
         let theme = ThemeState::get();
         let track_height = config.size.track_height();
         let thumb_size = config.size.thumb_size();
@@ -192,7 +187,7 @@ impl Slider {
             .unwrap_or_else(|| theme.color(ColorToken::SurfaceElevated));
         let thumb_bg = config
             .thumb_color
-            .unwrap_or_else(|| theme.color(ColorToken::TextInverse));
+            .unwrap_or_else(|| theme.color(ColorToken::Border).with_alpha(1.0));
         // Fill color for the filled portion of the track
         let fill_bg = config
             .fill_color
@@ -204,7 +199,7 @@ impl Slider {
         let min = config.min;
         let max = config.max;
         let step = config.step;
-        let width = config.width;
+        let width: Option<f32> = config.width;
 
         // Track width - use config width or default
         let track_width = config.width.unwrap_or(300.0);
@@ -217,16 +212,20 @@ impl Slider {
         // Get PERSISTED state from context using BlincComponent macro
         // These survive across UI rebuilds!
         // Use the instance_key from InstanceKey so each slider has its own state
-        let instance_key = key.get();
-        let thumb_offset = SliderState::use_thumb_offset_for(
-            ctx,
-            instance_key,
+        let instance_key = key.get().to_string();
+
+        let ctx = BlincContextState::get();
+        let scheduler = get_scheduler();
+
+        let thumb_offset = Arc::new(Mutex::new(AnimatedValue::new(
+            scheduler,
             initial_offset,
             SpringConfig::snappy(),
-        );
-        let drag_start_x = SliderState::use_drag_start_x_for(ctx, instance_key, 0.0);
-        let drag_start_offset = SliderState::use_drag_start_offset_for(ctx, instance_key, 0.0);
-        let is_dragging = SliderState::use_is_dragging_for(ctx, instance_key, false);
+        )));
+        let drag_start_x = ctx.use_state_keyed(&format!("{}_drag_start_x", instance_key), || 0.0);
+        let drag_start_offset =
+            ctx.use_state_keyed(&format!("{}_drag_start_offset", instance_key), || 0.0);
+        let is_dragging = ctx.use_state_keyed(&format!("{}_is_dragging", instance_key), || false);
 
         // Clones for closures
         let thumb_offset_for_click = thumb_offset.clone();
@@ -530,7 +529,9 @@ impl Slider {
             div().h_fit().child(slider_container)
         };
 
-        Self { inner }
+        Self {
+            inner: div().child(inner),
+        }
     }
 }
 
@@ -699,8 +700,8 @@ impl SliderBuilder {
     /// Build the final Slider component with the given context
     ///
     /// This must be called last to create the actual Slider element.
-    pub fn build_final<C: BlincContext + AnimationContext>(self, ctx: &C) -> Slider {
-        Slider::with_config(ctx, self.key, self.config)
+    pub fn build_final(self) -> Slider {
+        Slider::with_config(self.key, self.config)
     }
 }
 

@@ -11,13 +11,15 @@ use crate::panels::{
     InspectorPanel, PreviewConfig, PreviewPanel, TimelinePanel, TimelinePanelState, TreePanel,
     TreePanelState,
 };
-use crate::theme::{DebuggerColors, DebuggerTokens};
+use crate::theme::DebuggerColors;
 use anyhow::Result;
+use blinc_app::windowed::{WindowedApp, WindowedContext};
+use blinc_app::WindowConfig;
 use blinc_layout::prelude::*;
 use blinc_recorder::replay::{ReplayConfig, ReplayPlayer, ReplayState};
-use blinc_recorder::{ElementSnapshot, RecordingExport, Timestamp, TreeSnapshot};
+use blinc_recorder::{ElementSnapshot, RecordingExport, TreeSnapshot};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Application state
 pub struct AppState {
@@ -95,62 +97,77 @@ impl AppState {
     }
 }
 
-/// Build the main application UI with panel-based layout
-pub fn build_ui(state: &AppState) -> impl ElementBuilder {
+/// Shared application state for thread-safe access
+pub type SharedAppState = Arc<RwLock<AppState>>;
+
+/// Run the debugger application
+pub fn run(width: u32, height: u32, file: Option<PathBuf>, connect: Option<String>) -> Result<()> {
+    // Create shared application state
+    let app_state = Arc::new(RwLock::new(AppState::default()));
+
+    // Load recording if file path provided
+    if let Some(ref path) = file {
+        if let Err(e) = app_state.write().unwrap().load_recording(path) {
+            log::warn!("Failed to load recording from {:?}: {}", path, e);
+        }
+    }
+
+    // Store server address for later connection
+    if let Some(ref addr) = connect {
+        app_state.write().unwrap().server_addr = Some(addr.clone());
+    }
+
+    // Configure the window
+    let config = WindowConfig {
+        title: "Blinc Debugger".to_string(),
+        width,
+        height,
+        resizable: true,
+        ..Default::default()
+    };
+
+    // Run the windowed application
+    let state_for_ui = app_state.clone();
+    Ok(WindowedApp::run(config, move |ctx| {
+        build_debugger_ui(ctx, &state_for_ui)
+    })?)
+}
+
+/// Build the debugger UI using WindowedContext
+fn build_debugger_ui(ctx: &WindowedContext, app_state: &SharedAppState) -> impl ElementBuilder {
+    let state = app_state.read().unwrap();
+
     div()
-        .w_full()
-        .h_full()
-        .bg(DebuggerColors::BG_BASE)
+        .w(ctx.width)
+        .h(ctx.height)
+        .bg(DebuggerColors::bg_base())
         .flex_col()
         .child(
             // Main panel area (tree + preview + inspector)
             div()
                 .flex_grow()
                 .flex_row()
-                .child(
-                    // Tree Panel (left)
-                    TreePanel::new(state.current_snapshot.as_ref(), &state.tree_state),
-                )
-                .child(
-                    // Preview Panel (center)
-                    PreviewPanel::new(
-                        state.current_snapshot.as_ref(),
-                        &state.preview_config,
-                        state.cursor_position(),
-                    ),
-                )
-                .child(
-                    // Inspector Panel (right)
-                    InspectorPanel::new(state.selected_element()),
-                ),
+                // Tree Panel (left)
+                .child(TreePanel::new(
+                    state.current_snapshot.as_ref(),
+                    &state.tree_state,
+                ))
+                // Preview Panel (center)
+                .child(PreviewPanel::new(
+                    state.current_snapshot.as_ref(),
+                    &state.preview_config,
+                    state.cursor_position(),
+                ))
+                // Inspector Panel (right)
+                .child(InspectorPanel::new(state.selected_element())),
         )
-        .child(
-            // Timeline Panel (bottom)
-            TimelinePanel::new(
-                state
-                    .recording
-                    .as_ref()
-                    .map(|r| r.events.as_slice())
-                    .unwrap_or(&[]),
-                &state.timeline_state,
-            ),
-        )
-}
-
-/// Run the debugger application
-pub fn run(
-    _width: u32,
-    _height: u32,
-    _file: Option<PathBuf>,
-    _connect: Option<String>,
-) -> Result<()> {
-    // TODO: Initialize windowed app with blinc_app
-    // TODO: Set up event loop
-    // TODO: Load recording if file provided
-    // TODO: Connect to debug server if address provided
-
-    log::info!("Debugger app scaffolding ready - implementation pending");
-
-    // Placeholder - actual implementation will use blinc_app::run()
-    Ok(())
+        // Timeline Panel (bottom)
+        .child(TimelinePanel::new(
+            state
+                .recording
+                .as_ref()
+                .map(|r| r.events.as_slice())
+                .unwrap_or(&[]),
+            &state.timeline_state,
+        ))
 }

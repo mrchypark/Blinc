@@ -599,7 +599,7 @@ fn slider_section(ctx: &WindowedContext) -> impl ElementBuilder {
                     cn::slider(&volume)
                         .label("Volume")
                         .show_value()
-                        .build_final(ctx),
+                        .build_final(),
                 ),
             )
             .child(
@@ -610,7 +610,7 @@ fn slider_section(ctx: &WindowedContext) -> impl ElementBuilder {
                         .max(100.0)
                         .step(5.0)
                         .show_value()
-                        .build_final(ctx),
+                        .build_final(),
                 ),
             )
             .child(
@@ -618,7 +618,7 @@ fn slider_section(ctx: &WindowedContext) -> impl ElementBuilder {
                     cn::slider(&disabled_slider)
                         .label("Disabled")
                         .disabled(true)
-                        .build_final(ctx),
+                        .build_final(),
                 ),
             ),
     )

@@ -331,13 +331,22 @@ impl Button {
                     .no_cursor();
 
                 if let Some(ref icon_str) = icon {
-                    let icon_svg = svg(icon_str).size(font_size, font_size).color(fg);
-                    match icon_position {
-                        IconPosition::Start => {
-                            content = content.child(icon_svg).child(label_text);
-                        }
-                        IconPosition::End => {
-                            content = content.child(label_text).child(icon_svg);
+                    // Convert path data to full SVG using blinc_icons
+                    let icon_size = font_size + 2.0; // Slightly larger for visibility
+                    let svg_str = blinc_icons::to_svg(icon_str, icon_size);
+                    let icon_svg = svg(&svg_str).size(icon_size, icon_size).color(fg);
+
+                    if label.is_empty() {
+                        // Icon-only button
+                        content = content.child(icon_svg);
+                    } else {
+                        match icon_position {
+                            IconPosition::Start => {
+                                content = content.child(icon_svg).child(label_text);
+                            }
+                            IconPosition::End => {
+                                content = content.child(label_text).child(icon_svg);
+                            }
                         }
                     }
                 } else {

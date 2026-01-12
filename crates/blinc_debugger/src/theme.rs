@@ -1,97 +1,202 @@
-//! Custom dark theme constants for blinc_debugger
+//! Debugger theme using blinc_theme system
 //!
-//! Design system derived from the debugger dashboard mockup:
-//! - Near-black background (#0A0A0A)
-//! - Elevated card surfaces (#1C1C1E)
-//! - Lime/green primary accent (#A3E635)
-//! - Orange secondary accent (#F97316)
+//! Uses the global ThemeState for colors and spacing,
+//! with debugger-specific extensions for event colors and panel dimensions.
 
 use blinc_core::Color;
+use blinc_layout::div::FontWeight;
+use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
 
-/// Debugger color palette - dark mode optimized
+/// Debugger-specific colors (extensions not in base theme)
 pub struct DebuggerColors;
 
 impl DebuggerColors {
-    // Background colors
-    pub const BG_BASE: Color = Color::from_rgb_u8(10, 10, 10); // #0A0A0A
-    pub const BG_ELEVATED: Color = Color::from_rgb_u8(28, 28, 30); // #1C1C1E
-    pub const BG_SURFACE: Color = Color::from_rgb_u8(38, 38, 40); // #262628
-    pub const BG_HOVER: Color = Color::from_rgb_u8(48, 48, 52); // #303034
+    // Access theme colors via ThemeState
+    pub fn bg_base() -> Color {
+        ThemeState::get().color(ColorToken::Background)
+    }
 
-    // Border colors
-    pub const BORDER_DEFAULT: Color = Color::from_rgb_u8(42, 42, 44); // #2A2A2C
-    pub const BORDER_SUBTLE: Color = Color::from_rgb_u8(32, 32, 34); // #202022
+    pub fn bg_elevated() -> Color {
+        ThemeState::get().color(ColorToken::SurfaceElevated)
+    }
 
-    // Text colors
-    pub const TEXT_PRIMARY: Color = Color::from_rgb_u8(255, 255, 255); // #FFFFFF
-    pub const TEXT_SECONDARY: Color = Color::from_rgb_u8(156, 163, 175); // #9CA3AF
-    pub const TEXT_MUTED: Color = Color::from_rgb_u8(107, 114, 128); // #6B7280
-    pub const TEXT_DISABLED: Color = Color::from_rgb_u8(75, 85, 99); // #4B5563
+    pub fn bg_surface() -> Color {
+        ThemeState::get().color(ColorToken::Surface)
+    }
 
-    // Primary accent - Lime green
-    pub const PRIMARY: Color = Color::from_rgb_u8(163, 230, 53); // #A3E635
-    pub const PRIMARY_HOVER: Color = Color::from_rgb_u8(132, 204, 22); // #84CC16
+    pub fn bg_hover() -> Color {
+        ThemeState::get().color(ColorToken::InputBgHover)
+    }
 
-    // Secondary accent - Orange
-    pub const SECONDARY: Color = Color::from_rgb_u8(249, 115, 22); // #F97316
-    pub const SECONDARY_HOVER: Color = Color::from_rgb_u8(234, 88, 12); // #EA580C
+    pub fn border_default() -> Color {
+        ThemeState::get().color(ColorToken::Border)
+    }
 
-    // Semantic colors
-    pub const SUCCESS: Color = Color::from_rgb_u8(34, 197, 94); // #22C55E
-    pub const WARNING: Color = Color::from_rgb_u8(250, 204, 21); // #FACC15
-    pub const ERROR: Color = Color::from_rgb_u8(239, 68, 68); // #EF4444
-    pub const INFO: Color = Color::from_rgb_u8(59, 130, 246); // #3B82F6
+    pub fn border_subtle() -> Color {
+        ThemeState::get().color(ColorToken::Border).with_alpha(0.5)
+    }
 
-    // Diff colors (for tree diff visualization)
-    pub const DIFF_ADDED: Color = Color::from_rgb_u8(34, 197, 94); // Green
-    pub const DIFF_REMOVED: Color = Color::from_rgb_u8(239, 68, 68); // Red
-    pub const DIFF_MODIFIED: Color = Color::from_rgb_u8(250, 204, 21); // Yellow
-    pub const DIFF_UNCHANGED: Color = Color::from_rgb_u8(107, 114, 128); // Gray
+    pub fn text_primary() -> Color {
+        ThemeState::get().color(ColorToken::TextPrimary)
+    }
 
-    // Event type colors (for timeline)
-    pub const EVENT_MOUSE: Color = Color::from_rgb_u8(163, 230, 53); // Lime
-    pub const EVENT_KEYBOARD: Color = Color::from_rgb_u8(59, 130, 246); // Blue
-    pub const EVENT_SCROLL: Color = Color::from_rgb_u8(249, 115, 22); // Orange
-    pub const EVENT_FOCUS: Color = Color::from_rgb_u8(168, 85, 247); // Purple
-    pub const EVENT_HOVER: Color = Color::from_rgb_u8(236, 72, 153); // Pink
+    pub fn text_secondary() -> Color {
+        ThemeState::get().color(ColorToken::TextSecondary)
+    }
+
+    pub fn text_muted() -> Color {
+        ThemeState::get().color(ColorToken::TextTertiary)
+    }
+
+    pub fn primary() -> Color {
+        ThemeState::get().color(ColorToken::Primary)
+    }
+
+    pub fn primary_hover() -> Color {
+        ThemeState::get().color(ColorToken::PrimaryHover)
+    }
+
+    pub fn secondary() -> Color {
+        ThemeState::get().color(ColorToken::Secondary)
+    }
+
+    pub fn success() -> Color {
+        ThemeState::get().color(ColorToken::Success)
+    }
+
+    pub fn warning() -> Color {
+        ThemeState::get().color(ColorToken::Warning)
+    }
+
+    pub fn error() -> Color {
+        ThemeState::get().color(ColorToken::Error)
+    }
+
+    pub fn info() -> Color {
+        ThemeState::get().color(ColorToken::Info)
+    }
+
+    // Diff colors (for tree diff visualization) - use semantic colors
+    pub fn diff_added() -> Color {
+        ThemeState::get().color(ColorToken::Success)
+    }
+
+    pub fn diff_removed() -> Color {
+        ThemeState::get().color(ColorToken::Error)
+    }
+
+    pub fn diff_modified() -> Color {
+        ThemeState::get().color(ColorToken::Warning)
+    }
+
+    pub fn diff_unchanged() -> Color {
+        ThemeState::get().color(ColorToken::TextTertiary)
+    }
+
+    // Event type colors (debugger-specific) - derived from theme
+    pub fn event_mouse() -> Color {
+        ThemeState::get().color(ColorToken::Primary)
+    }
+
+    pub fn event_keyboard() -> Color {
+        ThemeState::get().color(ColorToken::Info)
+    }
+
+    pub fn event_scroll() -> Color {
+        ThemeState::get().color(ColorToken::Secondary)
+    }
+
+    pub fn event_focus() -> Color {
+        ThemeState::get().color(ColorToken::Accent)
+    }
+
+    pub fn event_hover() -> Color {
+        ThemeState::get().color(ColorToken::Warning)
+    }
 }
 
 /// Design tokens for the debugger UI
 pub struct DebuggerTokens;
 
 impl DebuggerTokens {
-    // Border radius
-    pub const RADIUS_SM: f32 = 6.0;
-    pub const RADIUS_MD: f32 = 8.0;
-    pub const RADIUS_LG: f32 = 12.0;
-    pub const RADIUS_XL: f32 = 16.0;
-    pub const RADIUS_FULL: f32 = 9999.0;
+    // Border radius - use theme tokens
+    pub fn radius_sm() -> f32 {
+        ThemeState::get().radius(RadiusToken::Sm)
+    }
 
-    // Spacing (based on 4px grid)
-    pub const SPACE_1: f32 = 4.0;
-    pub const SPACE_2: f32 = 8.0;
-    pub const SPACE_3: f32 = 12.0;
-    pub const SPACE_4: f32 = 16.0;
-    pub const SPACE_5: f32 = 20.0;
-    pub const SPACE_6: f32 = 24.0;
-    pub const SPACE_8: f32 = 32.0;
+    pub fn radius_md() -> f32 {
+        ThemeState::get().radius(RadiusToken::Md)
+    }
 
-    // Typography
-    pub const FONT_SIZE_XS: f32 = 11.0;
-    pub const FONT_SIZE_SM: f32 = 13.0;
-    pub const FONT_SIZE_BASE: f32 = 14.0;
-    pub const FONT_SIZE_LG: f32 = 16.0;
-    pub const FONT_SIZE_XL: f32 = 18.0;
-    pub const FONT_SIZE_2XL: f32 = 24.0;
-    pub const FONT_SIZE_3XL: f32 = 30.0;
-    pub const FONT_SIZE_4XL: f32 = 36.0;
+    pub fn radius_lg() -> f32 {
+        ThemeState::get().radius(RadiusToken::Lg)
+    }
 
-    pub const FONT_WEIGHT_NORMAL: u16 = 400;
-    pub const FONT_WEIGHT_MEDIUM: u16 = 500;
-    pub const FONT_WEIGHT_SEMIBOLD: u16 = 600;
-    pub const FONT_WEIGHT_BOLD: u16 = 700;
+    pub fn radius_full() -> f32 {
+        ThemeState::get().radius(RadiusToken::Full)
+    }
 
-    // Panel dimensions (matching plan)
+    // Spacing - use theme tokens
+    pub fn space_1() -> f32 {
+        ThemeState::get().spacing_value(SpacingToken::Space1)
+    }
+
+    pub fn space_2() -> f32 {
+        ThemeState::get().spacing_value(SpacingToken::Space2)
+    }
+
+    pub fn space_3() -> f32 {
+        ThemeState::get().spacing_value(SpacingToken::Space3)
+    }
+
+    pub fn space_4() -> f32 {
+        ThemeState::get().spacing_value(SpacingToken::Space4)
+    }
+
+    pub fn space_5() -> f32 {
+        ThemeState::get().spacing_value(SpacingToken::Space5)
+    }
+
+    pub fn space_6() -> f32 {
+        ThemeState::get().spacing_value(SpacingToken::Space6)
+    }
+
+    pub fn space_8() -> f32 {
+        ThemeState::get().spacing_value(SpacingToken::Space8)
+    }
+
+    pub fn space_10() -> f32 {
+        ThemeState::get().spacing_value(SpacingToken::Space10)
+    }
+
+    // Typography - use theme tokens
+    pub fn font_size_xs() -> f32 {
+        ThemeState::get().typography().text_xs
+    }
+
+    pub fn font_size_sm() -> f32 {
+        ThemeState::get().typography().text_sm
+    }
+
+    pub fn font_size_base() -> f32 {
+        ThemeState::get().typography().text_base
+    }
+
+    pub fn font_size_lg() -> f32 {
+        ThemeState::get().typography().text_lg
+    }
+
+    pub fn font_size_xl() -> f32 {
+        ThemeState::get().typography().text_xl
+    }
+
+    // Font weights - these stay as constants since they're enums
+    pub const FONT_WEIGHT_NORMAL: FontWeight = FontWeight::Normal;
+    pub const FONT_WEIGHT_MEDIUM: FontWeight = FontWeight::Medium;
+    pub const FONT_WEIGHT_SEMIBOLD: FontWeight = FontWeight::SemiBold;
+    pub const FONT_WEIGHT_BOLD: FontWeight = FontWeight::Bold;
+
+    // Panel dimensions (debugger-specific layout constants)
     pub const TREE_PANEL_WIDTH: f32 = 280.0;
     pub const INSPECTOR_WIDTH: f32 = 300.0;
     pub const TIMELINE_HEIGHT: f32 = 150.0;
