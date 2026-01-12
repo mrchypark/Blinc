@@ -91,6 +91,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .child(navigation_menu_section())
                         .child(sidebar_section(ctx))
                         .child(resizable_section())
+                        .child(scroll_area_section())
+                        .child(aspect_ratio_section())
                         .child(toast_section(ctx))
                         .child(loading_section(ctx))
                         .child(kbd_section())
@@ -3502,4 +3504,299 @@ fn icon_tile(icon_data: &'static str, name: &str) -> impl ElementBuilder {
         .rounded(6.0)
         .child(cn::icon(icon_data).size(IconSize::Large))
         .child(text(name).size(9.0).color(text_tertiary))
+}
+
+// ============================================================================
+// SCROLL AREA SECTION
+// ============================================================================
+
+fn scroll_area_section() -> impl ElementBuilder {
+    let theme = ThemeState::get();
+    let text_secondary = theme.color(ColorToken::TextSecondary);
+    let surface = theme.color(ColorToken::Surface);
+
+    section_container()
+        .child(section_title("Scroll Area"))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                // Auto visibility (default) - shows on scroll/hover, auto-dismisses
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            text("Auto (default)")
+                                .size(12.0)
+                                .color(text_secondary),
+                        )
+                        .child(
+                            cn::scroll_area()
+                                .scrollbar(cn::ScrollbarVisibility::Auto)
+                                .w(200.0)
+                                .h(150.0)
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(8.0)
+                                        .p(8.0)
+                                        .child(text("Scroll content 1").size(14.0))
+                                        .child(text("Scroll content 2").size(14.0))
+                                        .child(text("Scroll content 3").size(14.0))
+                                        .child(text("Scroll content 4").size(14.0))
+                                        .child(text("Scroll content 5").size(14.0))
+                                        .child(text("Scroll content 6").size(14.0))
+                                        .child(text("Scroll content 7").size(14.0))
+                                        .child(text("Scroll content 8").size(14.0))
+                                        .child(text("Scroll content 9").size(14.0))
+                                        .child(text("Scroll content 10").size(14.0)),
+                                ),
+                        ),
+                )
+                // Always visible scrollbar
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            text("Always visible")
+                                .size(12.0)
+                                .color(text_secondary),
+                        )
+                        .child(
+                            cn::scroll_area()
+                                .scrollbar(cn::ScrollbarVisibility::Always)
+                                .w(200.0)
+                                .h(150.0)
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(8.0)
+                                        .p(8.0)
+                                        .bg(surface)
+                                        .child(text("Item A").size(14.0))
+                                        .child(text("Item B").size(14.0))
+                                        .child(text("Item C").size(14.0))
+                                        .child(text("Item D").size(14.0))
+                                        .child(text("Item E").size(14.0))
+                                        .child(text("Item F").size(14.0))
+                                        .child(text("Item G").size(14.0))
+                                        .child(text("Item H").size(14.0)),
+                                ),
+                        ),
+                )
+                // Hover visibility
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            text("Show on hover")
+                                .size(12.0)
+                                .color(text_secondary),
+                        )
+                        .child(
+                            cn::scroll_area()
+                                .scrollbar(cn::ScrollbarVisibility::Hover)
+                                .w(200.0)
+                                .h(150.0)
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(8.0)
+                                        .p(8.0)
+                                        .child(text("Hover to see scrollbar").size(14.0))
+                                        .child(text("Line 2").size(14.0))
+                                        .child(text("Line 3").size(14.0))
+                                        .child(text("Line 4").size(14.0))
+                                        .child(text("Line 5").size(14.0))
+                                        .child(text("Line 6").size(14.0))
+                                        .child(text("Line 7").size(14.0))
+                                        .child(text("Line 8").size(14.0)),
+                                ),
+                        ),
+                )
+                // Never show scrollbar
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(
+                            text("Hidden scrollbar")
+                                .size(12.0)
+                                .color(text_secondary),
+                        )
+                        .child(
+                            cn::scroll_area()
+                                .scrollbar(cn::ScrollbarVisibility::Never)
+                                .w(200.0)
+                                .h(150.0)
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(8.0)
+                                        .p(8.0)
+                                        .bg(surface)
+                                        .child(text("No visible scrollbar").size(14.0))
+                                        .child(text("But still scrollable").size(14.0))
+                                        .child(text("Line 3").size(14.0))
+                                        .child(text("Line 4").size(14.0))
+                                        .child(text("Line 5").size(14.0))
+                                        .child(text("Line 6").size(14.0))
+                                        .child(text("Line 7").size(14.0))
+                                        .child(text("Line 8").size(14.0)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// ASPECT RATIO SECTION
+// ============================================================================
+
+fn aspect_ratio_section() -> impl ElementBuilder {
+    let theme = ThemeState::get();
+    let text_secondary = theme.color(ColorToken::TextSecondary);
+    let text_primary = theme.color(ColorToken::TextPrimary);
+    let surface = theme.color(ColorToken::Surface);
+    let primary = theme.color(ColorToken::Primary);
+
+    section_container()
+        .child(section_title("Aspect Ratio"))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                .items_end()
+                // Square (1:1)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(text("1:1 Square").size(12.0).color(text_secondary))
+                        .child(
+                            cn::aspect_ratio_square()
+                                .w(100.0)
+                                .bg(surface)
+                                .rounded(8.0)
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(text("1:1").size(14.0).color(text_primary)),
+                                ),
+                        ),
+                )
+                // 16:9 Widescreen
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(text("16:9 Widescreen").size(12.0).color(text_secondary))
+                        .child(
+                            cn::aspect_ratio_16_9()
+                                .w(160.0)
+                                .bg(primary.with_alpha(0.2))
+                                .rounded(8.0)
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(text("16:9").size(14.0).color(text_primary)),
+                                ),
+                        ),
+                )
+                // 4:3 Traditional
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(text("4:3 Traditional").size(12.0).color(text_secondary))
+                        .child(
+                            cn::aspect_ratio_4_3()
+                                .w(120.0)
+                                .bg(surface)
+                                .rounded(8.0)
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(text("4:3").size(14.0).color(text_primary)),
+                                ),
+                        ),
+                )
+                // 21:9 Ultrawide
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(text("21:9 Ultrawide").size(12.0).color(text_secondary))
+                        .child(
+                            cn::aspect_ratio_21_9()
+                                .w(210.0)
+                                .bg(primary.with_alpha(0.3))
+                                .rounded(8.0)
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(text("21:9").size(14.0).color(text_primary)),
+                                ),
+                        ),
+                )
+                // 9:16 Vertical (portrait)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(text("9:16 Vertical").size(12.0).color(text_secondary))
+                        .child(
+                            cn::aspect_ratio_9_16()
+                                .w(56.0)
+                                .bg(surface)
+                                .rounded(8.0)
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(text("9:16").size(12.0).color(text_primary)),
+                                ),
+                        ),
+                )
+                // Custom ratio
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(text("Custom 3:2").size(12.0).color(text_secondary))
+                        .child(
+                            cn::aspect_ratio(3.0 / 2.0)
+                                .w(120.0)
+                                .bg(primary.with_alpha(0.15))
+                                .rounded(8.0)
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(text("3:2").size(14.0).color(text_primary)),
+                                ),
+                        ),
+                ),
+        )
 }
