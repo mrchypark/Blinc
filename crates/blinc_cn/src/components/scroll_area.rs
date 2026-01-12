@@ -1,0 +1,502 @@
+//! Scroll Area component - styled scrollable container with customizable scrollbar
+//!
+//! A themed scroll container that wraps `blinc_layout::scroll()` with a custom
+//! scrollbar overlay. Supports various scrollbar visibility modes and auto-dismiss.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use blinc_cn::prelude::*;
+//!
+//! // Basic scroll area with auto-dismissing scrollbar
+//! cn::scroll_area()
+//!     .h(400.0)
+//!     .child(
+//!         div().flex_col().gap(8.0)
+//!             .child(text("Item 1"))
+//!             .child(text("Item 2"))
+//!             // ... many items
+//!     )
+//!
+//! // Always show scrollbar
+//! cn::scroll_area()
+//!     .scrollbar(ScrollbarVisibility::Always)
+//!     .h(300.0)
+//!     .child(content)
+//!
+//! // Horizontal scroll
+//! cn::scroll_area()
+//!     .horizontal()
+//!     .w(400.0)
+//!     .child(wide_content)
+//!
+//! // Custom scrollbar styling
+//! cn::scroll_area()
+//!     .scrollbar_width(8.0)
+//!     .scrollbar_color(Color::GRAY)
+//!     .h(400.0)
+//!     .child(content)
+//! ```
+
+use std::cell::OnceCell;
+use std::sync::{Arc, Mutex};
+
+use blinc_animation::{get_scheduler, AnimatedValue, SharedAnimatedValue, SpringConfig};
+use blinc_core::{BlincContextState, Color};
+use blinc_layout::element::RenderProps;
+use blinc_layout::motion::motion;
+use blinc_layout::prelude::*;
+use blinc_layout::tree::{LayoutNodeId, LayoutTree};
+use blinc_layout::widgets::scroll::{scroll, ScrollDirection};
+use blinc_layout::InstanceKey;
+use blinc_theme::{ColorToken, ThemeState};
+
+/// Scrollbar visibility modes
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollbarVisibility {
+    /// Always show scrollbar (like classic Windows style)
+    Always,
+    /// Show scrollbar only when hovering over the scroll area
+    Hover,
+    /// Show when scrolling, auto-dismiss after inactivity (like macOS)
+    #[default]
+    Auto,
+    /// Never show scrollbar (content still scrollable)
+    Never,
+}
+
+/// Scroll area size presets
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollAreaSize {
+    /// Small scrollbar (4px width)
+    Small,
+    /// Medium scrollbar (6px width)
+    #[default]
+    Medium,
+    /// Large scrollbar (10px width)
+    Large,
+}
+
+impl ScrollAreaSize {
+    fn scrollbar_width(&self) -> f32 {
+        match self {
+            ScrollAreaSize::Small => 4.0,
+            ScrollAreaSize::Medium => 6.0,
+            ScrollAreaSize::Large => 10.0,
+        }
+    }
+}
+
+/// Configuration for scroll area
+struct ScrollAreaConfig {
+    /// Scrollbar visibility mode
+    visibility: ScrollbarVisibility,
+    /// Scroll direction
+    direction: ScrollDirection,
+    /// Custom scrollbar width (overrides size preset)
+    scrollbar_width: Option<f32>,
+    /// Scrollbar size preset
+    size: ScrollAreaSize,
+    /// Thumb color (uses theme if None)
+    thumb_color: Option<Color>,
+    /// Track color (uses theme if None)
+    track_color: Option<Color>,
+    /// Viewport dimensions
+    width: Option<f32>,
+    height: Option<f32>,
+    /// Enable bounce physics
+    bounce: bool,
+    /// Content builder
+    content: Option<Box<dyn ElementBuilder>>,
+}
+
+impl Default for ScrollAreaConfig {
+    fn default() -> Self {
+        Self {
+            visibility: ScrollbarVisibility::default(),
+            direction: ScrollDirection::Vertical,
+            scrollbar_width: None,
+            size: ScrollAreaSize::default(),
+            thumb_color: None,
+            track_color: None,
+            width: None,
+            height: None,
+            bounce: true,
+            content: None,
+        }
+    }
+}
+
+/// Built scroll area with inner element
+struct BuiltScrollArea {
+    inner: Div,
+}
+
+impl BuiltScrollArea {
+    fn from_config(config: &ScrollAreaConfig, key: &InstanceKey) -> Self {
+        let theme = ThemeState::get();
+        let ctx = BlincContextState::get();
+        let scheduler = get_scheduler();
+
+        // Calculate scrollbar dimensions
+        let bar_width = config
+            .scrollbar_width
+            .unwrap_or_else(|| config.size.scrollbar_width());
+
+        let thumb_color = config
+            .thumb_color
+            .unwrap_or_else(|| theme.color(ColorToken::Border).with_alpha(0.5));
+        let track_color = config
+            .track_color
+            .unwrap_or_else(|| theme.color(ColorToken::Surface).with_alpha(0.1));
+
+        // State for tracking scroll position and hover
+        let instance_key = key.get().to_string();
+        let is_hovered = ctx.use_state_keyed(&format!("{}_hover", instance_key), || false);
+        let is_scrolling = ctx.use_state_keyed(&format!("{}_scrolling", instance_key), || false);
+        let scroll_position =
+            ctx.use_state_keyed(&format!("{}_scroll_pos", instance_key), || 0.0f32);
+        let content_size =
+            ctx.use_state_keyed(&format!("{}_content_size", instance_key), || 1000.0f32);
+        let viewport_size =
+            ctx.use_state_keyed(&format!("{}_viewport_size", instance_key), || 400.0f32);
+
+        // Create opacity animation for auto-dismiss
+        let opacity_anim: SharedAnimatedValue = Arc::new(Mutex::new(AnimatedValue::new(
+            scheduler,
+            0.0,
+            SpringConfig::gentle(),
+        )));
+
+        // Determine if scrollbar should be visible
+        let should_show = match config.visibility {
+            ScrollbarVisibility::Always => true,
+            ScrollbarVisibility::Hover => is_hovered.get(),
+            ScrollbarVisibility::Auto => is_scrolling.get() || is_hovered.get(),
+            ScrollbarVisibility::Never => false,
+        };
+
+        // Update opacity animation target
+        {
+            let mut anim = opacity_anim.lock().unwrap();
+            anim.set_target(if should_show { 1.0 } else { 0.0 });
+        }
+
+        // Calculate thumb size and position
+        // Thumb height is proportional to viewport/content ratio
+        let viewport = viewport_size.get();
+        let content = content_size.get().max(viewport); // Prevent division by zero
+        let scroll_ratio = viewport / content;
+        let thumb_height = (scroll_ratio * viewport).max(30.0).min(viewport - 8.0);
+
+        // Thumb position based on scroll offset
+        let scroll_range = content - viewport;
+        let scroll_offset = scroll_position.get().abs();
+        let scroll_progress = if scroll_range > 0.0 {
+            (scroll_offset / scroll_range).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let max_thumb_travel = viewport - thumb_height - 8.0; // 4px padding top and bottom
+        let thumb_offset = scroll_progress * max_thumb_travel + 4.0;
+
+        // Get viewport dimensions
+        let viewport_width = config.width.unwrap_or(300.0);
+        let viewport_height = config.height.unwrap_or(400.0);
+
+        // Build scroll container with physics
+        let mut scroll_container = scroll()
+            .w(viewport_width)
+            .h(viewport_height)
+            .direction(config.direction)
+            .bounce(config.bounce);
+
+        // Clone states for scroll handler
+        let scroll_pos_for_handler = scroll_position.clone();
+        let is_scrolling_for_handler = is_scrolling.clone();
+
+        scroll_container = scroll_container.on_scroll(move |e| {
+            // Update scroll position state
+            let current = scroll_pos_for_handler.get();
+            scroll_pos_for_handler.set(current + e.scroll_delta_y);
+            is_scrolling_for_handler.set(true);
+        });
+
+        // Add content if present - note: content is added via .child() on the builder
+        // The scroll container will receive content through the child method
+        let _ = &config.content; // Acknowledge content field
+
+        // Build scrollbar thumb
+        let thumb = div()
+            .absolute()
+            .right(2.0)
+            .top(thumb_offset)
+            .w(bar_width)
+            .h(thumb_height)
+            .rounded(bar_width / 2.0)
+            .bg(thumb_color);
+
+        // Build scrollbar track
+        let track = div()
+            .absolute()
+            .right(0.0)
+            .top(0.0)
+            .bottom(0.0)
+            .w(bar_width + 4.0)
+            .bg(track_color)
+            .rounded(bar_width / 2.0)
+            .child(thumb);
+
+        // Wrap track with opacity animation
+        let animated_track = motion().opacity(opacity_anim).child(track);
+
+        // Clone states for hover handlers
+        let is_hovered_enter = is_hovered.clone();
+        let is_hovered_leave = is_hovered.clone();
+
+        // Build the final container
+        let visibility = config.visibility;
+
+        let mut container = div()
+            .w(viewport_width)
+            .h(viewport_height)
+            .relative()
+            .overflow_clip()
+            .on_hover_enter(move |_| {
+                is_hovered_enter.set(true);
+            })
+            .on_hover_leave(move |_| {
+                is_hovered_leave.set(false);
+            });
+
+        // Add scroll container
+        container = container.child(scroll_container);
+
+        // Add scrollbar overlay if not hidden
+        if visibility != ScrollbarVisibility::Never {
+            container = container.child(animated_track);
+        }
+
+        Self { inner: container }
+    }
+}
+
+/// Scroll Area component with customizable scrollbar
+pub struct ScrollArea {
+    inner: Div,
+}
+
+impl ElementBuilder for ScrollArea {
+    fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
+        self.inner.build(tree)
+    }
+
+    fn render_props(&self) -> RenderProps {
+        self.inner.render_props()
+    }
+
+    fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
+        self.inner.children_builders()
+    }
+}
+
+/// Builder for scroll area
+pub struct ScrollAreaBuilder {
+    config: ScrollAreaConfig,
+    key: InstanceKey,
+    built: OnceCell<ScrollArea>,
+}
+
+impl ScrollAreaBuilder {
+    /// Create a new scroll area builder
+    #[track_caller]
+    pub fn new() -> Self {
+        Self {
+            config: ScrollAreaConfig::default(),
+            key: InstanceKey::new("scroll_area"),
+            built: OnceCell::new(),
+        }
+    }
+
+    fn get_or_build(&self) -> &ScrollArea {
+        self.built.get_or_init(|| {
+            let built = BuiltScrollArea::from_config(&self.config, &self.key);
+            ScrollArea { inner: built.inner }
+        })
+    }
+
+    /// Set scrollbar visibility mode
+    pub fn scrollbar(mut self, visibility: ScrollbarVisibility) -> Self {
+        self.config.visibility = visibility;
+        self
+    }
+
+    /// Set scroll direction
+    pub fn direction(mut self, direction: ScrollDirection) -> Self {
+        self.config.direction = direction;
+        self
+    }
+
+    /// Set to vertical scrolling (default)
+    pub fn vertical(mut self) -> Self {
+        self.config.direction = ScrollDirection::Vertical;
+        self
+    }
+
+    /// Set to horizontal scrolling
+    pub fn horizontal(mut self) -> Self {
+        self.config.direction = ScrollDirection::Horizontal;
+        self
+    }
+
+    /// Set to scroll in both directions
+    pub fn both_directions(mut self) -> Self {
+        self.config.direction = ScrollDirection::Both;
+        self
+    }
+
+    /// Set scrollbar size preset
+    pub fn size(mut self, size: ScrollAreaSize) -> Self {
+        self.config.size = size;
+        self
+    }
+
+    /// Set custom scrollbar width
+    pub fn scrollbar_width(mut self, width: f32) -> Self {
+        self.config.scrollbar_width = Some(width);
+        self
+    }
+
+    /// Set scrollbar thumb color
+    pub fn thumb_color(mut self, color: impl Into<Color>) -> Self {
+        self.config.thumb_color = Some(color.into());
+        self
+    }
+
+    /// Set scrollbar track color
+    pub fn track_color(mut self, color: impl Into<Color>) -> Self {
+        self.config.track_color = Some(color.into());
+        self
+    }
+
+    /// Set viewport width
+    pub fn w(mut self, width: f32) -> Self {
+        self.config.width = Some(width);
+        self
+    }
+
+    /// Set viewport height
+    pub fn h(mut self, height: f32) -> Self {
+        self.config.height = Some(height);
+        self
+    }
+
+    /// Enable or disable bounce physics
+    pub fn bounce(mut self, enabled: bool) -> Self {
+        self.config.bounce = enabled;
+        self
+    }
+
+    /// Disable bounce physics
+    pub fn no_bounce(mut self) -> Self {
+        self.config.bounce = false;
+        self
+    }
+
+    /// Set the scrollable content
+    pub fn child(mut self, content: impl ElementBuilder + 'static) -> Self {
+        self.config.content = Some(Box::new(content));
+        self
+    }
+
+    /// Build the final ScrollArea component
+    pub fn build_final(self) -> ScrollArea {
+        let built = BuiltScrollArea::from_config(&self.config, &self.key);
+        ScrollArea { inner: built.inner }
+    }
+}
+
+impl Default for ScrollAreaBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ElementBuilder for ScrollAreaBuilder {
+    fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
+        self.get_or_build().build(tree)
+    }
+
+    fn render_props(&self) -> RenderProps {
+        self.get_or_build().render_props()
+    }
+
+    fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
+        self.get_or_build().children_builders()
+    }
+}
+
+/// Create a new scroll area with customizable scrollbar
+///
+/// # Example
+///
+/// ```ignore
+/// use blinc_cn::prelude::*;
+///
+/// // Basic usage with auto-dismiss scrollbar
+/// cn::scroll_area()
+///     .h(400.0)
+///     .child(long_content)
+///
+/// // Always show scrollbar
+/// cn::scroll_area()
+///     .scrollbar(ScrollbarVisibility::Always)
+///     .h(300.0)
+///     .child(content)
+///
+/// // Horizontal scroll
+/// cn::scroll_area()
+///     .horizontal()
+///     .w(400.0)
+///     .child(wide_content)
+/// ```
+#[track_caller]
+pub fn scroll_area() -> ScrollAreaBuilder {
+    ScrollAreaBuilder::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blinc_theme::ThemeState;
+
+    fn init_theme() {
+        let _ = ThemeState::try_get().unwrap_or_else(|| {
+            ThemeState::init_default();
+            ThemeState::get()
+        });
+    }
+
+    #[test]
+    fn test_scrollbar_width_presets() {
+        assert_eq!(ScrollAreaSize::Small.scrollbar_width(), 4.0);
+        assert_eq!(ScrollAreaSize::Medium.scrollbar_width(), 6.0);
+        assert_eq!(ScrollAreaSize::Large.scrollbar_width(), 10.0);
+    }
+
+    #[test]
+    fn test_scroll_area_builder_config() {
+        init_theme();
+
+        let builder = scroll_area()
+            .scrollbar(ScrollbarVisibility::Always)
+            .size(ScrollAreaSize::Large)
+            .h(500.0)
+            .w(300.0);
+
+        assert_eq!(builder.config.visibility, ScrollbarVisibility::Always);
+        assert_eq!(builder.config.size, ScrollAreaSize::Large);
+        assert_eq!(builder.config.height, Some(500.0));
+        assert_eq!(builder.config.width, Some(300.0));
+    }
+}

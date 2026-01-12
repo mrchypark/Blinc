@@ -96,6 +96,13 @@ pub mod cn {
         b, caption, chained_text, h1, h2, h3, h4, h5, h6, heading, inline_code, muted, p, small,
         span, strong,
     };
+    // Scroll Area
+    pub use crate::components::scroll_area::{scroll_area, ScrollbarVisibility};
+    // Aspect Ratio
+    pub use crate::components::aspect_ratio::{
+        aspect_ratio, aspect_ratio_16_9, aspect_ratio_21_9, aspect_ratio_4_3, aspect_ratio_9_16,
+        aspect_ratio_square,
+    };
 }
 
 /// Prelude for convenient imports
@@ -198,6 +205,15 @@ pub mod prelude {
     pub use crate::components::typography::{
         b, caption, chained_text, h1, h2, h3, h4, h5, h6, heading, inline_code, muted, p, small,
         span, strong,
+    };
+    // Scroll Area
+    pub use crate::components::scroll_area::{
+        scroll_area, ScrollArea, ScrollAreaBuilder, ScrollAreaSize, ScrollbarVisibility,
+    };
+    // Aspect Ratio
+    pub use crate::components::aspect_ratio::{
+        aspect_ratio, aspect_ratio_16_9, aspect_ratio_21_9, aspect_ratio_4_3, aspect_ratio_9_16,
+        aspect_ratio_square, AspectRatio, AspectRatioBuilder, AspectRatioPreset,
     };
     pub use blinc_layout::stateful::ButtonState;
     // Re-export State for checkbox/switch/radio usage

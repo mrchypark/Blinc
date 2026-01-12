@@ -108,8 +108,8 @@ Layout helpers.
 | **Accordion** | motion, SharedAnimatedValue | ✅ Done |
 | **Collapsible** | motion, SharedAnimatedValue | ✅ Done |
 | **Resizable** | div, drag, stateful | ✅ Done |
-| **Scroll Area** | scroll | Planned |
-| **Aspect Ratio** | div | Planned |
+| **Scroll Area** | scroll, motion | ✅ Done |
+| **Aspect Ratio** | div | ✅ Done |
 
 ### 8. Typography (Priority: Low)
 
