@@ -60,7 +60,20 @@ const KNOWN_FONT_PATHS: &[&str] = &[
     "C:\\Windows\\Fonts\\cour.ttf",    // Courier New (Monospace)
 ];
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "android")]
+const KNOWN_FONT_PATHS: &[&str] = &[
+    // Android system fonts
+    "/system/fonts/Roboto-Regular.ttf",
+    "/system/fonts/Roboto-Bold.ttf",
+    "/system/fonts/Roboto-Medium.ttf",
+    "/system/fonts/RobotoMono-Regular.ttf",
+    "/system/fonts/DroidSans.ttf",
+    "/system/fonts/DroidSansMono.ttf",
+    "/system/fonts/DroidSerif-Regular.ttf",
+    "/system/fonts/NotoSansCJK-Regular.ttc",
+];
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "android")))]
 const KNOWN_FONT_PATHS: &[&str] = &[
     // Linux common paths
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -100,6 +113,19 @@ impl FontRegistry {
             }
         }
         tracing::debug!("Loaded {} known system fonts", loaded_count);
+
+        // Debug: list loaded fonts
+        for face in db.faces() {
+            for family in face.families.iter() {
+                tracing::debug!(
+                    "Font loaded: '{}' (family='{}', weight={:?}, style={:?})",
+                    face.post_script_name,
+                    family.0,
+                    face.weight,
+                    face.style
+                );
+            }
+        }
 
         Self {
             db,
@@ -270,6 +296,14 @@ impl FontRegistry {
         weight: u16,
         italic: bool,
     ) -> Option<fontdb::ID> {
+        tracing::debug!(
+            "find_generic_font_id: querying family={:?}, weight={}, italic={}, db_faces={}",
+            family,
+            weight,
+            italic,
+            self.db.faces().count()
+        );
+
         let query = Query {
             families: &[family],
             weight: Weight(weight),
@@ -278,7 +312,32 @@ impl FontRegistry {
         };
 
         if let Some(id) = self.db.query(&query) {
+            tracing::debug!("find_generic_font_id: found font id={:?}", id);
             return Some(id);
+        }
+
+        tracing::debug!("find_generic_font_id: no font found for family={:?}, trying named fonts", family);
+
+        // Generic family queries may not match fonts loaded by path
+        // Try common font names as fallback based on the generic family
+        let fallback_names: &[&str] = match family {
+            Family::SansSerif => &["Roboto", "SF Pro", "Helvetica", "Arial", "Noto Sans", "DejaVu Sans"],
+            Family::Serif => &["Noto Serif", "Times New Roman", "Georgia", "DejaVu Serif"],
+            Family::Monospace => &["Roboto Mono", "Droid Sans Mono", "SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono"],
+            _ => &[],
+        };
+
+        for name in fallback_names {
+            let named_query = Query {
+                families: &[Family::Name(name)],
+                weight: Weight(weight),
+                style: if italic { Style::Italic } else { Style::Normal },
+                stretch: Stretch::Normal,
+            };
+            if let Some(id) = self.db.query(&named_query) {
+                tracing::debug!("find_generic_font_id: found named font '{}' id={:?}", name, id);
+                return Some(id);
+            }
         }
 
         // Try with Oblique if Italic wasn't found

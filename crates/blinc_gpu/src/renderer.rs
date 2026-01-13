@@ -962,15 +962,18 @@ impl GpuRenderer {
 
         // Select texture format based on platform
         let texture_format = config.texture_format.unwrap_or_else(|| {
-            // On Android, prefer sRGB format
+            // On Android, prefer non-sRGB format to match macOS behavior
+            // Using sRGB causes colors to appear washed out because the GPU
+            // applies automatic gamma correction
             surface_caps
                 .formats
                 .iter()
-                .find(|f| f.is_srgb())
+                .find(|f| !f.is_srgb())
                 .copied()
                 .unwrap_or(surface_caps.formats[0])
         });
-        tracing::debug!("Selected texture format: {:?}", texture_format);
+        tracing::info!("Surface formats available: {:?}", surface_caps.formats);
+        tracing::info!("Selected texture format: {:?}", texture_format);
 
         Self::create_renderer(
             instance,

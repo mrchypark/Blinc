@@ -289,7 +289,7 @@ impl RenderContext {
                 None
             };
 
-            if let Ok(mut glyphs) = self.text_ctx.prepare_text_with_style(
+            match self.text_ctx.prepare_text_with_style(
                 &text.content,
                 text.x,
                 y_pos,
@@ -305,15 +305,33 @@ impl RenderContext {
                 text.italic,
                 layout_height,
             ) {
-                // Apply clip bounds to all glyphs if the text element has clip bounds
-                if let Some(clip) = text.clip_bounds {
-                    for glyph in &mut glyphs {
-                        glyph.clip_bounds = clip;
+                Ok(mut glyphs) => {
+                    tracing::debug!(
+                        "Prepared {} glyphs for text '{}' (font={:?}, generic={:?})",
+                        glyphs.len(),
+                        text.content,
+                        font_name,
+                        generic
+                    );
+                    // Apply clip bounds to all glyphs if the text element has clip bounds
+                    if let Some(clip) = text.clip_bounds {
+                        for glyph in &mut glyphs {
+                            glyph.clip_bounds = clip;
+                        }
                     }
+                    all_glyphs.extend(glyphs);
                 }
-                all_glyphs.extend(glyphs);
+                Err(e) => {
+                    tracing::warn!("Failed to prepare text '{}': {:?}", text.content, e);
+                }
             }
         }
+
+        tracing::debug!(
+            "Text rendering: {} texts collected, {} total glyphs prepared",
+            texts.len(),
+            all_glyphs.len()
+        );
 
         // SVGs are rendered as rasterized images (not tessellated paths) for better anti-aliasing
         // They will be rendered later via render_rasterized_svgs
@@ -2138,7 +2156,7 @@ impl RenderContext {
                 None
             };
 
-            if let Ok(glyphs) = self.text_ctx.prepare_text_with_style(
+            match self.text_ctx.prepare_text_with_style(
                 &text.content,
                 text.x,
                 y_pos,
@@ -2154,20 +2172,40 @@ impl RenderContext {
                 text.italic,
                 layout_height,
             ) {
-                // Apply clip bounds if present
-                let mut glyphs = glyphs;
-                if let Some(clip) = text.clip_bounds {
-                    for glyph in &mut glyphs {
-                        glyph.clip_bounds = clip;
+                Ok(mut glyphs) => {
+                    tracing::debug!(
+                        "render_tree_with_motion: prepared {} glyphs for '{}' (font={:?})",
+                        glyphs.len(),
+                        text.content,
+                        font_name
+                    );
+                    // Apply clip bounds if present
+                    if let Some(clip) = text.clip_bounds {
+                        for glyph in &mut glyphs {
+                            glyph.clip_bounds = clip;
+                        }
                     }
+                    // Group glyphs by their z_layer
+                    glyphs_by_layer
+                        .entry(text.z_index)
+                        .or_default()
+                        .extend(glyphs);
                 }
-                // Group glyphs by their z_layer
-                glyphs_by_layer
-                    .entry(text.z_index)
-                    .or_default()
-                    .extend(glyphs);
+                Err(e) => {
+                    tracing::warn!(
+                        "render_tree_with_motion: failed to prepare text '{}': {:?}",
+                        text.content,
+                        e
+                    );
+                }
             }
         }
+
+        tracing::debug!(
+            "render_tree_with_motion: {} texts, {} z-layers with glyphs",
+            texts.len(),
+            glyphs_by_layer.len()
+        );
 
         // SVGs are rendered as rasterized images (not tessellated paths) for better anti-aliasing
         // They will be rendered later via render_rasterized_svgs

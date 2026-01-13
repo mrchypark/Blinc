@@ -80,11 +80,18 @@ impl AndroidApp {
 
     /// Initialize Android logging
     fn init_logging() {
+        // Initialize android_logger for log crate
         android_logger::init_once(
             android_logger::Config::default()
                 .with_max_level(log::LevelFilter::Debug)
                 .with_tag("Blinc"),
         );
+
+        // Initialize tracing-android for tracing crate
+        use tracing_subscriber::layer::SubscriberExt;
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_android::layer("Blinc").unwrap());
+        let _ = tracing::subscriber::set_global_default(subscriber);
     }
 
     /// Run an Android Blinc application
@@ -410,118 +417,226 @@ impl AndroidApp {
             });
 
             // Process touch/input events from android-activity
+            // Collect pending events for dispatch (like desktop windowed.rs)
+            #[derive(Clone, Default)]
+            struct PendingEvent {
+                node_id: blinc_layout::LayoutNodeId,
+                event_type: u32,
+                mouse_x: f32,
+                mouse_y: f32,
+            }
+
+            let mut pending_events: Vec<PendingEvent> = Vec::new();
+
             if let (Some(ref mut windowed_ctx), Some(ref tree)) = (&mut ctx, &render_tree) {
                 // Get the scale factor for coordinate conversion
                 let scale = windowed_ctx.scale_factor as f32;
+                let router = &mut windowed_ctx.event_router;
+
+                // Set up callback to collect events (like desktop)
+                router.set_event_callback({
+                    let events = &mut pending_events as *mut Vec<PendingEvent>;
+                    move |node, event_type| {
+                        // SAFETY: This callback is only used within this scope
+                        unsafe {
+                            (*events).push(PendingEvent {
+                                node_id: node,
+                                event_type,
+                                ..Default::default()
+                            });
+                        }
+                    }
+                });
 
                 // Process all pending input events
-                if let Ok(mut input_iter) = app.input_events_iter() {
-                    // Handle input events using android-activity 0.6 API
-                    // The callback returns InputStatus and next() returns bool
-                    while input_iter.next(|event| {
-                        match event {
-                            AndroidInputEvent::MotionEvent(motion_event) => {
-                                let action = motion_event.action();
-                                let pointer_count = motion_event.pointer_count();
-                                let action_index = motion_event.pointer_index();
+                match app.input_events_iter() {
+                    Ok(mut input_iter) => {
+                        // Handle input events using android-activity 0.6 API
+                        while input_iter.next(|event| {
+                            match event {
+                                AndroidInputEvent::MotionEvent(motion_event) => {
+                                    let action = motion_event.action();
+                                    let pointer_count = motion_event.pointer_count();
+                                    let action_index = motion_event.pointer_index();
 
-                                if pointer_count > 0 {
-                                    // For PointerDown/PointerUp, get the action pointer
-                                    // For other events, get the primary pointer
-                                    let pointer_idx = match action {
-                                        MotionAction::PointerDown | MotionAction::PointerUp => {
-                                            action_index
-                                        }
-                                        _ => 0,
-                                    };
+                                    if pointer_count > 0 {
+                                        let pointer_idx = match action {
+                                            MotionAction::PointerDown | MotionAction::PointerUp => {
+                                                action_index
+                                            }
+                                            _ => 0,
+                                        };
 
-                                    let pointer = motion_event.pointer_at_index(pointer_idx);
-                                    let lx = pointer.x() / scale;
-                                    let ly = pointer.y() / scale;
+                                        let pointer = motion_event.pointer_at_index(pointer_idx);
+                                        let lx = pointer.x() / scale;
+                                        let ly = pointer.y() / scale;
 
-                                    match action {
-                                        MotionAction::Down => {
-                                            tracing::debug!(
-                                                "Touch DOWN at logical ({:.1}, {:.1})",
-                                                lx, ly
-                                            );
-                                            windowed_ctx
-                                                .event_router
-                                                .on_mouse_down(tree, lx, ly, MouseButton::Left);
-                                            needs_rebuild = true;
+                                        match action {
+                                            MotionAction::Down | MotionAction::PointerDown => {
+                                                tracing::debug!(
+                                                    "Touch DOWN at logical ({:.1}, {:.1})",
+                                                    lx, ly
+                                                );
+                                                router.on_mouse_down(tree, lx, ly, MouseButton::Left);
+                                                // Update pending events with coordinates
+                                                unsafe {
+                                                    let events = &mut pending_events as *mut Vec<PendingEvent>;
+                                                    for event in (*events).iter_mut() {
+                                                        event.mouse_x = lx;
+                                                        event.mouse_y = ly;
+                                                    }
+                                                }
+                                            }
+                                            MotionAction::Move => {
+                                                router.on_mouse_move(tree, lx, ly);
+                                                unsafe {
+                                                    let events = &mut pending_events as *mut Vec<PendingEvent>;
+                                                    for event in (*events).iter_mut() {
+                                                        event.mouse_x = lx;
+                                                        event.mouse_y = ly;
+                                                    }
+                                                }
+                                            }
+                                            MotionAction::Up | MotionAction::PointerUp => {
+                                                tracing::debug!(
+                                                    "Touch UP at logical ({:.1}, {:.1})",
+                                                    lx, ly
+                                                );
+                                                router.on_mouse_up(tree, lx, ly, MouseButton::Left);
+                                                unsafe {
+                                                    let events = &mut pending_events as *mut Vec<PendingEvent>;
+                                                    for event in (*events).iter_mut() {
+                                                        event.mouse_x = lx;
+                                                        event.mouse_y = ly;
+                                                    }
+                                                }
+                                            }
+                                            MotionAction::Cancel => {
+                                                tracing::debug!("Touch CANCEL");
+                                                router.on_mouse_leave();
+                                            }
+                                            _ => {}
                                         }
-                                        MotionAction::Move => {
-                                            windowed_ctx.event_router.on_mouse_move(tree, lx, ly);
-                                            needs_rebuild = true;
-                                        }
-                                        MotionAction::Up => {
-                                            tracing::debug!(
-                                                "Touch UP at logical ({:.1}, {:.1})",
-                                                lx, ly
-                                            );
-                                            windowed_ctx
-                                                .event_router
-                                                .on_mouse_up(tree, lx, ly, MouseButton::Left);
-                                            needs_rebuild = true;
-                                        }
-                                        MotionAction::Cancel => {
-                                            tracing::debug!("Touch CANCEL");
-                                            windowed_ctx.event_router.on_mouse_leave();
-                                            needs_rebuild = true;
-                                        }
-                                        MotionAction::PointerDown => {
-                                            tracing::debug!(
-                                                "Multi-touch DOWN at logical ({:.1}, {:.1})",
-                                                lx, ly
-                                            );
-                                            windowed_ctx
-                                                .event_router
-                                                .on_mouse_down(tree, lx, ly, MouseButton::Left);
-                                            needs_rebuild = true;
-                                        }
-                                        MotionAction::PointerUp => {
-                                            tracing::debug!(
-                                                "Multi-touch UP at logical ({:.1}, {:.1})",
-                                                lx, ly
-                                            );
-                                            windowed_ctx
-                                                .event_router
-                                                .on_mouse_up(tree, lx, ly, MouseButton::Left);
-                                            needs_rebuild = true;
-                                        }
-                                        _ => {}
+                                        InputStatus::Handled
+                                    } else {
+                                        InputStatus::Unhandled
                                     }
-                                    InputStatus::Handled
-                                } else {
-                                    InputStatus::Unhandled
                                 }
+                                _ => InputStatus::Unhandled,
                             }
-                            _ => InputStatus::Unhandled,
+                        }) {
+                            // Event was processed, continue loop
                         }
-                    }) {
-                        // Event was processed, continue loop
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to get input events iterator: {:?}", e);
+                    }
+                }
+
+                // Clear the callback
+                router.clear_event_callback();
+            } else {
+                // Log when we can't process input (missing context or tree)
+                if ctx.is_none() {
+                    tracing::trace!("Input: ctx is None");
+                }
+                if render_tree.is_none() {
+                    tracing::trace!("Input: render_tree is None");
+                }
+            }
+
+            // Dispatch collected events to the tree (critical for click handlers!)
+            if !pending_events.is_empty() {
+                if let Some(ref mut tree) = render_tree {
+                    for event in pending_events {
+                        tracing::debug!(
+                            "Dispatching event: node={:?}, type={}, pos=({:.1}, {:.1})",
+                            event.node_id, event.event_type, event.mouse_x, event.mouse_y
+                        );
+                        tree.dispatch_event(
+                            event.node_id,
+                            event.event_type,
+                            event.mouse_x,
+                            event.mouse_y,
+                        );
                     }
                 }
             }
 
-            // Check dirty flag
-            if ref_dirty_flag.swap(false, Ordering::SeqCst) {
-                needs_rebuild = true;
-            }
+            // =========================================================
+            // PHASE 1: Check for incremental updates (prop changes, subtree rebuilds)
+            // This avoids full rebuild for simple state changes
+            // =========================================================
+            let mut needs_redraw = false;
 
-            // Tick animations
-            let animations_active = {
-                if let Ok(mut sched) = animations.lock() {
-                    sched.tick()
-                } else {
-                    false
+            // Check if stateful elements requested a redraw (hover/press/state changes)
+            let has_stateful_updates = blinc_layout::take_needs_redraw();
+            let has_pending_rebuilds = blinc_layout::has_pending_subtree_rebuilds();
+
+            if has_stateful_updates || has_pending_rebuilds {
+                if has_stateful_updates {
+                    tracing::debug!("Redraw requested by: stateful state change");
                 }
-            };
-            if animations_active {
+
+                // Get all pending prop updates
+                let prop_updates = blinc_layout::take_pending_prop_updates();
+                let had_prop_updates = !prop_updates.is_empty();
+
+                // Apply prop updates to the tree
+                if let Some(ref mut tree) = render_tree {
+                    for (node_id, props) in &prop_updates {
+                        tree.update_render_props(*node_id, |p| *p = props.clone());
+                    }
+                }
+
+                // Process subtree rebuilds
+                let mut needs_layout = false;
+                if let Some(ref mut tree) = render_tree {
+                    needs_layout = tree.process_pending_subtree_rebuilds();
+                }
+
+                if needs_layout {
+                    if let Some(ref mut tree) = render_tree {
+                        if let Some(ref windowed_ctx) = ctx {
+                            tracing::debug!("Subtree rebuilds processed, recomputing layout");
+                            tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                        }
+                    }
+                }
+
+                if had_prop_updates && !needs_layout {
+                    tracing::trace!("Visual-only prop updates, skipping layout");
+                }
+
+                needs_redraw = true;
+            }
+
+            // Check dirty flag from State::set() calls
+            if ref_dirty_flag.swap(false, Ordering::SeqCst) {
+                tracing::debug!("Rebuild triggered by: ref_dirty_flag (State::set)");
                 needs_rebuild = true;
             }
 
-            // Render if we have everything and need to rebuild
+            // Check if tree was marked dirty by event handlers
+            if let Some(ref tree) = render_tree {
+                if tree.needs_rebuild() {
+                    tracing::debug!("Rebuild triggered by: tree.needs_rebuild()");
+                    needs_rebuild = true;
+                }
+            }
+
+            // Tick animations (just tick, don't force rebuild)
+            {
+                if let Ok(mut sched) = animations.lock() {
+                    if sched.tick() {
+                        needs_redraw = true;
+                    }
+                }
+            }
+
+            // =========================================================
+            // PHASE 2: Full rebuild only when structure changes
+            // =========================================================
             if needs_rebuild && focused {
                 if let (
                     Some(ref mut app_instance),
@@ -539,19 +654,43 @@ impl AndroidApp {
                     // Build UI
                     let element = ui_builder(windowed_ctx);
 
-                    // Create render tree (full rebuild each frame for simplicity)
-                    let tree = render_tree.get_or_insert_with(|| {
-                        let mut t = RenderTree::from_element(&element);
-                        t.set_scale_factor(windowed_ctx.scale_factor as f32);
-                        t
-                    });
+                    // Create or update render tree
+                    if render_tree.is_none() {
+                        // First time: create tree
+                        let mut tree = RenderTree::from_element(&element);
+                        tree.set_scale_factor(windowed_ctx.scale_factor as f32);
+                        tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                        render_tree = Some(tree);
+                    } else if let Some(ref mut tree) = render_tree {
+                        // Full rebuild
+                        tree.clear_dirty();
+                        *tree = RenderTree::from_element(&element);
+                        tree.set_scale_factor(windowed_ctx.scale_factor as f32);
+                        tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                    }
+                    needs_redraw = true;
+                }
+            }
 
-                    // For now, always rebuild the tree fully
-                    // TODO: implement incremental update like desktop
-                    *tree = RenderTree::from_element(&element);
-                    tree.set_scale_factor(windowed_ctx.scale_factor as f32);
-                    tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
-
+            // =========================================================
+            // PHASE 3: Render if we need redraw
+            // =========================================================
+            if needs_redraw && focused {
+                if let (
+                    Some(ref mut app_instance),
+                    Some(ref surf),
+                    Some(ref config),
+                    Some(ref mut windowed_ctx),
+                    Some(ref rs),
+                    Some(ref tree),
+                ) = (
+                    &mut blinc_app,
+                    &surface,
+                    &surface_config,
+                    &mut ctx,
+                    &render_state,
+                    &render_tree,
+                ) {
                     // Render
                     match surf.get_current_texture() {
                         Ok(output) => {
@@ -590,9 +729,9 @@ impl AndroidApp {
                             }
                         }
                     }
-
-                    needs_rebuild = false;
                 }
+
+                needs_rebuild = false;
             }
         }
 
@@ -655,19 +794,38 @@ impl AndroidApp {
         let mut text_ctx = TextRenderingContext::new(device.clone(), queue.clone());
 
         // Load Android system fonts
+        let mut fonts_loaded = 0;
         for font_path in crate::system_font_paths() {
             let path = std::path::Path::new(font_path);
+            tracing::debug!("Checking font path: {}", font_path);
             if path.exists() {
-                if let Ok(data) = std::fs::read(path) {
-                    let _ = text_ctx.load_font_data(data);
-                    break;
+                match std::fs::read(path) {
+                    Ok(data) => {
+                        tracing::info!("Loading font from: {} ({} bytes)", font_path, data.len());
+                        match text_ctx.load_font_data(data) {
+                            Ok(_) => {
+                                tracing::info!("Successfully loaded font: {}", font_path);
+                                fonts_loaded += 1;
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to load font {}: {:?}", font_path, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to read font file {}: {}", font_path, e);
+                    }
                 }
+            } else {
+                tracing::debug!("Font path does not exist: {}", font_path);
             }
         }
+        tracing::info!("Loaded {} system fonts", fonts_loaded);
 
         // Preload common fonts
         text_ctx.preload_fonts(&["Roboto", "Noto Sans", "Droid Sans"]);
         text_ctx.preload_generic_styles(blinc_gpu::GenericFont::SansSerif, &[400, 700], false);
+        tracing::info!("Font preloading complete");
 
         let ctx = crate::context::RenderContext::new(
             renderer,
