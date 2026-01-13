@@ -363,6 +363,52 @@ impl ScrollRef {
     }
 }
 
+// =========================================================================
+// Global use_scroll_ref Function
+// =========================================================================
+
+/// Create a persistent scroll reference that survives across UI rebuilds
+///
+/// This is the primary way to create a ScrollRef when you don't have direct
+/// access to `WindowedContext`. It uses `BlincContextState` for persistence
+/// across rebuilds.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use blinc_layout::selector::use_scroll_ref;
+///
+/// let scroll_ref = use_scroll_ref("my_scroll");
+///
+/// scroll()
+///     .bind(&scroll_ref)
+///     .child(content)
+///
+/// // Later, control the scroll programmatically:
+/// scroll_ref.scroll_to_bottom();
+/// scroll_ref.scroll_to("item-42");
+/// ```
+///
+/// # Panics
+///
+/// Panics if `BlincContextState` has not been initialized.
+pub fn use_scroll_ref(key: &str) -> ScrollRef {
+    use blinc_core::BlincContextState;
+
+    let ctx = BlincContextState::get();
+    let state_key = format!("scroll_ref:{}", key);
+
+    // Get or create the inner state using BlincContextState's persisted storage
+    let (signal_id, inner) = ctx.get_or_create_persisted(&state_key, ScrollRef::new_inner);
+
+    // Create a no-op trigger - scroll operations are processed every frame
+    // by the renderer's process_pending_scroll_refs(), so we don't need
+    // to trigger rebuilds on scroll commands
+    let noop_trigger: TriggerCallback = Arc::new(|| {});
+
+    ScrollRef::with_inner(inner, signal_id, noop_trigger)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

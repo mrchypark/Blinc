@@ -847,6 +847,54 @@ impl BlincContextState {
     pub fn is_recording_updates(&self) -> bool {
         self.recorder_update_callback.read().unwrap().is_some()
     }
+
+    // =========================================================================
+    // Scroll Ref Support (for blinc_layout integration)
+    // =========================================================================
+
+    /// Get or create a persisted value for scroll ref inner state
+    ///
+    /// This is a low-level method used by blinc_layout's `use_scroll_ref` function
+    /// to persist ScrollRefInner across rebuilds without circular dependencies.
+    ///
+    /// Returns (signal_id, value) tuple where the value is retrieved from or stored
+    /// in the reactive graph.
+    ///
+    /// # Type Parameters
+    ///
+    /// - `T`: The type to store (typically `Arc<Mutex<ScrollRefInner>>`)
+    /// - `F`: Factory function to create initial value
+    pub fn get_or_create_persisted<T, F>(&self, key: &str, create: F) -> (SignalId, T)
+    where
+        T: Clone + Send + 'static,
+        F: FnOnce() -> T,
+    {
+        let state_key = StateKey::from_string::<T>(key);
+        let mut hooks = self.hooks.lock().unwrap();
+
+        if let Some(raw_id) = hooks.get(&state_key) {
+            // Reconstruct the signal ID and get the value from the reactive graph
+            let signal_id = SignalId::from_raw(raw_id);
+            let value = self
+                .reactive
+                .lock()
+                .unwrap()
+                .get_untracked(Signal::<T>::from_id(signal_id))
+                .unwrap_or_else(create);
+            (signal_id, value)
+        } else {
+            // First time - create a new value and store it in the reactive graph
+            let new_value = create();
+            let signal = self
+                .reactive
+                .lock()
+                .unwrap()
+                .create_signal(new_value.clone());
+            let raw_id = signal.id().to_raw();
+            hooks.insert(state_key, raw_id);
+            (signal.id(), new_value)
+        }
+    }
 }
 
 // =========================================================================

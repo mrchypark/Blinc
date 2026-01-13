@@ -353,6 +353,7 @@ fn section_container() -> Div {
     let radius = theme.radii().radius_xl;
 
     div()
+        .w_fit()
         .bg(surface)
         .rounded(radius)
         .border(1.5, border)
@@ -3510,12 +3511,12 @@ fn scroll_area_section() -> impl ElementBuilder {
             div()
                 .flex_row()
                 .flex_wrap()
-                .gap(24.0)
+                .gap_px(24.0)
                 // Auto visibility (default) - shows on scroll/hover, auto-dismisses
                 .child(
                     div()
                         .flex_col()
-                        .gap(8.0)
+                        .gap_px(8.0)
                         .child(
                             text("Auto (default)")
                                 .size(12.0)
@@ -3529,7 +3530,7 @@ fn scroll_area_section() -> impl ElementBuilder {
                                 .child(
                                     div()
                                         .flex_col()
-                                        .gap(8.0)
+                                        .gap_px(8.0)
                                         .p(8.0)
                                         .child(text("Scroll content 1").size(14.0))
                                         .child(text("Scroll content 2").size(14.0))
@@ -3548,7 +3549,7 @@ fn scroll_area_section() -> impl ElementBuilder {
                 .child(
                     div()
                         .flex_col()
-                        .gap(8.0)
+                        .gap_px(8.0)
                         .child(
                             text("Always visible")
                                 .size(12.0)
@@ -3562,7 +3563,7 @@ fn scroll_area_section() -> impl ElementBuilder {
                                 .child(
                                     div()
                                         .flex_col()
-                                        .gap(8.0)
+                                        .gap_px(8.0)
                                         .p(8.0)
                                         .bg(surface)
                                         .child(text("Item A").size(14.0))
@@ -3580,7 +3581,7 @@ fn scroll_area_section() -> impl ElementBuilder {
                 .child(
                     div()
                         .flex_col()
-                        .gap(8.0)
+                        .gap_px(8.0)
                         .child(
                             text("Show on hover")
                                 .size(12.0)
@@ -3594,7 +3595,7 @@ fn scroll_area_section() -> impl ElementBuilder {
                                 .child(
                                     div()
                                         .flex_col()
-                                        .gap(8.0)
+                                        .gap_px(8.0)
                                         .p(8.0)
                                         .child(text("Hover to see scrollbar").size(14.0))
                                         .child(text("Line 2").size(14.0))
@@ -3611,7 +3612,7 @@ fn scroll_area_section() -> impl ElementBuilder {
                 .child(
                     div()
                         .flex_col()
-                        .gap(8.0)
+                        .gap_px(8.0)
                         .child(
                             text("Hidden scrollbar")
                                 .size(12.0)
@@ -3625,7 +3626,7 @@ fn scroll_area_section() -> impl ElementBuilder {
                                 .child(
                                     div()
                                         .flex_col()
-                                        .gap(8.0)
+                                        .gap_px(8.0)
                                         .p(8.0)
                                         .bg(surface)
                                         .child(text("No visible scrollbar").size(14.0))
@@ -3659,18 +3660,18 @@ fn aspect_ratio_section() -> impl ElementBuilder {
             div()
                 .flex_row()
                 .flex_wrap()
-                .gap(24.0)
+                .gap_px(24.0)
                 .items_end()
                 // Square (1:1)
                 .child(
                     div()
                         .flex_col()
-                        .gap(8.0)
+                        .gap_px(8.0)
                         .child(text("1:1 Square").size(12.0).color(text_secondary))
                         .child(
                             cn::aspect_ratio_square()
                                 .w(100.0)
-                                .bg(surface)
+                                .bg(primary.with_alpha(0.25))
                                 .rounded(8.0)
                                 .child(
                                     div()
@@ -3686,7 +3687,7 @@ fn aspect_ratio_section() -> impl ElementBuilder {
                 .child(
                     div()
                         .flex_col()
-                        .gap(8.0)
+                        .gap_px(8.0)
                         .child(text("16:9 Widescreen").size(12.0).color(text_secondary))
                         .child(
                             cn::aspect_ratio_16_9()
@@ -3707,12 +3708,12 @@ fn aspect_ratio_section() -> impl ElementBuilder {
                 .child(
                     div()
                         .flex_col()
-                        .gap(8.0)
+                        .gap_px(8.0)
                         .child(text("4:3 Traditional").size(12.0).color(text_secondary))
                         .child(
                             cn::aspect_ratio_4_3()
                                 .w(120.0)
-                                .bg(surface)
+                                .bg(primary.with_alpha(0.1))
                                 .rounded(8.0)
                                 .child(
                                     div()
@@ -3728,7 +3729,7 @@ fn aspect_ratio_section() -> impl ElementBuilder {
                 .child(
                     div()
                         .flex_col()
-                        .gap(8.0)
+                        .gap_px(8.0)
                         .child(text("21:9 Ultrawide").size(12.0).color(text_secondary))
                         .child(
                             cn::aspect_ratio_21_9()
@@ -3749,12 +3750,12 @@ fn aspect_ratio_section() -> impl ElementBuilder {
                 .child(
                     div()
                         .flex_col()
-                        .gap(8.0)
+                        .gap_px(8.0)
                         .child(text("9:16 Vertical").size(12.0).color(text_secondary))
                         .child(
                             cn::aspect_ratio_9_16()
                                 .w(56.0)
-                                .bg(surface)
+                                .bg(primary.with_alpha(0.35))
                                 .rounded(8.0)
                                 .child(
                                     div()
@@ -3770,7 +3771,7 @@ fn aspect_ratio_section() -> impl ElementBuilder {
                 .child(
                     div()
                         .flex_col()
-                        .gap(8.0)
+                        .gap_px(8.0)
                         .child(text("Custom 3:2").size(12.0).color(text_secondary))
                         .child(
                             cn::aspect_ratio(3.0 / 2.0)

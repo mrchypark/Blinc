@@ -29,7 +29,7 @@
 //!     .child(content)
 //! ```
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 
 use blinc_core::Color;
 use blinc_layout::element::RenderProps;
@@ -108,7 +108,7 @@ struct BuiltAspectRatio {
 }
 
 impl BuiltAspectRatio {
-    fn from_config(config: &AspectRatioConfig) -> Self {
+    fn from_config(config: AspectRatioConfig) -> Self {
         // Calculate dimensions based on what's provided
         let (final_width, final_height) = match (config.width, config.height) {
             // Both provided - use width and ignore height (width takes priority)
@@ -137,17 +137,17 @@ impl BuiltAspectRatio {
             container = container.rounded(radius);
         }
 
-        // Add content wrapper for absolute positioning
-        // Note: actual content is added via .child() on the builder
-        if config.content.is_some() {
-            // Content wrapper that fills the container
+        // Add content if provided
+        if let Some(content) = config.content {
+            // Content wrapper that fills the container with absolute positioning
             let content_wrapper = div()
                 .absolute()
                 .left(0.0)
                 .top(0.0)
                 .right(0.0)
                 .bottom(0.0)
-                .overflow_clip();
+                .overflow_clip()
+                .child_box(content);
 
             // Position the container as relative for absolute positioning to work
             container = container.relative().child(content_wrapper);
@@ -178,7 +178,7 @@ impl ElementBuilder for AspectRatio {
 
 /// Builder for aspect ratio container
 pub struct AspectRatioBuilder {
-    config: AspectRatioConfig,
+    config: RefCell<AspectRatioConfig>,
     built: OnceCell<AspectRatio>,
 }
 
@@ -186,10 +186,10 @@ impl AspectRatioBuilder {
     /// Create a new aspect ratio builder with the given ratio
     pub fn new(ratio: f32) -> Self {
         Self {
-            config: AspectRatioConfig {
+            config: RefCell::new(AspectRatioConfig {
                 ratio: ratio.max(0.01), // Prevent zero/negative ratios
                 ..Default::default()
-            },
+            }),
             built: OnceCell::new(),
         }
     }
@@ -201,50 +201,53 @@ impl AspectRatioBuilder {
 
     fn get_or_build(&self) -> &AspectRatio {
         self.built.get_or_init(|| {
-            let built = BuiltAspectRatio::from_config(&self.config);
+            // Take ownership of config, replacing with default
+            let config = self.config.take();
+            let built = BuiltAspectRatio::from_config(config);
             AspectRatio { inner: built.inner }
         })
     }
 
     /// Set the aspect ratio (width / height)
-    pub fn ratio(mut self, ratio: f32) -> Self {
-        self.config.ratio = ratio.max(0.01);
+    pub fn ratio(self, ratio: f32) -> Self {
+        self.config.borrow_mut().ratio = ratio.max(0.01);
         self
     }
 
     /// Set width (height will be calculated from ratio)
-    pub fn w(mut self, width: f32) -> Self {
-        self.config.width = Some(width);
+    pub fn w(self, width: f32) -> Self {
+        self.config.borrow_mut().width = Some(width);
         self
     }
 
     /// Set height (width will be calculated from ratio)
-    pub fn h(mut self, height: f32) -> Self {
-        self.config.height = Some(height);
+    pub fn h(self, height: f32) -> Self {
+        self.config.borrow_mut().height = Some(height);
         self
     }
 
     /// Set background color
-    pub fn bg(mut self, color: impl Into<Color>) -> Self {
-        self.config.background = Some(color.into());
+    pub fn bg(self, color: impl Into<Color>) -> Self {
+        self.config.borrow_mut().background = Some(color.into());
         self
     }
 
     /// Set corner radius
-    pub fn rounded(mut self, radius: f32) -> Self {
-        self.config.corner_radius = Some(radius);
+    pub fn rounded(self, radius: f32) -> Self {
+        self.config.borrow_mut().corner_radius = Some(radius);
         self
     }
 
     /// Set the child content
-    pub fn child(mut self, content: impl ElementBuilder + 'static) -> Self {
-        self.config.content = Some(Box::new(content));
+    pub fn child(self, content: impl ElementBuilder + 'static) -> Self {
+        self.config.borrow_mut().content = Some(Box::new(content));
         self
     }
 
     /// Build the final AspectRatio component
     pub fn build_final(self) -> AspectRatio {
-        let built = BuiltAspectRatio::from_config(&self.config);
+        let config = self.config.into_inner();
+        let built = BuiltAspectRatio::from_config(config);
         AspectRatio { inner: built.inner }
     }
 }
@@ -410,9 +413,10 @@ mod tests {
 
         let builder = aspect_ratio(4.0 / 3.0).w(400.0).rounded(8.0);
 
-        assert!((builder.config.ratio - 4.0 / 3.0).abs() < 0.001);
-        assert_eq!(builder.config.width, Some(400.0));
-        assert_eq!(builder.config.corner_radius, Some(8.0));
+        let config = builder.config.borrow();
+        assert!((config.ratio - 4.0 / 3.0).abs() < 0.001);
+        assert_eq!(config.width, Some(400.0));
+        assert_eq!(config.corner_radius, Some(8.0));
     }
 
     #[test]
@@ -421,7 +425,8 @@ mod tests {
 
         let builder = aspect_ratio_square().w(200.0);
 
-        assert_eq!(builder.config.ratio, 1.0);
-        assert_eq!(builder.config.width, Some(200.0));
+        let config = builder.config.borrow();
+        assert_eq!(config.ratio, 1.0);
+        assert_eq!(config.width, Some(200.0));
     }
 }

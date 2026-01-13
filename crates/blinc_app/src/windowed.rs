@@ -2190,6 +2190,17 @@ impl WindowedApp {
                             // These are re-added during rendering if still active
                             rs.clear_overlays();
 
+                            // Tick scroll physics and sync ScrollRef state BEFORE any rebuilds
+                            // This ensures ScrollRef has up-to-date values when stateful components
+                            // query scroll position during rebuild
+                            let scroll_animating = if let Some(ref mut tree) = render_tree {
+                                let animating = tree.tick_scroll_physics(current_time);
+                                tree.process_pending_scroll_refs();
+                                animating
+                            } else {
+                                false
+                            };
+
                             // =========================================================
                             // PHASE 1: Check if tree structure needs rebuild
                             // Only structural changes require tree rebuild
@@ -2508,17 +2519,8 @@ impl WindowedApp {
                             // Tick theme animation (handles color interpolation during theme transitions)
                             let theme_animating = blinc_theme::ThemeState::get().tick();
 
-                            // Process pending scroll operations from ScrollRefs
-                            if let Some(ref mut tree) = render_tree {
-                                tree.process_pending_scroll_refs();
-                            }
-
-                            // Tick scroll physics for bounce-back animations
-                            let scroll_animating = if let Some(ref mut tree) = render_tree {
-                                tree.tick_scroll_physics(current_time)
-                            } else {
-                                false
-                            };
+                            // Note: scroll physics tick moved to before PHASE 1 (before any rebuilds)
+                            // so that ScrollRef has up-to-date values when stateful components rebuild
 
                             // =========================================================
                             // PHASE 4: Render
