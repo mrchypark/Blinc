@@ -1,0 +1,55 @@
+[package]
+name = "{{project_name}}"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "{{project_name_snake}}"
+path = "src/main.rs"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "{{project_name_snake}}_desktop"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[dependencies]
+blinc_app = { path = "{{blinc_path}}/crates/blinc_app" }
+blinc_core = { path = "{{blinc_path}}/crates/blinc_core" }
+blinc_layout = { path = "{{blinc_path}}/crates/blinc_layout" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+blinc_platform_android = { path = "{{blinc_path}}/extensions/blinc_platform_android" }
+android-activity = { version = "0.6", features = ["native-activity"] }
+log = "0.4"
+android_logger = "0.14"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+blinc_platform_ios = { path = "{{blinc_path}}/extensions/blinc_platform_ios" }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+blinc_platform_desktop = { path = "{{blinc_path}}/extensions/blinc_platform_desktop" }
+
+[features]
+default = ["desktop"]
+desktop = []
+android = []
+ios = []
+
+[profile.release]
+lto = "thin"
+opt-level = "z"
+strip = true
+
+[profile.dev]
+opt-level = 1
+
+# Android-specific configuration
+[package.metadata.android]
+package = "com.blinc.{{project_name_snake}}"
+apk_label = "{{project_name}}"
+target_sdk_version = 34
+min_sdk_version = 24
+
+[package.metadata.android.application]
+theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
