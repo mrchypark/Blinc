@@ -1288,7 +1288,8 @@ impl RenderContext {
                 (0.0, 0.0),
                 false,      // inside_glass
                 false,      // inside_foreground
-                None,       // No initial clip
+                None,       // No initial clip bounds
+                None,       // No initial clip radius
                 1.0,        // Initial motion opacity
                 (0.0, 0.0), // Initial motion translate offset
                 (1.0, 1.0), // Initial motion scale
@@ -1317,6 +1318,7 @@ impl RenderContext {
         inside_glass: bool,
         inside_foreground: bool,
         current_clip: Option<[f32; 4]>,
+        current_clip_radius: Option<[f32; 4]>,
         inherited_motion_opacity: f32,
         inherited_motion_translate: (f32, f32),
         inherited_motion_scale: (f32, f32),
@@ -1447,7 +1449,7 @@ impl RenderContext {
         // When a node clips, we INTERSECT its bounds with any existing clip
         // This ensures nested clipping works correctly (inner clips can't expand outer clips)
         let should_clip = clips_content || has_layout_animation;
-        let child_clip = if should_clip {
+        let (child_clip, child_clip_radius) = if should_clip {
             // For layout animation, use animated bounds for clipping
             // This ensures content is clipped to the animating size during transition
             let clip_bounds = if has_layout_animation {
@@ -1459,7 +1461,15 @@ impl RenderContext {
                 [abs_x, abs_y, bounds.width, bounds.height]
             };
             let this_clip = clip_bounds;
-            if let Some(parent_clip) = current_clip {
+
+            // Extract border radius from this node for rounded clipping
+            // Order: top_left, top_right, bottom_right, bottom_left
+            let this_clip_radius = tree.get_render_node(node).map(|n| {
+                let r = &n.props.border_radius;
+                [r.top_left, r.top_right, r.bottom_right, r.bottom_left]
+            });
+
+            let new_clip = if let Some(parent_clip) = current_clip {
                 // Intersect: take the overlap of parent_clip and this_clip
                 let x1 = parent_clip[0].max(this_clip[0]);
                 let y1 = parent_clip[1].max(this_clip[1]);
@@ -1470,9 +1480,21 @@ impl RenderContext {
                 Some([x1, y1, w, h])
             } else {
                 Some(this_clip)
-            }
+            };
+
+            // Use this node's border radius if it has one, otherwise inherit parent's
+            let new_radius = if this_clip_radius
+                .map(|r| r.iter().any(|&v| v > 0.0))
+                .unwrap_or(false)
+            {
+                this_clip_radius
+            } else {
+                current_clip_radius
+            };
+
+            (new_clip, new_radius)
         } else {
-            current_clip
+            (current_clip, current_clip_radius)
         };
 
         if let Some(render_node) = tree.get_render_node(node) {
@@ -1657,6 +1679,11 @@ impl RenderContext {
                     let scaled_clip = current_clip
                         .map(|[cx, cy, cw, ch]| [cx * scale, cy * scale, cw * scale, ch * scale]);
 
+                    // Scale clip radius by DPI factor (radius values are in layout coordinates)
+                    let scaled_clip_radius = current_clip_radius
+                        .map(|[tl, tr, br, bl]| [tl * scale, tr * scale, br * scale, bl * scale])
+                        .unwrap_or([0.0; 4]);
+
                     images.push(ImageElement {
                         source: image_data.source.clone(),
                         x: abs_x * scale,
@@ -1669,7 +1696,7 @@ impl RenderContext {
                         border_radius: image_data.border_radius * scale,
                         tint: image_data.tint,
                         clip_bounds: scaled_clip,
-                        clip_radius: [0.0; 4],
+                        clip_radius: scaled_clip_radius,
                         layer: effective_layer,
                         loading_strategy: image_data.loading_strategy,
                         placeholder_type: image_data.placeholder_type,
@@ -1881,6 +1908,7 @@ impl RenderContext {
                 children_inside_glass,
                 inside_foreground,
                 child_clip,
+                child_clip_radius,
                 effective_motion_opacity,
                 effective_motion_translate,
                 effective_motion_scale,

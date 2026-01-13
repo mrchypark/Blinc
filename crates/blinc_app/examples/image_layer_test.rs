@@ -3,6 +3,10 @@
 //! Tests the rendering order of images vs primitives (paths, backgrounds).
 //! This helps debug z-order issues where images may render above/below other elements.
 //!
+//! **Solution for rendering elements ON TOP of images:**
+//! Use `.foreground()` on any element that needs to render above images.
+//! The render order is: Background primitives → Images → Foreground primitives
+//!
 //! Run with: cargo run -p blinc_app --example image_layer_test --features windowed
 
 use blinc_app::prelude::*;

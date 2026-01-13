@@ -170,5 +170,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Apply clip alpha
     color.a *= clip_alpha;
 
+    // Output premultiplied alpha for correct blending
+    // (blend state uses src_factor: One, dst_factor: OneMinusSrcAlpha)
+    color = vec4<f32>(color.rgb * color.a, color.a);
+
     return color;
 }
