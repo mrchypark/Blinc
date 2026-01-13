@@ -142,23 +142,57 @@ div()
 
 ## Crates
 
-| Crate                        | Description                                 |
-| ---------------------------- | ------------------------------------------- |
-| **blinc_app** | High-level app framework with windowed runner |
-| **blinc_core** | Reactive signals, state machines, brush types |
-| **blinc_layout** | Flexbox layout engine with GPUI-style builders |
-| **blinc_gpu** | GPU rendering: SDF shapes, glass effects, MSAA |
-| **blinc_paint** | Canvas/paint API for custom drawing |
-| **blinc_text** | Text shaping, font loading, glyph atlas |
-| **blinc_image** | Image loading and cross-platform assets |
-| **blinc_svg** | SVG parsing and rendering |
-| **blinc_animation** | Spring physics and keyframe animations |
-| **blinc_theme** | Design tokens, theming, light/dark mode |
-| **blinc_platform** | Cross-platform traits and asset loading |
-| **blinc_platform_desktop** | Desktop backend (winit) |
-| **blinc_platform_android** | Android backend (NDK) |
-| **blinc_platform_ios** | iOS backend (UIKit/Metal) |
-| **blinc_cli** | Command-line tooling |
+### Core
+
+| Crate | Description |
+| ----- | ----------- |
+| [**blinc_app**](crates/blinc_app/README.md) | High-level app framework with windowed runner |
+| [**blinc_core**](crates/blinc_core/README.md) | Reactive signals, state machines, brush types |
+| [**blinc_layout**](crates/blinc_layout/README.md) | Flexbox layout engine with GPUI-style builders |
+| [**blinc_gpu**](crates/blinc_gpu/README.md) | GPU rendering: SDF shapes, glass effects, MSAA |
+
+### Rendering & Media
+
+| Crate | Description |
+| ----- | ----------- |
+| [**blinc_paint**](crates/blinc_paint/README.md) | Canvas/paint API for custom drawing |
+| [**blinc_text**](crates/blinc_text/README.md) | Text shaping, font loading, glyph atlas |
+| [**blinc_image**](crates/blinc_image/README.md) | Image loading and cross-platform assets |
+| [**blinc_svg**](crates/blinc_svg/README.md) | SVG parsing and rendering |
+
+### Animation & Theming
+
+| Crate | Description |
+| ----- | ----------- |
+| [**blinc_animation**](crates/blinc_animation/README.md) | Spring physics and keyframe animations |
+| [**blinc_theme**](crates/blinc_theme/README.md) | Design tokens, theming, light/dark mode |
+
+### Component Library
+
+| Crate | Description |
+| ----- | ----------- |
+| [**blinc_cn**](crates/blinc_cn/README.md) | shadcn/ui-style component library (40+ components) |
+| [**blinc_icons**](crates/blinc_icons/README.md) | Lucide icon set integration |
+
+### Platform
+
+| Crate | Description |
+| ----- | ----------- |
+| [**blinc_platform**](crates/blinc_platform/README.md) | Cross-platform traits and asset loading |
+| [**blinc_platform_desktop**](extensions/blinc_platform_desktop/README.md) | Desktop backend (winit) |
+| [**blinc_platform_android**](extensions/blinc_platform_android/README.md) | Android backend (NDK) |
+| [**blinc_platform_ios**](extensions/blinc_platform_ios/README.md) | iOS backend (UIKit/Metal) |
+
+### Tooling & Development
+
+| Crate | Description |
+| ----- | ----------- |
+| [**blinc_cli**](crates/blinc_cli/README.md) | Command-line tooling |
+| [**blinc_macros**](crates/blinc_macros/README.md) | Procedural macros for components |
+| [**blinc_debugger**](crates/blinc_debugger/README.md) | Visual debugger overlay |
+| [**blinc_recorder**](crates/blinc_recorder/README.md) | Frame recording and debugging |
+| [**blinc_runtime**](crates/blinc_runtime/README.md) | Embedding SDK for host applications |
+| [**blinc_test_suite**](crates/blinc_test_suite/README.md) | Visual regression testing framework |
 
 ## Builder API Reference
 
