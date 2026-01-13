@@ -25,11 +25,13 @@ use std::sync::{
 };
 
 use android_activity::{AndroidApp as NdkAndroidApp, MainEvent, PollEvent};
+use android_activity::input::{InputEvent as AndroidInputEvent, MotionAction};
 use ndk::native_window::NativeWindow;
 
 use blinc_animation::AnimationScheduler;
 use blinc_core::context_state::{BlincContextState, HookState, SharedHookState};
 use blinc_core::reactive::{ReactiveGraph, SignalId};
+use blinc_layout::event_router::MouseButton;
 use blinc_layout::overlay_state::OverlayContext;
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager};
@@ -407,10 +409,105 @@ impl AndroidApp {
                 }
             });
 
-            // Check for input events
-            if let Some(ref mut windowed_ctx) = ctx {
-                // Process touch events from android-activity
-                // TODO: Implement touch event routing through EventRouter
+            // Process touch/input events from android-activity
+            if let (Some(ref mut windowed_ctx), Some(ref tree)) = (&mut ctx, &render_tree) {
+                // Get the scale factor for coordinate conversion
+                let scale = windowed_ctx.scale_factor as f32;
+
+                // Process all pending input events
+                if let Ok(mut input_iter) = app.input_events_iter() {
+                    loop {
+                        // Handle input events - extract action and pointer data
+                        let event_data = input_iter.next(|event| {
+                            match event {
+                                AndroidInputEvent::MotionEvent(motion_event) => {
+                                    let action = motion_event.action();
+                                    let pointer_count = motion_event.pointer_count();
+                                    let action_index = motion_event.pointer_index();
+
+                                    if pointer_count > 0 {
+                                        // For PointerDown/PointerUp, get the action pointer
+                                        // For other events, get the primary pointer
+                                        let pointer_idx = match action {
+                                            MotionAction::PointerDown | MotionAction::PointerUp => {
+                                                action_index
+                                            }
+                                            _ => 0,
+                                        };
+
+                                        let pointer = motion_event.pointer_at_index(pointer_idx);
+                                        let lx = pointer.x() / scale;
+                                        let ly = pointer.y() / scale;
+
+                                        Some((action, lx, ly))
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            }
+                        });
+
+                        match event_data {
+                            Some(Some((action, lx, ly))) => {
+                                match action {
+                                    MotionAction::Down => {
+                                        tracing::debug!(
+                                            "Touch DOWN at logical ({:.1}, {:.1})",
+                                            lx, ly
+                                        );
+                                        windowed_ctx
+                                            .event_router
+                                            .on_mouse_down(tree, lx, ly, MouseButton::Left);
+                                        needs_rebuild = true;
+                                    }
+                                    MotionAction::Move => {
+                                        windowed_ctx.event_router.on_mouse_move(tree, lx, ly);
+                                        needs_rebuild = true;
+                                    }
+                                    MotionAction::Up => {
+                                        tracing::debug!(
+                                            "Touch UP at logical ({:.1}, {:.1})",
+                                            lx, ly
+                                        );
+                                        windowed_ctx
+                                            .event_router
+                                            .on_mouse_up(tree, lx, ly, MouseButton::Left);
+                                        needs_rebuild = true;
+                                    }
+                                    MotionAction::Cancel => {
+                                        tracing::debug!("Touch CANCEL");
+                                        windowed_ctx.event_router.on_mouse_leave();
+                                        needs_rebuild = true;
+                                    }
+                                    MotionAction::PointerDown => {
+                                        tracing::debug!(
+                                            "Multi-touch DOWN at logical ({:.1}, {:.1})",
+                                            lx, ly
+                                        );
+                                        windowed_ctx
+                                            .event_router
+                                            .on_mouse_down(tree, lx, ly, MouseButton::Left);
+                                        needs_rebuild = true;
+                                    }
+                                    MotionAction::PointerUp => {
+                                        tracing::debug!(
+                                            "Multi-touch UP at logical ({:.1}, {:.1})",
+                                            lx, ly
+                                        );
+                                        windowed_ctx
+                                            .event_router
+                                            .on_mouse_up(tree, lx, ly, MouseButton::Left);
+                                        needs_rebuild = true;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Some(None) => {}
+                            None => break,
+                        }
+                    }
+                }
             }
 
             // Check dirty flag

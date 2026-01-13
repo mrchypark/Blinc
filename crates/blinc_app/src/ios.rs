@@ -35,11 +35,12 @@ use std::sync::{
 use blinc_animation::AnimationScheduler;
 use blinc_core::context_state::{BlincContextState, HookState, SharedHookState};
 use blinc_core::reactive::{ReactiveGraph, SignalId};
+use blinc_layout::event_router::MouseButton;
 use blinc_layout::overlay_state::OverlayContext;
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager};
 use blinc_platform::assets::set_global_asset_loader;
-use blinc_platform_ios::{IOSAssetLoader, IOSWakeProxy};
+use blinc_platform_ios::{IOSAssetLoader, IOSWakeProxy, TouchPhase};
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
@@ -360,13 +361,394 @@ impl IOSRenderContext {
     /// Handle a touch event
     ///
     /// Call this from your UIView's touch handling methods.
-    pub fn handle_touch(&mut self, _touch: blinc_platform_ios::Touch) {
-        // TODO: Route touch to event router
-        // This will be implemented when the event routing system is connected
+    /// Touch coordinates should be in logical points (not physical pixels).
+    ///
+    /// # Example (Swift)
+    ///
+    /// ```swift
+    /// override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+    ///     for touch in touches {
+    ///         let point = touch.location(in: self)
+    ///         blinc_handle_touch(context, 0, Float(point.x), Float(point.y), 0) // 0 = began
+    ///     }
+    /// }
+    /// ```
+    pub fn handle_touch(&mut self, touch: blinc_platform_ios::Touch) {
+        let tree = match &self.render_tree {
+            Some(t) => t,
+            None => return, // No tree yet, ignore touch
+        };
+
+        // Touch coordinates are already in logical points on iOS
+        let lx = touch.x;
+        let ly = touch.y;
+
+        match touch.phase {
+            TouchPhase::Began => {
+                tracing::debug!("iOS Touch BEGAN at ({:.1}, {:.1})", lx, ly);
+                self.windowed_ctx
+                    .event_router
+                    .on_mouse_down(tree, lx, ly, MouseButton::Left);
+            }
+            TouchPhase::Moved => {
+                self.windowed_ctx.event_router.on_mouse_move(tree, lx, ly);
+            }
+            TouchPhase::Ended => {
+                tracing::debug!("iOS Touch ENDED at ({:.1}, {:.1})", lx, ly);
+                self.windowed_ctx
+                    .event_router
+                    .on_mouse_up(tree, lx, ly, MouseButton::Left);
+            }
+            TouchPhase::Cancelled => {
+                tracing::debug!("iOS Touch CANCELLED");
+                self.windowed_ctx.event_router.on_mouse_leave();
+            }
+        }
+
+        // Mark for rebuild
+        self.ref_dirty_flag.store(true, Ordering::SeqCst);
     }
 
     /// Set focus state
     pub fn set_focused(&mut self, focused: bool) {
         self.windowed_ctx.focused = focused;
+    }
+}
+
+// =============================================================================
+// C FFI for Swift/Objective-C Integration
+// =============================================================================
+
+/// Type alias for UI builder function pointer
+///
+/// The function receives the WindowedContext pointer and should build/update the UI.
+/// It's called each frame when rendering is needed.
+///
+/// Example Rust implementation:
+/// ```ignore
+/// #[no_mangle]
+/// pub extern "C" fn my_app_build_ui(ctx: *mut WindowedContext) {
+///     if ctx.is_null() { return; }
+///     let ctx = unsafe { &mut *ctx };
+///     // Use ctx.width, ctx.height, etc. to build UI
+/// }
+/// ```
+pub type UIBuilderFn = extern "C" fn(ctx: *mut WindowedContext);
+
+/// Stored UI builder for FFI
+static mut UI_BUILDER: Option<UIBuilderFn> = None;
+
+/// Register a UI builder function (C FFI for Swift/Rust interop)
+///
+/// The builder function will be called each frame to build the UI.
+/// Call this once during initialization before any rendering.
+///
+/// # Safety
+/// The function pointer must remain valid for the lifetime of the application.
+#[no_mangle]
+pub extern "C" fn blinc_set_ui_builder(builder: UIBuilderFn) {
+    unsafe {
+        UI_BUILDER = Some(builder);
+    }
+}
+
+/// Get the registered UI builder (internal use)
+fn get_ui_builder() -> Option<UIBuilderFn> {
+    unsafe { UI_BUILDER }
+}
+
+/// Build a frame using the registered UI builder (C FFI for Swift)
+///
+/// This ticks animations, calls the registered UI builder, and prepares
+/// the frame for rendering. Call this each frame when blinc_needs_render() is true.
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+/// A UI builder must have been registered via `blinc_set_ui_builder`.
+#[no_mangle]
+pub extern "C" fn blinc_build_frame(ctx: *mut IOSRenderContext) {
+    if ctx.is_null() {
+        return;
+    }
+
+    unsafe {
+        let ctx = &mut *ctx;
+
+        // Clear dirty flag
+        ctx.ref_dirty_flag.swap(false, Ordering::SeqCst);
+
+        // Tick animations
+        if let Ok(mut sched) = ctx.animations.lock() {
+            sched.tick();
+        }
+
+        // Call the registered UI builder if any
+        if let Some(builder) = get_ui_builder() {
+            builder(&mut ctx.windowed_ctx as *mut WindowedContext);
+        }
+    }
+}
+
+/// Create an iOS render context (C FFI for Swift)
+///
+/// # Arguments
+/// * `width` - Physical width in pixels
+/// * `height` - Physical height in pixels
+/// * `scale_factor` - Display scale factor (UIScreen.scale)
+///
+/// # Returns
+/// Pointer to the render context, or null on failure
+///
+/// # Safety
+/// The returned pointer must be freed with `blinc_destroy_context`.
+#[no_mangle]
+pub extern "C" fn blinc_create_context(
+    width: u32,
+    height: u32,
+    scale_factor: f64,
+) -> *mut IOSRenderContext {
+    match IOSApp::create_context(width, height, scale_factor) {
+        Ok(ctx) => Box::into_raw(Box::new(ctx)),
+        Err(e) => {
+            tracing::error!("Failed to create iOS render context: {}", e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Check if a frame needs to be rendered (C FFI for Swift)
+///
+/// Returns true if reactive state changed, animations are active,
+/// or a wake was requested.
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_needs_render(ctx: *mut IOSRenderContext) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    unsafe { (*ctx).needs_render() }
+}
+
+/// Update the window size (C FFI for Swift)
+///
+/// Call this when the view's bounds change.
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_update_size(
+    ctx: *mut IOSRenderContext,
+    width: u32,
+    height: u32,
+    scale_factor: f64,
+) {
+    if ctx.is_null() {
+        return;
+    }
+    unsafe {
+        (*ctx).update_size(width, height, scale_factor);
+    }
+}
+
+/// Handle a touch event (C FFI for Swift)
+///
+/// # Arguments
+/// * `ctx` - Render context pointer
+/// * `touch_id` - Unique touch identifier (from UITouch)
+/// * `x` - X position in logical points
+/// * `y` - Y position in logical points
+/// * `phase` - Touch phase: 0=began, 1=moved, 2=ended, 3=cancelled
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_handle_touch(
+    ctx: *mut IOSRenderContext,
+    touch_id: u64,
+    x: f32,
+    y: f32,
+    phase: i32,
+) {
+    if ctx.is_null() {
+        return;
+    }
+
+    let touch_phase = match phase {
+        0 => TouchPhase::Began,
+        1 => TouchPhase::Moved,
+        2 => TouchPhase::Ended,
+        _ => TouchPhase::Cancelled,
+    };
+
+    let touch = blinc_platform_ios::Touch::new(touch_id, x, y, touch_phase);
+    unsafe {
+        (*ctx).handle_touch(touch);
+    }
+}
+
+/// Set the focus state (C FFI for Swift)
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_set_focused(ctx: *mut IOSRenderContext, focused: bool) {
+    if ctx.is_null() {
+        return;
+    }
+    unsafe {
+        (*ctx).set_focused(focused);
+    }
+}
+
+/// Destroy the render context (C FFI for Swift)
+///
+/// Frees all resources associated with the context.
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`,
+/// and must not be used after this call.
+#[no_mangle]
+pub extern "C" fn blinc_destroy_context(ctx: *mut IOSRenderContext) {
+    if !ctx.is_null() {
+        unsafe {
+            drop(Box::from_raw(ctx));
+        }
+    }
+}
+
+/// Tick animations (C FFI for Swift)
+///
+/// Call this each frame before building UI. Returns true if any animations
+/// are active (meaning you should continue rendering).
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_tick_animations(ctx: *mut IOSRenderContext) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    unsafe {
+        let ctx = &mut *ctx;
+        if let Ok(mut sched) = ctx.animations.lock() {
+            sched.tick()
+        } else {
+            false
+        }
+    }
+}
+
+/// Get the logical width for UI layout (C FFI for Swift)
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_get_width(ctx: *mut IOSRenderContext) -> f32 {
+    if ctx.is_null() {
+        return 0.0;
+    }
+    unsafe { (*ctx).windowed_ctx.width }
+}
+
+/// Get the logical height for UI layout (C FFI for Swift)
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_get_height(ctx: *mut IOSRenderContext) -> f32 {
+    if ctx.is_null() {
+        return 0.0;
+    }
+    unsafe { (*ctx).windowed_ctx.height }
+}
+
+/// Get the scale factor (C FFI for Swift)
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_get_scale_factor(ctx: *mut IOSRenderContext) -> f64 {
+    if ctx.is_null() {
+        return 1.0;
+    }
+    unsafe { (*ctx).windowed_ctx.scale_factor }
+}
+
+/// Get a pointer to the WindowedContext for UI building (C FFI for Swift)
+///
+/// Use this to pass to a Rust UI builder function.
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+/// The returned pointer is only valid while `ctx` is valid.
+#[no_mangle]
+pub extern "C" fn blinc_get_windowed_context(ctx: *mut IOSRenderContext) -> *mut WindowedContext {
+    if ctx.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe { &mut (*ctx).windowed_ctx as *mut WindowedContext }
+}
+
+/// Mark the context as needing a rebuild (C FFI for Swift)
+///
+/// Call this when external state changes that should trigger a UI update.
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_mark_dirty(ctx: *mut IOSRenderContext) {
+    if ctx.is_null() {
+        return;
+    }
+    unsafe {
+        (*ctx).ref_dirty_flag.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Clear the dirty flag (C FFI for Swift)
+///
+/// Call this after processing a rebuild.
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_clear_dirty(ctx: *mut IOSRenderContext) {
+    if ctx.is_null() {
+        return;
+    }
+    unsafe {
+        (*ctx).ref_dirty_flag.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Get the physical width in pixels (C FFI for Swift)
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_get_physical_width(ctx: *mut IOSRenderContext) -> u32 {
+    if ctx.is_null() {
+        return 0;
+    }
+    unsafe {
+        let ctx = &*ctx;
+        (ctx.windowed_ctx.width * ctx.windowed_ctx.scale_factor as f32) as u32
+    }
+}
+
+/// Get the physical height in pixels (C FFI for Swift)
+///
+/// # Safety
+/// `ctx` must be a valid pointer returned by `blinc_create_context`.
+#[no_mangle]
+pub extern "C" fn blinc_get_physical_height(ctx: *mut IOSRenderContext) -> u32 {
+    if ctx.is_null() {
+        return 0;
+    }
+    unsafe {
+        let ctx = &*ctx;
+        (ctx.windowed_ctx.height * ctx.windowed_ctx.scale_factor as f32) as u32
     }
 }
