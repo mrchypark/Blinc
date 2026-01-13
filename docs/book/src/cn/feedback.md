@@ -1,0 +1,291 @@
+# Feedback Components
+
+Components for user feedback: alerts, badges, progress indicators, and toasts.
+
+## Alert
+
+Display important messages:
+
+```rust
+use blinc_cn::prelude::*;
+
+alert()
+    .child(alert_title("Heads up!"))
+    .child(alert_description("This is an important message."))
+```
+
+### Alert Variants
+
+```rust
+// Default
+alert()
+    .child(alert_title("Note"))
+    .child(alert_description("This is a note."))
+
+// Destructive (error/warning)
+alert()
+    .variant(AlertVariant::Destructive)
+    .child(alert_title("Error"))
+    .child(alert_description("Something went wrong."))
+```
+
+### With Icon
+
+```rust
+alert()
+    .child(icon(icons::INFO).size(16.0))
+    .child(alert_title("Information"))
+    .child(alert_description("Here's some useful info."))
+```
+
+## Badge
+
+Small labels for status or counts:
+
+```rust
+badge("New")
+badge("3").variant(BadgeVariant::Secondary)
+badge("Error").variant(BadgeVariant::Destructive)
+badge("Beta").variant(BadgeVariant::Outline)
+```
+
+### Badge Variants
+
+```rust
+// Default - primary color
+badge("Default")
+
+// Secondary - muted color
+badge("Secondary").variant(BadgeVariant::Secondary)
+
+// Destructive - error/warning
+badge("Destructive").variant(BadgeVariant::Destructive)
+
+// Outline - bordered
+badge("Outline").variant(BadgeVariant::Outline)
+```
+
+### With Icon
+
+```rust
+badge("")
+    .variant(BadgeVariant::Outline)
+    .child(icon(icons::CHECK).size(12.0))
+    .child(text("Verified"))
+```
+
+## Progress
+
+Progress bar:
+
+```rust
+progress()
+    .value(75.0)  // 0-100
+```
+
+### Indeterminate
+
+```rust
+progress()
+    .indeterminate(true)
+```
+
+### With Label
+
+```rust
+div()
+    .flex_col()
+    .gap(4.0)
+    .child(
+        div().flex_row().justify_between()
+            .child(text("Uploading..."))
+            .child(text(format!("{}%", progress_value)))
+    )
+    .child(progress().value(progress_value))
+```
+
+## Spinner
+
+Loading indicator:
+
+```rust
+spinner()
+```
+
+### Spinner Sizes
+
+```rust
+spinner().size(SpinnerSize::Sm)   // Small
+spinner().size(SpinnerSize::Md)   // Medium (default)
+spinner().size(SpinnerSize::Lg)   // Large
+```
+
+### In Button
+
+```rust
+button(if is_loading { "" } else { "Save" })
+    .loading(is_loading)
+    .disabled(is_loading)
+```
+
+## Skeleton
+
+Placeholder for loading content:
+
+```rust
+skeleton().w(200.0).h(20.0)
+```
+
+### Card Skeleton
+
+```rust
+card()
+    .child(card_header()
+        .child(skeleton().w(150.0).h(24.0))  // Title placeholder
+        .child(skeleton().w(200.0).h(16.0))) // Description placeholder
+    .child(card_content()
+        .child(skeleton().w_full().h(100.0))) // Content placeholder
+```
+
+### List Skeleton
+
+```rust
+div()
+    .flex_col()
+    .gap(12.0)
+    .child(
+        div().flex_row().gap(12.0)
+            .child(skeleton().w(48.0).h(48.0).rounded_full())  // Avatar
+            .child(
+                div().flex_col().gap(4.0)
+                    .child(skeleton().w(150.0).h(16.0))  // Name
+                    .child(skeleton().w(100.0).h(14.0))) // Subtitle
+    )
+    // Repeat for more items...
+```
+
+## Toast
+
+Temporary notifications:
+
+```rust
+// Show a toast
+show_toast(
+    toast()
+        .title("Success")
+        .description("Your changes have been saved.")
+);
+
+// With variant
+show_toast(
+    toast()
+        .variant(ToastVariant::Destructive)
+        .title("Error")
+        .description("Failed to save changes.")
+);
+```
+
+### Toast Variants
+
+```rust
+// Default
+toast().title("Notification")
+
+// Success
+toast()
+    .variant(ToastVariant::Success)
+    .title("Success")
+
+// Destructive/Error
+toast()
+    .variant(ToastVariant::Destructive)
+    .title("Error")
+```
+
+### With Action
+
+```rust
+toast()
+    .title("Event created")
+    .description("Friday, February 10, 2024")
+    .action(
+        toast_action()
+            .child(button("Undo").size(ButtonSize::Sm))
+            .on_click(|| undo_action())
+    )
+```
+
+### Toast Position
+
+```rust
+// Configure toast container position
+toaster()
+    .position(ToasterPosition::TopRight)  // TopLeft, TopRight, BottomLeft, BottomRight
+```
+
+## Examples
+
+### Loading State
+
+```rust
+let is_loading = use_state(true);
+
+if is_loading {
+    div()
+        .flex_col()
+        .items_center()
+        .gap(16.0)
+        .child(spinner().size(SpinnerSize::Lg))
+        .child(text("Loading..."))
+} else {
+    // Actual content
+}
+```
+
+### Form Submission Feedback
+
+```rust
+let status = use_state(FormStatus::Idle);
+
+div()
+    .flex_col()
+    .gap(16.0)
+    .child(/* form fields */)
+    .child(
+        match status {
+            FormStatus::Idle => button("Submit").on_click(|| submit()),
+            FormStatus::Submitting => button("").loading(true).disabled(true),
+            FormStatus::Success => alert()
+                .child(alert_title("Success"))
+                .child(alert_description("Form submitted successfully!")),
+            FormStatus::Error(msg) => alert()
+                .variant(AlertVariant::Destructive)
+                .child(alert_title("Error"))
+                .child(alert_description(msg)),
+        }
+    )
+```
+
+### Notification Center
+
+```rust
+fn notify_success(message: &str) {
+    show_toast(
+        toast()
+            .variant(ToastVariant::Success)
+            .title("Success")
+            .description(message)
+            .duration(Duration::from_secs(5))
+    );
+}
+
+fn notify_error(message: &str) {
+    show_toast(
+        toast()
+            .variant(ToastVariant::Destructive)
+            .title("Error")
+            .description(message)
+            .duration(Duration::from_secs(10))
+    );
+}
+```
