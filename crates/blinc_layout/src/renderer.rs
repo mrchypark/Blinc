@@ -4541,7 +4541,8 @@ impl RenderTree {
         // Draw borders
         // Individual border sides take precedence over uniform border
         // Also check uniform border_width for .border(width, color) API
-        let has_border = render_node.props.border_sides.has_any() || render_node.props.border_width > 0.0;
+        let has_border =
+            render_node.props.border_sides.has_any() || render_node.props.border_width > 0.0;
         if has_border {
             let sides = &render_node.props.border_sides;
 
@@ -5186,7 +5187,8 @@ impl RenderTree {
             // Draw borders
             // Individual border sides take precedence over uniform border
             // Also check uniform border_width for .border(width, color) API
-            let has_border = render_node.props.border_sides.has_any() || render_node.props.border_width > 0.0;
+            let has_border =
+                render_node.props.border_sides.has_any() || render_node.props.border_width > 0.0;
             if has_border {
                 let sides = &render_node.props.border_sides;
 
@@ -5703,7 +5705,8 @@ impl RenderTree {
 
             // Draw borders
             // Also check uniform border_width for .border(width, color) API
-            let has_border = render_node.props.border_sides.has_any() || render_node.props.border_width > 0.0;
+            let has_border =
+                render_node.props.border_sides.has_any() || render_node.props.border_width > 0.0;
             if has_border {
                 let sides = &render_node.props.border_sides;
                 let uniform_width = render_node.props.border_width;
@@ -5718,10 +5721,26 @@ impl RenderTree {
                     ctx.push_clip(ClipShape::rounded_rect(rect, radius));
                 }
 
-                let left_border = sides.left.as_ref().map(|b| (b.width, b.color)).unwrap_or((uniform_width, uniform_color));
-                let right_border = sides.right.as_ref().map(|b| (b.width, b.color)).unwrap_or((uniform_width, uniform_color));
-                let top_border = sides.top.as_ref().map(|b| (b.width, b.color)).unwrap_or((uniform_width, uniform_color));
-                let bottom_border = sides.bottom.as_ref().map(|b| (b.width, b.color)).unwrap_or((uniform_width, uniform_color));
+                let left_border = sides
+                    .left
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
+                let right_border = sides
+                    .right
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
+                let top_border = sides
+                    .top
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
+                let bottom_border = sides
+                    .bottom
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
 
                 if left_border.0 > 0.0 {
                     let border_rect = Rect::new(0.0, 0.0, left_border.0, rect.height());

@@ -960,22 +960,19 @@ impl RenderContext {
             // Render border on top of image if specified
             if image.border_width > 0.0 {
                 use blinc_gpu::primitives::GpuPrimitive;
-                let border_primitive = GpuPrimitive::rect(
-                    image.x,
-                    image.y,
-                    image.width,
-                    image.height,
-                )
-                .with_color(0.0, 0.0, 0.0, 0.0) // Transparent fill
-                .with_corner_radius(image.border_radius)
-                .with_border(
-                    image.border_width,
-                    image.border_color.r,
-                    image.border_color.g,
-                    image.border_color.b,
-                    image.border_color.a,
-                );
-                self.renderer.render_primitives_overlay(target, &[border_primitive]);
+                let border_primitive =
+                    GpuPrimitive::rect(image.x, image.y, image.width, image.height)
+                        .with_color(0.0, 0.0, 0.0, 0.0) // Transparent fill
+                        .with_corner_radius(image.border_radius)
+                        .with_border(
+                            image.border_width,
+                            image.border_color.r,
+                            image.border_color.g,
+                            image.border_color.b,
+                            image.border_color.a,
+                        );
+                self.renderer
+                    .render_primitives_overlay(target, &[border_primitive]);
             }
         }
     }
@@ -1050,22 +1047,19 @@ impl RenderContext {
             // Render border on top of image if specified
             if image.border_width > 0.0 {
                 use blinc_gpu::primitives::GpuPrimitive;
-                let border_primitive = GpuPrimitive::rect(
-                    image.x,
-                    image.y,
-                    image.width,
-                    image.height,
-                )
-                .with_color(0.0, 0.0, 0.0, 0.0) // Transparent fill
-                .with_corner_radius(image.border_radius)
-                .with_border(
-                    image.border_width,
-                    image.border_color.r,
-                    image.border_color.g,
-                    image.border_color.b,
-                    image.border_color.a,
-                );
-                self.renderer.render_primitives_overlay(target, &[border_primitive]);
+                let border_primitive =
+                    GpuPrimitive::rect(image.x, image.y, image.width, image.height)
+                        .with_color(0.0, 0.0, 0.0, 0.0) // Transparent fill
+                        .with_corner_radius(image.border_radius)
+                        .with_border(
+                            image.border_width,
+                            image.border_color.r,
+                            image.border_color.g,
+                            image.border_color.b,
+                            image.border_color.a,
+                        );
+                self.renderer
+                    .render_primitives_overlay(target, &[border_primitive]);
             }
         }
     }
@@ -1751,7 +1745,10 @@ impl RenderContext {
                         placeholder_color: image_data.placeholder_color,
                         z_index: *z_layer,
                         border_width: render_node.props.border_width * scale,
-                        border_color: render_node.props.border_color.unwrap_or(blinc_core::Color::TRANSPARENT),
+                        border_color: render_node
+                            .props
+                            .border_color
+                            .unwrap_or(blinc_core::Color::TRANSPARENT),
                     });
                 }
                 // Canvas elements are rendered inline during tree traversal (in render_layer)

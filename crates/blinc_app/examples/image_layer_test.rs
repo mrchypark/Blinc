@@ -68,7 +68,11 @@ fn test_border_no_image() -> impl ElementBuilder {
     div()
         .flex_col()
         .gap(4.0)
-        .child(text("7: Border test (small circles)").size(14.0).color(Color::WHITE))
+        .child(
+            text("7: Border test (small circles)")
+                .size(14.0)
+                .color(Color::WHITE),
+        )
         .child(
             div()
                 .flex_row()
@@ -165,7 +169,11 @@ fn test_case_2(src: &str) -> impl ElementBuilder {
     div()
         .flex_col()
         .gap(4.0)
-        .child(text("2: Sibling + .foreground()").size(14.0).color(Color::WHITE))
+        .child(
+            text("2: Sibling + .foreground()")
+                .size(14.0)
+                .color(Color::WHITE),
+        )
         .child(
             div()
                 .w(100.0)
@@ -196,7 +204,11 @@ fn test_case_3(src: &str) -> impl ElementBuilder {
     div()
         .flex_col()
         .gap(4.0)
-        .child(text("3: .foreground() + border").size(14.0).color(Color::WHITE))
+        .child(
+            text("3: .foreground() + border")
+                .size(14.0)
+                .color(Color::WHITE),
+        )
         .child(
             div()
                 .w(100.0)
@@ -228,7 +240,11 @@ fn test_case_4(src: &str) -> impl ElementBuilder {
     div()
         .flex_col()
         .gap(4.0)
-        .child(text("4: Stack (image first)").size(14.0).color(Color::WHITE))
+        .child(
+            text("4: Stack (image first)")
+                .size(14.0)
+                .color(Color::WHITE),
+        )
         .child(
             stack()
                 .w(100.0)
@@ -289,16 +305,12 @@ fn test_case_6(src: &str) -> impl ElementBuilder {
                 .relative()
                 .child(img(src).size(100.0, 100.0).cover().rounded(8.0))
                 .child(
-                    div()
-                        .absolute()
-                        .bottom(8.0)
-                        .left(8.0)
-                        .child(
-                            text("HELLO")
-                                .size(16.0)
-                                .weight(FontWeight::Bold)
-                                .color(Color::WHITE),
-                        ),
+                    div().absolute().bottom(8.0).left(8.0).child(
+                        text("HELLO")
+                            .size(16.0)
+                            .weight(FontWeight::Bold)
+                            .color(Color::WHITE),
+                    ),
                 ),
         )
         .child(

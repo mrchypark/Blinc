@@ -104,7 +104,9 @@ pub mod cn {
         aspect_ratio_square,
     };
     // Avatar
-    pub use crate::components::avatar::{avatar, avatar_group, AvatarShape, AvatarSize, AvatarStatus};
+    pub use crate::components::avatar::{
+        avatar, avatar_group, AvatarShape, AvatarSize, AvatarStatus,
+    };
 }
 
 /// Prelude for convenient imports
