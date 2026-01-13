@@ -32,10 +32,12 @@ pub mod activity;
 pub mod assets;
 pub mod event_loop;
 pub mod input;
+pub mod jni_utils;
 pub mod window;
 
 pub use assets::AndroidAssetLoader;
 pub use event_loop::AndroidEventLoop;
+pub use jni_utils::{get_display_density, get_display_dpi, is_dark_mode};
 pub use window::AndroidWindow;
 
 use blinc_platform::{Platform, PlatformError};
@@ -83,8 +85,13 @@ impl Platform for AndroidPlatform {
         "android"
     }
 
+    #[cfg(target_os = "android")]
     fn scale_factor(&self) -> f64 {
-        // TODO: Get actual density from DisplayMetrics via JNI
+        get_display_density(&self.app)
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn scale_factor(&self) -> f64 {
         1.0
     }
 }

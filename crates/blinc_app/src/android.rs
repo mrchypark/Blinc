@@ -261,9 +261,9 @@ impl AndroidApp {
                                         blinc_app = Some(app_instance);
                                         native_window = Some(window);
 
-                                        // Create WindowedContext
-                                        // TODO: Get actual DPI from DisplayMetrics
-                                        let scale_factor = 1.0;
+                                        // Create WindowedContext with actual display density
+                                        let scale_factor =
+                                            blinc_platform_android::get_display_density(&app);
                                         let logical_width = width as f32 / scale_factor as f32;
                                         let logical_height = height as f32 / scale_factor as f32;
 

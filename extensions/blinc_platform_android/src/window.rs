@@ -14,6 +14,8 @@ pub struct AndroidWindow {
     native_window: NativeWindow,
     focused: AtomicBool,
     running: AtomicBool,
+    /// Display density (scale factor) from DisplayMetrics
+    scale_factor: f64,
 }
 
 #[cfg(target_os = "android")]
@@ -24,7 +26,23 @@ impl AndroidWindow {
             native_window,
             focused: AtomicBool::new(true),
             running: AtomicBool::new(true),
+            scale_factor: 1.0,
         }
+    }
+
+    /// Create a new Android window with a specific scale factor
+    pub fn with_scale_factor(native_window: NativeWindow, scale_factor: f64) -> Self {
+        Self {
+            native_window,
+            focused: AtomicBool::new(true),
+            running: AtomicBool::new(true),
+            scale_factor,
+        }
+    }
+
+    /// Set the scale factor (display density)
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        self.scale_factor = scale_factor;
     }
 
     /// Get the underlying native window
@@ -58,16 +76,13 @@ impl Window for AndroidWindow {
     }
 
     fn logical_size(&self) -> (f32, f32) {
-        // Android handles DPI internally through the view system
-        // For now, return physical size as logical size
         let (w, h) = self.size();
-        (w as f32, h as f32)
+        let scale = self.scale_factor as f32;
+        (w as f32 / scale, h as f32 / scale)
     }
 
     fn scale_factor(&self) -> f64 {
-        // TODO: Get actual density from DisplayMetrics
-        // For now, return 1.0 as Android handles scaling internally
-        1.0
+        self.scale_factor
     }
 
     fn set_title(&self, _title: &str) {
