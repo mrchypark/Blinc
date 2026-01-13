@@ -2743,7 +2743,7 @@ fn convert_cursor_style(cursor: CursorStyle) -> blinc_platform::Cursor {
 }
 
 /// Convenience function to run a windowed app with default configuration
-#[cfg(feature = "windowed")]
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
 pub fn run_windowed<F, E>(ui_builder: F) -> Result<()>
 where
     F: FnMut(&mut WindowedContext) -> E + 'static,
@@ -2753,7 +2753,7 @@ where
 }
 
 /// Convenience function to run a windowed app with a title
-#[cfg(feature = "windowed")]
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
 pub fn run_windowed_with_title<F, E>(title: &str, ui_builder: F) -> Result<()>
 where
     F: FnMut(&mut WindowedContext) -> E + 'static,

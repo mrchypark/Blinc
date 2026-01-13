@@ -35,3 +35,6 @@ jni.workspace = true
 
 # Android logging
 android_logger = "0.14"
+
+# Encoding
+base64 = "0.22"

@@ -17,13 +17,16 @@ path = "src/main.rs"
 required-features = ["desktop"]
 
 [dependencies]
-blinc_app = { path = "/Users/amaterasu/Vibranium/Blinc/crates/blinc_app" }
 blinc_core = { path = "/Users/amaterasu/Vibranium/Blinc/crates/blinc_core" }
 blinc_layout = { path = "/Users/amaterasu/Vibranium/Blinc/crates/blinc_layout" }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
+[target.'cfg(not(target_os = "android"))'.dependencies]
+blinc_app = { path = "/Users/amaterasu/Vibranium/Blinc/crates/blinc_app" }
+
 [target.'cfg(target_os = "android")'.dependencies]
+blinc_app = { path = "/Users/amaterasu/Vibranium/Blinc/crates/blinc_app", features = ["android"] }
 blinc_platform_android = { path = "/Users/amaterasu/Vibranium/Blinc/extensions/blinc_platform_android" }
 android-activity = { version = "0.6", features = ["native-activity"] }
 log = "0.4"

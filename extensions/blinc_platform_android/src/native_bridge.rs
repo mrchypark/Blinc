@@ -98,12 +98,23 @@ impl AndroidNativeBridgeAdapter {
         let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr() as *mut _) }
             .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to get JavaVM: {}", e)))?;
 
-        let mut env = vm
-            .attach_current_thread()
-            .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to attach thread: {}", e)))?;
+        // Attach thread and find the bridge class in a scope so env is dropped before we move vm
+        let bridge_class = {
+            let mut env = vm
+                .attach_current_thread()
+                .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to attach thread: {}", e)))?;
 
-        Self::new(vm, &mut env)
-            .map_err(|e| NativeBridgeError::PlatformError(format!("JNI init failed: {}", e)))
+            // Find the BlincNativeBridge class
+            let class = env
+                .find_class("com/blinc/BlincNativeBridge")
+                .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to find BlincNativeBridge class: {}", e)))?;
+            env.new_global_ref(class)
+                .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to create global ref: {}", e)))?
+        };
+
+        debug!("AndroidNativeBridgeAdapter initialized from AndroidApp");
+
+        Ok(Self { vm, bridge_class })
     }
 
     /// Serialize NativeValue arguments to JSON
