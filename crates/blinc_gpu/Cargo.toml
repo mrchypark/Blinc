@@ -9,11 +9,16 @@ license.workspace = true
 crate-type = ["lib"]
 
 [features]
-default = ["vulkan", "metal", "dx12"]
+# No default backends - must be explicitly selected per platform
+default = []
 vulkan = ["wgpu/vulkan-portability"]
 metal = ["wgpu/metal"]
 dx12 = ["wgpu/dx12"]
-webgl = ["wgpu/webgl"]  # For WebGL/OpenGL ES support
+webgl = ["wgpu/webgl"]
+# Platform-specific presets
+desktop = ["vulkan", "metal", "dx12"]  # All desktop backends
+android = ["vulkan"]                    # Android only uses Vulkan
+ios = ["metal"]                         # iOS only uses Metal
 
 [dependencies]
 blinc_core = { path = "../blinc_core" }

@@ -15,7 +15,7 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 blinc_core = { path = "../blinc_core" }
 blinc_layout = { path = "../blinc_layout" }
-blinc_gpu = { path = "../blinc_gpu" }
+blinc_gpu = { path = "../blinc_gpu", default-features = false }
 blinc_svg = { path = "../blinc_svg" }
 blinc_text = { path = "../blinc_text" }
 blinc_image = { path = "../blinc_image" }
@@ -67,6 +67,6 @@ blinc_cn = { path = "../blinc_cn" }
 
 [features]
 default = ["windowed"]
-windowed = ["winit", "blinc_platform_desktop"]
-android = ["blinc_platform_android", "android-activity", "ndk", "jni", "android_logger", "log", "tracing-android", "tracing-subscriber"]
-ios = ["blinc_platform_ios"]
+windowed = ["winit", "blinc_platform_desktop", "blinc_gpu/desktop"]
+android = ["blinc_platform_android", "android-activity", "ndk", "jni", "android_logger", "log", "tracing-android", "tracing-subscriber", "blinc_gpu/android"]
+ios = ["blinc_platform_ios", "blinc_gpu/ios"]
