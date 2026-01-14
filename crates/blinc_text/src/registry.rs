@@ -76,18 +76,18 @@ const KNOWN_FONT_PATHS: &[&str] = &[
 #[cfg(target_os = "ios")]
 const KNOWN_FONT_PATHS: &[&str] = &[
     // iOS system fonts - Core directory (most reliable)
-    "/System/Library/Fonts/Core/SFUI.ttf",           // SF UI (system font)
-    "/System/Library/Fonts/Core/SFUIMono.ttf",       // SF Mono
-    "/System/Library/Fonts/Core/SFUIItalic.ttf",     // SF Italic
-    "/System/Library/Fonts/Core/Helvetica.ttc",      // Helvetica
-    "/System/Library/Fonts/Core/HelveticaNeue.ttc",  // Helvetica Neue
-    "/System/Library/Fonts/Core/Avenir.ttc",         // Avenir
-    "/System/Library/Fonts/Core/AvenirNext.ttc",     // Avenir Next
-    "/System/Library/Fonts/Core/Courier.ttc",        // Courier
-    "/System/Library/Fonts/Core/CourierNew.ttf",     // Courier New
+    "/System/Library/Fonts/Core/SFUI.ttf", // SF UI (system font)
+    "/System/Library/Fonts/Core/SFUIMono.ttf", // SF Mono
+    "/System/Library/Fonts/Core/SFUIItalic.ttf", // SF Italic
+    "/System/Library/Fonts/Core/Helvetica.ttc", // Helvetica
+    "/System/Library/Fonts/Core/HelveticaNeue.ttc", // Helvetica Neue
+    "/System/Library/Fonts/Core/Avenir.ttc", // Avenir
+    "/System/Library/Fonts/Core/AvenirNext.ttc", // Avenir Next
+    "/System/Library/Fonts/Core/Courier.ttc", // Courier
+    "/System/Library/Fonts/Core/CourierNew.ttf", // Courier New
     // CoreUI fonts
-    "/System/Library/Fonts/CoreUI/Menlo.ttc",        // Menlo (monospace)
-    "/System/Library/Fonts/CoreUI/SFUIRounded.ttf",  // SF Rounded
+    "/System/Library/Fonts/CoreUI/Menlo.ttc", // Menlo (monospace)
+    "/System/Library/Fonts/CoreUI/SFUIRounded.ttf", // SF Rounded
     // CoreAddition fonts
     "/System/Library/Fonts/CoreAddition/Georgia.ttf",
     "/System/Library/Fonts/CoreAddition/Arial.ttf",
@@ -96,7 +96,12 @@ const KNOWN_FONT_PATHS: &[&str] = &[
     "/System/Library/Fonts/CoreAddition/TimesNewRomanPS.ttf",
 ];
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "android", target_os = "ios")))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "android",
+    target_os = "ios"
+)))]
 const KNOWN_FONT_PATHS: &[&str] = &[
     // Linux common paths
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -356,14 +361,31 @@ impl FontRegistry {
             return Some(id);
         }
 
-        tracing::debug!("find_generic_font_id: no font found for family={:?}, trying named fonts", family);
+        tracing::debug!(
+            "find_generic_font_id: no font found for family={:?}, trying named fonts",
+            family
+        );
 
         // Generic family queries may not match fonts loaded by path
         // Try common font names as fallback based on the generic family
         let fallback_names: &[&str] = match family {
-            Family::SansSerif => &["Roboto", "SF Pro", "Helvetica", "Arial", "Noto Sans", "DejaVu Sans"],
+            Family::SansSerif => &[
+                "Roboto",
+                "SF Pro",
+                "Helvetica",
+                "Arial",
+                "Noto Sans",
+                "DejaVu Sans",
+            ],
             Family::Serif => &["Noto Serif", "Times New Roman", "Georgia", "DejaVu Serif"],
-            Family::Monospace => &["Roboto Mono", "Droid Sans Mono", "SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono"],
+            Family::Monospace => &[
+                "Roboto Mono",
+                "Droid Sans Mono",
+                "SF Mono",
+                "Menlo",
+                "Consolas",
+                "DejaVu Sans Mono",
+            ],
             _ => &[],
         };
 
@@ -375,7 +397,11 @@ impl FontRegistry {
                 stretch: Stretch::Normal,
             };
             if let Some(id) = self.db.query(&named_query) {
-                tracing::debug!("find_generic_font_id: found named font '{}' id={:?}", name, id);
+                tracing::debug!(
+                    "find_generic_font_id: found named font '{}' id={:?}",
+                    name,
+                    id
+                );
                 return Some(id);
             }
         }

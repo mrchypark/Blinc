@@ -24,8 +24,8 @@ use std::sync::{
     Arc, Mutex,
 };
 
-use android_activity::{AndroidApp as NdkAndroidApp, InputStatus, MainEvent, PollEvent};
 use android_activity::input::{InputEvent as AndroidInputEvent, MotionAction};
+use android_activity::{AndroidApp as NdkAndroidApp, InputStatus, MainEvent, PollEvent};
 use ndk::native_window::NativeWindow;
 
 use blinc_animation::AnimationScheduler;
@@ -89,8 +89,8 @@ impl AndroidApp {
 
         // Initialize tracing-android for tracing crate
         use tracing_subscriber::layer::SubscriberExt;
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing_android::layer("Blinc").unwrap());
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_android::layer("Blinc").unwrap());
         let _ = tracing::subscriber::set_global_default(subscriber);
     }
 
@@ -484,12 +484,19 @@ impl AndroidApp {
                                             MotionAction::Down | MotionAction::PointerDown => {
                                                 tracing::debug!(
                                                     "Touch DOWN at logical ({:.1}, {:.1})",
-                                                    lx, ly
+                                                    lx,
+                                                    ly
                                                 );
-                                                router.on_mouse_down(tree, lx, ly, MouseButton::Left);
+                                                router.on_mouse_down(
+                                                    tree,
+                                                    lx,
+                                                    ly,
+                                                    MouseButton::Left,
+                                                );
                                                 // Update pending events with coordinates
                                                 unsafe {
-                                                    let events = &mut pending_events as *mut Vec<PendingEvent>;
+                                                    let events = &mut pending_events
+                                                        as *mut Vec<PendingEvent>;
                                                     for event in (*events).iter_mut() {
                                                         event.mouse_x = lx;
                                                         event.mouse_y = ly;
@@ -499,7 +506,8 @@ impl AndroidApp {
                                             MotionAction::Move => {
                                                 router.on_mouse_move(tree, lx, ly);
                                                 unsafe {
-                                                    let events = &mut pending_events as *mut Vec<PendingEvent>;
+                                                    let events = &mut pending_events
+                                                        as *mut Vec<PendingEvent>;
                                                     for event in (*events).iter_mut() {
                                                         event.mouse_x = lx;
                                                         event.mouse_y = ly;
@@ -509,11 +517,13 @@ impl AndroidApp {
                                             MotionAction::Up | MotionAction::PointerUp => {
                                                 tracing::debug!(
                                                     "Touch UP at logical ({:.1}, {:.1})",
-                                                    lx, ly
+                                                    lx,
+                                                    ly
                                                 );
                                                 router.on_mouse_up(tree, lx, ly, MouseButton::Left);
                                                 unsafe {
-                                                    let events = &mut pending_events as *mut Vec<PendingEvent>;
+                                                    let events = &mut pending_events
+                                                        as *mut Vec<PendingEvent>;
                                                     for event in (*events).iter_mut() {
                                                         event.mouse_x = lx;
                                                         event.mouse_y = ly;
@@ -560,7 +570,10 @@ impl AndroidApp {
                     for event in pending_events {
                         tracing::debug!(
                             "Dispatching event: node={:?}, type={}, pos=({:.1}, {:.1})",
-                            event.node_id, event.event_type, event.mouse_x, event.mouse_y
+                            event.node_id,
+                            event.event_type,
+                            event.mouse_x,
+                            event.mouse_y
                         );
                         tree.dispatch_event(
                             event.node_id,
@@ -793,7 +806,9 @@ impl AndroidApp {
 
         // Create surface from native window using raw handles
         // Safety: The native window handle is valid for the lifetime of the window
-        use raw_window_handle::{AndroidDisplayHandle, AndroidNdkWindowHandle, RawDisplayHandle, RawWindowHandle};
+        use raw_window_handle::{
+            AndroidDisplayHandle, AndroidNdkWindowHandle, RawDisplayHandle, RawWindowHandle,
+        };
         use std::ptr::NonNull;
 
         let raw_window = NonNull::new(window.ptr().as_ptr() as *mut std::ffi::c_void)

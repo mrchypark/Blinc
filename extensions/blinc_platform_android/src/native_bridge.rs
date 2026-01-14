@@ -91,25 +91,28 @@ impl AndroidNativeBridgeAdapter {
     ///
     /// # Arguments
     /// * `app` - AndroidApp from android_main
-    pub fn from_android_app(
-        app: &android_activity::AndroidApp,
-    ) -> Result<Self, NativeBridgeError> {
+    pub fn from_android_app(app: &android_activity::AndroidApp) -> Result<Self, NativeBridgeError> {
         // Get JavaVM from AndroidApp
-        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr() as *mut _) }
-            .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to get JavaVM: {}", e)))?;
+        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr() as *mut _) }.map_err(|e| {
+            NativeBridgeError::PlatformError(format!("Failed to get JavaVM: {}", e))
+        })?;
 
         // Attach thread and find the bridge class in a scope so env is dropped before we move vm
         let bridge_class = {
-            let mut env = vm
-                .attach_current_thread()
-                .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to attach thread: {}", e)))?;
+            let mut env = vm.attach_current_thread().map_err(|e| {
+                NativeBridgeError::PlatformError(format!("Failed to attach thread: {}", e))
+            })?;
 
             // Find the BlincNativeBridge class
-            let class = env
-                .find_class("com/blinc/BlincNativeBridge")
-                .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to find BlincNativeBridge class: {}", e)))?;
-            env.new_global_ref(class)
-                .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to create global ref: {}", e)))?
+            let class = env.find_class("com/blinc/BlincNativeBridge").map_err(|e| {
+                NativeBridgeError::PlatformError(format!(
+                    "Failed to find BlincNativeBridge class: {}",
+                    e
+                ))
+            })?;
+            env.new_global_ref(class).map_err(|e| {
+                NativeBridgeError::PlatformError(format!("Failed to create global ref: {}", e))
+            })?
         };
 
         debug!("AndroidNativeBridgeAdapter initialized from AndroidApp");
@@ -128,7 +131,9 @@ impl AndroidNativeBridgeAdapter {
                 NativeValue::Int64(v) => v.to_string(),
                 NativeValue::Float32(v) => v.to_string(),
                 NativeValue::Float64(v) => v.to_string(),
-                NativeValue::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+                NativeValue::String(s) => {
+                    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+                }
                 NativeValue::Bytes(b) => {
                     // Base64 encode bytes
                     use base64::{engine::general_purpose::STANDARD, Engine};
@@ -159,19 +164,19 @@ impl PlatformAdapter for AndroidNativeBridgeAdapter {
             .map_err(|e| NativeBridgeError::PlatformError(format!("JNI attach failed: {}", e)))?;
 
         // Create Java strings for arguments
-        let ns_jstring = env
-            .new_string(namespace)
-            .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to create namespace string: {}", e)))?;
+        let ns_jstring = env.new_string(namespace).map_err(|e| {
+            NativeBridgeError::PlatformError(format!("Failed to create namespace string: {}", e))
+        })?;
 
-        let name_jstring = env
-            .new_string(name)
-            .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to create name string: {}", e)))?;
+        let name_jstring = env.new_string(name).map_err(|e| {
+            NativeBridgeError::PlatformError(format!("Failed to create name string: {}", e))
+        })?;
 
         // Serialize args to JSON
         let args_json = Self::args_to_json(&args);
-        let args_jstring = env
-            .new_string(&args_json)
-            .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to create args string: {}", e)))?;
+        let args_jstring = env.new_string(&args_json).map_err(|e| {
+            NativeBridgeError::PlatformError(format!("Failed to create args string: {}", e))
+        })?;
 
         // Call BlincNativeBridge.callNative(namespace, name, argsJson) -> String
         let result = env
@@ -191,14 +196,16 @@ impl PlatformAdapter for AndroidNativeBridgeAdapter {
             })?;
 
         // Extract the result string
-        let result_obj = result
-            .l()
-            .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to get result object: {}", e)))?;
+        let result_obj = result.l().map_err(|e| {
+            NativeBridgeError::PlatformError(format!("Failed to get result object: {}", e))
+        })?;
 
         let result_jstring = JString::from(result_obj);
         let result_str: String = env
             .get_string(&result_jstring)
-            .map_err(|e| NativeBridgeError::PlatformError(format!("Failed to get result string: {}", e)))?
+            .map_err(|e| {
+                NativeBridgeError::PlatformError(format!("Failed to get result string: {}", e))
+            })?
             .into();
 
         debug!("Android native result: {}", result_str);

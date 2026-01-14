@@ -90,5 +90,6 @@ pub use store::{
 // Re-export native bridge types
 pub use native_bridge::{
     native_call, native_register, set_platform_adapter, FromNativeValue, IntoNativeArgs,
-    NativeBridgeError, NativeBridgeState, NativeHandler, NativeResult, NativeValue, PlatformAdapter,
+    NativeBridgeError, NativeBridgeState, NativeHandler, NativeResult, NativeValue,
+    PlatformAdapter,
 };

@@ -81,12 +81,12 @@ pub fn system_font_paths() -> &'static [&'static str] {
     {
         // iOS system fonts - Core directory is most reliable
         &[
-            "/System/Library/Fonts/Core/SFUI.ttf",          // SF UI (system font)
-            "/System/Library/Fonts/Core/SFUIMono.ttf",      // SF Mono
-            "/System/Library/Fonts/Core/Helvetica.ttc",     // Helvetica
+            "/System/Library/Fonts/Core/SFUI.ttf", // SF UI (system font)
+            "/System/Library/Fonts/Core/SFUIMono.ttf", // SF Mono
+            "/System/Library/Fonts/Core/Helvetica.ttc", // Helvetica
             "/System/Library/Fonts/Core/HelveticaNeue.ttc", // Helvetica Neue
-            "/System/Library/Fonts/Core/Avenir.ttc",        // Avenir
-            "/System/Library/Fonts/CoreUI/Menlo.ttc",       // Menlo (monospace)
+            "/System/Library/Fonts/Core/Avenir.ttc", // Avenir
+            "/System/Library/Fonts/CoreUI/Menlo.ttc", // Menlo (monospace)
         ]
     }
     #[cfg(not(any(

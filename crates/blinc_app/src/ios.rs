@@ -107,14 +107,17 @@ impl IOSApp {
     pub fn create_context(width: u32, height: u32, scale_factor: f64) -> Result<IOSRenderContext> {
         tracing::info!(
             "IOSApp::create_context: {}x{} physical pixels, scale_factor={}",
-            width, height, scale_factor
+            width,
+            height,
+            scale_factor
         );
 
         let logical_width = width as f32 / scale_factor as f32;
         let logical_height = height as f32 / scale_factor as f32;
         tracing::info!(
             "IOSApp::create_context: {:.1}x{:.1} logical points",
-            logical_width, logical_height
+            logical_width,
+            logical_height
         );
 
         // Initialize the asset loader
@@ -334,7 +337,11 @@ impl IOSRenderContext {
         if changed {
             tracing::debug!(
                 "iOS update_size: {:.1}x{:.1} logical ({:.0}x{:.0} physical) @ {:.1}x scale",
-                logical_width, logical_height, physical_width, physical_height, scale_factor
+                logical_width,
+                logical_height,
+                physical_width,
+                physical_height,
+                scale_factor
             );
             self.ref_dirty_flag.store(true, Ordering::SeqCst);
         }
@@ -465,7 +472,10 @@ impl IOSRenderContext {
             move |node, event_type| {
                 // SAFETY: This callback is only used within this scope
                 unsafe {
-                    (*events).push(PendingEvent { node_id: node, event_type });
+                    (*events).push(PendingEvent {
+                        node_id: node,
+                        event_type,
+                    });
                 }
             }
         });
@@ -499,7 +509,10 @@ impl IOSRenderContext {
         // Clear callback
         self.windowed_ctx.event_router.clear_event_callback();
 
-        eprintln!("[Blinc] iOS Touch: collected {} pending events", pending_events.len());
+        eprintln!(
+            "[Blinc] iOS Touch: collected {} pending events",
+            pending_events.len()
+        );
 
         // Dispatch collected events to the tree
         if !pending_events.is_empty() {
@@ -509,8 +522,9 @@ impl IOSRenderContext {
                 let router = &self.windowed_ctx.event_router;
                 for event in pending_events {
                     // Get bounds for local coordinate calculation
-                    let (bounds_x, bounds_y, bounds_width, bounds_height) =
-                        router.get_node_bounds(event.node_id).unwrap_or((0.0, 0.0, 0.0, 0.0));
+                    let (bounds_x, bounds_y, bounds_width, bounds_height) = router
+                        .get_node_bounds(event.node_id)
+                        .unwrap_or((0.0, 0.0, 0.0, 0.0));
                     let local_x = lx - bounds_x;
                     let local_y = ly - bounds_y;
 
@@ -548,7 +562,8 @@ impl IOSRenderContext {
 use std::sync::OnceLock;
 
 /// Type for Rust UI builder function that directly creates/updates the render tree
-type RustUIBuilder = Box<dyn Fn(&mut WindowedContext, Option<&mut RenderTree>) -> RenderTree + Send + Sync>;
+type RustUIBuilder =
+    Box<dyn Fn(&mut WindowedContext, Option<&mut RenderTree>) -> RenderTree + Send + Sync>;
 
 /// Global storage for Rust UI builder
 static RUST_UI_BUILDER: OnceLock<RustUIBuilder> = OnceLock::new();
@@ -789,7 +804,10 @@ pub extern "C" fn blinc_handle_touch(
     y: f32,
     phase: i32,
 ) {
-    eprintln!("[Blinc FFI] blinc_handle_touch called: x={}, y={}, phase={}", x, y, phase);
+    eprintln!(
+        "[Blinc FFI] blinc_handle_touch called: x={}, y={}, phase={}",
+        x, y, phase
+    );
 
     if ctx.is_null() {
         eprintln!("[Blinc FFI] blinc_handle_touch: ctx is NULL!");
@@ -1097,27 +1115,22 @@ pub extern "C" fn blinc_init_gpu(
     // Preload common fonts with iOS family names
     // Note: iOS uses ".SF UI" family names (with leading dot for system fonts)
     text_ctx.preload_fonts(&[
-        ".SF UI",            // iOS system font
-        ".SF UI Text",       // iOS system font (text)
-        ".SF UI Display",    // iOS system font (display)
-        "Helvetica",         // Helvetica
-        "Helvetica Neue",    // Helvetica Neue
-        "Avenir",            // Avenir
-        "Avenir Next",       // Avenir Next
-        "Menlo",             // Monospace
-        "Courier New",       // Courier
+        ".SF UI",         // iOS system font
+        ".SF UI Text",    // iOS system font (text)
+        ".SF UI Display", // iOS system font (display)
+        "Helvetica",      // Helvetica
+        "Helvetica Neue", // Helvetica Neue
+        "Avenir",         // Avenir
+        "Avenir Next",    // Avenir Next
+        "Menlo",          // Monospace
+        "Courier New",    // Courier
     ]);
     text_ctx.preload_generic_styles(blinc_gpu::GenericFont::SansSerif, &[400, 700], false);
     tracing::info!("Font preloading complete, {} fonts loaded", fonts_loaded);
 
     // Create RenderContext with text rendering support
-    let render_context = crate::context::RenderContext::new(
-        renderer,
-        text_ctx,
-        device,
-        queue,
-        config.sample_count,
-    );
+    let render_context =
+        crate::context::RenderContext::new(renderer, text_ctx, device, queue, config.sample_count);
     let app = BlincApp::from_context(render_context, config);
 
     // Configure surface with the format the renderer selected
@@ -1163,7 +1176,10 @@ pub extern "C" fn blinc_gpu_resize(gpu: *mut IOSGpuRenderer, width: u32, height:
 
     unsafe {
         let gpu = &mut *gpu;
-        if width > 0 && height > 0 && (gpu.surface_config.width != width || gpu.surface_config.height != height) {
+        if width > 0
+            && height > 0
+            && (gpu.surface_config.width != width || gpu.surface_config.height != height)
+        {
             gpu.surface_config.width = width;
             gpu.surface_config.height = height;
             gpu.surface.configure(gpu.app.device(), &gpu.surface_config);
@@ -1299,7 +1315,10 @@ pub extern "C" fn blinc_load_bundled_font(
 
         let path = std::path::Path::new(path_str);
         if !path.exists() {
-            tracing::error!("blinc_load_bundled_font: font file does not exist: {}", path_str);
+            tracing::error!(
+                "blinc_load_bundled_font: font file does not exist: {}",
+                path_str
+            );
             return 0;
         }
 

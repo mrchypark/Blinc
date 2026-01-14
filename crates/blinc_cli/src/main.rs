@@ -300,15 +300,15 @@ fn cmd_new(name: &str, template: &str, org: &str, rust: bool) -> Result<()> {
     let path = PathBuf::from(name);
 
     // Extract the actual project name from the path (last component)
-    let project_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(name);
+    let project_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(name);
 
     if rust {
         info!("Creating new Rust project: {}", project_name);
     } else {
-        info!("Creating new project: {} (template: {})", project_name, template);
+        info!(
+            "Creating new project: {} (template: {})",
+            project_name, template
+        );
     }
     info!("Organization prefix: {}", org);
 

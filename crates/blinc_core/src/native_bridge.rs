@@ -81,10 +81,7 @@ pub type NativeHandler = Arc<dyn Fn(Vec<NativeValue>) -> NativeResult<NativeValu
 #[derive(Debug, Clone)]
 pub enum NativeBridgeError {
     /// Function not registered in any handler
-    NotRegistered {
-        namespace: String,
-        name: String,
-    },
+    NotRegistered { namespace: String, name: String },
     /// Type mismatch when extracting return value
     TypeMismatch {
         expected: &'static str,
@@ -337,55 +334,67 @@ impl FromNativeValue for () {
 
 impl FromNativeValue for bool {
     fn from_native_value(value: NativeValue) -> NativeResult<Self> {
-        value.as_bool().ok_or_else(|| NativeBridgeError::TypeMismatch {
-            expected: "Bool",
-            actual: value.type_name().to_string(),
-        })
+        value
+            .as_bool()
+            .ok_or_else(|| NativeBridgeError::TypeMismatch {
+                expected: "Bool",
+                actual: value.type_name().to_string(),
+            })
     }
 }
 
 impl FromNativeValue for i32 {
     fn from_native_value(value: NativeValue) -> NativeResult<Self> {
-        value.as_i32().ok_or_else(|| NativeBridgeError::TypeMismatch {
-            expected: "Int32",
-            actual: value.type_name().to_string(),
-        })
+        value
+            .as_i32()
+            .ok_or_else(|| NativeBridgeError::TypeMismatch {
+                expected: "Int32",
+                actual: value.type_name().to_string(),
+            })
     }
 }
 
 impl FromNativeValue for i64 {
     fn from_native_value(value: NativeValue) -> NativeResult<Self> {
-        value.as_i64().ok_or_else(|| NativeBridgeError::TypeMismatch {
-            expected: "Int64",
-            actual: value.type_name().to_string(),
-        })
+        value
+            .as_i64()
+            .ok_or_else(|| NativeBridgeError::TypeMismatch {
+                expected: "Int64",
+                actual: value.type_name().to_string(),
+            })
     }
 }
 
 impl FromNativeValue for f32 {
     fn from_native_value(value: NativeValue) -> NativeResult<Self> {
-        value.as_f32().ok_or_else(|| NativeBridgeError::TypeMismatch {
-            expected: "Float32",
-            actual: value.type_name().to_string(),
-        })
+        value
+            .as_f32()
+            .ok_or_else(|| NativeBridgeError::TypeMismatch {
+                expected: "Float32",
+                actual: value.type_name().to_string(),
+            })
     }
 }
 
 impl FromNativeValue for f64 {
     fn from_native_value(value: NativeValue) -> NativeResult<Self> {
-        value.as_f64().ok_or_else(|| NativeBridgeError::TypeMismatch {
-            expected: "Float64",
-            actual: value.type_name().to_string(),
-        })
+        value
+            .as_f64()
+            .ok_or_else(|| NativeBridgeError::TypeMismatch {
+                expected: "Float64",
+                actual: value.type_name().to_string(),
+            })
     }
 }
 
 impl FromNativeValue for String {
     fn from_native_value(value: NativeValue) -> NativeResult<Self> {
-        value.into_string().ok_or_else(|| NativeBridgeError::TypeMismatch {
-            expected: "String",
-            actual: "non-string".to_string(),
-        })
+        value
+            .into_string()
+            .ok_or_else(|| NativeBridgeError::TypeMismatch {
+                expected: "String",
+                actual: "non-string".to_string(),
+            })
     }
 }
 
