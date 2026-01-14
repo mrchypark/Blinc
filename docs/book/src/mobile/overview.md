@@ -74,32 +74,50 @@ cd my-app
 use blinc_app::prelude::*;
 
 fn app(ctx: &mut WindowedContext) -> impl ElementBuilder {
+    let count = ctx.use_state_keyed("count", || 0i32);
+
     div()
-        .width(ctx.width)
-        .height(ctx.height)
+        .w(ctx.width)
+        .h(ctx.height)
         .bg(0x1a1a2e)
+        .flex_col()
+        .items_center()
         .justify_center()
-        .align_center()
-        .child(counter(1))
+        .gap(20.0)
+        .child(counter_display(count.clone()))
+        .child(counter_button("+", count.clone(), 1))
 }
 
-fn counter(delta: i32) -> impl ElementBuilder {
-    // Stateful elements update incrementally without rebuilding the whole UI
-    stateful(move |state: &mut i32| {
-        let count = *state;
+fn counter_display(count: State<i32>) -> impl ElementBuilder {
+    // Stateful elements with deps update incrementally when dependencies change
+    stateful::<NoState>()
+        .deps([count.signal_id()])
+        .on_state(move |_ctx| {
+            text(format!("Count: {}", count.get()))
+                .size(48.0)
+                .color(0xffffff)
+        })
+}
 
-        div()
-            .gap(16.0)
-            .align_center()
-            .child(
-                button("Tap me!")
-                    .on_click(move |s: &mut i32| *s += delta)
-            )
-            .child(
-                text(format!("Count: {}", count))
-                    .color(0xffffff)
-            )
-    })
+fn counter_button(label: &str, count: State<i32>, delta: i32) -> impl ElementBuilder {
+    let label = label.to_string();
+    stateful::<ButtonState>()
+        .on_state(move |ctx| {
+            let bg = match ctx.state() {
+                ButtonState::Idle => 0x4a4a5a,
+                ButtonState::Hovered => 0x5a5a6a,
+                ButtonState::Pressed => 0x3a3a4a,
+                ButtonState::Disabled => 0x2a2a2a,
+            };
+            div()
+                .w(80.0).h(50.0)
+                .rounded(8.0)
+                .bg(bg)
+                .items_center()
+                .justify_center()
+                .child(text(&label).size(24.0).color(0xffffff))
+        })
+        .on_click(move |_| count.set_rebuild(count.get() + delta))
 }
 ```
 
