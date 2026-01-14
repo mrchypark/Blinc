@@ -1,10 +1,13 @@
 [package]
 name = "blinc_theme"
+description = "Theming system for Blinc UI framework - colors, typography, and design tokens"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+keywords = ["ui", "gui", "theme", "design", "blinc"]
+categories = ["gui"]
 
 [dependencies]
 blinc_core = { path = "../blinc_core", version = "0.1.1" }
