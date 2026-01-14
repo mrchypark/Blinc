@@ -687,11 +687,20 @@ impl StateTransitions for ButtonState {
     fn on_event(&self, event: u32) -> Option<Self> {
         use blinc_core::events::event_types::*;
         match (self, event) {
+            // Desktop mouse: enter → hover
             (ButtonState::Idle, POINTER_ENTER) => Some(ButtonState::Hovered),
             (ButtonState::Hovered, POINTER_LEAVE) => Some(ButtonState::Idle),
+
+            // Mouse/touch: press down
             (ButtonState::Hovered, POINTER_DOWN) => Some(ButtonState::Pressed),
+            (ButtonState::Idle, POINTER_DOWN) => Some(ButtonState::Pressed), // Touch: no hover first
+
+            // Mouse/touch: release
             (ButtonState::Pressed, POINTER_UP) => Some(ButtonState::Hovered),
+
+            // Touch: finger lifted outside (or mouse left while pressed)
             (ButtonState::Pressed, POINTER_LEAVE) => Some(ButtonState::Idle),
+
             (ButtonState::Disabled, _) => None, // Disabled ignores all events
             _ => None,
         }

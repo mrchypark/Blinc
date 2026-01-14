@@ -235,14 +235,23 @@ impl AndroidApp {
         let mut render_state: Option<blinc_layout::RenderState> = None;
         let mut native_window: Option<NativeWindow> = None;
         let mut needs_rebuild = true;
+        let mut needs_redraw_next_frame = false;
         let mut running = true;
         let mut focused = false;
 
         tracing::info!("Entering Android event loop");
 
         while running {
-            // Poll for events with 16ms timeout (~60fps)
-            app.poll_events(Some(std::time::Duration::from_millis(16)), |event| {
+            // Use non-blocking poll if we need to redraw, otherwise wait up to 16ms
+            // This ensures immediate response to state changes while saving CPU when idle
+            let poll_timeout = if needs_rebuild || needs_redraw_next_frame {
+                None // Non-blocking - just check for events
+            } else {
+                Some(std::time::Duration::from_millis(16)) // Wait for events (~60fps max)
+            };
+            needs_redraw_next_frame = false;
+
+            app.poll_events(poll_timeout, |event| {
                 match event {
                     PollEvent::Main(main_event) => match main_event {
                         MainEvent::InitWindow { .. } => {
@@ -732,6 +741,28 @@ impl AndroidApp {
                 }
 
                 needs_rebuild = false;
+            }
+
+            // =========================================================
+            // PHASE 4: Check if we need another frame for animations
+            // =========================================================
+            {
+                // Check animation scheduler for active animations
+                if let Ok(scheduler) = animations.lock() {
+                    if scheduler.has_active_animations() {
+                        needs_redraw_next_frame = true;
+                    }
+                }
+
+                // Check for animating stateful elements (spring animations, state transitions)
+                if blinc_layout::has_animating_statefuls() {
+                    needs_redraw_next_frame = true;
+                }
+
+                // Check for pending subtree rebuilds that might need processing
+                if blinc_layout::has_pending_subtree_rebuilds() {
+                    needs_redraw_next_frame = true;
+                }
             }
         }
 
