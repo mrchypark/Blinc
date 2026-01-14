@@ -31,9 +31,7 @@ fn counter_button(label: &str, count: State<i32>, delta: i32) -> impl ElementBui
                 .child(text(&label).size(24.0).color(Color::WHITE))
         })
         .on_click(move |_| {
-            // Use set_rebuild to trigger a full UI rebuild when state changes
-            // This ensures iOS re-renders (incremental updates require Stateful pattern)
-            count.set_rebuild(count.get() + delta);
+            count.set(count.get() + delta);
         })
 }
 
@@ -62,7 +60,7 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
         .items_center()
         .justify_center()
         .gap(20.0)
-        .child(text("Blinc Mobile Example").size(32.0).color(Color::WHITE).no_wrap())
+        .child(div().child(text("Blinc Mobile Example").size(32.0).color(Color::WHITE)))
         .child(counter_display(count.clone()))
         .child(
             div()

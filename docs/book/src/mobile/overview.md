@@ -117,7 +117,7 @@ fn counter_button(label: &str, count: State<i32>, delta: i32) -> impl ElementBui
                 .justify_center()
                 .child(text(&label).size(24.0).color(Color::WHITE))
         })
-        .on_click(move |_| count.set_rebuild(count.get() + delta))
+        .on_click(move |_| count.set(count.get() + delta))
 }
 ```
 
