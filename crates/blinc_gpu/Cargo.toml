@@ -22,6 +22,8 @@ webgl = ["wgpu/webgl"]
 desktop = ["vulkan", "metal", "dx12"]  # All desktop backends
 android = ["vulkan"]                    # Android only uses Vulkan
 ios = ["metal"]                         # iOS only uses Metal
+fuchsia = ["vulkan"]                    # Fuchsia uses Vulkan via Scenic
+harmony = ["vulkan"]                    # HarmonyOS prefers Vulkan
 
 [dependencies]
 blinc_core = { path = "../blinc_core", version = "0.1.1" }

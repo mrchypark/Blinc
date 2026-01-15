@@ -1,0 +1,36 @@
+[package]
+name = "blinc_platform_harmony"
+description = "Blinc HarmonyOS platform - XComponent integration, N-API bridge, and Vulkan rendering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/blinc_platform_harmony"
+rust-version.workspace = true
+keywords = ["ui", "gui", "harmonyos", "ohos", "blinc"]
+categories = ["gui"]
+
+[lib]
+crate-type = ["lib", "cdylib"]  # cdylib for N-API native module
+
+[features]
+default = []
+gles = []  # OpenGL ES fallback for older devices
+
+[dependencies]
+# Core dependencies (always available)
+blinc_core = { path = "../../crates/blinc_core", version = "0.1.1" }
+blinc_animation = { path = "../../crates/blinc_animation", version = "0.1.1" }
+blinc_platform = { path = "../../crates/blinc_platform", version = "0.1.1" }
+
+# Logging
+tracing.workspace = true
+
+# HarmonyOS N-API bindings (similar to Node.js N-API)
+# Note: These will be available when building with OHOS SDK
+# napi = "2"
+# napi-derive = "2"
+
+# GPU (Vulkan preferred, GLES fallback)
+# [target.'cfg(target_os = "ohos")'.dependencies]
+# blinc_gpu = { path = "../../crates/blinc_gpu", version = "0.1.1", default-features = false, features = ["vulkan"] }

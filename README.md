@@ -467,7 +467,9 @@ Easing::EaseOutBounce    // Bounce effect
 | Windows | Stable | wgpu (DX12/Vulkan) |
 | Linux | Stable | wgpu (Vulkan) |
 | Android | Stable | wgpu (Vulkan), ~530KB |
-| iOS | In Progress | wgpu (Metal) |
+| iOS | Stable | wgpu (Metal) |
+| Fuschia | In progress | wgpu (Vulkan/Scenic) |
+| HarmonyOS | In progress | wgpu (Vulkan/OpenGL ES) |
 
 ## Roadmap
 
@@ -487,11 +489,14 @@ Easing::EaseOutBounce    // Bounce effect
 - Reactive signals and state machines
 - Desktop and Android platforms
 - Theming system with animated transitions
+- Components library
 
 ### In Progress
 
-- iOS platform completion
-- Widget library (Button, Checkbox, Toggle, etc.)
+- ~~iOS platform completion~~
+- ~~Widget library (Button, Checkbox, Toggle, etc.)~~
+- Fuschia platform support
+- HarmonyOS platform support
 
 ### Future
 

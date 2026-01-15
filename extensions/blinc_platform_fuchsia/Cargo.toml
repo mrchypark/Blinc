@@ -1,0 +1,38 @@
+[package]
+name = "blinc_platform_fuchsia"
+description = "Blinc Fuchsia platform - Scenic compositor, FIDL events, and Vulkan rendering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/blinc_platform_fuchsia"
+rust-version.workspace = true
+keywords = ["ui", "gui", "fuchsia", "blinc"]
+categories = ["gui"]
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = []
+
+[dependencies]
+# Core dependencies (always available)
+blinc_core = { path = "../../crates/blinc_core", version = "0.1.1" }
+blinc_animation = { path = "../../crates/blinc_animation", version = "0.1.1" }
+blinc_platform = { path = "../../crates/blinc_platform", version = "0.1.1" }
+
+# Logging
+tracing.workspace = true
+
+# Fuchsia-specific dependencies (only when targeting Fuchsia)
+# Note: These will be available when building with the Fuchsia SDK
+# [target.'cfg(target_os = "fuchsia")'.dependencies]
+# fuchsia-async = "0.1"
+# fuchsia-component = "0.1"
+# fidl = "0.1"
+# fidl_fuchsia_ui_scenic = "0.1"
+# fidl_fuchsia_ui_views = "0.1"
+# fidl_fuchsia_ui_input = "0.1"
+# fidl_fuchsia_ui_pointer = "0.1"
+# blinc_gpu = { path = "../../crates/blinc_gpu", version = "0.1.1", default-features = false, features = ["vulkan"] }
