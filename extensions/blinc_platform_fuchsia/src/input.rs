@@ -21,11 +21,11 @@ use blinc_platform::{
     MouseEvent, ScrollPhase, TouchEvent,
 };
 
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_ui_pointer::{
     EventPhase, MouseEvent as FidlMouseEvent, TouchEvent as FidlTouchEvent,
 };
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_ui_input3::{KeyEvent as FidlKeyEvent, KeyEventType, Modifiers as FidlModifiers};
 
 // ============================================================================
@@ -109,7 +109,7 @@ pub fn convert_touch(touch: &Touch) -> InputEvent {
 }
 
 /// Convert fuchsia.ui.pointer.TouchEvent to Blinc Touch
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 pub fn from_fuchsia_touch_event(
     event: &FidlTouchEvent,
     scale_factor: f64,
@@ -138,7 +138,7 @@ pub fn from_fuchsia_touch_event(
 }
 
 /// Convert fuchsia.ui.pointer.MouseEvent to MouseInteraction
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 pub fn from_fuchsia_mouse_event(
     event: &FidlMouseEvent,
     scale_factor: f64,
@@ -178,7 +178,7 @@ pub fn from_fuchsia_mouse_event(
 }
 
 /// Convert fuchsia.ui.input3.KeyEvent to KeyEvent
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 pub fn from_fuchsia_key_event(event: &FidlKeyEvent) -> Option<KeyEvent> {
     let key = event.key.map(|k| k as u32)?;
 
@@ -207,7 +207,7 @@ pub fn from_fuchsia_key_event(event: &FidlKeyEvent) -> Option<KeyEvent> {
 }
 
 /// Convert Fuchsia modifiers to our KeyModifiers
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 fn convert_fuchsia_modifiers(mods: FidlModifiers) -> KeyModifiers {
     KeyModifiers {
         shift: mods.contains(FidlModifiers::SHIFT),

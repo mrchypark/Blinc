@@ -38,13 +38,13 @@ use std::time::Duration;
 
 use blinc_platform::{ControlFlow, Event, EventLoop, PlatformError};
 
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_ui_composition::{FlatlandEvent, FlatlandEventStream, ParentViewportWatcherProxy};
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_ui_pointer::{TouchSourceProxy, MouseSourceProxy, TouchResponse as FidlTouchResponse, TouchResponseType as FidlTouchResponseType};
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_ui_views::ViewRefFocusedProxy;
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use futures::{FutureExt, StreamExt};
 
 use crate::window::FuchsiaWindow;
@@ -249,7 +249,7 @@ impl EventLoop for FuchsiaEventLoop {
     where
         F: FnMut(Event, &Self::Window) -> ControlFlow + 'static,
     {
-        #[cfg(target_os = "fuchsia")]
+        #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
         {
             // On Fuchsia, we run a synchronous event loop that polls
             // for wake requests. The full implementation would use
@@ -289,7 +289,7 @@ impl EventLoop for FuchsiaEventLoop {
             Ok(())
         }
 
-        #[cfg(not(target_os = "fuchsia"))]
+        #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
         {
             Err(PlatformError::Unsupported(
                 "Fuchsia event loop only available on Fuchsia OS".to_string(),
@@ -360,7 +360,8 @@ pub enum FuchsiaEvent {
 /// On Fuchsia, this holds the FIDL proxy connections that we poll.
 /// Each async method (Watch, GetLayout, etc.) is a hanging get that
 /// returns when new data is available.
-#[cfg(not(target_os = "fuchsia"))]
+/// Stub event sources for builds without full Fuchsia SDK
+#[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
 #[derive(Default)]
 pub struct FuchsiaEventSources {
     /// Has touch source connection
@@ -372,7 +373,7 @@ pub struct FuchsiaEventSources {
 }
 
 /// Event sources holder for async event loop (Fuchsia)
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 pub struct FuchsiaEventSources {
     /// Flatland event stream
     pub flatland_events: Option<FlatlandEventStream>,
@@ -386,7 +387,7 @@ pub struct FuchsiaEventSources {
     pub view_ref_focused: Option<ViewRefFocusedProxy>,
 }
 
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 impl Default for FuchsiaEventSources {
     fn default() -> Self {
         Self {
@@ -399,7 +400,7 @@ impl Default for FuchsiaEventSources {
     }
 }
 
-#[cfg(not(target_os = "fuchsia"))]
+#[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
 impl FuchsiaEventSources {
     /// Create new event sources
     pub fn new() -> Self {
@@ -425,7 +426,7 @@ impl FuchsiaEventSources {
     }
 }
 
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 impl FuchsiaEventSources {
     /// Create new event sources
     pub fn new() -> Self {
@@ -556,7 +557,7 @@ impl AsyncEventLoop {
     ///
     /// On actual Fuchsia, this would be an async function using
     /// fuchsia-async executor.
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn run_sync<F>(&mut self, mut handler: F, poll_timeout: Duration)
     where
         F: FnMut(FuchsiaEvent) -> bool,
@@ -585,7 +586,7 @@ impl AsyncEventLoop {
     /// Run the async event loop (Fuchsia implementation)
     ///
     /// This is the real async implementation using fuchsia-async.
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn run_async<F>(&mut self, mut handler: F)
     where
         F: FnMut(FuchsiaEvent) -> bool,

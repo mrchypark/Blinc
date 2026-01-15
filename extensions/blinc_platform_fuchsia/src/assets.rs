@@ -47,13 +47,15 @@ impl AssetLoader for FuchsiaAssetLoader {
     fn load(&self, path: &AssetPath) -> Result<Vec<u8>> {
         let full_path = self.resolve_path(path);
 
+        // On Fuchsia, use std::fs to read from package namespace
         #[cfg(target_os = "fuchsia")]
         {
-            std::fs::read(&full_path).map_err(|e| {
+            return std::fs::read(&full_path).map_err(|e| {
                 PlatformError::AssetLoad(format!("Failed to load {}: {}", full_path, e))
-            })
+            });
         }
 
+        // On other platforms, assets aren't available
         #[cfg(not(target_os = "fuchsia"))]
         {
             Err(PlatformError::AssetLoad(format!(
@@ -66,11 +68,13 @@ impl AssetLoader for FuchsiaAssetLoader {
     fn exists(&self, path: &AssetPath) -> bool {
         let full_path = self.resolve_path(path);
 
+        // On Fuchsia, check filesystem
         #[cfg(target_os = "fuchsia")]
         {
-            std::path::Path::new(&full_path).exists()
+            return std::path::Path::new(&full_path).exists();
         }
 
+        // On other platforms, always false
         #[cfg(not(target_os = "fuchsia"))]
         {
             let _ = full_path;

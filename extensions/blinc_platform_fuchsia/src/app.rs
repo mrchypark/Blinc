@@ -24,7 +24,8 @@ impl FuchsiaPlatform {
     }
 }
 
-#[cfg(target_os = "fuchsia")]
+// Implementation with real Fuchsia SDK (when building in Fuchsia tree)
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 impl Platform for FuchsiaPlatform {
     type Window = FuchsiaWindow;
     type EventLoop = FuchsiaEventLoop;
@@ -49,7 +50,7 @@ impl Platform for FuchsiaPlatform {
 }
 
 // Placeholder for non-Fuchsia builds
-#[cfg(not(target_os = "fuchsia"))]
+#[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
 impl Platform for FuchsiaPlatform {
     type Window = FuchsiaWindow;
     type EventLoop = FuchsiaEventLoop;

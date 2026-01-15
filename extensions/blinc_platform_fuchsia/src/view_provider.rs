@@ -34,20 +34,20 @@
 
 use std::sync::Arc;
 
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl::endpoints::{ClientEnd, ServerEnd};
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_ui_app::{ViewProviderRequest, ViewProviderRequestStream};
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_ui_composition::{
     LayoutInfo as FidlLayoutInfo, ParentViewportWatcherProxy,
 };
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_ui_views::{
     ViewCreationToken as FidlViewCreationToken, ViewIdentityOnCreation, ViewRef as FidlViewRef,
     ViewRefFocusedProxy,
 };
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use futures::TryStreamExt;
 
 use crate::flatland::{FlatlandError, FlatlandSession};
@@ -59,46 +59,46 @@ use crate::scenic::ViewProperties;
 #[derive(Debug)]
 pub struct ViewCreationToken {
     /// The raw token value (zx::Channel on Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub value: u64,
     /// The actual FIDL token on Fuchsia
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub inner: Option<FidlViewCreationToken>,
 }
 
 impl ViewCreationToken {
     /// Create a new view creation token (non-Fuchsia placeholder)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn new(value: u64) -> Self {
         Self { value }
     }
 
     /// Create from FIDL token (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn from_fidl(token: FidlViewCreationToken) -> Self {
         Self { inner: Some(token) }
     }
 
     /// Create an invalid token (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn new_invalid() -> Self {
         Self { inner: None }
     }
 
     /// Check if the token is valid
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn is_valid(&self) -> bool {
         self.value != 0
     }
 
     /// Check if the token is valid (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn is_valid(&self) -> bool {
         self.inner.is_some()
     }
 
     /// Take the inner FIDL token (Fuchsia only)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn take_fidl(&mut self) -> Option<FidlViewCreationToken> {
         self.inner.take()
     }
@@ -110,20 +110,20 @@ impl ViewCreationToken {
 #[derive(Debug)]
 pub struct ViewRef {
     /// The raw reference value (non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub value: u64,
     /// The actual FIDL ViewRef on Fuchsia
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub inner: Option<FidlViewRef>,
 }
 
 impl Clone for ViewRef {
     fn clone(&self) -> Self {
-        #[cfg(not(target_os = "fuchsia"))]
+        #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
         {
             Self { value: self.value }
         }
-        #[cfg(target_os = "fuchsia")]
+        #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
         {
             // ViewRef contains a handle that can't be cloned directly
             // We create an empty clone - the original retains ownership
@@ -134,25 +134,25 @@ impl Clone for ViewRef {
 
 impl ViewRef {
     /// Create a new view ref (non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn new(value: u64) -> Self {
         Self { value }
     }
 
     /// Create from FIDL ViewRef (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn from_fidl(view_ref: FidlViewRef) -> Self {
         Self { inner: Some(view_ref) }
     }
 
     /// Check if this ViewRef is valid
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn is_valid(&self) -> bool {
         self.inner.is_some()
     }
 
     /// Check if this ViewRef is valid (non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn is_valid(&self) -> bool {
         self.value != 0
     }
@@ -271,7 +271,7 @@ impl ViewProvider {
     /// Handle CreateView2 request
     ///
     /// Called when the system wants us to create our View.
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn create_view2(
         &mut self,
         mut args: CreateView2Args,
@@ -332,7 +332,7 @@ impl ViewProvider {
     }
 
     /// Handle CreateView2 (sync placeholder for non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn create_view2_sync(
         &mut self,
         args: CreateView2Args,
@@ -408,7 +408,7 @@ impl Default for ViewProvider {
 ///
 /// This function runs the FIDL service loop for ViewProvider.
 /// Receives CreateView2 requests and forwards events to the app.
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 pub async fn serve_view_provider(
     mut stream: ViewProviderRequestStream,
     mut event_sender: futures::channel::mpsc::Sender<ViewEvent>,
@@ -476,7 +476,7 @@ pub async fn serve_view_provider(
 /// - Size changes
 /// - Scale factor changes
 /// - Inset changes
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 pub async fn watch_parent_viewport(
     watcher: ParentViewportWatcherProxy,
     mut event_sender: futures::channel::mpsc::Sender<ViewEvent>,
@@ -516,7 +516,7 @@ pub async fn watch_parent_viewport(
 }
 
 /// Convert FIDL LayoutInfo to our LayoutInfo
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 fn convert_layout_info(fidl_layout: &FidlLayoutInfo) -> LayoutInfo {
     let logical_size = fidl_layout.logical_size.map(|size| {
         (size.width as f32, size.height as f32)
@@ -659,7 +659,7 @@ impl Default for ParentViewportWatcher {
 }
 
 /// Watch for focus changes
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 pub async fn watch_focus(
     view_ref_focused: ViewRefFocusedProxy,
     mut event_sender: futures::channel::mpsc::Sender<ViewEvent>,

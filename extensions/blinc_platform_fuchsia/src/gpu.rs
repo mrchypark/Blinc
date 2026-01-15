@@ -47,21 +47,20 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[cfg(target_os = "fuchsia")]
-use fidl_fuchsia_sysmem2::{
-    AllocatorMarker as SysmemAllocatorMarker, AllocatorProxy as SysmemAllocatorProxy,
-    BufferCollectionConstraints, BufferCollectionTokenMarker, BufferMemoryConstraints,
+// Use our standalone FIDL stubs for cross-compilation
+use blinc_fidl::fuchsia_sysmem2::{
+    AllocatorMarker as SysmemAllocatorMarker, BufferCollectionTokenMarker,
+    BufferCollectionConstraints, BufferMemoryConstraints,
     BufferUsage, CoherencyDomain, Heap, ImageFormatConstraints,
+    BufferCollectionSetConstraintsRequest, HeapType,
+    VULKAN_IMAGE_USAGE_COLOR_ATTACHMENT, VULKAN_IMAGE_USAGE_TRANSFER_SRC,
+    VULKAN_IMAGE_USAGE_TRANSFER_DST,
 };
-#[cfg(target_os = "fuchsia")]
-use fidl_fuchsia_ui_composition::{
-    AllocatorProxy as FlatlandAllocatorProxy, BufferCollectionExportToken,
-    BufferCollectionImportToken, RegisterBufferCollectionUsage,
-};
-#[cfg(target_os = "fuchsia")]
-use fuchsia_component::client::connect_to_protocol;
-#[cfg(target_os = "fuchsia")]
-use fuchsia_zircon as zx;
+use blinc_fidl::fuchsia_math::SizeU;
+use blinc_fidl::fuchsia_images2::PixelFormat;
+
+// Zircon types from our standalone crate
+use blinc_fuchsia_zircon as zx;
 
 use crate::flatland::{BufferCollection, BufferFormat, ContentId, FlatlandSession, ImageProperties};
 
@@ -170,125 +169,13 @@ impl ImagePipeClient {
 
     /// Initialize the ImagePipe with buffer collection
     ///
-    /// On Fuchsia, this:
-    /// 1. Creates a BufferCollection via sysmem2
-    /// 2. Sets Vulkan constraints (VK_FUCHSIA_buffer_collection)
-    /// 3. Sets Flatland constraints via Allocator
-    /// 4. Waits for allocation to complete
-    #[cfg(target_os = "fuchsia")]
-    pub async fn initialize(&mut self) -> Result<(), ImagePipeError> {
-        // Connect to sysmem2 allocator
-        let sysmem_allocator = connect_to_protocol::<SysmemAllocatorMarker>()
-            .map_err(|e| ImagePipeError::AllocationFailed(format!("sysmem connect: {:?}", e)))?;
-
-        // Create buffer collection token
-        let (token_client, token_server) = fidl::endpoints::create_endpoints::<BufferCollectionTokenMarker>();
-        sysmem_allocator.allocate_shared_collection(fidl_fuchsia_sysmem2::AllocatorAllocateSharedCollectionRequest {
-            token_request: Some(token_server),
-            ..Default::default()
-        }).map_err(|e| ImagePipeError::AllocationFailed(format!("allocate_shared_collection: {:?}", e)))?;
-
-        // Duplicate token for Flatland
-        let token_proxy = token_client.into_proxy()
-            .map_err(|e| ImagePipeError::AllocationFailed(format!("token proxy: {:?}", e)))?;
-
-        let (flatland_token, flatland_token_server) = fidl::endpoints::create_endpoints::<BufferCollectionTokenMarker>();
-        token_proxy.duplicate(fidl_fuchsia_sysmem2::BufferCollectionTokenDuplicateRequest {
-            rights_attenuation_mask: Some(zx::Rights::SAME_RIGHTS),
-            token_request: Some(flatland_token_server),
-            ..Default::default()
-        }).map_err(|e| ImagePipeError::AllocationFailed(format!("duplicate token: {:?}", e)))?;
-
-        token_proxy.sync().await
-            .map_err(|e| ImagePipeError::AllocationFailed(format!("token sync: {:?}", e)))?;
-
-        // Set Vulkan constraints on our token
-        let (collection_client, collection_server) = fidl::endpoints::create_endpoints();
-        sysmem_allocator.bind_shared_collection(fidl_fuchsia_sysmem2::AllocatorBindSharedCollectionRequest {
-            token: Some(token_proxy.into_client_end().unwrap()),
-            buffer_collection_request: Some(collection_server),
-            ..Default::default()
-        }).map_err(|e| ImagePipeError::AllocationFailed(format!("bind_shared_collection: {:?}", e)))?;
-
-        let collection_proxy = collection_client.into_proxy()
-            .map_err(|e| ImagePipeError::AllocationFailed(format!("collection proxy: {:?}", e)))?;
-
-        // Set buffer constraints for Vulkan rendering
-        let constraints = BufferCollectionConstraints {
-            usage: Some(BufferUsage {
-                vulkan: Some(fidl_fuchsia_sysmem2::VULKAN_IMAGE_USAGE_COLOR_ATTACHMENT
-                    | fidl_fuchsia_sysmem2::VULKAN_IMAGE_USAGE_TRANSFER_SRC
-                    | fidl_fuchsia_sysmem2::VULKAN_IMAGE_USAGE_TRANSFER_DST),
-                ..Default::default()
-            }),
-            min_buffer_count: Some(self.buffer_count),
-            buffer_memory_constraints: Some(BufferMemoryConstraints {
-                ram_domain_supported: Some(true),
-                cpu_domain_supported: Some(false),
-                inaccessible_domain_supported: Some(true),
-                heap_permitted: Some(vec![Heap {
-                    heap_type: Some(
-                        fidl_fuchsia_sysmem2::HeapType::GoldfishDeviceLocal.into_primitive().into()
-                    ),
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }),
-            image_format_constraints: Some(vec![ImageFormatConstraints {
-                pixel_format: Some(match self.format {
-                    BufferFormat::B8G8R8A8 | BufferFormat::B8G8R8A8Srgb =>
-                        fidl_fuchsia_images2::PixelFormat::B8G8R8A8,
-                    BufferFormat::R8G8B8A8 | BufferFormat::R8G8B8A8Srgb =>
-                        fidl_fuchsia_images2::PixelFormat::R8G8B8A8,
-                }),
-                min_size: Some(fidl_fuchsia_math::SizeU {
-                    width: self.width,
-                    height: self.height,
-                }),
-                max_size: Some(fidl_fuchsia_math::SizeU {
-                    width: self.width,
-                    height: self.height,
-                }),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        };
-
-        collection_proxy.set_constraints(fidl_fuchsia_sysmem2::BufferCollectionSetConstraintsRequest {
-            constraints: Some(constraints),
-            ..Default::default()
-        }).map_err(|e| ImagePipeError::AllocationFailed(format!("set_constraints: {:?}", e)))?;
-
-        // Wait for buffers to be allocated
-        let wait_result = collection_proxy.wait_for_all_buffers_allocated().await
-            .map_err(|e| ImagePipeError::AllocationFailed(format!("wait_for_buffers: {:?}", e)))?
-            .map_err(|e| ImagePipeError::AllocationFailed(format!("allocation failed: {:?}", e)))?;
-
-        let buffer_info = wait_result.buffer_collection_info
-            .ok_or_else(|| ImagePipeError::AllocationFailed("No buffer info".to_string()))?;
-
-        let buffer_count = buffer_info.buffers.as_ref()
-            .map(|b| b.len() as u32)
-            .unwrap_or(0);
-
-        tracing::info!(
-            "ImagePipe initialized: {}x{} with {} buffers allocated",
-            self.width, self.height, buffer_count
-        );
-
-        // Store buffer collection info
-        self.buffer_collection = Some(BufferCollection::new(
-            buffer_count,
-            self.width,
-            self.height,
-            self.format,
-        ));
-
-        Ok(())
-    }
-
-    /// Initialize (placeholder for non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    /// On real Fuchsia with full SDK, this would:
+    /// 1. Create a BufferCollection via sysmem2
+    /// 2. Set Vulkan constraints (VK_FUCHSIA_buffer_collection)
+    /// 3. Set Flatland constraints via Allocator
+    /// 4. Wait for allocation to complete
+    ///
+    /// For now, uses a stub implementation that creates local buffers.
     pub fn initialize_sync(&mut self) -> Result<(), ImagePipeError> {
         self.buffer_collection = Some(BufferCollection::new(
             self.buffer_count,
@@ -346,7 +233,7 @@ impl ImagePipeClient {
     /// * `presentation_time` - Requested presentation time (0 = ASAP)
     ///
     /// Returns release fence that signals when buffer can be reused.
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn present(&self, presentation_time: i64) -> Result<PresentResult, ImagePipeError> {
         // Advance to next buffer
         let next = (self.current_buffer.load(Ordering::Acquire) + 1) % self.buffer_count;
@@ -366,7 +253,7 @@ impl ImagePipeClient {
     }
 
     /// Synchronous present (placeholder for non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn present_sync(&self, presentation_time: i64) -> Result<PresentResult, ImagePipeError> {
         let next = (self.current_buffer.load(Ordering::Acquire) + 1) % self.buffer_count;
         self.current_buffer.store(next, Ordering::Release);
@@ -381,7 +268,7 @@ impl ImagePipeClient {
     /// Resize the ImagePipe buffers
     ///
     /// This reallocates the buffer collection with new dimensions.
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn resize(&mut self, width: u32, height: u32) -> Result<(), ImagePipeError> {
         if width == self.width && height == self.height {
             return Ok(());
@@ -592,7 +479,7 @@ impl VulkanSurface {
     /// Initialize the surface
     ///
     /// Must be called before rendering.
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn initialize(&mut self) -> Result<(), ImagePipeError> {
         // Initialize ImagePipe buffers
         self.image_pipe.initialize().await?;
@@ -611,7 +498,7 @@ impl VulkanSurface {
     }
 
     /// Initialize (placeholder for non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn initialize_sync(&mut self) -> Result<(), ImagePipeError> {
         self.image_pipe.initialize_sync()?;
 
@@ -635,7 +522,7 @@ impl VulkanSurface {
     }
 
     /// Present the current frame
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn present(&self) -> Result<PresentResult, ImagePipeError> {
         if !self.valid {
             return Err(ImagePipeError::NotInitialized);
@@ -644,7 +531,7 @@ impl VulkanSurface {
     }
 
     /// Present (placeholder for non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn present_sync(&self) -> Result<PresentResult, ImagePipeError> {
         if !self.valid {
             return Err(ImagePipeError::NotInitialized);
@@ -653,7 +540,7 @@ impl VulkanSurface {
     }
 
     /// Resize the surface
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn resize(&mut self, width: u32, height: u32) -> Result<(), ImagePipeError> {
         self.image_pipe.resize(width, height).await
     }
@@ -691,7 +578,7 @@ impl VulkanSurface {
 /// let surface_info = create_vulkan_surface_info(&handle)?;
 /// // Use with wgpu::Instance::create_surface_from_raw_surface
 /// ```
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 pub fn create_vulkan_surface_info(
     handle: &FuchsiaSurfaceHandle,
 ) -> Result<VulkanSurfaceInfo, blinc_platform::PlatformError> {
@@ -713,7 +600,7 @@ pub fn create_vulkan_surface_info(
 }
 
 /// Information for creating a Vulkan surface
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 #[derive(Debug)]
 pub struct VulkanSurfaceInfo {
     /// ImagePipe2 handle for the surface (zx::Handle for vkCreateImagePipeSurfaceFUCHSIA)
@@ -727,7 +614,7 @@ pub struct VulkanSurfaceInfo {
 /// Create a Vulkan surface using VK_FUCHSIA_imagepipe_surface
 ///
 /// This function creates the actual VkSurfaceKHR for wgpu to use.
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 pub async fn create_image_pipe_surface(
     width: u32,
     height: u32,
@@ -837,13 +724,13 @@ impl FuchsiaGpu {
     /// Initialize GPU resources
     ///
     /// Must be called before rendering.
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn initialize(&mut self) -> Result<(), ImagePipeError> {
         self.surface.initialize().await
     }
 
     /// Initialize (placeholder for non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn initialize_sync(&mut self) -> Result<(), ImagePipeError> {
         self.surface.initialize_sync()
     }
@@ -877,7 +764,7 @@ impl FuchsiaGpu {
     }
 
     /// End the current frame and present
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn end_frame(&mut self) -> Result<PresentResult, ImagePipeError> {
         if !self.in_frame {
             return Err(ImagePipeError::NoFrameInProgress);
@@ -890,7 +777,7 @@ impl FuchsiaGpu {
     }
 
     /// End frame (placeholder for non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn end_frame_sync(&mut self) -> Result<PresentResult, ImagePipeError> {
         if !self.in_frame {
             return Err(ImagePipeError::NoFrameInProgress);
@@ -913,7 +800,7 @@ impl FuchsiaGpu {
     }
 
     /// Resize the GPU surface
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn resize(&mut self, width: u32, height: u32) -> Result<(), ImagePipeError> {
         if self.in_frame {
             return Err(ImagePipeError::FrameInProgress);

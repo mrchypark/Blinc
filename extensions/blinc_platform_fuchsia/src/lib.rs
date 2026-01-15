@@ -115,7 +115,7 @@ pub use blinc_fidl as fidl;
 pub use blinc_fuchsia_async as fuchsia_async;
 
 // Convenience constructor for non-Fuchsia builds
-#[cfg(not(target_os = "fuchsia"))]
+#[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
 impl FuchsiaPlatform {
     /// Create a placeholder platform (for cross-compilation checks)
     pub fn with_placeholder() -> Result<Self, blinc_platform::PlatformError> {

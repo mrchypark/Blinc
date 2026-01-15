@@ -15,6 +15,9 @@ crate-type = ["lib"]
 
 [features]
 default = []
+# Enable this feature when building within the Fuchsia tree with full SDK
+# This enables real FIDL protocol implementations instead of stubs
+fuchsia-sdk = []
 
 [dependencies]
 # Core dependencies (always available)

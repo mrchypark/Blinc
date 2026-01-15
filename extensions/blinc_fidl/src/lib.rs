@@ -49,6 +49,11 @@ mod header;
 mod error;
 mod handle;
 
+// FIDL protocol stubs for cross-compilation
+pub mod fuchsia_math;
+pub mod fuchsia_images2;
+pub mod fuchsia_sysmem2;
+
 pub use encoding::Encoder;
 pub use decoding::Decoder;
 pub use header::{MessageHeader, TransactionId, Ordinal, MessageFlags, DynamicFlags};

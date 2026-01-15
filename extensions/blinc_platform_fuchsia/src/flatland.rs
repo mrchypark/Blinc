@@ -31,23 +31,23 @@
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use std::sync::Arc;
 
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl::endpoints::ServerEnd;
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_math as fmath;
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_ui_composition::{
     self as fcomp, AllocatorMarker, AllocatorProxy, ColorRgba, FlatlandMarker, FlatlandProxy,
     HitRegion as FidlHitRegion, ImageProperties as FidlImageProperties, Orientation,
     ParentViewportWatcherMarker, ParentViewportWatcherProxy, PresentArgs as FidlPresentArgs,
     TransformId as FidlTransformId, ContentId as FidlContentId, ViewBoundProtocols,
 };
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fidl_fuchsia_ui_views::ViewCreationToken as FidlViewCreationToken;
-#[cfg(target_os = "fuchsia")]
+#[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
 use fuchsia_component::client::connect_to_protocol;
 
 /// Transform ID for Flatland scene graph nodes
@@ -204,10 +204,10 @@ pub struct FlatlandSession {
     /// Root transform
     root_transform: Option<TransformId>,
     /// Flatland FIDL proxy (Fuchsia only)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     proxy: Option<FlatlandProxy>,
     /// ParentViewportWatcher for layout updates (Fuchsia only)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     parent_viewport_watcher: Option<ParentViewportWatcherProxy>,
 }
 
@@ -215,7 +215,7 @@ impl FlatlandSession {
     /// Create a new Flatland session
     ///
     /// On Fuchsia, this connects to the Flatland service.
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn new() -> Result<Self, FlatlandError> {
         Ok(Self {
             next_transform_id: AtomicU64::new(1),
@@ -225,7 +225,7 @@ impl FlatlandSession {
     }
 
     /// Create a new Flatland session (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn new() -> Result<Self, FlatlandError> {
         let proxy = connect_to_protocol::<FlatlandMarker>()
             .map_err(|e| FlatlandError::ConnectionFailed(format!("{:?}", e)))?;
@@ -242,13 +242,13 @@ impl FlatlandSession {
     }
 
     /// Get the Flatland proxy (Fuchsia only)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn proxy(&self) -> Option<&FlatlandProxy> {
         self.proxy.as_ref()
     }
 
     /// Create a view with the given token (Fuchsia only)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn create_view_with_token(
         &mut self,
         token: FidlViewCreationToken,
@@ -269,26 +269,26 @@ impl FlatlandSession {
     }
 
     /// Set the parent viewport watcher proxy (Fuchsia only)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn set_parent_viewport_watcher(&mut self, watcher: ParentViewportWatcherProxy) {
         self.parent_viewport_watcher = Some(watcher);
     }
 
     /// Get the parent viewport watcher proxy (Fuchsia only)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn parent_viewport_watcher(&self) -> Option<&ParentViewportWatcherProxy> {
         self.parent_viewport_watcher.as_ref()
     }
 
     /// Create a new transform node
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn create_transform(&self) -> TransformId {
         let id = self.next_transform_id.fetch_add(1, Ordering::SeqCst);
         TransformId(id)
     }
 
     /// Create a new transform node (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn create_transform(&self) -> TransformId {
         let id = self.next_transform_id.fetch_add(1, Ordering::SeqCst);
         let transform_id = FidlTransformId { value: id };
@@ -303,11 +303,11 @@ impl FlatlandSession {
     }
 
     /// Release a transform node
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn release_transform(&self, _id: TransformId) {}
 
     /// Release a transform node (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn release_transform(&self, id: TransformId) {
         if let Some(proxy) = &self.proxy {
             let transform_id = FidlTransformId { value: id.0 };
@@ -318,13 +318,13 @@ impl FlatlandSession {
     }
 
     /// Set the root transform for this session
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn set_root_transform(&mut self, transform: TransformId) {
         self.root_transform = Some(transform);
     }
 
     /// Set the root transform for this session (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn set_root_transform(&mut self, transform: TransformId) {
         self.root_transform = Some(transform);
 
@@ -337,11 +337,11 @@ impl FlatlandSession {
     }
 
     /// Add a child transform to a parent
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn add_child(&self, _parent: TransformId, _child: TransformId) {}
 
     /// Add a child transform to a parent (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn add_child(&self, parent: TransformId, child: TransformId) {
         if let Some(proxy) = &self.proxy {
             let parent_id = FidlTransformId { value: parent.0 };
@@ -353,11 +353,11 @@ impl FlatlandSession {
     }
 
     /// Remove a child transform from a parent
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn remove_child(&self, _parent: TransformId, _child: TransformId) {}
 
     /// Remove a child transform from a parent (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn remove_child(&self, parent: TransformId, child: TransformId) {
         if let Some(proxy) = &self.proxy {
             let parent_id = FidlTransformId { value: parent.0 };
@@ -369,11 +369,11 @@ impl FlatlandSession {
     }
 
     /// Set the translation of a transform
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn set_translation(&self, _transform: TransformId, _x: f32, _y: f32) {}
 
     /// Set the translation of a transform (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn set_translation(&self, transform: TransformId, x: f32, y: f32) {
         if let Some(proxy) = &self.proxy {
             let transform_id = FidlTransformId { value: transform.0 };
@@ -385,11 +385,11 @@ impl FlatlandSession {
     }
 
     /// Set the scale of a transform
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn set_scale(&self, _transform: TransformId, _sx: f32, _sy: f32) {}
 
     /// Set the scale of a transform (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn set_scale(&self, transform: TransformId, sx: f32, sy: f32) {
         if let Some(proxy) = &self.proxy {
             let transform_id = FidlTransformId { value: transform.0 };
@@ -401,11 +401,11 @@ impl FlatlandSession {
     }
 
     /// Set the orientation (rotation) of a transform
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn set_orientation(&self, _transform: TransformId, _degrees: f32) {}
 
     /// Set the orientation (rotation) of a transform (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn set_orientation(&self, transform: TransformId, degrees: f32) {
         if let Some(proxy) = &self.proxy {
             let transform_id = FidlTransformId { value: transform.0 };
@@ -424,11 +424,11 @@ impl FlatlandSession {
     }
 
     /// Set the clip bounds for a transform
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn set_clip_boundary(&self, _transform: TransformId, _rect: Option<(f32, f32, f32, f32)>) {}
 
     /// Set the clip bounds for a transform (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn set_clip_boundary(&self, transform: TransformId, rect: Option<(f32, f32, f32, f32)>) {
         if let Some(proxy) = &self.proxy {
             let transform_id = FidlTransformId { value: transform.0 };
@@ -445,14 +445,14 @@ impl FlatlandSession {
     }
 
     /// Create a new content ID for images
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn create_image(&self, _props: ImageProperties) -> ContentId {
         let id = self.next_content_id.fetch_add(1, Ordering::SeqCst);
         ContentId(id)
     }
 
     /// Create content from a buffer collection
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn create_image_from_buffer_collection(
         &self,
         _import_token: (),
@@ -464,7 +464,7 @@ impl FlatlandSession {
     }
 
     /// Create content from a buffer collection (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn create_image_from_buffer_collection(
         &self,
         import_token: fcomp::BufferCollectionImportToken,
@@ -495,14 +495,14 @@ impl FlatlandSession {
     }
 
     /// Create a solid color fill
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn create_filled_rect(&self, _color: SolidColor) -> ContentId {
         let id = self.next_content_id.fetch_add(1, Ordering::SeqCst);
         ContentId(id)
     }
 
     /// Create a solid color fill (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn create_filled_rect(&self, color: SolidColor) -> ContentId {
         let id = self.next_content_id.fetch_add(1, Ordering::SeqCst);
         let content_id = FidlContentId { value: id };
@@ -527,11 +527,11 @@ impl FlatlandSession {
     }
 
     /// Set the content of a transform
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn set_content(&self, _transform: TransformId, _content: ContentId) {}
 
     /// Set the content of a transform (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn set_content(&self, transform: TransformId, content: ContentId) {
         if let Some(proxy) = &self.proxy {
             let transform_id = FidlTransformId { value: transform.0 };
@@ -543,11 +543,11 @@ impl FlatlandSession {
     }
 
     /// Clear the content of a transform
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn clear_content(&self, _transform: TransformId) {}
 
     /// Clear the content of a transform (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn clear_content(&self, transform: TransformId) {
         if let Some(proxy) = &self.proxy {
             let transform_id = FidlTransformId { value: transform.0 };
@@ -559,11 +559,11 @@ impl FlatlandSession {
     }
 
     /// Release content
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn release_image(&self, _content: ContentId) {}
 
     /// Release content (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn release_image(&self, content: ContentId) {
         if let Some(proxy) = &self.proxy {
             let content_id = FidlContentId { value: content.0 };
@@ -574,11 +574,11 @@ impl FlatlandSession {
     }
 
     /// Release filled rect
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn release_filled_rect(&self, _content: ContentId) {}
 
     /// Release filled rect (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn release_filled_rect(&self, content: ContentId) {
         if let Some(proxy) = &self.proxy {
             let content_id = FidlContentId { value: content.0 };
@@ -589,11 +589,11 @@ impl FlatlandSession {
     }
 
     /// Set the image destination size
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn set_image_destination_size(&self, _content: ContentId, _width: u32, _height: u32) {}
 
     /// Set the image destination size (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn set_image_destination_size(&self, content: ContentId, width: u32, height: u32) {
         if let Some(proxy) = &self.proxy {
             let content_id = FidlContentId { value: content.0 };
@@ -605,11 +605,11 @@ impl FlatlandSession {
     }
 
     /// Set hit regions for input handling
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn set_hit_regions(&self, _transform: TransformId, _regions: Vec<HitRegion>) {}
 
     /// Set hit regions for input handling (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn set_hit_regions(&self, transform: TransformId, regions: Vec<HitRegion>) {
         if let Some(proxy) = &self.proxy {
             let transform_id = FidlTransformId { value: transform.0 };
@@ -631,11 +631,11 @@ impl FlatlandSession {
     }
 
     /// Set infinite hit region (catches all input)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn set_infinite_hit_region(&self, _transform: TransformId) {}
 
     /// Set infinite hit region (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn set_infinite_hit_region(&self, transform: TransformId) {
         if let Some(proxy) = &self.proxy {
             let transform_id = FidlTransformId { value: transform.0 };
@@ -648,7 +648,7 @@ impl FlatlandSession {
     /// Present pending changes
     ///
     /// Returns frame info when the frame is presented.
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn present(&self, args: PresentArgs) -> Result<FramePresentedInfo, FlatlandError> {
         let proxy = self.proxy.as_ref()
             .ok_or_else(|| FlatlandError::ConnectionFailed("No proxy".to_string()))?;
@@ -668,7 +668,7 @@ impl FlatlandSession {
     }
 
     /// Synchronous present (for placeholder implementation)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn present_sync(&self, _args: PresentArgs) -> Result<FramePresentedInfo, FlatlandError> {
         Ok(FramePresentedInfo::default())
     }
@@ -679,13 +679,13 @@ impl FlatlandSession {
     }
 
     /// Clear the entire scene graph
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn clear(&mut self) {
         self.root_transform = None;
     }
 
     /// Clear the entire scene graph (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn clear(&mut self) {
         if let Some(proxy) = &self.proxy {
             if let Err(e) = proxy.clear() {
@@ -762,7 +762,7 @@ impl BufferCollection {
     /// Allocate the buffers
     ///
     /// On Fuchsia, this would use sysmem2 for allocation.
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn allocate(&mut self) -> Result<(), FlatlandError> {
         // TODO: Connect to fuchsia.sysmem2.Allocator
         // Allocate BufferCollection with Vulkan-compatible constraints
@@ -796,21 +796,21 @@ impl BufferFormat {
 ///
 /// On Fuchsia, this uses fuchsia.ui.composition.Allocator
 pub struct FlatlandAllocator {
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     _private: (),
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     proxy: Option<AllocatorProxy>,
 }
 
 impl FlatlandAllocator {
     /// Create a new allocator (non-Fuchsia)
-    #[cfg(not(target_os = "fuchsia"))]
+    #[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
     pub fn new() -> Result<Self, FlatlandError> {
         Ok(Self { _private: () })
     }
 
     /// Create a new allocator (Fuchsia)
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn new() -> Result<Self, FlatlandError> {
         let proxy = connect_to_protocol::<AllocatorMarker>()
             .map_err(|e| FlatlandError::ConnectionFailed(format!("Allocator: {:?}", e)))?;
@@ -823,7 +823,7 @@ impl FlatlandAllocator {
     /// Register a buffer collection with Flatland
     ///
     /// Returns an import token that can be used to create images.
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub async fn register_buffer_collection(
         &self,
         export_token: fcomp::BufferCollectionExportToken,
@@ -861,7 +861,7 @@ impl Default for FlatlandAllocator {
 }
 
 /// Token for importing a buffer collection into Flatland (non-Fuchsia placeholder)
-#[cfg(not(target_os = "fuchsia"))]
+#[cfg(not(all(target_os = "fuchsia", feature = "fuchsia-sdk")))]
 pub struct BufferCollectionImportToken {
     _private: (),
 }

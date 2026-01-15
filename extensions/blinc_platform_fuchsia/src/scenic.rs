@@ -309,14 +309,14 @@ impl ViewProviderService {
     }
 
     /// Called when the view is created
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn on_create_view(&self) {
         self.view.set_state(ViewState::Attached);
         tracing::info!("Scenic view created");
     }
 
     /// Called when the view is destroyed
-    #[cfg(target_os = "fuchsia")]
+    #[cfg(all(target_os = "fuchsia", feature = "fuchsia-sdk"))]
     pub fn on_destroy_view(&self) {
         self.view.set_state(ViewState::Destroying);
         tracing::info!("Scenic view destroyed");
