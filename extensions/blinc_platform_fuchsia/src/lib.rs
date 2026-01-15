@@ -109,8 +109,10 @@ pub use view_provider::{
 };
 pub use window::FuchsiaWindow;
 
-// Re-export Zircon types for platform consumers
+// Re-export Fuchsia SDK crates for platform consumers
 pub use blinc_fuchsia_zircon as zircon;
+pub use blinc_fidl as fidl;
+pub use blinc_fuchsia_async as fuchsia_async;
 
 // Convenience constructor for non-Fuchsia builds
 #[cfg(not(target_os = "fuchsia"))]
