@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Blinc UI Example"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Blinc Example Application"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Blinc Example"
+    }
+  ]
+}
