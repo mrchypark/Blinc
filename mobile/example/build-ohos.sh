@@ -26,6 +26,13 @@ export PATH="$OHOS_NDK_HOME/llvm/bin:$PATH"
 ARCH="${1:-aarch64}"
 PROFILE="${2:-debug}"
 
+# Handle --release and --debug flags
+if [ "$PROFILE" = "--release" ]; then
+    PROFILE="release"
+elif [ "$PROFILE" = "--debug" ]; then
+    PROFILE="debug"
+fi
+
 # Map arch to Rust target
 case "$ARCH" in
     aarch64|arm64)

@@ -1,0 +1,22 @@
+# Local configuration (contains user-specific paths)
+local.properties
+
+# Build outputs
+build/
+entry/build/
+.hvigor/
+oh_modules/
+oh-package-lock.json5
+
+# IDE files
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/shelf/
+*.iws
+
+# Temporary files
+*.log
+*.tmp
+
+# Native libraries (built from Rust source)
+entry/libs/

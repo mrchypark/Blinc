@@ -1,0 +1,11 @@
+# Local configuration - copy to local.properties and adjust paths
+# DO NOT commit local.properties to version control
+
+# macOS (DevEco Studio managed SDK):
+# sdk.dir=/Users/YOUR_USERNAME/Library/OpenHarmony/Sdk
+
+# Linux:
+# sdk.dir=/home/YOUR_USERNAME/OpenHarmony/Sdk
+
+# Windows:
+# sdk.dir=C:\\Users\\YOUR_USERNAME\\AppData\\Local\\OpenHarmony\\Sdk
