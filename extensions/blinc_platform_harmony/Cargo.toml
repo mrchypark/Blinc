@@ -10,6 +10,9 @@ rust-version.workspace = true
 keywords = ["ui", "gui", "harmonyos", "ohos", "blinc"]
 categories = ["gui"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ohos"))'] }
+
 [lib]
 crate-type = ["lib", "cdylib"]  # cdylib for N-API native module
 
