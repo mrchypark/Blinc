@@ -21,7 +21,9 @@ use crate::shaders::{
 };
 
 fn env_u64(name: &str) -> Option<u64> {
-    std::env::var(name).ok().and_then(|v| v.trim().parse::<u64>().ok())
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
 }
 
 fn env_usize(name: &str) -> Option<usize> {
