@@ -124,6 +124,9 @@ Android touch events are automatically routed to your UI. The touch phases map a
 | ACTION_UP     | pointer_up + pointer_leave |
 | ACTION_CANCEL | pointer_leave |
 
+Two-finger pinch gestures emit the layout `PINCH` event with the gesture center
+and per-frame scale delta. One-finger drag scrolling is unchanged.
+
 ## Debugging
 
 ### View Logs
