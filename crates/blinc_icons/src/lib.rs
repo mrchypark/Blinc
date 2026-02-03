@@ -18,6 +18,8 @@
 //! ```
 
 // Generated icon constants module
+// NOTE: `icons.rs` is generated and intentionally not rustfmt'd.
+#[rustfmt::skip]
 pub mod icons;
 
 /// Default Lucide viewBox (all icons are 24x24)
