@@ -2217,6 +2217,7 @@ impl WindowedApp {
                                         bounds_height,
                                         event.drag_delta_x,
                                         event.drag_delta_y,
+                                        1.0,
                                     );
                                 }
                             }
