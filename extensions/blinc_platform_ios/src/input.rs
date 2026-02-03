@@ -131,6 +131,8 @@ impl GestureDetector {
                     self.tap_start = None;
                     if self.active_touches.len() == 2 {
                         self.pinch_span = self.pinch_span_and_center().map(|(span, _)| span);
+                    } else {
+                        self.pinch_span = None;
                     }
                 }
                 None
@@ -150,21 +152,35 @@ impl GestureDetector {
                     existing.x = touch.x;
                     existing.y = touch.y;
                 }
-                if self.active_touches.len() == 2 {
+                let touch_count = self.active_touches.len();
+                if touch_count == 2 {
                     self.tap_in_progress = false;
                     self.tap_start = None;
                     if let Some((span, center)) = self.pinch_span_and_center() {
+                        if !span.is_finite() {
+                            self.pinch_span = None;
+                            return None;
+                        }
                         let scale = match self.pinch_span {
-                            Some(previous) if previous > 0.0 => span / previous,
+                            Some(previous) if previous.is_finite() && previous > 0.0 => {
+                                span / previous
+                            }
                             _ => 1.0,
                         };
                         self.pinch_span = Some(span);
+                        if !scale.is_finite() {
+                            return None;
+                        }
                         return Some(Gesture::Pinch {
                             scale: scale.clamp(0.90, 1.10),
                             center,
                         });
                     }
-                } else if self.active_touches.len() < 2 {
+                } else {
+                    if touch_count > 1 {
+                        self.tap_in_progress = false;
+                        self.tap_start = None;
+                    }
                     self.pinch_span = None;
                 }
                 None
