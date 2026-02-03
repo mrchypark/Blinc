@@ -20,6 +20,87 @@ use crate::shaders::{
     SIMPLE_GLASS_SHADER, TEXT_SHADER,
 };
 
+fn env_u64(name: &str) -> Option<u64> {
+    std::env::var(name).ok().and_then(|v| v.trim().parse::<u64>().ok())
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+}
+
+fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    // Default wgpu limits include `max_buffer_size = 256 MiB`.
+    // This is conservative and may be smaller than what the hardware supports.
+    //
+    // If you want to raise this limit (e.g. for large path buffers), set:
+    //   BLINC_WGPU_MAX_BUFFER_MB=512
+    // The value is clamped to the adapter-supported maximum.
+    let supported = adapter.limits();
+    let mut limits = wgpu::Limits::default();
+
+    if let Some(mib) = env_u64("BLINC_WGPU_MAX_BUFFER_MB") {
+        let requested = mib.saturating_mul(1024 * 1024);
+        let clamped = requested.min(supported.max_buffer_size);
+        limits.max_buffer_size = clamped;
+
+        tracing::info!(
+            "wgpu limits override: max_buffer_size={} MiB (requested {} MiB, supported {} MiB)",
+            limits.max_buffer_size / (1024 * 1024),
+            mib,
+            supported.max_buffer_size / (1024 * 1024)
+        );
+    } else {
+        tracing::debug!(
+            "wgpu limits: max_buffer_size={} MiB (supported {} MiB)",
+            limits.max_buffer_size / (1024 * 1024),
+            supported.max_buffer_size / (1024 * 1024)
+        );
+    }
+
+    limits
+}
+
+fn apply_renderer_config_overrides(
+    mut config: RendererConfig,
+    required_limits: &wgpu::Limits,
+) -> RendererConfig {
+    // Allow raising internal buffer capacities at startup.
+    // These do NOT change hardware capabilities; they just size our storage buffers.
+    //
+    // Env:
+    // - BLINC_GPU_MAX_PRIMITIVES=20000
+    // - BLINC_GPU_MAX_GLYPHS=50000
+    // - BLINC_GPU_MAX_GLASS_PRIMITIVES=1000
+    if let Some(v) = env_usize("BLINC_GPU_MAX_PRIMITIVES") {
+        config.max_primitives = v;
+    }
+    if let Some(v) = env_usize("BLINC_GPU_MAX_GLYPHS") {
+        config.max_glyphs = v;
+    }
+    if let Some(v) = env_usize("BLINC_GPU_MAX_GLASS_PRIMITIVES") {
+        config.max_glass_primitives = v;
+    }
+
+    // Clamp to required limits so device creation + bind sizes stay valid.
+    let prim_cap = (required_limits.max_storage_buffer_binding_size as u64
+        / std::mem::size_of::<GpuPrimitive>() as u64)
+        .max(1) as usize;
+    let glyph_cap = (required_limits.max_storage_buffer_binding_size as u64
+        / std::mem::size_of::<GpuGlyph>() as u64)
+        .max(1) as usize;
+    let glass_cap = (required_limits.max_storage_buffer_binding_size as u64
+        / std::mem::size_of::<GpuGlassPrimitive>() as u64)
+        .max(1) as usize;
+
+    config.max_primitives = config.max_primitives.clamp(1, prim_cap);
+    config.max_glyphs = config.max_glyphs.clamp(1, glyph_cap);
+    config.max_glass_primitives = config.max_glass_primitives.clamp(1, glass_cap);
+
+    config
+}
+
 /// Error type for renderer operations
 #[derive(Debug)]
 pub enum RendererError {
@@ -793,12 +874,23 @@ impl GpuRenderer {
             .await
             .ok_or(RendererError::AdapterNotFound)?;
 
+        let required_limits = device_required_limits(&adapter);
+        let config = apply_renderer_config_overrides(config, &required_limits);
+
+        tracing::info!(
+            "gpu config: max_primitives={}, max_glyphs={}, max_glass_primitives={}, sample_count={}",
+            config.max_primitives,
+            config.max_glyphs,
+            config.max_glass_primitives,
+            config.sample_count
+        );
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Blinc GPU Device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits,
                     // MemoryUsage hint tells the driver to prefer lower memory over performance.
                     // This helps reduce RSS on integrated GPUs (Apple Silicon) where GPU memory
                     // is shared with CPU and counts against process memory.
@@ -858,12 +950,23 @@ impl GpuRenderer {
             .await
             .ok_or(RendererError::AdapterNotFound)?;
 
+        let required_limits = device_required_limits(&adapter);
+        let config = apply_renderer_config_overrides(config, &required_limits);
+
+        tracing::info!(
+            "gpu config: max_primitives={}, max_glyphs={}, max_glass_primitives={}, sample_count={}",
+            config.max_primitives,
+            config.max_glyphs,
+            config.max_glass_primitives,
+            config.sample_count
+        );
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Blinc GPU Device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits,
                     // MemoryUsage hint tells the driver to prefer lower memory over performance.
                     // This helps reduce RSS on integrated GPUs (Apple Silicon) where GPU memory
                     // is shared with CPU and counts against process memory.
@@ -941,12 +1044,23 @@ impl GpuRenderer {
             .await
             .ok_or(RendererError::AdapterNotFound)?;
 
+        let required_limits = device_required_limits(&adapter);
+        let config = apply_renderer_config_overrides(config, &required_limits);
+
+        tracing::info!(
+            "gpu config: max_primitives={}, max_glyphs={}, max_glass_primitives={}, sample_count={}",
+            config.max_primitives,
+            config.max_glyphs,
+            config.max_glass_primitives,
+            config.sample_count
+        );
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Blinc GPU Device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits,
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                 },
                 None,
