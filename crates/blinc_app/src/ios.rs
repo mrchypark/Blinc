@@ -40,7 +40,7 @@ use blinc_layout::overlay_state::OverlayContext;
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager};
 use blinc_platform::assets::set_global_asset_loader;
-use blinc_platform_ios::{IOSAssetLoader, IOSWakeProxy, TouchPhase};
+use blinc_platform_ios::{Gesture, GestureDetector, IOSAssetLoader, IOSWakeProxy, TouchPhase};
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
@@ -257,6 +257,7 @@ impl IOSApp {
             rebuild_count: 0,
             last_touch_pos: None,
             is_scrolling: false,
+            gesture_detector: GestureDetector::new(),
         })
     }
 
@@ -292,6 +293,8 @@ pub struct IOSRenderContext {
     last_touch_pos: Option<(f32, f32)>,
     /// Whether currently scrolling (touch drag in progress)
     is_scrolling: bool,
+    /// Gesture detector for touch gestures
+    gesture_detector: GestureDetector,
 }
 
 impl IOSRenderContext {
@@ -462,6 +465,9 @@ impl IOSRenderContext {
             event_type: u32,
         }
 
+        let gesture = self.gesture_detector.process(&touch);
+        let active_touches = self.gesture_detector.active_touch_count();
+
         let tree = match &self.render_tree {
             Some(t) => t,
             None => {
@@ -517,30 +523,44 @@ impl IOSRenderContext {
                     .event_router
                     .on_mouse_down(tree, lx, ly, MouseButton::Left);
                 // Initialize touch tracking for scroll
-                self.last_touch_pos = Some((lx, ly));
-                self.is_scrolling = false;
+                if active_touches == 1 {
+                    self.last_touch_pos = Some((lx, ly));
+                    self.is_scrolling = false;
+                } else {
+                    self.last_touch_pos = None;
+                    self.is_scrolling = false;
+                }
             }
             TouchPhase::Moved => {
                 self.windowed_ctx.event_router.on_mouse_move(tree, lx, ly);
 
                 // Calculate scroll delta from touch movement
                 // Touch: dragging down = positive delta = content scrolls up (shows below)
-                if let Some((prev_x, prev_y)) = self.last_touch_pos {
-                    let delta_x = lx - prev_x;
-                    let delta_y = ly - prev_y;
+                if active_touches == 1 {
+                    if let Some((prev_x, prev_y)) = self.last_touch_pos {
+                        let delta_x = lx - prev_x;
+                        let delta_y = ly - prev_y;
 
-                    // Only dispatch scroll if there's actual movement
-                    // Small threshold to avoid jitter
-                    if delta_x.abs() > 0.5 || delta_y.abs() > 0.5 {
-                        self.is_scrolling = true;
-                        // Store scroll info for dispatch after event loop
-                        scroll_info = Some((lx, ly, delta_x, delta_y));
-                        tracing::trace!("Touch scroll: delta=({:.1}, {:.1})", delta_x, delta_y);
+                        // Only dispatch scroll if there's actual movement
+                        // Small threshold to avoid jitter
+                        if delta_x.abs() > 0.5 || delta_y.abs() > 0.5 {
+                            self.is_scrolling = true;
+                            // Store scroll info for dispatch after event loop
+                            scroll_info = Some((lx, ly, delta_x, delta_y));
+                            tracing::trace!(
+                                "Touch scroll: delta=({:.1}, {:.1})",
+                                delta_x,
+                                delta_y
+                            );
+                        }
                     }
-                }
 
-                // Update last touch position
-                self.last_touch_pos = Some((lx, ly));
+                    // Update last touch position
+                    self.last_touch_pos = Some((lx, ly));
+                } else {
+                    self.last_touch_pos = None;
+                    self.is_scrolling = false;
+                }
             }
             TouchPhase::Ended => {
                 tracing::trace!("[Blinc] iOS Touch ENDED at ({:.1}, {:.1})", lx, ly);
@@ -612,6 +632,16 @@ impl IOSRenderContext {
             }
             // Stateful elements will call request_redraw() internally when state changes
             // The needs_render() check will pick this up for the next frame
+        }
+
+        if let Some(Gesture::Pinch { scale, center }) = gesture {
+            if let Some(ref mut tree) = self.render_tree {
+                let router = &mut self.windowed_ctx.event_router;
+                if let Some(hit) = router.hit_test(tree, center.0, center.1) {
+                    tree.dispatch_pinch_chain(&hit, center.0, center.1, scale);
+                    self.wake_proxy.wake();
+                }
+            }
         }
 
         // Dispatch scroll events (touch scrolling)
