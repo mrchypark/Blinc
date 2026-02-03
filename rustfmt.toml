@@ -1,4 +1,2 @@
-# Ignore generated files
-ignore = [
-    "crates/blinc_icons/src/icons.rs",
-]
+# Rustfmt configuration
+# Note: icons.rs uses #![rustfmt::skip] inline since `ignore` requires nightly
