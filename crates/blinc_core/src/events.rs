@@ -29,6 +29,8 @@ pub mod event_types {
     pub const SCROLL: EventType = 30;
     /// Scroll gesture ended (for deceleration/momentum)
     pub const SCROLL_END: EventType = 31;
+    /// Pinch zoom gesture update
+    pub const PINCH: EventType = 32;
     pub const RESIZE: EventType = 40;
 
     // Window lifecycle events

@@ -73,6 +73,11 @@ pub struct EventContext {
     /// Drag delta for DRAG/DRAG_END events (offset from drag start)
     pub drag_delta_x: f32,
     pub drag_delta_y: f32,
+    /// Pinch center in absolute coordinates (for PINCH events)
+    pub pinch_center_x: f32,
+    pub pinch_center_y: f32,
+    /// Pinch scale ratio delta per update (1.0 = no change)
+    pub pinch_scale: f32,
     /// Character for TEXT_INPUT events
     pub key_char: Option<char>,
     /// Key code for KEY_DOWN/KEY_UP events (platform-specific)
@@ -106,6 +111,9 @@ impl EventContext {
             scroll_time: None,
             drag_delta_x: 0.0,
             drag_delta_y: 0.0,
+            pinch_center_x: 0.0,
+            pinch_center_y: 0.0,
+            pinch_scale: 1.0,
             key_char: None,
             key_code: 0,
             shift: false,
@@ -160,6 +168,14 @@ impl EventContext {
     pub fn with_drag_delta(mut self, dx: f32, dy: f32) -> Self {
         self.drag_delta_x = dx;
         self.drag_delta_y = dy;
+        self
+    }
+
+    /// Set pinch data (for PINCH events)
+    pub fn with_pinch(mut self, scale: f32, center_x: f32, center_y: f32) -> Self {
+        self.pinch_scale = scale;
+        self.pinch_center_x = center_x;
+        self.pinch_center_y = center_y;
         self
     }
 
@@ -348,6 +364,14 @@ impl EventHandlers {
         F: Fn(&EventContext) + 'static,
     {
         self.on(event_types::SCROLL, handler);
+    }
+
+    /// Register a pinch handler (zoom gesture updates)
+    pub fn on_pinch<F>(&mut self, handler: F)
+    where
+        F: Fn(&EventContext) + 'static,
+    {
+        self.on(event_types::PINCH, handler);
     }
 
     /// Register a resize handler
