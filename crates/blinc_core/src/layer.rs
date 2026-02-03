@@ -1609,9 +1609,17 @@ pub enum ParticleForce {
     /// Constant directional force (gravity)
     Gravity(Vec3),
     /// Wind with turbulence
-    Wind { direction: Vec3, strength: f32, turbulence: f32 },
+    Wind {
+        direction: Vec3,
+        strength: f32,
+        turbulence: f32,
+    },
     /// Vortex/swirl
-    Vortex { axis: Vec3, center: Vec3, strength: f32 },
+    Vortex {
+        axis: Vec3,
+        center: Vec3,
+        strength: f32,
+    },
     /// Velocity damping
     Drag(f32),
     /// Noise-based force

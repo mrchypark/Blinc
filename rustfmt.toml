@@ -1,0 +1,4 @@
+# Ignore generated files
+ignore = [
+    "crates/blinc_icons/src/icons.rs",
+]

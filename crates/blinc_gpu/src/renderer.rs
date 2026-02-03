@@ -23,7 +23,9 @@ use crate::shaders::{
 };
 
 fn env_u64(name: &str) -> Option<u64> {
-    std::env::var(name).ok().and_then(|v| v.trim().parse::<u64>().ok())
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
 }
 
 fn env_usize(name: &str) -> Option<usize> {
@@ -7249,9 +7251,11 @@ impl GpuRenderer {
             };
 
             // Create command encoder
-            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Particle Encoder"),
-            });
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Particle Encoder"),
+                });
 
             // Run compute pass to update particles
             system.update(&self.queue, &mut encoder, &particle_viewport);
@@ -7260,26 +7264,29 @@ impl GpuRenderer {
             self.queue.submit(std::iter::once(encoder.finish()));
 
             // Create render encoder
-            let mut render_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Particle Render Encoder"),
-            });
+            let mut render_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Particle Render Encoder"),
+                    });
 
             // Render pass
             {
-                let mut render_pass = render_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Particle Render Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load, // Don't clear, draw on top
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
+                let mut render_pass =
+                    render_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Particle Render Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: target,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load, // Don't clear, draw on top
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
 
                 // Set viewport to the particle bounds
                 render_pass.set_viewport(

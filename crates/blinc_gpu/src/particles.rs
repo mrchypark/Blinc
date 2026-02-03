@@ -79,7 +79,7 @@ impl Default for GpuEmitter {
             position_shape: [0.0, 0.0, 0.0, 0.0], // Point emitter
             shape_params: [0.0; 4],
             direction_randomness: [0.0, 1.0, 0.0, 0.0], // Up, no randomness
-            emission_config: [100.0, 0.0, 0.0, 1.0], // 100/s, no burst, gravity=1
+            emission_config: [100.0, 0.0, 0.0, 1.0],    // 100/s, no burst, gravity=1
             lifetime_speed: [1.0, 2.0, 1.0, 2.0],
             size_config: [0.1, 0.2, 0.0, 0.1],
             start_color: [1.0, 1.0, 1.0, 1.0],
@@ -948,7 +948,11 @@ impl ParticleSystemGpu {
         self.time = viewport.time;
 
         // Update emitter buffer
-        queue.write_buffer(&self.emitter_buffer, 0, bytemuck::bytes_of(&viewport.emitter));
+        queue.write_buffer(
+            &self.emitter_buffer,
+            0,
+            bytemuck::bytes_of(&viewport.emitter),
+        );
 
         // Update simulation uniforms
         let sim_uniforms = GpuSimulationUniforms {
@@ -966,7 +970,11 @@ impl ParticleSystemGpu {
             ],
             force_config: [viewport.forces.len() as f32, 0.0, 0.0, 0.0],
         };
-        queue.write_buffer(&self.sim_uniform_buffer, 0, bytemuck::bytes_of(&sim_uniforms));
+        queue.write_buffer(
+            &self.sim_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&sim_uniforms),
+        );
 
         // Update forces buffer
         let mut forces = [GpuForce::default(); 8];
@@ -1063,11 +1071,7 @@ impl ParticleSystemGpu {
     }
 
     fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [[f32; 4]; 4] {
-        let f = Self::normalize([
-            target[0] - eye[0],
-            target[1] - eye[1],
-            target[2] - eye[2],
-        ]);
+        let f = Self::normalize([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
         let r = Self::normalize(Self::cross(f, up));
         let u = Self::cross(r, f);
 
@@ -1100,10 +1104,8 @@ impl ParticleSystemGpu {
         let mut result = [[0.0f32; 4]; 4];
         for i in 0..4 {
             for j in 0..4 {
-                result[i][j] = a[0][j] * b[i][0]
-                    + a[1][j] * b[i][1]
-                    + a[2][j] * b[i][2]
-                    + a[3][j] * b[i][3];
+                result[i][j] =
+                    a[0][j] * b[i][0] + a[1][j] * b[i][1] + a[2][j] * b[i][2] + a[3][j] * b[i][3];
             }
         }
         result

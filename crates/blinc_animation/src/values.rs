@@ -94,7 +94,11 @@ pub struct TypedKeyframe<T: Interpolate> {
 impl<T: Interpolate> TypedKeyframe<T> {
     /// Create a new keyframe
     pub fn new(time: f32, value: T, easing: Easing) -> Self {
-        Self { time, value, easing }
+        Self {
+            time,
+            value,
+            easing,
+        }
     }
 
     /// Create a keyframe with linear easing
@@ -133,14 +137,16 @@ impl<T: Interpolate> TypedKeyframeAnimation<T> {
     /// Add a keyframe (builder pattern)
     pub fn keyframe(mut self, time: f32, value: T, easing: Easing) -> Self {
         self.keyframes.push(TypedKeyframe::new(time, value, easing));
-        self.keyframes.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+        self.keyframes
+            .sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
         self
     }
 
     /// Add a keyframe with linear easing
     pub fn at(mut self, time: f32, value: T) -> Self {
         self.keyframes.push(TypedKeyframe::linear(time, value));
-        self.keyframes.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+        self.keyframes
+            .sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
         self
     }
 

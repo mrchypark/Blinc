@@ -1833,17 +1833,48 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
 
         // Calculate UV offset and scale for clipped viewports
-        let uv_offset_x = if orig_w > 0.0 { (clipped_x - orig_x) / orig_w } else { 0.0 };
-        let uv_offset_y = if orig_h > 0.0 { (clipped_y - orig_y) / orig_h } else { 0.0 };
-        let uv_scale_x = if orig_w > 0.0 { clipped_w / orig_w } else { 1.0 };
-        let uv_scale_y = if orig_h > 0.0 { clipped_h / orig_h } else { 1.0 };
+        let uv_offset_x = if orig_w > 0.0 {
+            (clipped_x - orig_x) / orig_w
+        } else {
+            0.0
+        };
+        let uv_offset_y = if orig_h > 0.0 {
+            (clipped_y - orig_y) / orig_h
+        } else {
+            0.0
+        };
+        let uv_scale_x = if orig_w > 0.0 {
+            clipped_w / orig_w
+        } else {
+            1.0
+        };
+        let uv_scale_y = if orig_h > 0.0 {
+            clipped_h / orig_h
+        } else {
+            1.0
+        };
 
         // Create the uniform data for the shader
         // Must match the WGSL SdfUniform struct layout exactly
         let uniforms = Sdf3DUniform {
-            camera_pos: [viewport.camera_pos.x, viewport.camera_pos.y, viewport.camera_pos.z, 1.0],
-            camera_dir: [viewport.camera_dir.x, viewport.camera_dir.y, viewport.camera_dir.z, 0.0],
-            camera_up: [viewport.camera_up.x, viewport.camera_up.y, viewport.camera_up.z, 0.0],
+            camera_pos: [
+                viewport.camera_pos.x,
+                viewport.camera_pos.y,
+                viewport.camera_pos.z,
+                1.0,
+            ],
+            camera_dir: [
+                viewport.camera_dir.x,
+                viewport.camera_dir.y,
+                viewport.camera_dir.z,
+                0.0,
+            ],
+            camera_up: [
+                viewport.camera_up.x,
+                viewport.camera_up.y,
+                viewport.camera_up.z,
+                0.0,
+            ],
             camera_right: [
                 viewport.camera_right.x,
                 viewport.camera_right.y,
@@ -1941,7 +1972,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             emission_config: [
                 particle_data.emission_rate,
                 particle_data.burst_count, // burst count for one-shot effects
-                0.0, // spawn accumulated (deprecated)
+                0.0,                       // spawn accumulated (deprecated)
                 particle_data.gravity_scale,
             ],
             lifetime_speed: [
@@ -1985,11 +2016,19 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                     type_strength: [0.0, 1.0, 0.0, 0.0],
                     direction_params: [dir.x, dir.y, dir.z, 0.0],
                 },
-                ParticleForce::Wind { direction, strength, turbulence } => GpuForce {
+                ParticleForce::Wind {
+                    direction,
+                    strength,
+                    turbulence,
+                } => GpuForce {
                     type_strength: [1.0, *strength, 0.0, 0.0],
                     direction_params: [direction.x, direction.y, direction.z, *turbulence],
                 },
-                ParticleForce::Vortex { axis, center: _, strength } => GpuForce {
+                ParticleForce::Vortex {
+                    axis,
+                    center: _,
+                    strength,
+                } => GpuForce {
                     type_strength: [2.0, *strength, 0.0, 0.0],
                     direction_params: [axis.x, axis.y, axis.z, 0.0],
                 },
@@ -1997,7 +2036,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                     type_strength: [3.0, *coefficient, 0.0, 0.0],
                     direction_params: [0.0, 0.0, 0.0, 0.0],
                 },
-                ParticleForce::Turbulence { strength, frequency } => GpuForce {
+                ParticleForce::Turbulence {
+                    strength,
+                    frequency,
+                } => GpuForce {
                     type_strength: [4.0, *strength, 0.0, 0.0],
                     direction_params: [0.0, 0.0, 0.0, *frequency],
                 },

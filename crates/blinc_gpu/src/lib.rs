@@ -49,9 +49,8 @@ pub use text::TextRenderingContext;
 
 // Particle system exports
 pub use particles::{
-    GpuEmitter, GpuForce, GpuParticle, GpuRenderUniforms, GpuSimulationUniforms,
-    ParticleManager, ParticleSystemGpu, ParticleViewport, PARTICLE_COMPUTE_SHADER,
-    PARTICLE_RENDER_SHADER,
+    GpuEmitter, GpuForce, GpuParticle, GpuRenderUniforms, GpuSimulationUniforms, ParticleManager,
+    ParticleSystemGpu, ParticleViewport, PARTICLE_COMPUTE_SHADER, PARTICLE_RENDER_SHADER,
 };
 
 // Re-export text types for convenience
