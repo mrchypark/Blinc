@@ -20,6 +20,13 @@ use crate::shaders::{
     SIMPLE_GLASS_SHADER, TEXT_SHADER,
 };
 
+const BYTES_PER_MIB: u64 = 1024 * 1024;
+const MIN_CAPACITY: usize = 1;
+const ENV_WGPU_MAX_BUFFER_MB: &str = "BLINC_WGPU_MAX_BUFFER_MB";
+const ENV_GPU_MAX_PRIMITIVES: &str = "BLINC_GPU_MAX_PRIMITIVES";
+const ENV_GPU_MAX_GLYPHS: &str = "BLINC_GPU_MAX_GLYPHS";
+const ENV_GPU_MAX_GLASS_PRIMITIVES: &str = "BLINC_GPU_MAX_GLASS_PRIMITIVES";
+
 fn env_u64(name: &str) -> Option<u64> {
     std::env::var(name)
         .ok()
@@ -32,6 +39,19 @@ fn env_usize(name: &str) -> Option<usize> {
         .and_then(|v| v.trim().parse::<usize>().ok())
 }
 
+fn apply_usize_override(name: &str, target: &mut usize) {
+    if let Some(value) = env_usize(name) {
+        *target = value;
+    }
+}
+
+fn max_entries_for_buffer(required_limits: &wgpu::Limits, entry_size: usize) -> usize {
+    let max_bytes = required_limits.max_storage_buffer_binding_size as u64;
+    let entry_bytes = entry_size as u64;
+    let entries = max_bytes / entry_bytes;
+    entries.max(MIN_CAPACITY as u64) as usize
+}
+
 fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     // Default wgpu limits include `max_buffer_size = 256 MiB`.
     // This is conservative and may be smaller than what the hardware supports.
@@ -42,22 +62,22 @@ fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let supported = adapter.limits();
     let mut limits = wgpu::Limits::default();
 
-    if let Some(mib) = env_u64("BLINC_WGPU_MAX_BUFFER_MB") {
-        let requested = mib.saturating_mul(1024 * 1024);
+    if let Some(mib) = env_u64(ENV_WGPU_MAX_BUFFER_MB) {
+        let requested = mib.saturating_mul(BYTES_PER_MIB);
         let clamped = requested.min(supported.max_buffer_size);
         limits.max_buffer_size = clamped;
 
         tracing::info!(
             "wgpu limits override: max_buffer_size={} MiB (requested {} MiB, supported {} MiB)",
-            limits.max_buffer_size / (1024 * 1024),
+            limits.max_buffer_size / BYTES_PER_MIB,
             mib,
-            supported.max_buffer_size / (1024 * 1024)
+            supported.max_buffer_size / BYTES_PER_MIB
         );
     } else {
         tracing::debug!(
             "wgpu limits: max_buffer_size={} MiB (supported {} MiB)",
-            limits.max_buffer_size / (1024 * 1024),
-            supported.max_buffer_size / (1024 * 1024)
+            limits.max_buffer_size / BYTES_PER_MIB,
+            supported.max_buffer_size / BYTES_PER_MIB
         );
     }
 
@@ -75,30 +95,21 @@ fn apply_renderer_config_overrides(
     // - BLINC_GPU_MAX_PRIMITIVES=20000
     // - BLINC_GPU_MAX_GLYPHS=50000
     // - BLINC_GPU_MAX_GLASS_PRIMITIVES=1000
-    if let Some(v) = env_usize("BLINC_GPU_MAX_PRIMITIVES") {
-        config.max_primitives = v;
-    }
-    if let Some(v) = env_usize("BLINC_GPU_MAX_GLYPHS") {
-        config.max_glyphs = v;
-    }
-    if let Some(v) = env_usize("BLINC_GPU_MAX_GLASS_PRIMITIVES") {
-        config.max_glass_primitives = v;
-    }
+    apply_usize_override(ENV_GPU_MAX_PRIMITIVES, &mut config.max_primitives);
+    apply_usize_override(ENV_GPU_MAX_GLYPHS, &mut config.max_glyphs);
+    apply_usize_override(ENV_GPU_MAX_GLASS_PRIMITIVES, &mut config.max_glass_primitives);
 
     // Clamp to required limits so device creation + bind sizes stay valid.
-    let prim_cap = (required_limits.max_storage_buffer_binding_size as u64
-        / std::mem::size_of::<GpuPrimitive>() as u64)
-        .max(1) as usize;
-    let glyph_cap = (required_limits.max_storage_buffer_binding_size as u64
-        / std::mem::size_of::<GpuGlyph>() as u64)
-        .max(1) as usize;
-    let glass_cap = (required_limits.max_storage_buffer_binding_size as u64
-        / std::mem::size_of::<GpuGlassPrimitive>() as u64)
-        .max(1) as usize;
+    let prim_cap = max_entries_for_buffer(required_limits, std::mem::size_of::<GpuPrimitive>());
+    let glyph_cap = max_entries_for_buffer(required_limits, std::mem::size_of::<GpuGlyph>());
+    let glass_cap =
+        max_entries_for_buffer(required_limits, std::mem::size_of::<GpuGlassPrimitive>());
 
-    config.max_primitives = config.max_primitives.clamp(1, prim_cap);
-    config.max_glyphs = config.max_glyphs.clamp(1, glyph_cap);
-    config.max_glass_primitives = config.max_glass_primitives.clamp(1, glass_cap);
+    config.max_primitives = config.max_primitives.clamp(MIN_CAPACITY, prim_cap);
+    config.max_glyphs = config.max_glyphs.clamp(MIN_CAPACITY, glyph_cap);
+    config.max_glass_primitives = config
+        .max_glass_primitives
+        .clamp(MIN_CAPACITY, glass_cap);
 
     config
 }
