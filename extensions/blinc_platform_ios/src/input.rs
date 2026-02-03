@@ -94,6 +94,8 @@ pub struct GestureDetector {
     tap_in_progress: bool,
     /// Start position of potential tap
     tap_start: Option<(f32, f32)>,
+    /// Last pinch span between two touches
+    pinch_span: Option<f32>,
 }
 
 impl GestureDetector {
@@ -102,13 +104,35 @@ impl GestureDetector {
         Self::default()
     }
 
+    fn pinch_span_and_center(&self) -> Option<(f32, (f32, f32))> {
+        if self.active_touches.len() < 2 {
+            return None;
+        }
+
+        let first = &self.active_touches[0];
+        let second = &self.active_touches[1];
+        let dx = second.x - first.x;
+        let dy = second.y - first.y;
+        let span = (dx * dx + dy * dy).sqrt();
+        let center = ((first.x + second.x) * 0.5, (first.y + second.y) * 0.5);
+        Some((span, center))
+    }
+
     /// Process a touch event and detect gestures
     pub fn process(&mut self, touch: &Touch) -> Option<Gesture> {
         match touch.phase {
             TouchPhase::Began => {
                 self.active_touches.push(touch.clone());
-                self.tap_in_progress = true;
-                self.tap_start = Some((touch.x, touch.y));
+                if self.active_touches.len() == 1 {
+                    self.tap_in_progress = true;
+                    self.tap_start = Some((touch.x, touch.y));
+                } else {
+                    self.tap_in_progress = false;
+                    self.tap_start = None;
+                    if self.active_touches.len() == 2 {
+                        self.pinch_span = self.pinch_span_and_center().map(|(span, _)| span);
+                    }
+                }
                 None
             }
             TouchPhase::Moved => {
@@ -126,10 +150,30 @@ impl GestureDetector {
                     existing.x = touch.x;
                     existing.y = touch.y;
                 }
+                if self.active_touches.len() == 2 {
+                    self.tap_in_progress = false;
+                    self.tap_start = None;
+                    if let Some((span, center)) = self.pinch_span_and_center() {
+                        let scale = match self.pinch_span {
+                            Some(previous) if previous > 0.0 => span / previous,
+                            _ => 1.0,
+                        };
+                        self.pinch_span = Some(span);
+                        return Some(Gesture::Pinch {
+                            scale: scale.clamp(0.90, 1.10),
+                            center,
+                        });
+                    }
+                } else if self.active_touches.len() < 2 {
+                    self.pinch_span = None;
+                }
                 None
             }
             TouchPhase::Ended => {
                 self.active_touches.retain(|t| t.id != touch.id);
+                if self.active_touches.len() < 2 {
+                    self.pinch_span = None;
+                }
 
                 // Check for tap
                 if self.tap_in_progress {
@@ -148,6 +192,7 @@ impl GestureDetector {
                 self.active_touches.retain(|t| t.id != touch.id);
                 self.tap_in_progress = false;
                 self.tap_start = None;
+                self.pinch_span = None;
                 None
             }
         }
