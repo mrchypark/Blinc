@@ -389,6 +389,518 @@ pub fn style() -> ElementStyle {
     ElementStyle::new()
 }
 
+/// CSS-like macro for creating ElementStyle with CSS property names
+///
+/// Uses CSS property naming conventions (with hyphens parsed as separate tokens).
+/// Provides a familiar syntax for developers coming from CSS/web development.
+///
+/// # Examples
+///
+/// ```ignore
+/// use blinc_layout::prelude::*;
+/// use blinc_core::Color;
+///
+/// // CSS-style properties (note: use spaces around hyphens)
+/// let card = css! {
+///     background: Color::WHITE;
+///     border-radius: 8.0;
+///     box-shadow: Shadow::new(0.0, 4.0, 8.0, Color::BLACK.with_alpha(0.2));
+///     opacity: 0.9;
+/// };
+///
+/// // Transform properties
+/// let hover = css! {
+///     transform: Transform::scale(1.05, 1.05);
+///     opacity: 1.0;
+/// };
+///
+/// // Material effects (Blinc extensions)
+/// let glass_panel = css! {
+///     background: Color::WHITE.with_alpha(0.1);
+///     border-radius: 16.0;
+///     backdrop-filter: glass;
+/// };
+///
+/// // Animation
+/// let animated = css! {
+///     animation-name: "fade-in";
+///     animation-duration: 300;
+/// };
+/// ```
+///
+/// # Supported Properties
+///
+/// ## Standard CSS Properties
+/// - `background`: Color or Brush
+/// - `border-radius`: f32 (uniform) or CornerRadius
+/// - `box-shadow`: Shadow
+/// - `opacity`: f32 (0.0-1.0)
+/// - `transform`: Transform
+///
+/// ## Blinc Extensions
+/// - `backdrop-filter`: `glass`, `metallic`, `chrome`, `gold`, `wood`
+/// - `render-layer`: RenderLayer
+///
+/// ## Animation Properties
+/// - `animation`: CssAnimation
+/// - `animation-name`: String
+/// - `animation-duration`: u32 (milliseconds)
+#[macro_export]
+macro_rules! css {
+    // Empty style
+    () => {
+        $crate::element_style::ElementStyle::new()
+    };
+
+    // Main entry point - parse CSS properties (semicolon separated)
+    ($($tokens:tt)*) => {{
+        let mut __style = $crate::element_style::ElementStyle::new();
+        $crate::css_impl!(__style; $($tokens)*);
+        __style
+    }};
+}
+
+/// Internal macro for parsing CSS properties
+#[macro_export]
+#[doc(hidden)]
+macro_rules! css_impl {
+    // Base case - no more tokens
+    ($style:ident;) => {};
+
+    // =========================================================================
+    // Background (CSS: background)
+    // =========================================================================
+    ($style:ident; background: $value:expr; $($rest:tt)*) => {
+        $style = $style.bg($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; background: $value:expr) => {
+        $style = $style.bg($value);
+    };
+
+    // =========================================================================
+    // Border Radius (CSS: border-radius)
+    // =========================================================================
+    ($style:ident; border-radius: $value:expr; $($rest:tt)*) => {
+        $style = $style.rounded($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; border-radius: $value:expr) => {
+        $style = $style.rounded($value);
+    };
+
+    // =========================================================================
+    // Box Shadow (CSS: box-shadow)
+    // Shadow presets must come BEFORE generic expr to match correctly
+    // =========================================================================
+    ($style:ident; box-shadow: sm; $($rest:tt)*) => {
+        $style = $style.shadow_sm();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; box-shadow: sm) => {
+        $style = $style.shadow_sm();
+    };
+    ($style:ident; box-shadow: md; $($rest:tt)*) => {
+        $style = $style.shadow_md();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; box-shadow: md) => {
+        $style = $style.shadow_md();
+    };
+    ($style:ident; box-shadow: lg; $($rest:tt)*) => {
+        $style = $style.shadow_lg();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; box-shadow: lg) => {
+        $style = $style.shadow_lg();
+    };
+    ($style:ident; box-shadow: xl; $($rest:tt)*) => {
+        $style = $style.shadow_xl();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; box-shadow: xl) => {
+        $style = $style.shadow_xl();
+    };
+    ($style:ident; box-shadow: none; $($rest:tt)*) => {
+        $style = $style.shadow_none();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; box-shadow: none) => {
+        $style = $style.shadow_none();
+    };
+    // Generic expression (must come after presets)
+    ($style:ident; box-shadow: $value:expr; $($rest:tt)*) => {
+        $style = $style.shadow($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; box-shadow: $value:expr) => {
+        $style = $style.shadow($value);
+    };
+
+    // =========================================================================
+    // Opacity (CSS: opacity)
+    // =========================================================================
+    ($style:ident; opacity: $value:expr; $($rest:tt)*) => {
+        $style = $style.opacity($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; opacity: $value:expr) => {
+        $style = $style.opacity($value);
+    };
+
+    // =========================================================================
+    // Transform (CSS: transform)
+    // =========================================================================
+    ($style:ident; transform: $value:expr; $($rest:tt)*) => {
+        $style = $style.transform($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; transform: $value:expr) => {
+        $style = $style.transform($value);
+    };
+    // Scale shorthand
+    ($style:ident; transform: scale($value:expr); $($rest:tt)*) => {
+        $style = $style.scale($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; transform: scale($sx:expr, $sy:expr); $($rest:tt)*) => {
+        $style = $style.scale_xy($sx, $sy);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    // Translate shorthand
+    ($style:ident; transform: translate($x:expr, $y:expr); $($rest:tt)*) => {
+        $style = $style.translate($x, $y);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    // Rotate shorthand (degrees)
+    ($style:ident; transform: rotate($deg:expr); $($rest:tt)*) => {
+        $style = $style.rotate_deg($deg);
+        $crate::css_impl!($style; $($rest)*);
+    };
+
+    // =========================================================================
+    // Backdrop Filter (Blinc extension for materials)
+    // =========================================================================
+    ($style:ident; backdrop-filter: glass; $($rest:tt)*) => {
+        $style = $style.glass();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; backdrop-filter: glass) => {
+        $style = $style.glass();
+    };
+    ($style:ident; backdrop-filter: metallic; $($rest:tt)*) => {
+        $style = $style.metallic();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; backdrop-filter: chrome; $($rest:tt)*) => {
+        $style = $style.chrome();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; backdrop-filter: gold; $($rest:tt)*) => {
+        $style = $style.gold();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; backdrop-filter: wood; $($rest:tt)*) => {
+        $style = $style.wood();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; backdrop-filter: $value:expr; $($rest:tt)*) => {
+        $style = $style.material($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+
+    // =========================================================================
+    // Render Layer (Blinc extension)
+    // =========================================================================
+    ($style:ident; render-layer: foreground; $($rest:tt)*) => {
+        $style = $style.foreground();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; render-layer: background; $($rest:tt)*) => {
+        $style = $style.layer_background();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; render-layer: $value:expr; $($rest:tt)*) => {
+        $style = $style.layer($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+
+    // =========================================================================
+    // Animation Properties
+    // =========================================================================
+    ($style:ident; animation: $value:expr; $($rest:tt)*) => {
+        $style = $style.animation($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; animation: $value:expr) => {
+        $style = $style.animation($value);
+    };
+    ($style:ident; animation-name: $value:expr; $($rest:tt)*) => {
+        $style = $style.animation_name($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; animation-name: $value:expr) => {
+        $style = $style.animation_name($value);
+    };
+    ($style:ident; animation-duration: $value:expr; $($rest:tt)*) => {
+        $style = $style.animation_duration($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; animation-duration: $value:expr) => {
+        $style = $style.animation_duration($value);
+    };
+}
+
+/// Rust-friendly macro for creating ElementStyle with builder-like syntax
+///
+/// Uses Rust naming conventions (underscores instead of hyphens).
+/// Comma-separated properties with colon syntax.
+///
+/// # Examples
+///
+/// ```ignore
+/// use blinc_layout::prelude::*;
+/// use blinc_core::Color;
+///
+/// // Basic usage with property: value syntax
+/// let s = style! {
+///     bg: Color::BLUE,
+///     rounded: 8.0,
+///     opacity: 0.9,
+/// };
+///
+/// // Preset methods (no value needed)
+/// let card = style! {
+///     bg: Color::WHITE,
+///     rounded_lg,
+///     shadow_md,
+/// };
+///
+/// // Transform shortcuts
+/// let hover = style! {
+///     scale: 1.05,
+///     rotate_deg: 15.0,
+///     translate: (10.0, 5.0),
+/// };
+///
+/// // Material effects
+/// let glass_panel = style! {
+///     glass,
+///     rounded: 16.0,
+/// };
+/// ```
+#[macro_export]
+macro_rules! style {
+    // Empty style
+    () => {
+        $crate::element_style::ElementStyle::new()
+    };
+
+    // Main entry point - parse properties
+    ($($tokens:tt)*) => {{
+        let mut __style = $crate::element_style::ElementStyle::new();
+        $crate::style_impl!(__style; $($tokens)*);
+        __style
+    }};
+}
+
+/// Internal macro for parsing style properties (Rust-style)
+#[macro_export]
+#[doc(hidden)]
+macro_rules! style_impl {
+    // Base case - no more tokens
+    ($style:ident;) => {};
+
+    // =========================================================================
+    // Background properties
+    // =========================================================================
+    ($style:ident; bg: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.bg($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; background: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.background($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Corner radius properties
+    // =========================================================================
+    ($style:ident; rounded: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.rounded($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rounded_corners: ($tl:expr, $tr:expr, $br:expr, $bl:expr) $(, $($rest:tt)*)?) => {
+        $style = $style.rounded_corners($tl, $tr, $br, $bl);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    // Preset corner radii
+    ($style:ident; rounded_sm $(, $($rest:tt)*)?) => {
+        $style = $style.rounded_sm();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rounded_md $(, $($rest:tt)*)?) => {
+        $style = $style.rounded_md();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rounded_lg $(, $($rest:tt)*)?) => {
+        $style = $style.rounded_lg();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rounded_xl $(, $($rest:tt)*)?) => {
+        $style = $style.rounded_xl();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rounded_2xl $(, $($rest:tt)*)?) => {
+        $style = $style.rounded_2xl();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rounded_none $(, $($rest:tt)*)?) => {
+        $style = $style.rounded_none();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rounded_full $(, $($rest:tt)*)?) => {
+        $style = $style.rounded_full();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Shadow properties
+    // =========================================================================
+    ($style:ident; shadow: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.shadow($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; shadow_sm $(, $($rest:tt)*)?) => {
+        $style = $style.shadow_sm();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; shadow_md $(, $($rest:tt)*)?) => {
+        $style = $style.shadow_md();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; shadow_lg $(, $($rest:tt)*)?) => {
+        $style = $style.shadow_lg();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; shadow_xl $(, $($rest:tt)*)?) => {
+        $style = $style.shadow_xl();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; shadow_none $(, $($rest:tt)*)?) => {
+        $style = $style.shadow_none();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Transform properties
+    // =========================================================================
+    ($style:ident; transform: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.transform($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; scale: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.scale($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; scale_xy: ($sx:expr, $sy:expr) $(, $($rest:tt)*)?) => {
+        $style = $style.scale_xy($sx, $sy);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; translate: ($x:expr, $y:expr) $(, $($rest:tt)*)?) => {
+        $style = $style.translate($x, $y);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rotate: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.rotate($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rotate_deg: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.rotate_deg($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Opacity properties
+    // =========================================================================
+    ($style:ident; opacity: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.opacity($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; opaque $(, $($rest:tt)*)?) => {
+        $style = $style.opaque();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; translucent $(, $($rest:tt)*)?) => {
+        $style = $style.translucent();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; transparent $(, $($rest:tt)*)?) => {
+        $style = $style.transparent();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Material properties
+    // =========================================================================
+    ($style:ident; material: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.material($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; glass $(, $($rest:tt)*)?) => {
+        $style = $style.glass();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; metallic $(, $($rest:tt)*)?) => {
+        $style = $style.metallic();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; chrome $(, $($rest:tt)*)?) => {
+        $style = $style.chrome();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; gold $(, $($rest:tt)*)?) => {
+        $style = $style.gold();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; wood $(, $($rest:tt)*)?) => {
+        $style = $style.wood();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Layer properties
+    // =========================================================================
+    ($style:ident; layer: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.layer($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; foreground $(, $($rest:tt)*)?) => {
+        $style = $style.foreground();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; layer_background $(, $($rest:tt)*)?) => {
+        $style = $style.layer_background();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Animation properties
+    // =========================================================================
+    ($style:ident; animation: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.animation($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; animation_name: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.animation_name($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; animation_duration: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.animation_duration($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,5 +946,301 @@ mod tests {
 
         let non_empty = style().bg(Color::RED);
         assert!(!non_empty.is_empty());
+    }
+
+    // =========================================================================
+    // style! macro tests
+    // =========================================================================
+
+    #[test]
+    fn test_style_macro_empty() {
+        let s = style!();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn test_style_macro_basic() {
+        ThemeState::init_default();
+
+        let s = style! {
+            bg: Color::BLUE,
+            rounded: 8.0,
+            opacity: 0.9,
+        };
+
+        assert!(matches!(s.background, Some(Brush::Solid(c)) if c == Color::BLUE));
+        assert!(s.corner_radius.is_some());
+        assert_eq!(s.opacity, Some(0.9));
+    }
+
+    #[test]
+    fn test_style_macro_presets() {
+        ThemeState::init_default();
+
+        let s = style! {
+            bg: Color::WHITE,
+            rounded_lg,
+            shadow_md,
+        };
+
+        assert!(s.background.is_some());
+        assert!(s.corner_radius.is_some());
+        assert!(s.shadow.is_some());
+    }
+
+    #[test]
+    fn test_style_macro_transforms() {
+        let s = style! {
+            scale: 1.05,
+        };
+        assert!(s.transform.is_some());
+
+        let s2 = style! {
+            translate: (10.0, 20.0),
+        };
+        assert!(s2.transform.is_some());
+
+        let s3 = style! {
+            rotate_deg: 45.0,
+        };
+        assert!(s3.transform.is_some());
+
+        let s4 = style! {
+            scale_xy: (1.1, 0.9),
+        };
+        assert!(s4.transform.is_some());
+    }
+
+    #[test]
+    fn test_style_macro_materials() {
+        let s = style! {
+            glass,
+            rounded: 16.0,
+        };
+
+        assert!(s.material.is_some());
+        assert!(s.corner_radius.is_some());
+        // Glass sets render layer to Glass
+        assert!(s.render_layer.is_some());
+    }
+
+    #[test]
+    fn test_style_macro_opacity_presets() {
+        let s1 = style! { opaque };
+        assert_eq!(s1.opacity, Some(1.0));
+
+        let s2 = style! { translucent };
+        assert_eq!(s2.opacity, Some(0.5));
+
+        let s3 = style! { transparent };
+        assert_eq!(s3.opacity, Some(0.0));
+    }
+
+    #[test]
+    fn test_style_macro_combined() {
+        ThemeState::init_default();
+
+        // Test combining multiple properties
+        let card_style = style! {
+            bg: Color::WHITE,
+            rounded_lg,
+            shadow_md,
+            opacity: 0.95,
+            scale: 1.0,
+        };
+
+        assert!(card_style.background.is_some());
+        assert!(card_style.corner_radius.is_some());
+        assert!(card_style.shadow.is_some());
+        assert_eq!(card_style.opacity, Some(0.95));
+        assert!(card_style.transform.is_some());
+    }
+
+    #[test]
+    fn test_style_macro_rounded_variants() {
+        ThemeState::init_default();
+
+        let s1 = style! { rounded_sm };
+        assert!(s1.corner_radius.is_some());
+
+        let s2 = style! { rounded_md };
+        assert!(s2.corner_radius.is_some());
+
+        let s3 = style! { rounded_xl };
+        assert!(s3.corner_radius.is_some());
+
+        let s4 = style! { rounded_full };
+        assert!(s4.corner_radius.is_some());
+
+        let s5 = style! { rounded_none };
+        assert!(s5.corner_radius.is_some());
+    }
+
+    #[test]
+    fn test_style_macro_shadow_variants() {
+        ThemeState::init_default();
+
+        let s1 = style! { shadow_sm };
+        assert!(s1.shadow.is_some());
+
+        let s2 = style! { shadow_lg };
+        assert!(s2.shadow.is_some());
+
+        let s3 = style! { shadow_xl };
+        assert!(s3.shadow.is_some());
+
+        let s4 = style! { shadow_none };
+        assert!(s4.shadow.is_some()); // shadow_none sets a transparent shadow
+    }
+
+    #[test]
+    fn test_style_macro_material_variants() {
+        let s1 = style! { metallic };
+        assert!(s1.material.is_some());
+
+        let s2 = style! { chrome };
+        assert!(s2.material.is_some());
+
+        let s3 = style! { gold };
+        assert!(s3.material.is_some());
+
+        let s4 = style! { wood };
+        assert!(s4.material.is_some());
+    }
+
+    #[test]
+    fn test_style_macro_layer() {
+        let s1 = style! { foreground };
+        assert!(s1.render_layer.is_some());
+
+        let s2 = style! { layer_background };
+        assert!(s2.render_layer.is_some());
+    }
+
+    #[test]
+    fn test_style_macro_rounded_corners() {
+        let s = style! {
+            rounded_corners: (8.0, 8.0, 0.0, 0.0),
+        };
+        assert!(s.corner_radius.is_some());
+        let cr = s.corner_radius.unwrap();
+        assert_eq!(cr.top_left, 8.0);
+        assert_eq!(cr.top_right, 8.0);
+        assert_eq!(cr.bottom_right, 0.0);
+        assert_eq!(cr.bottom_left, 0.0);
+    }
+
+    // =========================================================================
+    // css! macro tests - CSS property name compatibility
+    // =========================================================================
+
+    #[test]
+    fn test_css_macro_empty() {
+        let s = css!();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn test_css_macro_basic() {
+        // Uses CSS property names with semicolon separators
+        let s = css! {
+            background: Color::BLUE;
+            border-radius: 8.0;
+            opacity: 0.9;
+        };
+
+        assert!(matches!(s.background, Some(Brush::Solid(c)) if c == Color::BLUE));
+        assert!(s.corner_radius.is_some());
+        assert_eq!(s.opacity, Some(0.9));
+    }
+
+    #[test]
+    fn test_css_macro_shadow() {
+        ThemeState::init_default();
+
+        let s = css! {
+            box-shadow: md;
+        };
+        assert!(s.shadow.is_some());
+
+        let s2 = css! {
+            box-shadow: Shadow::new(0.0, 4.0, 8.0, Color::BLACK);
+        };
+        assert!(s2.shadow.is_some());
+    }
+
+    #[test]
+    fn test_css_macro_transform() {
+        let s = css! {
+            transform: Transform::scale(1.05, 1.05);
+        };
+        assert!(s.transform.is_some());
+    }
+
+    #[test]
+    fn test_css_macro_backdrop_filter() {
+        // Blinc extension for materials
+        let s = css! {
+            backdrop-filter: glass;
+        };
+        assert!(s.material.is_some());
+        assert!(s.render_layer.is_some()); // Glass sets render layer
+    }
+
+    #[test]
+    fn test_css_macro_combined() {
+        ThemeState::init_default();
+
+        // Full CSS-like card style
+        let card = css! {
+            background: Color::WHITE;
+            border-radius: 12.0;
+            box-shadow: lg;
+            opacity: 0.95;
+        };
+
+        assert!(card.background.is_some());
+        assert!(card.corner_radius.is_some());
+        assert!(card.shadow.is_some());
+        assert_eq!(card.opacity, Some(0.95));
+    }
+
+    #[test]
+    fn test_css_macro_animation() {
+        let s = css! {
+            animation-name: "fade-in";
+            animation-duration: 300;
+        };
+
+        assert!(s.animation.is_some());
+        let anim = s.animation.unwrap();
+        assert_eq!(anim.name, "fade-in");
+        assert_eq!(anim.duration_ms, 300);
+    }
+
+    #[test]
+    fn test_css_and_style_macros_produce_same_result() {
+        // Both macros should produce equivalent ElementStyle for same properties
+        let from_css = css! {
+            background: Color::RED;
+            border-radius: 10.0;
+            opacity: 0.8;
+        };
+
+        let from_style = style! {
+            bg: Color::RED,
+            rounded: 10.0,
+            opacity: 0.8,
+        };
+
+        // Same background
+        assert!(matches!(from_css.background, Some(Brush::Solid(c)) if c == Color::RED));
+        assert!(matches!(from_style.background, Some(Brush::Solid(c)) if c == Color::RED));
+
+        // Same corner radius
+        assert_eq!(from_css.corner_radius, from_style.corner_radius);
+
+        // Same opacity
+        assert_eq!(from_css.opacity, from_style.opacity);
     }
 }
