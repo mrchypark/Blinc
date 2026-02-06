@@ -1190,11 +1190,20 @@ pub trait DrawContext {
     /// Default implementation returns [`ImageId::UNSUPPORTED`].
     fn create_image_rgba(
         &mut self,
-        _pixels: &[u8],
-        _width: u32,
-        _height: u32,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
         _label: &str,
     ) -> ImageId {
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|v| v.checked_mul(4))
+            .unwrap_or(usize::MAX);
+        debug_assert_eq!(
+            pixels.len(),
+            expected_len,
+            "Pixel buffer size does not match dimensions"
+        );
         ImageId::UNSUPPORTED
     }
 
@@ -1215,10 +1224,19 @@ pub trait DrawContext {
         _image: ImageId,
         _x: u32,
         _y: u32,
-        _width: u32,
-        _height: u32,
-        _pixels: &[u8],
+        width: u32,
+        height: u32,
+        pixels: &[u8],
     ) {
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|v| v.checked_mul(4))
+            .unwrap_or(usize::MAX);
+        debug_assert_eq!(
+            pixels.len(),
+            expected_len,
+            "Pixel buffer size does not match dimensions"
+        );
     }
 
     /// Query the dimensions of a known image
