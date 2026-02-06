@@ -1150,10 +1150,7 @@ impl RenderContext {
                     pixels,
                 } => {
                     let Some(gpu_image) = self.canvas_image_cache.get(image) else {
-                        tracing::warn!(
-                            "canvas image write skipped: missing image id {:?}",
-                            image
-                        );
+                        tracing::warn!("canvas image write skipped: missing image id {:?}", image);
                         continue;
                     };
                     gpu_image.write_rgba_sub_rect(
