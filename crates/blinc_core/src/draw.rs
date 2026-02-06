@@ -1197,7 +1197,7 @@ pub trait DrawContext {
 
     /// Create a GPU image from RGBA pixels.
     ///
-    /// `_pixels` must be tightly packed RGBA8 with length `_width * _height * 4`.
+    /// `pixels` must be tightly packed RGBA8 with length `width * height * 4`.
     ///
     /// Default implementation returns [`ImageId::UNSUPPORTED`].
     fn create_image_rgba(
@@ -1220,7 +1220,7 @@ pub trait DrawContext {
 
     /// Write RGBA pixels into a sub-rect of an existing image.
     ///
-    /// `_pixels` must be tightly packed RGBA8 with length `_width * _height * 4`.
+    /// `pixels` must be tightly packed RGBA8 with length `width * height * 4`.
     ///
     /// Default implementation is a no-op.
     fn write_image_rgba(
