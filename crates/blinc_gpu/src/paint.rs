@@ -1616,12 +1616,12 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
 
     fn create_image_rgba(
         &mut self,
-        pixels: Vec<u8>,
+        pixels: &[u8],
         width: u32,
         height: u32,
         label: &str,
     ) -> ImageId {
-        self.enqueue_image_create(width, height, label, Some(pixels))
+        self.enqueue_image_create(width, height, label, Some(pixels.to_vec()))
     }
 
     fn create_image_empty(&mut self, width: u32, height: u32, label: &str) -> ImageId {
@@ -1635,7 +1635,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         y: u32,
         width: u32,
         height: u32,
-        pixels: Vec<u8>,
+        pixels: &[u8],
     ) {
         if image.0 == 0 {
             return;
@@ -1646,7 +1646,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             y,
             width,
             height,
-            pixels,
+            pixels: pixels.to_vec(),
         });
     }
 
