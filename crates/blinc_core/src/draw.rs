@@ -1183,16 +1183,31 @@ pub trait DrawContext {
     /// Draw an image
     fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions);
 
-    /// Create a GPU image from RGBA pixels
+    #[doc(hidden)]
+    fn _debug_assert_rgba_buffer_size(&self, pixels: &[u8], width: u32, height: u32) {
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|v| v.checked_mul(4));
+        debug_assert_eq!(
+            expected_len,
+            Some(pixels.len()),
+            "Pixel buffer size does not match dimensions, or dimensions overflow"
+        );
+    }
+
+    /// Create a GPU image from RGBA pixels.
+    ///
+    /// `pixels` must be tightly packed RGBA8 with length `width * height * 4`.
     ///
     /// Default implementation returns [`ImageId::UNSUPPORTED`].
     fn create_image_rgba(
         &mut self,
-        _pixels: Vec<u8>,
-        _width: u32,
-        _height: u32,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
         _label: &str,
     ) -> ImageId {
+        self._debug_assert_rgba_buffer_size(pixels, width, height);
         ImageId::UNSUPPORTED
     }
 
@@ -1203,7 +1218,9 @@ pub trait DrawContext {
         ImageId::UNSUPPORTED
     }
 
-    /// Write RGBA pixels into a sub-rect of an existing image
+    /// Write RGBA pixels into a sub-rect of an existing image.
+    ///
+    /// `pixels` must be tightly packed RGBA8 with length `width * height * 4`.
     ///
     /// Default implementation is a no-op.
     fn write_image_rgba(
@@ -1211,10 +1228,11 @@ pub trait DrawContext {
         _image: ImageId,
         _x: u32,
         _y: u32,
-        _width: u32,
-        _height: u32,
-        _pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
     ) {
+        self._debug_assert_rgba_buffer_size(pixels, width, height);
     }
 
     /// Query the dimensions of a known image
