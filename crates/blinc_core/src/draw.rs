@@ -1188,7 +1188,7 @@ pub trait DrawContext {
     /// Default implementation returns [`ImageId::UNSUPPORTED`].
     fn create_image_rgba(
         &mut self,
-        _pixels: &[u8],
+        _pixels: Vec<u8>,
         _width: u32,
         _height: u32,
         _label: &str,
@@ -1213,7 +1213,7 @@ pub trait DrawContext {
         _y: u32,
         _width: u32,
         _height: u32,
-        _pixels: &[u8],
+        _pixels: Vec<u8>,
     ) {
     }
 

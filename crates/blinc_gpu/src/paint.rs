@@ -1608,7 +1608,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
 
     fn create_image_rgba(
         &mut self,
-        pixels: &[u8],
+        pixels: Vec<u8>,
         width: u32,
         height: u32,
         label: &str,
@@ -1619,7 +1619,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             width,
             height,
             label: Some(label.to_string()),
-            pixels: Some(pixels.to_vec()),
+            pixels: Some(pixels),
         });
         self.image_sizes.insert(id, (width, height));
         id
@@ -1645,7 +1645,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         y: u32,
         width: u32,
         height: u32,
-        pixels: &[u8],
+        pixels: Vec<u8>,
     ) {
         if image.0 == 0 {
             return;
@@ -1656,7 +1656,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             y,
             width,
             height,
-            pixels: pixels.to_vec(),
+            pixels,
         });
     }
 
