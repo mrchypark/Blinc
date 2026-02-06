@@ -1183,6 +1183,19 @@ pub trait DrawContext {
     /// Draw an image
     fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions);
 
+    #[doc(hidden)]
+    fn _debug_assert_rgba_buffer_size(&self, pixels: &[u8], width: u32, height: u32) {
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|v| v.checked_mul(4))
+            .unwrap_or(usize::MAX);
+        debug_assert_eq!(
+            pixels.len(),
+            expected_len,
+            "Pixel buffer size does not match dimensions"
+        );
+    }
+
     /// Create a GPU image from RGBA pixels.
     ///
     /// `_pixels` must be tightly packed RGBA8 with length `_width * _height * 4`.
@@ -1195,15 +1208,7 @@ pub trait DrawContext {
         height: u32,
         _label: &str,
     ) -> ImageId {
-        let expected_len = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|v| v.checked_mul(4))
-            .unwrap_or(usize::MAX);
-        debug_assert_eq!(
-            pixels.len(),
-            expected_len,
-            "Pixel buffer size does not match dimensions"
-        );
+        self._debug_assert_rgba_buffer_size(pixels, width, height);
         ImageId::UNSUPPORTED
     }
 
@@ -1228,15 +1233,7 @@ pub trait DrawContext {
         height: u32,
         pixels: &[u8],
     ) {
-        let expected_len = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|v| v.checked_mul(4))
-            .unwrap_or(usize::MAX);
-        debug_assert_eq!(
-            pixels.len(),
-            expected_len,
-            "Pixel buffer size does not match dimensions"
-        );
+        self._debug_assert_rgba_buffer_size(pixels, width, height);
     }
 
     /// Query the dimensions of a known image
