@@ -123,10 +123,6 @@ impl GpuImage {
         height: u32,
         pixels: &[u8],
     ) {
-        if width == 0 || height == 0 {
-            return;
-        }
-
         let max_write_width = self.width.saturating_sub(x);
         let max_write_height = self.height.saturating_sub(y);
         let width = width.min(max_write_width);
@@ -158,10 +154,6 @@ impl GpuImage {
             Some(v) => v,
             None => return,
         };
-        let padded_total = match padded_row_bytes.checked_mul(height_usize) {
-            Some(v) => v,
-            None => return,
-        };
         let padded_row_bytes_u32 = match u32::try_from(padded_row_bytes) {
             Ok(v) => v,
             Err(_) => return,
@@ -170,12 +162,15 @@ impl GpuImage {
         let data: Cow<'_, [u8]> = if padded_row_bytes == row_bytes {
             Cow::Borrowed(&pixels[..required_len])
         } else {
-            let mut padded = vec![0u8; padded_total];
-            for row in 0..height_usize {
-                let src_start = row * row_bytes;
-                let dst_start = row * padded_row_bytes;
-                padded[dst_start..dst_start + row_bytes]
-                    .copy_from_slice(&pixels[src_start..src_start + row_bytes]);
+            let padded_total = match padded_row_bytes.checked_mul(height_usize) {
+                Some(v) => v,
+                None => return,
+            };
+            let mut padded = Vec::with_capacity(padded_total);
+            let padding = vec![0u8; padded_row_bytes - row_bytes];
+            for chunk in pixels[..required_len].chunks_exact(row_bytes) {
+                padded.extend_from_slice(chunk);
+                padded.extend_from_slice(&padding);
             }
             Cow::Owned(padded)
         };

@@ -1945,7 +1945,7 @@ impl RenderContext {
                     let scaled_motion_ty = effective_motion_translate.1 * scale;
 
                     // Apply motion scale and translation (same logic as Text)
-                    let (scaled_x, scaled_y, scaled_width, scaled_height) =
+                    let (scaled_x, scaled_y, _scaled_width, scaled_height) =
                         if let Some((motion_center_x, motion_center_y)) =
                             effective_motion_scale_center
                         {
@@ -2213,7 +2213,6 @@ impl RenderContext {
         height: u32,
         target: &wgpu::TextureView,
     ) -> Result<()> {
-        // Get scale factor for HiDPI rendering
         let scale_factor = tree.scale_factor();
 
         // Create a single paint context for all layers with text rendering support
@@ -2604,9 +2603,6 @@ impl RenderContext {
         height: u32,
         target: &wgpu::TextureView,
     ) -> Result<()> {
-        // Get scale factor for HiDPI rendering
-        let scale_factor = tree.scale_factor();
-
         // Create a single paint context for all layers with text rendering support
         let mut ctx =
             GpuPaintContext::with_text_context(width as f32, height as f32, &mut self.text_ctx);
