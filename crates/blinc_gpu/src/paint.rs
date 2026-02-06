@@ -59,6 +59,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
+const NO_CLIP_BOUNDS: [f32; 4] = [-10000.0, -10000.0, 100000.0, 100000.0];
+const NO_CLIP_RADIUS: [f32; 4] = [0.0; 4];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transform Stack
@@ -532,11 +534,7 @@ impl<'a> GpuPaintContext<'a> {
     fn get_clip_data(&self) -> ([f32; 4], [f32; 4], ClipType) {
         if self.clip_stack.is_empty() {
             // No clip - use large bounds
-            return (
-                [-10000.0, -10000.0, 100000.0, 100000.0],
-                [0.0; 4],
-                ClipType::None,
-            );
+            return (NO_CLIP_BOUNDS, NO_CLIP_RADIUS, ClipType::None);
         }
 
         // Try to compute intersection of all rect clips
@@ -733,11 +731,7 @@ impl<'a> GpuPaintContext<'a> {
             ),
             ClipShape::Path(_) => {
                 // Path clipping not supported in GPU - fall back to no clip
-                (
-                    [-10000.0, -10000.0, 100000.0, 100000.0],
-                    [0.0; 4],
-                    ClipType::None,
-                )
+                (NO_CLIP_BOUNDS, NO_CLIP_RADIUS, ClipType::None)
             }
         }
     }
@@ -1574,11 +1568,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let (clip_bounds, clip_radius, clip_type) = if clip_type == ClipType::Rect {
             (clip_bounds, clip_radius, clip_type)
         } else {
-            (
-                [-10000.0, -10000.0, 100000.0, 100000.0],
-                [0.0; 4],
-                ClipType::None,
-            )
+            (NO_CLIP_BOUNDS, NO_CLIP_RADIUS, ClipType::None)
         };
 
         let opacity = self.combined_opacity() * _options.opacity;

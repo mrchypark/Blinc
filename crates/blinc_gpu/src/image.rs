@@ -134,29 +134,25 @@ impl GpuImage {
         let bytes_per_pixel = 4usize;
         let width_usize = width as usize;
         let height_usize = height as usize;
-        let row_bytes = match width_usize.checked_mul(bytes_per_pixel) {
-            Some(v) => v,
-            None => return,
+        let Some(row_bytes) = width_usize.checked_mul(bytes_per_pixel) else {
+            return;
         };
-        let required_len = match row_bytes.checked_mul(height_usize) {
-            Some(v) => v,
-            None => return,
+        let Some(required_len) = row_bytes.checked_mul(height_usize) else {
+            return;
         };
         if pixels.len() < required_len {
             return;
         }
 
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
-        let padded_row_bytes = match row_bytes
+        let Some(padded_row_bytes) = row_bytes
             .checked_add(align - 1)
-            .map(|v| (v / align) * align)
-        {
-            Some(v) => v,
-            None => return,
+            .map(|v| v & !(align - 1))
+        else {
+            return;
         };
-        let padded_row_bytes_u32 = match u32::try_from(padded_row_bytes) {
-            Ok(v) => v,
-            Err(_) => return,
+        let Ok(padded_row_bytes_u32) = u32::try_from(padded_row_bytes) else {
+            return;
         };
 
         let data: Cow<'_, [u8]> = if padded_row_bytes == row_bytes {
