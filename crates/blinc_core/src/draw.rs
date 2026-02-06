@@ -1178,6 +1178,47 @@ pub trait DrawContext {
     /// Draw an image
     fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions);
 
+    /// Create a GPU image from RGBA pixels
+    ///
+    /// Default implementation returns ImageId(0) to indicate unsupported.
+    fn create_image_rgba(
+        &mut self,
+        _pixels: &[u8],
+        _width: u32,
+        _height: u32,
+        _label: &str,
+    ) -> ImageId {
+        ImageId(0)
+    }
+
+    /// Create an empty GPU image (for later sub-rect writes)
+    ///
+    /// Default implementation returns ImageId(0) to indicate unsupported.
+    fn create_image_empty(&mut self, _width: u32, _height: u32, _label: &str) -> ImageId {
+        ImageId(0)
+    }
+
+    /// Write RGBA pixels into a sub-rect of an existing image
+    ///
+    /// Default implementation is a no-op.
+    fn write_image_rgba(
+        &mut self,
+        _image: ImageId,
+        _x: u32,
+        _y: u32,
+        _width: u32,
+        _height: u32,
+        _pixels: &[u8],
+    ) {
+    }
+
+    /// Query the dimensions of a known image
+    ///
+    /// Default implementation returns None.
+    fn image_dimensions(&self, _image: ImageId) -> Option<(u32, u32)> {
+        None
+    }
+
     /// Draw a drop shadow (renders outside the shape)
     fn draw_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow);
 
