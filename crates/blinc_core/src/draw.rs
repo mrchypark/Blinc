@@ -1942,6 +1942,7 @@ impl DrawContext for RecordingContext {
 // Recording SDF Builder
 // ─────────────────────────────────────────────────────────────────────────────
 
+// TODO: Remove `allow(dead_code)` when SDF recording path consumes all variants.
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 enum SdfShape {

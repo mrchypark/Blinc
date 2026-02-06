@@ -141,6 +141,12 @@ impl GpuImage {
             return;
         };
         if pixels.len() < required_len {
+            debug_assert!(
+                pixels.len() >= required_len,
+                "write_rgba_sub_rect: pixel buffer too small (required {}, got {})",
+                required_len,
+                pixels.len()
+            );
             return;
         }
 

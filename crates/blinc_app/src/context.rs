@@ -5,6 +5,7 @@
 use blinc_core::{
     Brush, Color, CornerRadius, DrawCommand, DrawContext, DrawContextExt, Rect, Stroke,
 };
+use blinc_gpu::primitives::{ClipType, ImageDraw, ImageOp};
 use blinc_gpu::{
     FontRegistry, GenericFont as GpuGenericFont, GpuGlyph, GpuImage, GpuImageInstance,
     GpuPaintContext, GpuPrimitive, GpuRenderer, ImageRenderingContext, PrimitiveBatch,
@@ -16,7 +17,7 @@ use blinc_layout::render_state::Overlay;
 use blinc_layout::renderer::ElementType;
 use blinc_svg::{RasterizedSvg, SvgDocument};
 use lru::LruCache;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -47,6 +48,8 @@ pub struct RenderContext {
     msaa_texture: Option<CachedTexture>,
     // LRU cache for images (prevents unbounded memory growth)
     image_cache: LruCache<String, GpuImage>,
+    // Dynamic images created via DrawContext image APIs (keyed by ImageId)
+    canvas_image_cache: HashMap<blinc_core::ImageId, GpuImage>,
     // LRU cache for parsed SVG documents (avoids re-parsing)
     svg_cache: LruCache<u64, SvgDocument>,
     // LRU cache for rasterized SVG textures (CPU-rasterized with proper AA)
@@ -184,6 +187,7 @@ impl RenderContext {
             backdrop_texture: None,
             msaa_texture: None,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAPACITY).unwrap()),
+            canvas_image_cache: HashMap::new(),
             svg_cache: LruCache::new(NonZeroUsize::new(SVG_CACHE_CAPACITY).unwrap()),
             rasterized_svg_cache: LruCache::new(
                 NonZeroUsize::new(RASTERIZED_SVG_CACHE_CAPACITY).unwrap(),
@@ -234,6 +238,10 @@ impl RenderContext {
 
         // Take the batch from fg_ctx before reusing text_ctx for text elements
         let mut fg_batch = fg_ctx.take_batch();
+
+        // Process canvas image upload operations before rendering
+        self.process_canvas_image_ops(&bg_batch.image_ops);
+        self.process_canvas_image_ops(&fg_batch.image_ops);
 
         // Collect text, SVG, and image elements
         let (texts, svgs, images) = self.collect_render_elements(tree);
@@ -383,13 +391,18 @@ impl RenderContext {
                     .render_paths_overlay_msaa(target, &bg_batch, self.sample_count);
             }
 
-            // Step 4: Render background-layer images to target (separate for now - images use different pipeline)
+            // Step 4: Render background-layer canvas images
+            if !bg_batch.image_draws.is_empty() {
+                self.render_canvas_images(target, &bg_batch.image_draws);
+            }
+
+            // Step 5: Render background-layer images to target (separate for now - images use different pipeline)
             self.render_images_ref(target, &bg_images);
 
-            // Step 5: Render glass/foreground-layer images (on top of glass, NOT blurred)
+            // Step 6: Render glass/foreground-layer images (on top of glass, NOT blurred)
             self.render_images_ref(target, &fg_images);
 
-            // Step 6: Render foreground and text
+            // Step 7: Render foreground and text
             // Use batch-based rendering when layer effects are present
             let has_layer_effects = fg_batch.has_layer_effects();
             if has_layer_effects {
@@ -441,7 +454,12 @@ impl RenderContext {
                 }
             }
 
-            // Step 8: Render text decorations (strikethrough, underline)
+            // Step 8: Render foreground canvas images
+            if !fg_batch.foreground_image_draws.is_empty() {
+                self.render_canvas_images(target, &fg_batch.foreground_image_draws);
+            }
+
+            // Step 9: Render text decorations (strikethrough, underline)
             let decorations_by_layer = generate_text_decoration_primitives_by_layer(&texts);
             for primitives in decorations_by_layer.values() {
                 if !primitives.is_empty() {
@@ -462,6 +480,11 @@ impl RenderContext {
             if use_msaa_overlay && bg_batch.has_paths() {
                 self.renderer
                     .render_paths_overlay_msaa(target, &bg_batch, self.sample_count);
+            }
+
+            // Render canvas images after background primitives
+            if !bg_batch.image_draws.is_empty() {
+                self.render_canvas_images(target, &bg_batch.image_draws);
             }
 
             // Render images after background primitives
@@ -522,6 +545,11 @@ impl RenderContext {
                 if !svgs.is_empty() {
                     self.render_rasterized_svgs(target, &svgs, scale_factor);
                 }
+            }
+
+            // Render foreground canvas images
+            if !fg_batch.foreground_image_draws.is_empty() {
+                self.render_canvas_images(target, &fg_batch.foreground_image_draws);
             }
 
             // Render text decorations (strikethrough, underline)
@@ -1087,6 +1115,135 @@ impl RenderContext {
                 self.renderer
                     .render_primitives_overlay(target, &[border_primitive]);
             }
+        }
+    }
+
+    /// Process image upload operations recorded during canvas painting
+    fn process_canvas_image_ops(&mut self, ops: &[ImageOp]) {
+        for op in ops {
+            match op {
+                ImageOp::Create {
+                    image,
+                    width,
+                    height,
+                    label,
+                    pixels,
+                } => {
+                    let gpu_image = match (pixels.as_deref(), label.as_deref()) {
+                        (Some(bytes), Some(label)) => self
+                            .image_ctx
+                            .create_image_labeled(bytes, *width, *height, label),
+                        (Some(bytes), None) => self.image_ctx.create_image(bytes, *width, *height),
+                        (None, Some(label)) => self
+                            .image_ctx
+                            .create_empty_image_labeled(*width, *height, label),
+                        (None, None) => self.image_ctx.create_empty_image(*width, *height),
+                    };
+                    self.canvas_image_cache.insert(*image, gpu_image);
+                }
+                ImageOp::Write {
+                    image,
+                    x,
+                    y,
+                    width,
+                    height,
+                    pixels,
+                } => {
+                    let Some(gpu_image) = self.canvas_image_cache.get(image) else {
+                        tracing::warn!("canvas image write skipped: missing image id {:?}", image);
+                        continue;
+                    };
+                    gpu_image.write_rgba_sub_rect(
+                        self.image_ctx.queue(),
+                        *x,
+                        *y,
+                        *width,
+                        *height,
+                        pixels,
+                    );
+                }
+            }
+        }
+    }
+
+    fn flush_canvas_image_batch(
+        &mut self,
+        target: &wgpu::TextureView,
+        image_id: blinc_core::ImageId,
+        instances: &[GpuImageInstance],
+    ) {
+        if instances.is_empty() {
+            return;
+        }
+        let Some(gpu_image) = self.canvas_image_cache.get(&image_id) else {
+            return;
+        };
+        self.renderer
+            .render_images(target, gpu_image.view(), instances);
+    }
+
+    /// Render canvas images recorded via DrawContext::draw_image
+    fn render_canvas_images(&mut self, target: &wgpu::TextureView, draws: &[ImageDraw]) {
+        use blinc_image::src_rect_to_uv;
+
+        let mut batched_image: Option<blinc_core::ImageId> = None;
+        let mut instances: Vec<GpuImageInstance> = Vec::new();
+
+        for draw in draws {
+            if batched_image != Some(draw.image) {
+                if let Some(image_id) = batched_image.take() {
+                    self.flush_canvas_image_batch(target, image_id, &instances);
+                    instances.clear();
+                }
+                batched_image = Some(draw.image);
+            }
+
+            let Some(gpu_image) = self.canvas_image_cache.get(&draw.image) else {
+                tracing::warn!(
+                    "canvas image draw skipped: missing image id {:?}",
+                    draw.image
+                );
+                continue;
+            };
+
+            let src_uv = if let Some(src) = draw.source_rect {
+                src_rect_to_uv(
+                    [src.x(), src.y(), src.width(), src.height()],
+                    gpu_image.width(),
+                    gpu_image.height(),
+                )
+            } else {
+                [0.0, 0.0, 1.0, 1.0]
+            };
+
+            let mut instance = GpuImageInstance::new(
+                draw.dst_rect.x(),
+                draw.dst_rect.y(),
+                draw.dst_rect.width(),
+                draw.dst_rect.height(),
+            )
+            .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
+            .with_tint(draw.tint[0], draw.tint[1], draw.tint[2], draw.tint[3])
+            .with_opacity(draw.opacity);
+
+            if draw.clip_type == ClipType::Rect {
+                instance = instance.with_clip_rounded_rect_corners(
+                    draw.clip_bounds[0],
+                    draw.clip_bounds[1],
+                    draw.clip_bounds[2],
+                    draw.clip_bounds[3],
+                    draw.clip_radius[0],
+                    draw.clip_radius[1],
+                    draw.clip_radius[2],
+                    draw.clip_radius[3],
+                );
+            }
+
+            instances.push(instance);
+        }
+
+        if let Some(image_id) = batched_image {
+            self.flush_canvas_image_batch(target, image_id, &instances);
         }
     }
 
@@ -1793,7 +1950,7 @@ impl RenderContext {
                     let scaled_motion_ty = effective_motion_translate.1 * scale;
 
                     // Apply motion scale and translation (same logic as Text)
-                    let (scaled_x, scaled_y, scaled_width, scaled_height) =
+                    let (scaled_x, scaled_y, _scaled_width, scaled_height) =
                         if let Some((motion_center_x, motion_center_y)) =
                             effective_motion_scale_center
                         {
@@ -2061,7 +2218,6 @@ impl RenderContext {
         height: u32,
         target: &wgpu::TextureView,
     ) -> Result<()> {
-        // Get scale factor for HiDPI rendering
         let scale_factor = tree.scale_factor();
 
         // Create a single paint context for all layers with text rendering support
@@ -2452,9 +2608,6 @@ impl RenderContext {
         height: u32,
         target: &wgpu::TextureView,
     ) -> Result<()> {
-        // Get scale factor for HiDPI rendering
-        let scale_factor = tree.scale_factor();
-
         // Create a single paint context for all layers with text rendering support
         let mut ctx =
             GpuPaintContext::with_text_context(width as f32, height as f32, &mut self.text_ctx);
