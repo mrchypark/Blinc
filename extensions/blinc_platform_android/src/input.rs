@@ -36,6 +36,89 @@ pub enum TouchEvent {
     Cancel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinchPhase {
+    Started,
+    Moved,
+    Ended,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PinchGesture {
+    pub scale: f32,
+    pub center: (f32, f32),
+    pub phase: PinchPhase,
+}
+
+#[derive(Debug, Default)]
+pub struct PinchState {
+    prev_span: Option<f32>,
+    last_center: Option<(f32, f32)>,
+    active: bool,
+}
+
+impl PinchState {
+    pub fn reset(&mut self) {
+        self.prev_span = None;
+        self.last_center = None;
+        self.active = false;
+    }
+}
+
+pub fn detect_pinch(pointers: &[TouchPointer], state: &mut PinchState) -> Option<PinchGesture> {
+    if pointers.len() < 2 {
+        if state.active {
+            let center = state.last_center.unwrap_or((0.0, 0.0));
+            state.reset();
+            return Some(PinchGesture {
+                scale: 1.0,
+                center,
+                phase: PinchPhase::Ended,
+            });
+        }
+        state.reset();
+        return None;
+    }
+
+    let p0 = pointers[0];
+    let p1 = pointers[1];
+    let center = ((p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5);
+    let dx = p1.x - p0.x;
+    let dy = p1.y - p0.y;
+    let span = (dx * dx + dy * dy).sqrt();
+
+    let gesture = match state.prev_span {
+        None => PinchGesture {
+            scale: 1.0,
+            center,
+            phase: PinchPhase::Started,
+        },
+        Some(prev_span) if prev_span > 0.0 => {
+            let mut scale = span / prev_span;
+            if scale < 0.90 {
+                scale = 0.90;
+            } else if scale > 1.10 {
+                scale = 1.10;
+            }
+            PinchGesture {
+                scale,
+                center,
+                phase: PinchPhase::Moved,
+            }
+        }
+        Some(_) => PinchGesture {
+            scale: 1.0,
+            center,
+            phase: PinchPhase::Moved,
+        },
+    };
+
+    state.prev_span = Some(span);
+    state.last_center = Some(center);
+    state.active = true;
+    Some(gesture)
+}
+
 /// Converts Android MotionEvent to Blinc TouchEvent
 #[cfg(target_os = "android")]
 pub fn convert_motion_event(event: &ndk::event::MotionEvent) -> Option<TouchEvent> {

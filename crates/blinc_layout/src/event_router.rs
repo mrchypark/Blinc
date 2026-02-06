@@ -73,8 +73,8 @@ pub struct HitTestResult {
     /// The bounds height of the hit element
     pub bounds_height: f32,
     /// Bounds for each ancestor node (for correct bounds when bubbling)
-    /// Maps node_id.index() to (x, y, width, height)
-    pub ancestor_bounds: std::collections::HashMap<u32, (f32, f32, f32, f32)>,
+    /// Maps node_id.to_raw() to (x, y, width, height)
+    pub ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
 }
 
 /// Callback for element events
@@ -139,7 +139,7 @@ pub struct EventRouter {
 
     /// Bounds for each ancestor from the last hit test
     /// Maps node_id.to_raw() to (x, y, width, height)
-    last_hit_ancestor_bounds: std::collections::HashMap<u32, (f32, f32, f32, f32)>,
+    last_hit_ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
 }
 
 impl Default for EventRouter {
@@ -206,9 +206,7 @@ impl EventRouter {
     ///
     /// Returns None if the node wasn't in the last hit chain.
     pub fn get_node_bounds(&self, node: LayoutNodeId) -> Option<(f32, f32, f32, f32)> {
-        self.last_hit_ancestor_bounds
-            .get(&(node.to_raw() as u32))
-            .copied()
+        self.last_hit_ancestor_bounds.get(&node.to_raw()).copied()
     }
 
     /// Get the current drag delta (offset from drag start position)
@@ -408,7 +406,7 @@ impl EventRouter {
         self.last_hit_ancestor_bounds.clear();
         for hit in &hits {
             self.last_hit_ancestor_bounds.insert(
-                hit.node.to_raw() as u32,
+                hit.node.to_raw(),
                 (
                     hit.bounds_x,
                     hit.bounds_y,
@@ -1102,7 +1100,7 @@ impl EventRouter {
         y: f32,
         parent_offset: (f32, f32),
         mut ancestors: Vec<LayoutNodeId>,
-        mut ancestor_bounds: std::collections::HashMap<u32, (f32, f32, f32, f32)>,
+        mut ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
     ) -> Option<HitTestResult> {
         let bounds = tree.layout().get_bounds(node, parent_offset)?;
 
@@ -1126,7 +1124,7 @@ impl EventRouter {
         ancestors.push(node);
         // Store this node's bounds for event bubbling
         ancestor_bounds.insert(
-            node.to_raw() as u32,
+            node.to_raw(),
             (bounds.x, bounds.y, bounds.width, bounds.height),
         );
 
@@ -1203,7 +1201,7 @@ impl EventRouter {
         y: f32,
         parent_offset: (f32, f32),
         mut ancestors: Vec<LayoutNodeId>,
-        mut ancestor_bounds: std::collections::HashMap<u32, (f32, f32, f32, f32)>,
+        mut ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
         results: &mut Vec<HitTestResult>,
     ) {
         let Some(bounds) = tree.layout().get_bounds(node, parent_offset) else {
@@ -1220,7 +1218,7 @@ impl EventRouter {
         ancestors.push(node);
         // Store this node's bounds
         ancestor_bounds.insert(
-            node.to_raw() as u32,
+            node.to_raw(),
             (bounds.x, bounds.y, bounds.width, bounds.height),
         );
 

@@ -3,6 +3,7 @@
 //! The main renderer that manages wgpu resources and executes render passes
 //! for SDF primitives, glass effects, and text.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
@@ -12,13 +13,107 @@ use crate::image::GpuImageInstance;
 use crate::path::PathVertex;
 use crate::primitives::{
     BlurUniforms, ColorMatrixUniforms, DropShadowUniforms, GlassType, GlassUniforms, GlowUniforms,
-    GpuGlassPrimitive, GpuGlyph, GpuPrimitive, PathUniforms, PrimitiveBatch, Uniforms,
+    GpuGlassPrimitive, GpuGlyph, GpuPrimitive, PathUniforms, PrimitiveBatch, Sdf3DUniform,
+    Uniforms, Viewport3D,
 };
 use crate::shaders::{
     BLUR_SHADER, COLOR_MATRIX_SHADER, COMPOSITE_SHADER, DROP_SHADOW_SHADER, GLASS_SHADER,
     GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, PATH_SHADER, SDF_SHADER,
     SIMPLE_GLASS_SHADER, TEXT_SHADER,
 };
+
+fn env_u64(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+}
+
+fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    // Default wgpu limits include `max_buffer_size = 256 MiB`.
+    // This is conservative and may be smaller than what the hardware supports.
+    //
+    // If you want to raise this limit (e.g. for large path buffers), set:
+    //   BLINC_WGPU_MAX_BUFFER_MB=512
+    // The value is clamped to the adapter-supported maximum.
+    let supported = adapter.limits();
+    let mut limits = wgpu::Limits::default();
+
+    if let Some(mib) = env_u64("BLINC_WGPU_MAX_BUFFER_MB") {
+        let requested = mib.saturating_mul(1024 * 1024);
+        let clamped = requested.min(supported.max_buffer_size);
+        limits.max_buffer_size = clamped;
+
+        tracing::info!(
+            "wgpu limits override: max_buffer_size={} MiB (requested {} MiB, supported {} MiB)",
+            limits.max_buffer_size / (1024 * 1024),
+            mib,
+            supported.max_buffer_size / (1024 * 1024)
+        );
+    } else {
+        tracing::debug!(
+            "wgpu limits: max_buffer_size={} MiB (supported {} MiB)",
+            limits.max_buffer_size / (1024 * 1024),
+            supported.max_buffer_size / (1024 * 1024)
+        );
+    }
+
+    limits
+}
+
+fn apply_renderer_config_overrides(
+    mut config: RendererConfig,
+    required_limits: &wgpu::Limits,
+) -> RendererConfig {
+    // Allow raising internal buffer capacities at startup.
+    // These do NOT change hardware capabilities; they just size our storage buffers.
+    //
+    // Env:
+    // - BLINC_GPU_MAX_PRIMITIVES=20000
+    // - BLINC_GPU_MAX_GLYPHS=50000
+    // - BLINC_GPU_MAX_GLASS_PRIMITIVES=1000
+    if let Some(v) = env_usize("BLINC_GPU_MAX_PRIMITIVES") {
+        config.max_primitives = v;
+    }
+    if let Some(v) = env_usize("BLINC_GPU_MAX_GLYPHS") {
+        config.max_glyphs = v;
+    }
+    if let Some(v) = env_usize("BLINC_GPU_MAX_GLASS_PRIMITIVES") {
+        config.max_glass_primitives = v;
+    }
+
+    // Clamp to required limits so device creation + bind sizes stay valid.
+    let prim_cap = (required_limits.max_storage_buffer_binding_size as u64
+        / std::mem::size_of::<GpuPrimitive>() as u64)
+        .max(1) as usize;
+    let glyph_cap = (required_limits.max_storage_buffer_binding_size as u64
+        / std::mem::size_of::<GpuGlyph>() as u64)
+        .max(1) as usize;
+    let glass_cap = (required_limits.max_storage_buffer_binding_size as u64
+        / std::mem::size_of::<GpuGlassPrimitive>() as u64)
+        .max(1) as usize;
+
+    config.max_primitives = config.max_primitives.clamp(1, prim_cap);
+    config.max_glyphs = config.max_glyphs.clamp(1, glyph_cap);
+    config.max_glass_primitives = config.max_glass_primitives.clamp(1, glass_cap);
+
+    config
+}
+
+fn log_renderer_config(config: &RendererConfig) {
+    tracing::info!(
+        "gpu config: max_primitives={}, max_glyphs={}, max_glass_primitives={}, sample_count={}",
+        config.max_primitives,
+        config.max_glyphs,
+        config.max_glass_primitives,
+        config.sample_count
+    );
+}
 
 /// Error type for renderer operations
 #[derive(Debug)]
@@ -215,6 +310,18 @@ struct CachedSdfWithGlyphs {
     atlas_view_ptr: *const wgpu::TextureView,
     /// Pointer to color atlas view when bind group was created (for invalidation)
     color_atlas_view_ptr: *const wgpu::TextureView,
+}
+
+/// Cached resources for SDF 3D raymarching viewports
+struct Sdf3DResources {
+    /// Bind group layout for SDF 3D uniforms
+    bind_group_layout: wgpu::BindGroupLayout,
+    /// Uniform buffer for SDF 3D uniforms
+    uniform_buffer: wgpu::Buffer,
+    /// Bind group for SDF 3D uniforms
+    bind_group: wgpu::BindGroup,
+    /// Cached pipelines keyed by shader hash
+    pipeline_cache: HashMap<u64, wgpu::RenderPipeline>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -714,6 +821,10 @@ pub struct GpuRenderer {
     path_image_sampler: wgpu::Sampler,
     /// Layer texture cache for offscreen rendering and composition
     layer_texture_cache: LayerTextureCache,
+    /// Cached resources for SDF 3D raymarching viewports (lazily initialized)
+    sdf_3d_resources: Option<Sdf3DResources>,
+    /// Cached particle systems for GPU particle rendering (keyed by hash of emitter config)
+    particle_systems: std::collections::HashMap<u64, crate::particles::ParticleSystemGpu>,
 }
 
 /// Image rendering pipeline (created lazily on first image render)
@@ -777,6 +888,29 @@ impl GpuRenderer {
         }
     }
 
+    /// Safely write primitives to buffer, truncating if necessary to prevent overflow
+    fn write_primitives_safe(&self, primitives: &[GpuPrimitive]) {
+        if primitives.is_empty() {
+            return;
+        }
+        let max_primitives = self.config.max_primitives;
+        let primitives_to_write = if primitives.len() > max_primitives {
+            tracing::warn!(
+                "Primitive count {} exceeds buffer capacity {}, truncating",
+                primitives.len(),
+                max_primitives
+            );
+            &primitives[..max_primitives]
+        } else {
+            primitives
+        };
+        self.queue.write_buffer(
+            &self.buffers.primitives,
+            0,
+            bytemuck::cast_slice(primitives_to_write),
+        );
+    }
+
     /// Create a new renderer without a surface (for headless rendering)
     pub async fn new(config: RendererConfig) -> Result<Self, RendererError> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -793,12 +927,16 @@ impl GpuRenderer {
             .await
             .ok_or(RendererError::AdapterNotFound)?;
 
+        let required_limits = device_required_limits(&adapter);
+        let config = apply_renderer_config_overrides(config, &required_limits);
+        log_renderer_config(&config);
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Blinc GPU Device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits,
                     // MemoryUsage hint tells the driver to prefer lower memory over performance.
                     // This helps reduce RSS on integrated GPUs (Apple Silicon) where GPU memory
                     // is shared with CPU and counts against process memory.
@@ -858,12 +996,16 @@ impl GpuRenderer {
             .await
             .ok_or(RendererError::AdapterNotFound)?;
 
+        let required_limits = device_required_limits(&adapter);
+        let config = apply_renderer_config_overrides(config, &required_limits);
+        log_renderer_config(&config);
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Blinc GPU Device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits,
                     // MemoryUsage hint tells the driver to prefer lower memory over performance.
                     // This helps reduce RSS on integrated GPUs (Apple Silicon) where GPU memory
                     // is shared with CPU and counts against process memory.
@@ -941,12 +1083,16 @@ impl GpuRenderer {
             .await
             .ok_or(RendererError::AdapterNotFound)?;
 
+        let required_limits = device_required_limits(&adapter);
+        let config = apply_renderer_config_overrides(config, &required_limits);
+        log_renderer_config(&config);
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Blinc GPU Device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits,
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                 },
                 None,
@@ -1217,6 +1363,8 @@ impl GpuRenderer {
             placeholder_path_image_view,
             path_image_sampler,
             layer_texture_cache: LayerTextureCache::new(texture_format),
+            sdf_3d_resources: None,
+            particle_systems: std::collections::HashMap::new(),
         })
     }
 
@@ -2788,12 +2936,23 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update primitives buffer
+        // Update primitives buffer (with safety limit to prevent buffer overflow)
         if !batch.primitives.is_empty() {
+            let max_primitives = self.config.max_primitives;
+            let primitives_to_write = if batch.primitives.len() > max_primitives {
+                tracing::warn!(
+                    "Primitive count {} exceeds buffer capacity {}, truncating",
+                    batch.primitives.len(),
+                    max_primitives
+                );
+                &batch.primitives[..max_primitives]
+            } else {
+                &batch.primitives
+            };
             self.queue.write_buffer(
                 &self.buffers.primitives,
                 0,
-                bytemuck::cast_slice(&batch.primitives),
+                bytemuck::cast_slice(primitives_to_write),
             );
         }
 
@@ -2856,6 +3015,16 @@ impl GpuRenderer {
 
         // Submit commands
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Render SDF 3D viewports (after main content, so they render on top)
+        if !batch.viewports_3d.is_empty() {
+            self.render_sdf_3d_viewports(target, &batch.viewports_3d);
+        }
+
+        // Render GPU particle viewports (after SDF viewports)
+        if !batch.particle_viewports.is_empty() {
+            self.render_particle_viewports(target, &batch.particle_viewports);
+        }
     }
 
     /// Render with layer effect processing
@@ -3268,14 +3437,8 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update primitives buffer
-        if !batch.primitives.is_empty() {
-            self.queue.write_buffer(
-                &self.buffers.primitives,
-                0,
-                bytemuck::cast_slice(&batch.primitives),
-            );
-        }
+        // Update primitives buffer (using safe write to prevent overflow)
+        self.write_primitives_safe(&batch.primitives);
 
         // Update path buffers if we have path geometry
         let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
@@ -6797,6 +6960,351 @@ impl GpuRenderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // SDF 3D Viewport Rendering
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /// Initialize SDF 3D resources lazily
+    fn ensure_sdf_3d_resources(&mut self) {
+        if self.sdf_3d_resources.is_some() {
+            return;
+        }
+
+        // Create bind group layout for SDF 3D uniforms
+        let bind_group_layout =
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("SDF 3D Bind Group Layout"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+
+        // Create uniform buffer
+        let uniform_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SDF 3D Uniform Buffer"),
+            size: std::mem::size_of::<Sdf3DUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Create bind group
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("SDF 3D Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        self.sdf_3d_resources = Some(Sdf3DResources {
+            bind_group_layout,
+            uniform_buffer,
+            bind_group,
+            pipeline_cache: HashMap::new(),
+        });
+    }
+
+    /// Get or create a render pipeline for an SDF 3D viewport
+    fn get_or_create_sdf_3d_pipeline(&mut self, shader_wgsl: &str) -> u64 {
+        self.ensure_sdf_3d_resources();
+
+        // Hash the shader for caching
+        let shader_hash = Self::hash_string(shader_wgsl);
+
+        let resources = self.sdf_3d_resources.as_mut().unwrap();
+
+        if !resources.pipeline_cache.contains_key(&shader_hash) {
+            // Create shader module
+            let shader_module = self
+                .device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("SDF 3D Raymarch Shader"),
+                    source: wgpu::ShaderSource::Wgsl(shader_wgsl.into()),
+                });
+
+            // Create pipeline layout
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("SDF 3D Pipeline Layout"),
+                        bind_group_layouts: &[&resources.bind_group_layout],
+                        push_constant_ranges: &[],
+                    });
+
+            // Create render pipeline
+            let pipeline = self
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("SDF 3D Raymarch Pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader_module,
+                        entry_point: Some("vs_main"),
+                        buffers: &[],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader_module,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: self.texture_format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        strip_index_format: None,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: None,
+                        polygon_mode: wgpu::PolygonMode::Fill,
+                        unclipped_depth: false,
+                        conservative: false,
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
+
+            resources.pipeline_cache.insert(shader_hash, pipeline);
+        }
+
+        shader_hash
+    }
+
+    /// Simple string hash for shader caching
+    fn hash_string(s: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        s.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Render SDF 3D viewports to the target
+    pub fn render_sdf_3d_viewports(
+        &mut self,
+        target: &wgpu::TextureView,
+        viewports: &[Viewport3D],
+    ) {
+        if viewports.is_empty() {
+            return;
+        }
+
+        self.ensure_sdf_3d_resources();
+
+        let (surface_width, surface_height) = self.viewport_size;
+
+        for viewport in viewports {
+            // The paint context already clipped to its clip stack, but we need to
+            // further clamp to the render target bounds for wgpu validity.
+            // If we need to clamp further, we must also adjust the UV offset/scale.
+            let orig_x = viewport.bounds[0];
+            let orig_y = viewport.bounds[1];
+            let orig_w = viewport.bounds[2];
+            let orig_h = viewport.bounds[3];
+
+            // Clamp to render target bounds
+            let x = orig_x.max(0.0);
+            let y = orig_y.max(0.0);
+            let right = (orig_x + orig_w).min(surface_width as f32);
+            let bottom = (orig_y + orig_h).min(surface_height as f32);
+            let w = (right - x).max(0.0);
+            let h = (bottom - y).max(0.0);
+
+            // Skip if viewport is fully outside the render target or has zero size
+            if w <= 0.0 || h <= 0.0 {
+                continue;
+            }
+
+            // Check if we needed to clamp further and adjust UV accordingly
+            let mut uniforms = viewport.uniforms;
+            if orig_w > 0.0 && orig_h > 0.0 {
+                // Calculate additional UV adjustment for surface clamping
+                // The paint context's UV maps the paint-clipped region to the original viewport.
+                // If we clamp further here, we need to adjust those UVs.
+                let extra_offset_x = (x - orig_x) / orig_w;
+                let extra_offset_y = (y - orig_y) / orig_h;
+                let extra_scale_x = w / orig_w;
+                let extra_scale_y = h / orig_h;
+
+                // Compose with existing UV transform: new_uv = old_offset + (extra_offset + uv * extra_scale) * old_scale
+                // Which simplifies to: new_offset = old_offset + extra_offset * old_scale, new_scale = old_scale * extra_scale
+                uniforms.uv_offset[0] += extra_offset_x * uniforms.uv_scale[0];
+                uniforms.uv_offset[1] += extra_offset_y * uniforms.uv_scale[1];
+                uniforms.uv_scale[0] *= extra_scale_x;
+                uniforms.uv_scale[1] *= extra_scale_y;
+            }
+
+            // Get or create pipeline for this viewport's shader
+            let shader_hash = self.get_or_create_sdf_3d_pipeline(&viewport.shader_wgsl);
+
+            // Update uniforms with adjusted UV
+            let resources = self.sdf_3d_resources.as_ref().unwrap();
+            self.queue
+                .write_buffer(&resources.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+
+            // Create command encoder
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("SDF 3D Render Encoder"),
+                });
+
+            // Render pass
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("SDF 3D Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            // Don't clear - we're rendering on top of existing content
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                // Set viewport and scissor to the clamped bounds
+                render_pass.set_viewport(x, y, w, h, 0.0, 1.0);
+                render_pass.set_scissor_rect(x as u32, y as u32, w as u32, h as u32);
+
+                let resources = self.sdf_3d_resources.as_ref().unwrap();
+                let pipeline = resources.pipeline_cache.get(&shader_hash).unwrap();
+                render_pass.set_pipeline(pipeline);
+                render_pass.set_bind_group(0, &resources.bind_group, &[]);
+                render_pass.draw(0..3, 0..1); // Fullscreen triangle
+            }
+
+            // Submit
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+    }
+
+    /// Render GPU particle viewports
+    pub fn render_particle_viewports(
+        &mut self,
+        target: &wgpu::TextureView,
+        viewports: &[crate::primitives::ParticleViewport3D],
+    ) {
+        use crate::particles::{ParticleSystemGpu, ParticleViewport};
+        use std::hash::{Hash, Hasher};
+
+        if viewports.is_empty() {
+            return;
+        }
+
+        // Use the actual texture format that was selected during renderer initialization
+        let surface_format = self.texture_format;
+
+        for (vp_index, vp) in viewports.iter().enumerate() {
+            if !vp.playing {
+                continue;
+            }
+
+            // Generate a stable hash key for this particle system based on emitter config
+            // This allows us to reuse the same GPU buffers across frames
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            vp_index.hash(&mut hasher);
+            vp.max_particles.hash(&mut hasher);
+            // Hash emitter position components to differentiate systems at different positions
+            (vp.emitter.position_shape[0].to_bits()).hash(&mut hasher);
+            (vp.emitter.position_shape[1].to_bits()).hash(&mut hasher);
+            (vp.emitter.position_shape[2].to_bits()).hash(&mut hasher);
+            let system_key = hasher.finish();
+
+            // Get or create the particle system
+            let system = self.particle_systems.entry(system_key).or_insert_with(|| {
+                ParticleSystemGpu::new(&self.device, surface_format, vp.max_particles)
+            });
+
+            // Convert ParticleViewport3D to ParticleViewport for the GPU system
+            let particle_viewport = ParticleViewport {
+                emitter: vp.emitter,
+                forces: vp.forces.clone(),
+                max_particles: vp.max_particles,
+                camera_pos: vp.camera_pos,
+                camera_target: vp.camera_target,
+                camera_up: vp.camera_up,
+                fov: vp.fov,
+                time: vp.time,
+                delta_time: vp.delta_time,
+                bounds: vp.bounds,
+                blend_mode: vp.blend_mode,
+                playing: vp.playing,
+            };
+
+            // Create command encoder
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Particle Encoder"),
+                });
+
+            // Run compute pass to update particles
+            system.update(&self.queue, &mut encoder, &particle_viewport);
+
+            // Submit compute work first
+            self.queue.submit(std::iter::once(encoder.finish()));
+
+            // Create render encoder
+            let mut render_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Particle Render Encoder"),
+                    });
+
+            // Render pass
+            {
+                let mut render_pass =
+                    render_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Particle Render Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: target,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load, // Don't clear, draw on top
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+
+                // Set viewport to the particle bounds
+                render_pass.set_viewport(
+                    vp.bounds[0],
+                    vp.bounds[1],
+                    vp.bounds[2],
+                    vp.bounds[3],
+                    0.0,
+                    1.0,
+                );
+
+                // Render the particles
+                system.render(&self.queue, &mut render_pass, &particle_viewport);
+            }
+
+            // Submit render work
+            self.queue.submit(std::iter::once(render_encoder.finish()));
+        }
     }
 }
 

@@ -2,6 +2,11 @@
 
 All notable changes to `blinc_layout` will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- `PINCH` event support in `EventContext` (center and scale fields)
+
 ## [0.1.12] - 2025-01-19
 
 ### Added

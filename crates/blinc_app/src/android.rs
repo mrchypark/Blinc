@@ -36,6 +36,7 @@ use blinc_layout::overlay_state::OverlayContext;
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager};
 use blinc_platform::assets::set_global_asset_loader;
+use blinc_platform_android::input::{detect_pinch, PinchPhase, PinchState, TouchPointer};
 use blinc_platform_android::AndroidAssetLoader;
 
 use crate::app::BlincApp;
@@ -235,6 +236,7 @@ impl AndroidApp {
         let mut last_touch_x: Option<f32> = None;
         let mut last_touch_y: Option<f32> = None;
         let mut is_scrolling = false;
+        let mut pinch_state = PinchState::default();
 
         tracing::info!("Entering Android event loop");
 
@@ -438,7 +440,7 @@ impl AndroidApp {
             // Track if touch ended (for scroll physics)
             let mut touch_ended = false;
 
-            if let (Some(ref mut windowed_ctx), Some(ref tree)) = (&mut ctx, &render_tree) {
+            if let (Some(ref mut windowed_ctx), Some(ref mut tree)) = (&mut ctx, &mut render_tree) {
                 // Get the scale factor for coordinate conversion
                 let scale = windowed_ctx.scale_factor as f32;
                 let router = &mut windowed_ctx.event_router;
@@ -469,6 +471,22 @@ impl AndroidApp {
                                     let pointer_count = motion_event.pointer_count();
                                     let action_index = motion_event.pointer_index();
 
+                                    if pointer_count == 0 {
+                                        if action == MotionAction::Cancel {
+                                            tracing::debug!("Touch CANCEL");
+                                            router.on_mouse_leave();
+                                            pinch_state.reset();
+                                            last_touch_x = None;
+                                            last_touch_y = None;
+                                            if is_scrolling {
+                                                touch_ended = true;
+                                            }
+                                            is_scrolling = false;
+                                            return InputStatus::Handled;
+                                        }
+                                        return InputStatus::Unhandled;
+                                    }
+
                                     if pointer_count > 0 {
                                         let pointer_idx = match action {
                                             MotionAction::PointerDown | MotionAction::PointerUp => {
@@ -480,6 +498,44 @@ impl AndroidApp {
                                         let pointer = motion_event.pointer_at_index(pointer_idx);
                                         let lx = pointer.x() / scale;
                                         let ly = pointer.y() / scale;
+                                        let pointers: Vec<TouchPointer> =
+                                            (0..pointer_count)
+                                                .map(|i| {
+                                                    let p = motion_event.pointer_at_index(i);
+                                                    TouchPointer {
+                                                        id: p.pointer_id(),
+                                                        x: p.x() / scale,
+                                                        y: p.y() / scale,
+                                                        pressure: p.pressure(),
+                                                        size: p.size(),
+                                                    }
+                                                })
+                                                .collect();
+
+                                        let pinch_gesture = detect_pinch(&pointers, &mut pinch_state);
+                                        if let Some(gesture) = pinch_gesture {
+                                            if matches!(gesture.phase, PinchPhase::Started | PinchPhase::Moved)
+                                            {
+                                                if let Some(hit) =
+                                                    router.hit_test(tree, gesture.center.0, gesture.center.1)
+                                                {
+                                                    tree.dispatch_pinch_chain(
+                                                        &hit,
+                                                        gesture.center.0,
+                                                        gesture.center.1,
+                                                        gesture.scale,
+                                                    );
+                                                    needs_redraw_next_frame = true;
+                                                }
+                                            }
+
+                                            if matches!(gesture.phase, PinchPhase::Started | PinchPhase::Ended)
+                                            {
+                                                last_touch_x = None;
+                                                last_touch_y = None;
+                                                is_scrolling = false;
+                                            }
+                                        }
 
                                         match action {
                                             MotionAction::Down | MotionAction::PointerDown => {
@@ -489,15 +545,17 @@ impl AndroidApp {
                                                     ly
                                                 );
                                                 router.on_mouse_down(
-                                                    tree,
+                                                    &*tree,
                                                     lx,
                                                     ly,
                                                     MouseButton::Left,
                                                 );
                                                 // Initialize touch tracking for scroll
-                                                last_touch_x = Some(lx);
-                                                last_touch_y = Some(ly);
-                                                is_scrolling = false;
+                                                if pointer_count == 1 {
+                                                    last_touch_x = Some(lx);
+                                                    last_touch_y = Some(ly);
+                                                    is_scrolling = false;
+                                                }
                                                 // Update pending events with coordinates
                                                 unsafe {
                                                     let events = &mut pending_events
@@ -509,34 +567,36 @@ impl AndroidApp {
                                                 }
                                             }
                                             MotionAction::Move => {
-                                                router.on_mouse_move(tree, lx, ly);
+                                                router.on_mouse_move(&*tree, lx, ly);
 
-                                                // Calculate scroll delta from touch movement
-                                                // Touch: dragging down = positive delta = content scrolls up (shows below)
-                                                if let (Some(prev_x), Some(prev_y)) =
-                                                    (last_touch_x, last_touch_y)
-                                                {
-                                                    let delta_x = lx - prev_x;
-                                                    let delta_y = ly - prev_y;
+                                                if pointer_count == 1 {
+                                                    // Calculate scroll delta from touch movement
+                                                    // Touch: dragging down = positive delta = content scrolls up (shows below)
+                                                    if let (Some(prev_x), Some(prev_y)) =
+                                                        (last_touch_x, last_touch_y)
+                                                    {
+                                                        let delta_x = lx - prev_x;
+                                                        let delta_y = ly - prev_y;
 
-                                                    // Only collect scroll if there's actual movement
-                                                    // Small threshold to avoid jitter
-                                                    if delta_x.abs() > 0.5 || delta_y.abs() > 0.5 {
-                                                        is_scrolling = true;
-                                                        // Store scroll info for dispatch after event loop
-                                                        scroll_info =
-                                                            Some((lx, ly, delta_x, delta_y));
-                                                        tracing::trace!(
-                                                            "Touch scroll: delta=({:.1}, {:.1})",
-                                                            delta_x,
-                                                            delta_y
-                                                        );
+                                                        // Only collect scroll if there's actual movement
+                                                        // Small threshold to avoid jitter
+                                                        if delta_x.abs() > 0.5 || delta_y.abs() > 0.5 {
+                                                            is_scrolling = true;
+                                                            // Store scroll info for dispatch after event loop
+                                                            scroll_info =
+                                                                Some((lx, ly, delta_x, delta_y));
+                                                            tracing::trace!(
+                                                                "Touch scroll: delta=({:.1}, {:.1})",
+                                                                delta_x,
+                                                                delta_y
+                                                            );
+                                                        }
                                                     }
-                                                }
 
-                                                // Update last touch position
-                                                last_touch_x = Some(lx);
-                                                last_touch_y = Some(ly);
+                                                    // Update last touch position
+                                                    last_touch_x = Some(lx);
+                                                    last_touch_y = Some(ly);
+                                                }
 
                                                 unsafe {
                                                     let events = &mut pending_events
@@ -553,7 +613,7 @@ impl AndroidApp {
                                                     lx,
                                                     ly
                                                 );
-                                                router.on_mouse_up(tree, lx, ly, MouseButton::Left);
+                                                router.on_mouse_up(&*tree, lx, ly, MouseButton::Left);
 
                                                 // Mark touch ended for scroll physics
                                                 if is_scrolling {
@@ -576,6 +636,7 @@ impl AndroidApp {
                                             MotionAction::Cancel => {
                                                 tracing::debug!("Touch CANCEL");
                                                 router.on_mouse_leave();
+                                                pinch_state.reset();
                                                 // Clear touch tracking on cancel too
                                                 last_touch_x = None;
                                                 last_touch_y = None;

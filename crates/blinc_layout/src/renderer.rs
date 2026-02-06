@@ -3090,6 +3090,7 @@ impl RenderTree {
             bounds_height,
             0.0,
             0.0,
+            1.0,
         );
     }
 
@@ -3111,6 +3112,7 @@ impl RenderTree {
         bounds_height: f32,
         drag_delta_x: f32,
         drag_delta_y: f32,
+        pinch_scale: f32,
     ) {
         let has_handler = self.handler_registry.has_handler(node_id, event_type);
         tracing::debug!(
@@ -3122,12 +3124,16 @@ impl RenderTree {
             drag_delta_y
         );
 
-        let ctx = crate::event_handler::EventContext::new(event_type, node_id)
+        let mut ctx = crate::event_handler::EventContext::new(event_type, node_id)
             .with_mouse_pos(mouse_x, mouse_y)
             .with_local_pos(local_x, local_y)
             .with_bounds_pos(bounds_x, bounds_y)
             .with_bounds(bounds_width, bounds_height)
             .with_drag_delta(drag_delta_x, drag_delta_y);
+
+        if event_type == blinc_core::events::event_types::PINCH {
+            ctx = ctx.with_pinch(pinch_scale, mouse_x, mouse_y);
+        }
 
         if has_handler {
             self.handler_registry.dispatch(&ctx);
@@ -3534,6 +3540,64 @@ impl RenderTree {
         }
 
         (remaining_dx, remaining_dy)
+    }
+
+    /// Dispatch a pinch event to the first handler in the hit chain (leaf -> root)
+    pub fn dispatch_pinch_chain(
+        &mut self,
+        hit: &crate::event_router::HitTestResult,
+        center_x: f32,
+        center_y: f32,
+        scale: f32,
+    ) {
+        let event_type = blinc_core::events::event_types::PINCH;
+
+        let chain = std::iter::once(hit.node).chain(
+            hit.ancestors
+                .iter()
+                .rev()
+                .copied()
+                .filter(|ancestor| *ancestor != hit.node),
+        );
+
+        for node_id in chain {
+            if !self.handler_registry.has_handler(node_id, event_type) {
+                continue;
+            }
+
+            let (bounds_x, bounds_y, bounds_width, bounds_height, local_x, local_y) =
+                if node_id == hit.node {
+                    (
+                        hit.bounds_x,
+                        hit.bounds_y,
+                        hit.bounds_width,
+                        hit.bounds_height,
+                        hit.local_x,
+                        hit.local_y,
+                    )
+                } else if let Some((bx, by, bw, bh)) = hit.ancestor_bounds.get(&node_id.to_raw()) {
+                    (*bx, *by, *bw, *bh, center_x - *bx, center_y - *by)
+                } else {
+                    continue;
+                };
+
+            self.dispatch_event_full(
+                node_id,
+                event_type,
+                center_x,
+                center_y,
+                local_x,
+                local_y,
+                bounds_x,
+                bounds_y,
+                bounds_width,
+                bounds_height,
+                0.0,
+                0.0,
+                scale,
+            );
+            return;
+        }
     }
 
     // =========================================================================
@@ -5378,25 +5442,20 @@ impl RenderTree {
             }
 
             // Handle canvas elements
-            // Note: No clip applied - canvas elements like notch() may draw outside bounds
+            // Push clip to ensure canvas content respects parent bounds (e.g., scroll containers)
             if let ElementType::Canvas(canvas_data) = &render_node.element_type {
-                // eprintln!(
-                //     "render_layer_with_motion: Canvas element {:?} at position ({}, {}), size {}x{}",
-                //     node,
-                //     bounds.x, bounds.y,
-                //     bounds.width, bounds.height
-                // );
                 if let Some(render_fn) = &canvas_data.render_fn {
-                    // eprintln!(
-                    //     "  >>> INVOKING canvas render_fn (transform already pushed for position)"
-                    // );
+                    // Push clip for canvas bounds - this ensures content doesn't render outside
+                    let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+                    ctx.push_clip(ClipShape::rect(clip_rect));
+
                     let canvas_bounds = crate::canvas::CanvasBounds {
                         width: bounds.width,
                         height: bounds.height,
                     };
                     render_fn(ctx, canvas_bounds);
-                } else {
-                    // eprintln!("  >>> WARNING: render_fn is None!");
+
+                    ctx.pop_clip();
                 }
             }
         }
@@ -5882,14 +5941,20 @@ impl RenderTree {
             }
 
             // Handle canvas element rendering
-            // Note: No clip applied - canvas elements like notch() may draw outside bounds
+            // Push clip to ensure canvas content respects parent bounds (e.g., scroll containers)
             if let ElementType::Canvas(canvas_data) = &render_node.element_type {
                 if let Some(render_fn) = &canvas_data.render_fn {
+                    // Push clip for canvas bounds - this ensures content doesn't render outside
+                    let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+                    ctx.push_clip(ClipShape::rect(clip_rect));
+
                     let canvas_bounds = crate::canvas::CanvasBounds {
                         width: bounds.width,
                         height: bounds.height,
                     };
                     render_fn(ctx, canvas_bounds);
+
+                    ctx.pop_clip();
                 }
             }
         }
@@ -6239,14 +6304,19 @@ impl RenderTree {
                 }
                 ElementType::Canvas(canvas_data) => {
                     // Canvas element: invoke the render callback with DrawContext
-                    // Note: No clip is applied - canvas elements like notch() may need to
-                    // draw outside their bounds (e.g., concave curves extend outward)
+                    // Push clip to ensure canvas content respects parent bounds (e.g., scroll containers)
                     if let Some(render_fn) = &canvas_data.render_fn {
+                        // Push clip for canvas bounds - this ensures content doesn't render outside
+                        let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+                        ctx.push_clip(ClipShape::rect(clip_rect));
+
                         let canvas_bounds = crate::canvas::CanvasBounds {
                             width: bounds.width,
                             height: bounds.height,
                         };
                         render_fn(ctx, canvas_bounds);
+
+                        ctx.pop_clip();
                     }
                 }
                 // Text, SVG, Image are handled in separate passes

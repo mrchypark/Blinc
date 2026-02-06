@@ -1,0 +1,2 @@
+# Rustfmt configuration
+# Note: icons.rs uses #![rustfmt::skip] inline since `ignore` requires nightly

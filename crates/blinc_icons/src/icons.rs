@@ -1,3 +1,4 @@
+#![rustfmt::skip]
 //! Generated Lucide icon constants
 //!
 //! Auto-generated from Lucide SVG files - DO NOT EDIT

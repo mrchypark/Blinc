@@ -147,6 +147,9 @@ iOS touch events are routed through the view controller:
 
 The `pointer_leave` after `pointer_up` is important for proper button state transitions on touch devices.
 
+Two-finger pinch gestures emit a `PINCH` event using the pinch center and a per-move scale ratio
+clamped to 0.90..1.10.
+
 ## Debugging
 
 ### Console Logs

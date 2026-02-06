@@ -22,6 +22,15 @@ GPU renderer for Blinc UI using [wgpu](https://wgpu.rs/) with SDF-based renderin
 - **Compositing**: Layer blending with various blend modes
 - **Cross-Platform**: Works on macOS, Windows, Linux, iOS, Android, and WebGPU
 
+## Environment Overrides
+
+Use these environment variables to override renderer capacities at startup. Values are clamped to adapter limits.
+
+- `BLINC_WGPU_MAX_BUFFER_MB`: Override wgpu `max_buffer_size` (MiB), clamped to adapter-supported max.
+- `BLINC_GPU_MAX_PRIMITIVES`: Override max SDF primitives per batch (clamped by storage buffer binding size).
+- `BLINC_GPU_MAX_GLYPHS`: Override max glyphs per batch (clamped by storage buffer binding size).
+- `BLINC_GPU_MAX_GLASS_PRIMITIVES`: Override max glass primitives per batch (clamped by storage buffer binding size).
+
 ## Architecture
 
 ```

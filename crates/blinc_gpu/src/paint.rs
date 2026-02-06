@@ -44,13 +44,15 @@
 use blinc_core::{
     Affine2D, BillboardFacing, BlendMode, Brush, Camera, ClipShape, Color, CornerRadius,
     DrawCommand, DrawContext, Environment, ImageId, ImageOptions, LayerConfig, LayerId, Light,
-    Mat4, MaterialId, MeshId, MeshInstance, Path, Point, Rect, SdfBuilder, Shadow, ShapeId, Size,
+    Mat4, MaterialId, MeshId, MeshInstance, ParticleBlendMode, ParticleEmitterShape, ParticleForce,
+    ParticleSystemData, Path, Point, Rect, Sdf3DViewport, SdfBuilder, Shadow, ShapeId, Size,
     Stroke, TextStyle, Transform,
 };
 
 use crate::path::{extract_brush_info, tessellate_fill, tessellate_stroke};
 use crate::primitives::{
     ClipType, FillType, GlassType, GpuGlassPrimitive, GpuPrimitive, PrimitiveBatch, PrimitiveType,
+    Sdf3DUniform, Viewport3D,
 };
 use crate::text::TextRenderingContext;
 
@@ -129,6 +131,8 @@ pub struct GpuPaintContext<'a> {
     is_3d: bool,
     /// Current camera (for 3D mode)
     camera: Option<Camera>,
+    /// Lights for 3D rendering
+    lights: Vec<Light>,
     /// Text rendering context (optional, for draw_text support)
     text_ctx: Option<&'a mut TextRenderingContext>,
     /// Whether we're rendering to the foreground layer (after glass)
@@ -151,6 +155,7 @@ impl<'a> GpuPaintContext<'a> {
             viewport: Size::new(width, height),
             is_3d: false,
             camera: None,
+            lights: Vec::new(),
             text_ctx: None,
             is_foreground: false,
             z_layer: 0,
@@ -181,6 +186,7 @@ impl<'a> GpuPaintContext<'a> {
             viewport: Size::new(width, height),
             is_3d: false,
             camera: None,
+            lights: Vec::new(),
             text_ctx: Some(text_ctx),
             is_foreground: false,
             z_layer: 0,
@@ -1757,8 +1763,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         // 3D mesh rendering is not yet implemented
     }
 
-    fn add_light(&mut self, _light: Light) {
-        // 3D lighting is not yet implemented
+    fn add_light(&mut self, light: Light) {
+        self.lights.push(light);
     }
 
     fn set_environment(&mut self, _env: &Environment) {
@@ -1794,6 +1800,292 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         // Restore 2D context
         self.is_3d = was_3d;
         self.camera = old_camera;
+    }
+
+    fn draw_sdf_viewport(&mut self, rect: Rect, viewport: &Sdf3DViewport) {
+        // Transform the rect to screen coordinates (like fill_rect does)
+        let transformed = self.transform_rect(rect);
+
+        // Get current clip bounds and intersect with the viewport
+        let (clip_bounds, _, _) = self.get_clip_data();
+        let clip_min_x = clip_bounds[0];
+        let clip_min_y = clip_bounds[1];
+        let clip_max_x = clip_bounds[0] + clip_bounds[2];
+        let clip_max_y = clip_bounds[1] + clip_bounds[3];
+
+        // Original viewport bounds
+        let orig_x = transformed.x();
+        let orig_y = transformed.y();
+        let orig_w = transformed.width();
+        let orig_h = transformed.height();
+
+        // Intersect viewport with clip region
+        let clipped_x = orig_x.max(clip_min_x);
+        let clipped_y = orig_y.max(clip_min_y);
+        let clipped_right = (orig_x + orig_w).min(clip_max_x);
+        let clipped_bottom = (orig_y + orig_h).min(clip_max_y);
+        let clipped_w = (clipped_right - clipped_x).max(0.0);
+        let clipped_h = (clipped_bottom - clipped_y).max(0.0);
+
+        // Skip if viewport is fully clipped
+        if clipped_w <= 0.0 || clipped_h <= 0.0 {
+            return;
+        }
+
+        // Calculate UV offset and scale for clipped viewports
+        let uv_offset_x = if orig_w > 0.0 {
+            (clipped_x - orig_x) / orig_w
+        } else {
+            0.0
+        };
+        let uv_offset_y = if orig_h > 0.0 {
+            (clipped_y - orig_y) / orig_h
+        } else {
+            0.0
+        };
+        let uv_scale_x = if orig_w > 0.0 {
+            clipped_w / orig_w
+        } else {
+            1.0
+        };
+        let uv_scale_y = if orig_h > 0.0 {
+            clipped_h / orig_h
+        } else {
+            1.0
+        };
+
+        // Create the uniform data for the shader
+        // Must match the WGSL SdfUniform struct layout exactly
+        let uniforms = Sdf3DUniform {
+            camera_pos: [
+                viewport.camera_pos.x,
+                viewport.camera_pos.y,
+                viewport.camera_pos.z,
+                1.0,
+            ],
+            camera_dir: [
+                viewport.camera_dir.x,
+                viewport.camera_dir.y,
+                viewport.camera_dir.z,
+                0.0,
+            ],
+            camera_up: [
+                viewport.camera_up.x,
+                viewport.camera_up.y,
+                viewport.camera_up.z,
+                0.0,
+            ],
+            camera_right: [
+                viewport.camera_right.x,
+                viewport.camera_right.y,
+                viewport.camera_right.z,
+                0.0,
+            ],
+            // Use ORIGINAL resolution for correct aspect ratio calculation
+            resolution: [orig_w, orig_h],
+            time: viewport.time,
+            fov: viewport.fov,
+            max_steps: viewport.max_steps,
+            max_distance: viewport.max_distance,
+            epsilon: viewport.epsilon,
+            _padding: 0.0,
+            uv_offset: [uv_offset_x, uv_offset_y],
+            uv_scale: [uv_scale_x, uv_scale_y],
+        };
+
+        // Create and push the 3D viewport with CLIPPED bounds
+        let viewport_3d = Viewport3D {
+            shader_wgsl: viewport.shader_wgsl.clone(),
+            uniforms,
+            bounds: [clipped_x, clipped_y, clipped_w, clipped_h],
+            lights: viewport.lights.clone(),
+        };
+
+        self.batch.push_viewport_3d(viewport_3d);
+    }
+
+    fn draw_particles(&mut self, rect: Rect, particle_data: &ParticleSystemData) {
+        use crate::particles::{GpuEmitter, GpuForce};
+        use crate::primitives::ParticleViewport3D;
+
+        // Transform the rect to screen coordinates
+        let transformed = self.transform_rect(rect);
+
+        // Get current clip bounds and intersect with the viewport
+        let (clip_bounds, _, _) = self.get_clip_data();
+        let clip_min_x = clip_bounds[0];
+        let clip_min_y = clip_bounds[1];
+        let clip_max_x = clip_bounds[0] + clip_bounds[2];
+        let clip_max_y = clip_bounds[1] + clip_bounds[3];
+
+        // Original viewport bounds
+        let orig_x = transformed.x();
+        let orig_y = transformed.y();
+        let orig_w = transformed.width();
+        let orig_h = transformed.height();
+
+        // Intersect viewport with clip region
+        let clipped_x = orig_x.max(clip_min_x);
+        let clipped_y = orig_y.max(clip_min_y);
+        let clipped_right = (orig_x + orig_w).min(clip_max_x);
+        let clipped_bottom = (orig_y + orig_h).min(clip_max_y);
+        let clipped_w = (clipped_right - clipped_x).max(0.0);
+        let clipped_h = (clipped_bottom - clipped_y).max(0.0);
+
+        // Skip if viewport is fully clipped
+        if clipped_w <= 0.0 || clipped_h <= 0.0 {
+            return;
+        }
+
+        // Skip if system is not playing
+        if !particle_data.playing {
+            return;
+        }
+
+        // Convert emitter shape to GPU format
+        let (shape_type, shape_params) = match &particle_data.emitter {
+            ParticleEmitterShape::Point => (0u32, [0.0f32; 4]),
+            ParticleEmitterShape::Sphere { radius } => (1u32, [*radius, 0.0, 0.0, 0.0]),
+            ParticleEmitterShape::Hemisphere { radius } => (2u32, [*radius, 0.0, 0.0, 0.0]),
+            ParticleEmitterShape::Cone { angle, radius } => (3u32, [*angle, *radius, 0.0, 0.0]),
+            ParticleEmitterShape::Box { half_extents } => {
+                (4u32, [half_extents.x, half_extents.y, half_extents.z, 0.0])
+            }
+            ParticleEmitterShape::Circle { radius } => (5u32, [*radius, 0.0, 0.0, 0.0]),
+        };
+
+        // Create GPU emitter
+        let emitter = GpuEmitter {
+            position_shape: [
+                particle_data.emitter_position.x,
+                particle_data.emitter_position.y,
+                particle_data.emitter_position.z,
+                shape_type as f32,
+            ],
+            shape_params,
+            direction_randomness: [
+                particle_data.direction.x,
+                particle_data.direction.y,
+                particle_data.direction.z,
+                particle_data.direction_randomness,
+            ],
+            emission_config: [
+                particle_data.emission_rate,
+                particle_data.burst_count, // burst count for one-shot effects
+                0.0,                       // spawn accumulated (deprecated)
+                particle_data.gravity_scale,
+            ],
+            lifetime_speed: [
+                particle_data.lifetime.0,
+                particle_data.lifetime.1,
+                particle_data.start_speed.0,
+                particle_data.start_speed.1,
+            ],
+            size_config: [
+                particle_data.start_size.0,
+                particle_data.start_size.1,
+                particle_data.end_size.0,
+                particle_data.end_size.1,
+            ],
+            start_color: [
+                particle_data.start_color.r,
+                particle_data.start_color.g,
+                particle_data.start_color.b,
+                particle_data.start_color.a,
+            ],
+            mid_color: [
+                particle_data.mid_color.r,
+                particle_data.mid_color.g,
+                particle_data.mid_color.b,
+                particle_data.mid_color.a,
+            ],
+            end_color: [
+                particle_data.end_color.r,
+                particle_data.end_color.g,
+                particle_data.end_color.b,
+                particle_data.end_color.a,
+            ],
+        };
+
+        // Convert forces to GPU format
+        let forces: Vec<GpuForce> = particle_data
+            .forces
+            .iter()
+            .map(|force| match force {
+                ParticleForce::Gravity(dir) => GpuForce {
+                    type_strength: [0.0, 1.0, 0.0, 0.0],
+                    direction_params: [dir.x, dir.y, dir.z, 0.0],
+                },
+                ParticleForce::Wind {
+                    direction,
+                    strength,
+                    turbulence,
+                } => GpuForce {
+                    type_strength: [1.0, *strength, 0.0, 0.0],
+                    direction_params: [direction.x, direction.y, direction.z, *turbulence],
+                },
+                ParticleForce::Vortex {
+                    axis,
+                    center: _,
+                    strength,
+                } => GpuForce {
+                    type_strength: [2.0, *strength, 0.0, 0.0],
+                    direction_params: [axis.x, axis.y, axis.z, 0.0],
+                },
+                ParticleForce::Drag(coefficient) => GpuForce {
+                    type_strength: [3.0, *coefficient, 0.0, 0.0],
+                    direction_params: [0.0, 0.0, 0.0, 0.0],
+                },
+                ParticleForce::Turbulence {
+                    strength,
+                    frequency,
+                } => GpuForce {
+                    type_strength: [4.0, *strength, 0.0, 0.0],
+                    direction_params: [0.0, 0.0, 0.0, *frequency],
+                },
+                ParticleForce::Attractor { position, strength } => GpuForce {
+                    type_strength: [5.0, *strength, 0.0, 0.0],
+                    direction_params: [position.x, position.y, position.z, 0.0],
+                },
+            })
+            .collect();
+
+        // Determine blend mode
+        let blend_mode = match particle_data.blend_mode {
+            ParticleBlendMode::Alpha => 0,
+            ParticleBlendMode::Additive => 1,
+            ParticleBlendMode::Multiply => 2,
+        };
+
+        // Create and push the particle viewport
+        let viewport = ParticleViewport3D {
+            emitter,
+            forces,
+            max_particles: particle_data.max_particles,
+            bounds: [clipped_x, clipped_y, clipped_w, clipped_h],
+            camera_pos: [
+                particle_data.camera_pos.x,
+                particle_data.camera_pos.y,
+                particle_data.camera_pos.z,
+            ],
+            camera_target: [
+                particle_data.camera_pos.x + particle_data.camera_dir.x,
+                particle_data.camera_pos.y + particle_data.camera_dir.y,
+                particle_data.camera_pos.z + particle_data.camera_dir.z,
+            ],
+            camera_up: [
+                particle_data.camera_up.x,
+                particle_data.camera_up.y,
+                particle_data.camera_up.z,
+            ],
+            fov: 0.8, // Default FOV
+            time: particle_data.time,
+            delta_time: particle_data.delta_time,
+            blend_mode,
+            playing: particle_data.playing,
+        };
+
+        self.batch.push_particle_viewport(viewport);
     }
 
     fn push_layer(&mut self, config: LayerConfig) {
