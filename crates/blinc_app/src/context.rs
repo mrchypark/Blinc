@@ -1129,23 +1129,15 @@ impl RenderContext {
                     label,
                     pixels,
                 } => {
-                    let gpu_image = match pixels {
-                        Some(bytes) => {
-                            if let Some(label) = label {
-                                self.image_ctx
-                                    .create_image_labeled(bytes, *width, *height, label)
-                            } else {
-                                self.image_ctx.create_image(bytes, *width, *height)
-                            }
-                        }
-                        None => {
-                            if let Some(label) = label {
-                                self.image_ctx
-                                    .create_empty_image_labeled(*width, *height, label)
-                            } else {
-                                self.image_ctx.create_empty_image(*width, *height)
-                            }
-                        }
+                    let gpu_image = match (pixels.as_deref(), label.as_deref()) {
+                        (Some(bytes), Some(label)) => self
+                            .image_ctx
+                            .create_image_labeled(bytes, *width, *height, label),
+                        (Some(bytes), None) => self.image_ctx.create_image(bytes, *width, *height),
+                        (None, Some(label)) => self
+                            .image_ctx
+                            .create_empty_image_labeled(*width, *height, label),
+                        (None, None) => self.image_ctx.create_empty_image(*width, *height),
                     };
                     self.canvas_image_cache.insert(*image, gpu_image);
                 }
@@ -1173,11 +1165,38 @@ impl RenderContext {
         }
     }
 
+    fn flush_canvas_image_batch(
+        &mut self,
+        target: &wgpu::TextureView,
+        image_id: blinc_core::ImageId,
+        instances: &[GpuImageInstance],
+    ) {
+        if instances.is_empty() {
+            return;
+        }
+        let Some(gpu_image) = self.canvas_image_cache.get(&image_id) else {
+            return;
+        };
+        self.renderer
+            .render_images(target, gpu_image.view(), instances);
+    }
+
     /// Render canvas images recorded via DrawContext::draw_image
     fn render_canvas_images(&mut self, target: &wgpu::TextureView, draws: &[ImageDraw]) {
         use blinc_image::src_rect_to_uv;
 
+        let mut batched_image: Option<blinc_core::ImageId> = None;
+        let mut instances: Vec<GpuImageInstance> = Vec::new();
+
         for draw in draws {
+            if batched_image != Some(draw.image) {
+                if let Some(image_id) = batched_image.take() {
+                    self.flush_canvas_image_batch(target, image_id, &instances);
+                    instances.clear();
+                }
+                batched_image = Some(draw.image);
+            }
+
             let Some(gpu_image) = self.canvas_image_cache.get(&draw.image) else {
                 continue;
             };
@@ -1215,8 +1234,11 @@ impl RenderContext {
                 );
             }
 
-            self.renderer
-                .render_images(target, gpu_image.view(), &[instance]);
+            instances.push(instance);
+        }
+
+        if let Some(image_id) = batched_image {
+            self.flush_canvas_image_batch(target, image_id, &instances);
         }
     }
 

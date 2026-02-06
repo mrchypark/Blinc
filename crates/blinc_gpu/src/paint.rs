@@ -1570,15 +1570,17 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
 
         let transformed = self.transform_rect(_rect);
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
-        let (clip_bounds, clip_radius, clip_type) = if clip_type == ClipType::Rect {
-            (clip_bounds, clip_radius, clip_type)
-        } else {
-            (
-                [-10000.0, -10000.0, 100000.0, 100000.0],
-                [0.0; 4],
-                ClipType::None,
-            )
+        let (clip_bounds, clip_radius, clip_type) = {
+            let (bounds, radius, clip_type) = self.get_clip_data();
+            if clip_type == ClipType::Rect {
+                (bounds, radius, clip_type)
+            } else {
+                (
+                    [-10000.0, -10000.0, 100000.0, 100000.0],
+                    [0.0; 4],
+                    ClipType::None,
+                )
+            }
         };
 
         let opacity = self.combined_opacity() * _options.opacity;
