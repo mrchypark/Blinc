@@ -627,6 +627,11 @@ impl Path {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageId(pub u64);
 
+impl ImageId {
+    /// Sentinel value returned when image operations are unsupported.
+    pub const UNSUPPORTED: Self = Self(0);
+}
+
 /// Image rendering options
 #[derive(Clone, Debug, Default)]
 pub struct ImageOptions {
@@ -1177,6 +1182,65 @@ pub trait DrawContext {
 
     /// Draw an image
     fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions);
+
+    #[doc(hidden)]
+    fn _debug_assert_rgba_buffer_size(&self, pixels: &[u8], width: u32, height: u32) {
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|v| v.checked_mul(4));
+        debug_assert_eq!(
+            expected_len,
+            Some(pixels.len()),
+            "Pixel buffer size does not match dimensions, or dimensions overflow"
+        );
+    }
+
+    /// Create a GPU image from RGBA pixels.
+    ///
+    /// `pixels` must be tightly packed RGBA8 with length `width * height * 4`.
+    ///
+    /// Default implementation returns [`ImageId::UNSUPPORTED`].
+    fn create_image_rgba(
+        &mut self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        _label: &str,
+    ) -> ImageId {
+        self._debug_assert_rgba_buffer_size(pixels, width, height);
+        ImageId::UNSUPPORTED
+    }
+
+    /// Create an empty GPU image (for later sub-rect writes)
+    ///
+    /// Default implementation returns [`ImageId::UNSUPPORTED`].
+    fn create_image_empty(&mut self, _width: u32, _height: u32, _label: &str) -> ImageId {
+        ImageId::UNSUPPORTED
+    }
+
+    /// Write RGBA pixels into a sub-rect of an existing image.
+    ///
+    /// `pixels` must be tightly packed RGBA8 with length `width * height * 4`.
+    ///
+    /// Default implementation is a no-op.
+    fn write_image_rgba(
+        &mut self,
+        _image: ImageId,
+        _x: u32,
+        _y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) {
+        self._debug_assert_rgba_buffer_size(pixels, width, height);
+    }
+
+    /// Query the dimensions of a known image
+    ///
+    /// Default implementation returns None.
+    fn image_dimensions(&self, _image: ImageId) -> Option<(u32, u32)> {
+        None
+    }
 
     /// Draw a drop shadow (renders outside the shape)
     fn draw_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow);
@@ -1878,6 +1942,7 @@ impl DrawContext for RecordingContext {
 // Recording SDF Builder
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 enum SdfShape {
     Rect {
