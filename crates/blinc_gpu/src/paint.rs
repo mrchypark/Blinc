@@ -522,6 +522,25 @@ impl<'a> GpuPaintContext<'a> {
         }
     }
 
+    fn enqueue_image_create(
+        &mut self,
+        width: u32,
+        height: u32,
+        label: &str,
+        pixels: Option<Vec<u8>>,
+    ) -> ImageId {
+        let id = ImageId(NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed));
+        self.batch.push_image_op(ImageOp::Create {
+            image: id,
+            width,
+            height,
+            label: Some(label.to_string()),
+            pixels,
+        });
+        self.image_sizes.insert(id, (width, height));
+        id
+    }
+
     /// Get clip data from the current clip stack
     /// Returns (clip_bounds, clip_radius, clip_type)
     ///
@@ -1557,13 +1576,12 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
     }
 
-    fn draw_image(&mut self, _image: ImageId, _rect: Rect, _options: &ImageOptions) {
-        let image = _image;
+    fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions) {
         if image.0 == 0 {
             return;
         }
 
-        let transformed = self.transform_rect(_rect);
+        let transformed = self.transform_rect(rect);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
         let (clip_bounds, clip_radius, clip_type) = if clip_type == ClipType::Rect {
             (clip_bounds, clip_radius, clip_type)
@@ -1571,8 +1589,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             (NO_CLIP_BOUNDS, NO_CLIP_RADIUS, ClipType::None)
         };
 
-        let opacity = self.combined_opacity() * _options.opacity;
-        let tint = if let Some(color) = _options.tint {
+        let opacity = self.combined_opacity() * options.opacity;
+        let tint = if let Some(color) = options.tint {
             [color.r, color.g, color.b, color.a]
         } else {
             [1.0, 1.0, 1.0, 1.0]
@@ -1581,7 +1599,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let draw = ImageDraw {
             image,
             dst_rect: transformed,
-            source_rect: _options.source_rect,
+            source_rect: options.source_rect,
             tint,
             opacity,
             clip_bounds,
@@ -1603,29 +1621,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         height: u32,
         label: &str,
     ) -> ImageId {
-        let id = ImageId(NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed));
-        self.batch.push_image_op(ImageOp::Create {
-            image: id,
-            width,
-            height,
-            label: Some(label.to_string()),
-            pixels: Some(pixels.to_vec()),
-        });
-        self.image_sizes.insert(id, (width, height));
-        id
+        self.enqueue_image_create(width, height, label, Some(pixels.to_vec()))
     }
 
     fn create_image_empty(&mut self, width: u32, height: u32, label: &str) -> ImageId {
-        let id = ImageId(NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed));
-        self.batch.push_image_op(ImageOp::Create {
-            image: id,
-            width,
-            height,
-            label: Some(label.to_string()),
-            pixels: None,
-        });
-        self.image_sizes.insert(id, (width, height));
-        id
+        self.enqueue_image_create(width, height, label, None)
     }
 
     fn write_image_rgba(
