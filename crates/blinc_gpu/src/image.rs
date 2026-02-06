@@ -151,9 +151,7 @@ impl GpuImage {
         }
 
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
-        let Some(padded_row_bytes) = row_bytes
-            .checked_add(align - 1)
-            .map(|v| v & !(align - 1))
+        let Some(padded_row_bytes) = row_bytes.checked_add(align - 1).map(|v| v & !(align - 1))
         else {
             return;
         };
