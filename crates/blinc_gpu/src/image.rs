@@ -18,6 +18,33 @@ pub struct GpuImage {
 }
 
 impl GpuImage {
+    /// Create an empty GPU image (uninitialized contents)
+    pub fn empty(device: &wgpu::Device, width: u32, height: u32, label: Option<&str>) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label,
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self {
+            texture,
+            view,
+            width,
+            height,
+        }
+    }
+
     /// Create a GPU image from RGBA pixel data
     pub fn from_rgba(
         device: &wgpu::Device,
@@ -80,6 +107,59 @@ impl GpuImage {
     /// Get the underlying texture
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+
+    /// Write RGBA pixels into a sub-rect of this image
+    pub fn write_rgba_sub_rect(
+        &self,
+        queue: &wgpu::Queue,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) {
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let bytes_per_pixel = 4u32;
+        let row_bytes = width * bytes_per_pixel;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_row_bytes = ((row_bytes + align - 1) / align) * align;
+
+        let data: std::borrow::Cow<'_, [u8]> = if padded_row_bytes == row_bytes {
+            std::borrow::Cow::Borrowed(pixels)
+        } else {
+            let mut padded = vec![0u8; (padded_row_bytes * height) as usize];
+            for row in 0..height as usize {
+                let src_start = row * row_bytes as usize;
+                let dst_start = row * padded_row_bytes as usize;
+                padded[dst_start..dst_start + row_bytes as usize]
+                    .copy_from_slice(&pixels[src_start..src_start + row_bytes as usize]);
+            }
+            std::borrow::Cow::Owned(padded)
+        };
+
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_row_bytes),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 }
 
@@ -279,6 +359,16 @@ impl ImageRenderingContext {
             height,
             Some(label),
         )
+    }
+
+    /// Create an empty GPU image
+    pub fn create_empty_image(&self, width: u32, height: u32) -> GpuImage {
+        GpuImage::empty(&self.device, width, height, None)
+    }
+
+    /// Create an empty GPU image with a label
+    pub fn create_empty_image_labeled(&self, width: u32, height: u32, label: &str) -> GpuImage {
+        GpuImage::empty(&self.device, width, height, Some(label))
     }
 
     /// Get the linear sampler
