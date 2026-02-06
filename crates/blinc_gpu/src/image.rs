@@ -141,6 +141,12 @@ impl GpuImage {
             return;
         };
         if pixels.len() < required_len {
+            debug_assert!(
+                pixels.len() >= required_len,
+                "write_rgba_sub_rect: pixel buffer too small (required {}, got {})",
+                required_len,
+                pixels.len()
+            );
             return;
         }
 
@@ -158,9 +164,8 @@ impl GpuImage {
         let data: Cow<'_, [u8]> = if padded_row_bytes == row_bytes {
             Cow::Borrowed(&pixels[..required_len])
         } else {
-            let padded_total = match padded_row_bytes.checked_mul(height_usize) {
-                Some(v) => v,
-                None => return,
+            let Some(padded_total) = padded_row_bytes.checked_mul(height_usize) else {
+                return;
             };
             let mut padded = Vec::with_capacity(padded_total);
             let padding = vec![0u8; padded_row_bytes - row_bytes];
