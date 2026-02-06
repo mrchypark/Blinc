@@ -4,6 +4,8 @@
 //! All structures use `#[repr(C)]` and implement `bytemuck::Pod` for safe
 //! GPU buffer copies.
 
+use blinc_core::{ImageId, Rect};
+
 /// Primitive types (must match shader constants)
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,6 +59,41 @@ pub enum ClipType {
     Circle = 2,
     /// Elliptical clip
     Ellipse = 3,
+}
+
+/// Image upload operations recorded during painting
+#[derive(Clone, Debug)]
+pub enum ImageOp {
+    /// Create a new image (optionally with initial pixels)
+    Create {
+        image: ImageId,
+        width: u32,
+        height: u32,
+        label: Option<String>,
+        pixels: Option<Vec<u8>>,
+    },
+    /// Write RGBA pixels into a sub-rect of an existing image
+    Write {
+        image: ImageId,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    },
+}
+
+/// Image draw call recorded during painting
+#[derive(Clone, Debug)]
+pub struct ImageDraw {
+    pub image: ImageId,
+    pub dst_rect: Rect,
+    pub source_rect: Option<Rect>,
+    pub tint: [f32; 4],
+    pub opacity: f32,
+    pub clip_bounds: [f32; 4],
+    pub clip_radius: [f32; 4],
+    pub clip_type: ClipType,
 }
 
 /// A GPU primitive ready for rendering (matches shader `Primitive` struct)
@@ -1135,6 +1172,12 @@ pub struct PrimitiveBatch {
     pub paths: PathBatch,
     /// Foreground tessellated path geometry
     pub foreground_paths: PathBatch,
+    /// Image upload operations
+    pub image_ops: Vec<ImageOp>,
+    /// Background image draw calls
+    pub image_draws: Vec<ImageDraw>,
+    /// Foreground image draw calls
+    pub foreground_image_draws: Vec<ImageDraw>,
     /// Layer commands for offscreen rendering and composition
     pub layer_commands: Vec<LayerCommandEntry>,
     /// 3D viewports to render via raymarching
@@ -1152,6 +1195,9 @@ impl PrimitiveBatch {
             glyphs: Vec::new(),
             paths: PathBatch::default(),
             foreground_paths: PathBatch::default(),
+            image_ops: Vec::new(),
+            image_draws: Vec::new(),
+            foreground_image_draws: Vec::new(),
             layer_commands: Vec::new(),
             viewports_3d: Vec::new(),
             particle_viewports: Vec::new(),
@@ -1165,6 +1211,9 @@ impl PrimitiveBatch {
         self.glyphs.clear();
         self.paths = PathBatch::default();
         self.foreground_paths = PathBatch::default();
+        self.image_ops.clear();
+        self.image_draws.clear();
+        self.foreground_image_draws.clear();
         self.layer_commands.clear();
         self.viewports_3d.clear();
         self.particle_viewports.clear();
@@ -1225,6 +1274,18 @@ impl PrimitiveBatch {
 
     pub fn push_glass(&mut self, glass: GpuGlassPrimitive) {
         self.glass_primitives.push(glass);
+    }
+
+    pub fn push_image_op(&mut self, op: ImageOp) {
+        self.image_ops.push(op);
+    }
+
+    pub fn push_image_draw(&mut self, draw: ImageDraw) {
+        self.image_draws.push(draw);
+    }
+
+    pub fn push_foreground_image_draw(&mut self, draw: ImageDraw) {
+        self.foreground_image_draws.push(draw);
     }
 
     pub fn push_glyph(&mut self, glyph: GpuGlyph) {
