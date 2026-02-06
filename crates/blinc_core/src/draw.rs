@@ -1187,12 +1187,11 @@ pub trait DrawContext {
     fn _debug_assert_rgba_buffer_size(&self, pixels: &[u8], width: u32, height: u32) {
         let expected_len = (width as usize)
             .checked_mul(height as usize)
-            .and_then(|v| v.checked_mul(4))
-            .unwrap_or(usize::MAX);
+            .and_then(|v| v.checked_mul(4));
         debug_assert_eq!(
-            pixels.len(),
             expected_len,
-            "Pixel buffer size does not match dimensions"
+            Some(pixels.len()),
+            "Pixel buffer size does not match dimensions, or dimensions overflow"
         );
     }
 
