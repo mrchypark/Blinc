@@ -209,6 +209,18 @@ pub struct SubscriptionHandle {
     index: usize,
 }
 
+impl SubscriptionHandle {
+    /// Returns the subscription key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the index within the key's subscriber list.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+}
+
 // =============================================================================
 // GLOBAL STORE REGISTRY
 // =============================================================================

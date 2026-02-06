@@ -627,6 +627,11 @@ impl Path {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageId(pub u64);
 
+impl ImageId {
+    /// Sentinel value returned when image operations are unsupported.
+    pub const UNSUPPORTED: Self = Self(0);
+}
+
 /// Image rendering options
 #[derive(Clone, Debug, Default)]
 pub struct ImageOptions {
@@ -1180,7 +1185,7 @@ pub trait DrawContext {
 
     /// Create a GPU image from RGBA pixels
     ///
-    /// Default implementation returns ImageId(0) to indicate unsupported.
+    /// Default implementation returns [`ImageId::UNSUPPORTED`].
     fn create_image_rgba(
         &mut self,
         _pixels: &[u8],
@@ -1188,14 +1193,14 @@ pub trait DrawContext {
         _height: u32,
         _label: &str,
     ) -> ImageId {
-        ImageId(0)
+        ImageId::UNSUPPORTED
     }
 
     /// Create an empty GPU image (for later sub-rect writes)
     ///
-    /// Default implementation returns ImageId(0) to indicate unsupported.
+    /// Default implementation returns [`ImageId::UNSUPPORTED`].
     fn create_image_empty(&mut self, _width: u32, _height: u32, _label: &str) -> ImageId {
-        ImageId(0)
+        ImageId::UNSUPPORTED
     }
 
     /// Write RGBA pixels into a sub-rect of an existing image
@@ -1919,6 +1924,7 @@ impl DrawContext for RecordingContext {
 // Recording SDF Builder
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 enum SdfShape {
     Rect {
