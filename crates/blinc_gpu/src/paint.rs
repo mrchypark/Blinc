@@ -51,10 +51,16 @@ use blinc_core::{
 
 use crate::path::{extract_brush_info, tessellate_fill, tessellate_stroke};
 use crate::primitives::{
-    ClipType, FillType, GlassType, GpuGlassPrimitive, GpuPrimitive, PrimitiveBatch, PrimitiveType,
-    Sdf3DUniform, Viewport3D,
+    ClipType, FillType, GlassType, GpuGlassPrimitive, GpuPrimitive, ImageDraw, ImageOp,
+    PrimitiveBatch, PrimitiveType, Sdf3DUniform, Viewport3D,
 };
 use crate::text::TextRenderingContext;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
+const NO_CLIP_BOUNDS: [f32; 4] = [-10000.0, -10000.0, 100000.0, 100000.0];
+const NO_CLIP_RADIUS: [f32; 4] = [0.0; 4];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transform Stack
@@ -141,6 +147,8 @@ pub struct GpuPaintContext<'a> {
     z_layer: u32,
     /// Stack of active layers for offscreen rendering
     layer_stack: Vec<LayerState>,
+    /// Known image sizes created in this context
+    image_sizes: HashMap<ImageId, (u32, u32)>,
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -160,6 +168,7 @@ impl<'a> GpuPaintContext<'a> {
             is_foreground: false,
             z_layer: 0,
             layer_stack: Vec::new(),
+            image_sizes: HashMap::new(),
         }
     }
 
@@ -191,6 +200,7 @@ impl<'a> GpuPaintContext<'a> {
             is_foreground: false,
             z_layer: 0,
             layer_stack: Vec::new(),
+            image_sizes: HashMap::new(),
         }
     }
 
@@ -512,6 +522,25 @@ impl<'a> GpuPaintContext<'a> {
         }
     }
 
+    fn enqueue_image_create(
+        &mut self,
+        width: u32,
+        height: u32,
+        label: &str,
+        pixels: Option<Vec<u8>>,
+    ) -> ImageId {
+        let id = ImageId(NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed));
+        self.batch.push_image_op(ImageOp::Create {
+            image: id,
+            width,
+            height,
+            label: Some(label.to_string()),
+            pixels,
+        });
+        self.image_sizes.insert(id, (width, height));
+        id
+    }
+
     /// Get clip data from the current clip stack
     /// Returns (clip_bounds, clip_radius, clip_type)
     ///
@@ -524,11 +553,7 @@ impl<'a> GpuPaintContext<'a> {
     fn get_clip_data(&self) -> ([f32; 4], [f32; 4], ClipType) {
         if self.clip_stack.is_empty() {
             // No clip - use large bounds
-            return (
-                [-10000.0, -10000.0, 100000.0, 100000.0],
-                [0.0; 4],
-                ClipType::None,
-            );
+            return (NO_CLIP_BOUNDS, NO_CLIP_RADIUS, ClipType::None);
         }
 
         // Try to compute intersection of all rect clips
@@ -725,11 +750,7 @@ impl<'a> GpuPaintContext<'a> {
             ),
             ClipShape::Path(_) => {
                 // Path clipping not supported in GPU - fall back to no clip
-                (
-                    [-10000.0, -10000.0, 100000.0, 100000.0],
-                    [0.0; 4],
-                    ClipType::None,
-                )
+                (NO_CLIP_BOUNDS, NO_CLIP_RADIUS, ClipType::None)
             }
         }
     }
@@ -759,6 +780,7 @@ impl<'a> GpuPaintContext<'a> {
         self.layer_stack.clear();
         self.is_3d = false;
         self.camera = None;
+        self.image_sizes.clear();
     }
 
     /// Apply opacity to a brush by modifying the color's alpha channel
@@ -1554,11 +1576,82 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
     }
 
-    fn draw_image(&mut self, _image: ImageId, _rect: Rect, _options: &ImageOptions) {
-        // Image rendering would require:
-        // 1. Texture loading and caching
-        // 2. A separate image rendering pipeline
-        // This is a placeholder for now
+    fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions) {
+        if image.0 == 0 {
+            return;
+        }
+
+        let transformed = self.transform_rect(rect);
+        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_type) = if clip_type == ClipType::Rect {
+            (clip_bounds, clip_radius, clip_type)
+        } else {
+            (NO_CLIP_BOUNDS, NO_CLIP_RADIUS, ClipType::None)
+        };
+
+        let opacity = self.combined_opacity() * options.opacity;
+        let tint = if let Some(color) = options.tint {
+            [color.r, color.g, color.b, color.a]
+        } else {
+            [1.0, 1.0, 1.0, 1.0]
+        };
+
+        let draw = ImageDraw {
+            image,
+            dst_rect: transformed,
+            source_rect: options.source_rect,
+            tint,
+            opacity,
+            clip_bounds,
+            clip_radius,
+            clip_type,
+        };
+
+        if self.is_foreground {
+            self.batch.push_foreground_image_draw(draw);
+        } else {
+            self.batch.push_image_draw(draw);
+        }
+    }
+
+    fn create_image_rgba(
+        &mut self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        label: &str,
+    ) -> ImageId {
+        self.enqueue_image_create(width, height, label, Some(pixels.to_vec()))
+    }
+
+    fn create_image_empty(&mut self, width: u32, height: u32, label: &str) -> ImageId {
+        self.enqueue_image_create(width, height, label, None)
+    }
+
+    fn write_image_rgba(
+        &mut self,
+        image: ImageId,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) {
+        if image.0 == 0 {
+            return;
+        }
+        self.batch.push_image_op(ImageOp::Write {
+            image,
+            x,
+            y,
+            width,
+            height,
+            pixels: pixels.to_vec(),
+        });
+    }
+
+    fn image_dimensions(&self, image: ImageId) -> Option<(u32, u32)> {
+        self.image_sizes.get(&image).copied()
     }
 
     fn draw_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow) {

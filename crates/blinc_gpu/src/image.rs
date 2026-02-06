@@ -2,7 +2,7 @@
 //!
 //! Manages GPU textures for images and provides rendering support.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 
 /// A GPU image texture ready for rendering
@@ -18,6 +18,37 @@ pub struct GpuImage {
 }
 
 impl GpuImage {
+    /// Create an empty GPU image (uninitialized contents)
+    pub fn empty(device: &wgpu::Device, width: u32, height: u32, label: Option<&str>) -> Self {
+        let max_dim = device.limits().max_texture_dimension_2d;
+        let width = width.clamp(1, max_dim);
+        let height = height.clamp(1, max_dim);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label,
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self {
+            texture,
+            view,
+            width,
+            height,
+        }
+    }
+
     /// Create a GPU image from RGBA pixel data
     pub fn from_rgba(
         device: &wgpu::Device,
@@ -80,6 +111,82 @@ impl GpuImage {
     /// Get the underlying texture
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+
+    /// Write RGBA pixels into a sub-rect of this image
+    pub fn write_rgba_sub_rect(
+        &self,
+        queue: &wgpu::Queue,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) {
+        let max_write_width = self.width.saturating_sub(x);
+        let max_write_height = self.height.saturating_sub(y);
+        let width = width.min(max_write_width);
+        let height = height.min(max_write_height);
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let bytes_per_pixel = 4usize;
+        let width_usize = width as usize;
+        let height_usize = height as usize;
+        let Some(row_bytes) = width_usize.checked_mul(bytes_per_pixel) else {
+            return;
+        };
+        let Some(required_len) = row_bytes.checked_mul(height_usize) else {
+            return;
+        };
+        if pixels.len() < required_len {
+            return;
+        }
+
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+        let Some(padded_row_bytes) = row_bytes.checked_add(align - 1).map(|v| v & !(align - 1))
+        else {
+            return;
+        };
+        let Ok(padded_row_bytes_u32) = u32::try_from(padded_row_bytes) else {
+            return;
+        };
+
+        let data: Cow<'_, [u8]> = if padded_row_bytes == row_bytes {
+            Cow::Borrowed(&pixels[..required_len])
+        } else {
+            let Some(padded_total) = padded_row_bytes.checked_mul(height_usize) else {
+                return;
+            };
+            let mut padded = Vec::with_capacity(padded_total);
+            let padding = vec![0u8; padded_row_bytes - row_bytes];
+            for chunk in pixels[..required_len].chunks_exact(row_bytes) {
+                padded.extend_from_slice(chunk);
+                padded.extend_from_slice(&padding);
+            }
+            Cow::Owned(padded)
+        };
+
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_row_bytes_u32),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 }
 
@@ -279,6 +386,16 @@ impl ImageRenderingContext {
             height,
             Some(label),
         )
+    }
+
+    /// Create an empty GPU image
+    pub fn create_empty_image(&self, width: u32, height: u32) -> GpuImage {
+        GpuImage::empty(&self.device, width, height, None)
+    }
+
+    /// Create an empty GPU image with a label
+    pub fn create_empty_image_labeled(&self, width: u32, height: u32, label: &str) -> GpuImage {
+        GpuImage::empty(&self.device, width, height, Some(label))
     }
 
     /// Get the linear sampler
