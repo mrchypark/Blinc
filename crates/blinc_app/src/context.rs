@@ -1202,6 +1202,10 @@ impl RenderContext {
             }
 
             let Some(gpu_image) = self.canvas_image_cache.get(&draw.image) else {
+                tracing::warn!(
+                    "canvas image draw skipped: missing image id {:?}",
+                    draw.image
+                );
                 continue;
             };
 
