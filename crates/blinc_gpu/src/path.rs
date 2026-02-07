@@ -898,37 +898,6 @@ pub fn tessellate_stroke(path: &Path, stroke: &Stroke, brush: &Brush) -> Tessell
     }
 }
 
-/// Extract solid color from brush (gradients not yet supported for paths)
-#[allow(dead_code)]
-fn brush_to_color(brush: &Brush) -> Color {
-    match brush {
-        Brush::Solid(color) => *color,
-        Brush::Glass(style) => {
-            // Glass effects are not supported on tessellated paths
-            // Return the tint color as a fallback
-            style.tint
-        }
-        Brush::Image(img) => {
-            // Image backgrounds are not supported on tessellated paths
-            // Return the tint color as a fallback
-            img.tint
-        }
-        Brush::Gradient(gradient) => {
-            // Use first stop color as fallback
-            gradient
-                .stops()
-                .first()
-                .map(|s| s.color)
-                .unwrap_or(Color::BLACK)
-        }
-        Brush::Blur(style) => {
-            // Blur effects are not supported on tessellated paths
-            // Return the tint color or semi-transparent white
-            style.tint.unwrap_or(Color::rgba(1.0, 1.0, 1.0, 0.3))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

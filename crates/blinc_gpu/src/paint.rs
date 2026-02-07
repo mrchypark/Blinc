@@ -63,32 +63,6 @@ const NO_CLIP_BOUNDS: [f32; 4] = [-10000.0, -10000.0, 100000.0, 100000.0];
 const NO_CLIP_RADIUS: [f32; 4] = [0.0; 4];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Transform Stack
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Combined 2D transform state (for future optimization)
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct TransformState {
-    /// Combined affine transform
-    affine: Affine2D,
-    /// Combined opacity
-    opacity: f32,
-    /// Current blend mode
-    blend_mode: BlendMode,
-}
-
-impl Default for TransformState {
-    fn default() -> Self {
-        Self {
-            affine: Affine2D::IDENTITY,
-            opacity: 1.0,
-            blend_mode: BlendMode::Normal,
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Layer Stack
 // ─────────────────────────────────────────────────────────────────────────────
 

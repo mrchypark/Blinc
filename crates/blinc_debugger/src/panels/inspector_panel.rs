@@ -201,11 +201,6 @@ impl InspectorPanel {
         self.built
             .get_or_init(|| BuiltInspectorPanel::from_config(&self.config))
     }
-
-    #[allow(dead_code)]
-    pub fn build(self) -> Div {
-        BuiltInspectorPanel::from_config(&self.config).inner
-    }
 }
 
 impl ElementBuilder for InspectorPanel {

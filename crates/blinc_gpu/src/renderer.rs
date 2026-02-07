@@ -191,12 +191,10 @@ struct Pipelines {
     /// Pipeline for simple frosted glass (pure blur, no refraction)
     simple_glass: wgpu::RenderPipeline,
     /// Pipeline for text rendering (MSAA)
-    #[allow(dead_code)]
-    text: wgpu::RenderPipeline,
+    _text: wgpu::RenderPipeline,
     /// Pipeline for text rendering on top of existing content (1x sampled)
     text_overlay: wgpu::RenderPipeline,
     /// Pipeline for final compositing (MSAA)
-    #[allow(dead_code)]
     composite: wgpu::RenderPipeline,
     /// Pipeline for final compositing (1x sampled, for overlay blending)
     composite_overlay: wgpu::RenderPipeline,
@@ -237,8 +235,7 @@ struct Buffers {
     /// Uniform buffer for glass shader
     glass_uniforms: wgpu::Buffer,
     /// Storage buffer for text glyphs
-    #[allow(dead_code)]
-    glyphs: wgpu::Buffer,
+    _glyphs: wgpu::Buffer,
     /// Uniform buffer for path rendering
     path_uniforms: wgpu::Buffer,
     /// Vertex buffer for path geometry (dynamic, recreated as needed)
@@ -256,30 +253,28 @@ struct Buffers {
 }
 
 /// Bind groups for shader resources
-#[allow(dead_code)]
 struct BindGroups {
     /// Bind group for SDF pipeline
     sdf: wgpu::BindGroup,
     /// Bind group for glass pipeline (needs backdrop texture)
-    glass: Option<wgpu::BindGroup>,
+    _glass: Option<wgpu::BindGroup>,
     /// Bind group for path pipeline
     path: wgpu::BindGroup,
 }
 
 /// Cached MSAA textures and resources for overlay rendering
-#[allow(dead_code)]
 struct CachedMsaaTextures {
-    msaa_texture: wgpu::Texture,
+    _msaa_texture: wgpu::Texture,
     msaa_view: wgpu::TextureView,
-    resolve_texture: wgpu::Texture,
+    _resolve_texture: wgpu::Texture,
     resolve_view: wgpu::TextureView,
     width: u32,
     height: u32,
     sample_count: u32,
     /// Sampler for compositing (reused across frames)
-    sampler: wgpu::Sampler,
+    _sampler: wgpu::Sampler,
     /// Uniform buffer for compositing (reused across frames)
-    composite_uniform_buffer: wgpu::Buffer,
+    _composite_uniform_buffer: wgpu::Buffer,
     /// Bind group for compositing (recreated when textures change)
     composite_bind_group: wgpu::BindGroup,
 }
@@ -528,28 +523,6 @@ impl LayerTextureCache {
         color_bytes + depth_bytes
     }
 
-    /// Get the appropriate pool for a bucket
-    #[allow(dead_code)]
-    fn get_pool(&self, bucket: TextureSizeBucket) -> &Vec<LayerTexture> {
-        match bucket {
-            TextureSizeBucket::Small => &self.pool_small,
-            TextureSizeBucket::Medium => &self.pool_medium,
-            TextureSizeBucket::Large => &self.pool_large,
-            TextureSizeBucket::XLarge => &self.pool_large, // XLarge uses large pool but rarely cached
-        }
-    }
-
-    /// Get mutable pool for a bucket
-    #[allow(dead_code)]
-    fn get_pool_mut(&mut self, bucket: TextureSizeBucket) -> &mut Vec<LayerTexture> {
-        match bucket {
-            TextureSizeBucket::Small => &mut self.pool_small,
-            TextureSizeBucket::Medium => &mut self.pool_medium,
-            TextureSizeBucket::Large => &mut self.pool_large,
-            TextureSizeBucket::XLarge => &mut self.pool_large,
-        }
-    }
-
     /// Acquire a texture of at least the given size
     ///
     /// First checks the pool for a matching texture, otherwise creates a new one.
@@ -774,11 +747,9 @@ impl LayerTextureCache {
 /// - Executes render passes
 pub struct GpuRenderer {
     /// wgpu instance
-    #[allow(dead_code)]
-    instance: wgpu::Instance,
+    _instance: wgpu::Instance,
     /// GPU adapter
-    #[allow(dead_code)]
-    adapter: wgpu::Adapter,
+    _adapter: wgpu::Adapter,
     /// GPU device
     device: Arc<wgpu::Device>,
     /// Command queue
@@ -810,11 +781,9 @@ pub struct GpuRenderer {
     /// Cached text resources (avoids per-frame allocation)
     cached_text: Option<CachedTextResources>,
     /// Placeholder glyph atlas texture view (1x1 transparent) for SDF bind group
-    #[allow(dead_code)]
-    placeholder_glyph_atlas_view: wgpu::TextureView,
+    _placeholder_glyph_atlas_view: wgpu::TextureView,
     /// Placeholder color glyph atlas texture view (1x1 transparent) for SDF bind group
-    #[allow(dead_code)]
-    placeholder_color_glyph_atlas_view: wgpu::TextureView,
+    _placeholder_color_glyph_atlas_view: wgpu::TextureView,
     /// Sampler for glyph atlas textures
     glyph_sampler: wgpu::Sampler,
     /// Cached SDF bind group with actual glyph atlas textures (for unified text rendering)
@@ -822,8 +791,7 @@ pub struct GpuRenderer {
     /// Gradient texture cache for multi-stop gradient support on paths
     gradient_texture_cache: GradientTextureCache,
     /// Placeholder image texture (1x1 white) for path bind group when no image is used
-    #[allow(dead_code)]
-    placeholder_path_image_view: wgpu::TextureView,
+    _placeholder_path_image_view: wgpu::TextureView,
     /// Sampler for path image textures
     path_image_sampler: wgpu::Sampler,
     /// Layer texture cache for offscreen rendering and composition
@@ -845,9 +813,7 @@ struct ImagePipeline {
 struct BindGroupLayouts {
     sdf: wgpu::BindGroupLayout,
     glass: wgpu::BindGroupLayout,
-    #[allow(dead_code)]
     text: wgpu::BindGroupLayout,
-    #[allow(dead_code)]
     composite: wgpu::BindGroupLayout,
     path: wgpu::BindGroupLayout,
     /// Layout for layer composition shader
@@ -1345,8 +1311,8 @@ impl GpuRenderer {
         );
 
         Ok(Self {
-            instance,
-            adapter,
+            _instance: instance,
+            _adapter: adapter,
             device,
             queue,
             pipelines,
@@ -1362,12 +1328,12 @@ impl GpuRenderer {
             cached_msaa: None,
             cached_glass: None,
             cached_text: None,
-            placeholder_glyph_atlas_view,
-            placeholder_color_glyph_atlas_view,
+            _placeholder_glyph_atlas_view: placeholder_glyph_atlas_view,
+            _placeholder_color_glyph_atlas_view: placeholder_color_glyph_atlas_view,
             glyph_sampler,
             cached_sdf_with_glyphs: None,
             gradient_texture_cache,
-            placeholder_path_image_view,
+            _placeholder_path_image_view: placeholder_path_image_view,
             path_image_sampler,
             layer_texture_cache: LayerTextureCache::new(texture_format),
             sdf_3d_resources: None,
@@ -2459,7 +2425,7 @@ impl GpuRenderer {
             sdf_overlay,
             glass,
             simple_glass,
-            text,
+            _text: text,
             text_overlay,
             composite,
             composite_overlay,
@@ -2550,7 +2516,7 @@ impl GpuRenderer {
             primitives,
             glass_primitives,
             glass_uniforms,
-            glyphs,
+            _glyphs: glyphs,
             path_uniforms,
             path_vertices: None,
             path_indices: None,
@@ -2647,7 +2613,7 @@ impl GpuRenderer {
         // Glass bind group will be created when we have a backdrop texture
         BindGroups {
             sdf,
-            glass: None,
+            _glass: None,
             path,
         }
     }
@@ -4687,15 +4653,15 @@ impl GpuRenderer {
             });
 
             self.cached_msaa = Some(CachedMsaaTextures {
-                msaa_texture,
+                _msaa_texture: msaa_texture,
                 msaa_view,
-                resolve_texture,
+                _resolve_texture: resolve_texture,
                 resolve_view,
                 width,
                 height,
                 sample_count,
-                sampler,
-                composite_uniform_buffer,
+                _sampler: sampler,
+                _composite_uniform_buffer: composite_uniform_buffer,
                 composite_bind_group,
             });
         }
@@ -4934,15 +4900,15 @@ impl GpuRenderer {
             });
 
             self.cached_msaa = Some(CachedMsaaTextures {
-                msaa_texture,
+                _msaa_texture: msaa_texture,
                 msaa_view,
-                resolve_texture,
+                _resolve_texture: resolve_texture,
                 resolve_view,
                 width,
                 height,
                 sample_count,
-                sampler,
-                composite_uniform_buffer,
+                _sampler: sampler,
+                _composite_uniform_buffer: composite_uniform_buffer,
                 composite_bind_group,
             });
         }
@@ -5060,7 +5026,7 @@ impl GpuRenderer {
 
         // Update glyphs buffer
         self.queue
-            .write_buffer(&self.buffers.glyphs, 0, bytemuck::cast_slice(glyphs));
+            .write_buffer(&self.buffers._glyphs, 0, bytemuck::cast_slice(glyphs));
 
         // Check if we need to recreate the text bind group
         // Invalidate if either atlas view pointer changed (texture was recreated)
@@ -5085,7 +5051,7 @@ impl GpuRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: self.buffers.glyphs.as_entire_binding(),
+                        resource: self.buffers._glyphs.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -6831,137 +6797,6 @@ impl GpuRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-
-            render_pass.set_pipeline(&self.pipelines.layer_composite);
-            render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
-        }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-    }
-
-    /// Blit a specific region from source texture to target at given position
-    ///
-    /// This is used for layer effects where we need to composite only the
-    /// element's region back to the target at the correct position.
-    #[allow(dead_code)]
-    fn blit_region_to_target(
-        &mut self,
-        source: &wgpu::TextureView,
-        target: &wgpu::TextureView,
-        position: (f32, f32),
-        size: (f32, f32),
-        opacity: f32,
-        blend_mode: blinc_core::BlendMode,
-    ) {
-        self.blit_region_to_target_with_clip(
-            source, target, position, size, opacity, blend_mode, None,
-        )
-    }
-
-    /// Blit a specific region with optional clip
-    #[allow(dead_code)]
-    fn blit_region_to_target_with_clip(
-        &mut self,
-        source: &wgpu::TextureView,
-        target: &wgpu::TextureView,
-        position: (f32, f32),
-        size: (f32, f32),
-        opacity: f32,
-        blend_mode: blinc_core::BlendMode,
-        clip: Option<([f32; 4], [f32; 4])>, // (bounds, radii)
-    ) {
-        use crate::primitives::LayerCompositeUniforms;
-
-        let vp_w = self.viewport_size.0 as f32;
-        let vp_h = self.viewport_size.1 as f32;
-
-        // Source rect in normalized coordinates (0-1)
-        // The source texture is viewport-sized, so we extract the element's region
-        let source_rect = [
-            position.0 / vp_w,
-            position.1 / vp_h,
-            size.0 / vp_w,
-            size.1 / vp_h,
-        ];
-
-        // Dest rect in viewport pixel coordinates
-        let dest_rect = [position.0, position.1, size.0, size.1];
-
-        let mut uniforms = LayerCompositeUniforms {
-            source_rect,
-            dest_rect,
-            viewport_size: [vp_w, vp_h],
-            opacity,
-            blend_mode: blend_mode as u32,
-            clip_bounds: [0.0, 0.0, vp_w, vp_h],
-            clip_radius: [0.0, 0.0, 0.0, 0.0],
-            clip_type: 0,
-            _pad: [0.0; 7],
-        };
-
-        if let Some((bounds, radii)) = clip {
-            uniforms.clip_bounds = bounds;
-            uniforms.clip_radius = radii;
-            uniforms.clip_type = 1;
-        }
-
-        let uniform_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Region Blit Uniforms Buffer"),
-                contents: bytemuck::cast_slice(&[uniforms]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Region Blit Bind Group"),
-            layout: &self.bind_group_layouts.layer_composite,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(source),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
-                },
-            ],
-        });
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Region Blit Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Region Blit Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            // Set scissor rect to only affect the element's region
-            render_pass.set_scissor_rect(
-                position.0.max(0.0) as u32,
-                position.1.max(0.0) as u32,
-                size.0.min(vp_w - position.0).max(1.0) as u32,
-                size.1.min(vp_h - position.1).max(1.0) as u32,
-            );
 
             render_pass.set_pipeline(&self.pipelines.layer_composite);
             render_pass.set_bind_group(0, &bind_group, &[]);

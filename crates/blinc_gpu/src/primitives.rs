@@ -4,8 +4,6 @@
 //! All structures use `#[repr(C)]` and implement `bytemuck::Pod` for safe
 //! GPU buffer copies.
 
-#![allow(deprecated)]
-
 use blinc_core::{ImageId, Rect};
 
 /// Primitive types (must match shader constants)
@@ -1766,8 +1764,6 @@ impl Default for ParticleViewport3D {
 /// Legacy rectangle primitive (deprecated - use GpuPrimitive instead)
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-#[deprecated(note = "Use GpuPrimitive instead")]
-#[allow(deprecated)]
 pub struct GpuRect {
     pub position: [f32; 2],
     pub size: [f32; 2],

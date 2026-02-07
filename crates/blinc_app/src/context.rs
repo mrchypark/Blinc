@@ -2,9 +2,7 @@
 //!
 //! Wraps the GPU rendering pipeline with a clean API.
 
-use blinc_core::{
-    Brush, Color, CornerRadius, DrawCommand, DrawContext, DrawContextExt, Rect, Stroke,
-};
+use blinc_core::{Brush, Color, CornerRadius, DrawCommand, DrawContextExt, Rect, Stroke};
 use blinc_gpu::primitives::{ClipType, ImageDraw, ImageOp};
 use blinc_gpu::{
     FontRegistry, GenericFont as GpuGenericFont, GpuGlyph, GpuImage, GpuImageInstance,
@@ -15,7 +13,7 @@ use blinc_layout::div::{FontFamily, FontWeight, GenericFont, TextAlign, TextVert
 use blinc_layout::prelude::*;
 use blinc_layout::render_state::Overlay;
 use blinc_layout::renderer::ElementType;
-use blinc_svg::{RasterizedSvg, SvgDocument};
+use blinc_svg::RasterizedSvg;
 use lru::LruCache;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -33,9 +31,6 @@ const CANVAS_IMAGE_CACHE_CAPACITY: usize = 512;
 /// Max image instances we submit in a single render_images call.
 const MAX_CANVAS_IMAGE_INSTANCES_PER_SUBMIT: usize = 1000;
 
-/// Maximum number of parsed SVG documents to cache
-const SVG_CACHE_CAPACITY: usize = 64;
-
 /// Maximum number of rasterized SVG textures to cache
 /// Key is (svg_hash, width, height, tint_hash) - separate textures for different sizes/tints
 const RASTERIZED_SVG_CACHE_CAPACITY: usize = 64;
@@ -50,16 +45,10 @@ pub struct RenderContext {
     sample_count: u32,
     // Single texture for glass backdrop (rendered to and sampled from)
     backdrop_texture: Option<CachedTexture>,
-    // Cached MSAA texture for anti-aliased rendering
-    #[allow(dead_code)]
-    msaa_texture: Option<CachedTexture>,
     // LRU cache for images (prevents unbounded memory growth)
     image_cache: LruCache<String, GpuImage>,
     // Dynamic images created via DrawContext image APIs (keyed by ImageId)
     canvas_image_cache: LruCache<blinc_core::ImageId, GpuImage>,
-    // LRU cache for parsed SVG documents (avoids re-parsing)
-    #[allow(dead_code)]
-    svg_cache: LruCache<u64, SvgDocument>,
     // LRU cache for rasterized SVG textures (CPU-rasterized with proper AA)
     rasterized_svg_cache: LruCache<u64, GpuImage>,
     // Scratch buffers for per-frame allocations (reused to avoid allocations)
@@ -70,8 +59,7 @@ pub struct RenderContext {
 }
 
 struct CachedTexture {
-    #[allow(dead_code)]
-    texture: wgpu::Texture,
+    _texture: wgpu::Texture,
     view: wgpu::TextureView,
     width: u32,
     height: u32,
@@ -98,16 +86,10 @@ struct TextElement {
     motion_opacity: f32,
     /// Whether to wrap text at container bounds
     wrap: bool,
-    /// Line height multiplier
-    #[allow(dead_code)]
-    line_height: f32,
     /// Measured width (before layout constraints) - used to determine if wrap is needed
     measured_width: f32,
     /// Font family category
     font_family: FontFamily,
-    /// Word spacing in pixels (0.0 = normal)
-    #[allow(dead_code)]
-    word_spacing: f32,
     /// Z-index for rendering order (higher = on top)
     z_index: u32,
     /// Font ascender in pixels (distance from baseline to top)
@@ -172,9 +154,6 @@ struct DebugBoundsElement {
     y: f32,
     width: f32,
     height: f32,
-    /// Element type name for labeling
-    #[allow(dead_code)]
-    element_type: String,
     /// Depth in the tree (for color coding)
     depth: u32,
 }
@@ -197,12 +176,10 @@ impl RenderContext {
             queue,
             sample_count,
             backdrop_texture: None,
-            msaa_texture: None,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAPACITY).unwrap()),
             canvas_image_cache: LruCache::new(
                 NonZeroUsize::new(CANVAS_IMAGE_CACHE_CAPACITY).unwrap(),
             ),
-            svg_cache: LruCache::new(NonZeroUsize::new(SVG_CACHE_CAPACITY).unwrap()),
             rasterized_svg_cache: LruCache::new(
                 NonZeroUsize::new(RASTERIZED_SVG_CACHE_CAPACITY).unwrap(),
             ),
@@ -652,7 +629,7 @@ impl RenderContext {
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             self.backdrop_texture = Some(CachedTexture {
-                texture,
+                _texture: texture,
                 view,
                 width: backdrop_width,
                 height: backdrop_height,
@@ -836,19 +813,6 @@ impl RenderContext {
             self.renderer
                 .render_primitives_overlay(target, &debug_primitives);
         }
-    }
-
-    /// Render images to the backdrop texture (for images that should be blurred by glass)
-    #[allow(dead_code)]
-    fn render_images_to_backdrop(&mut self, images: &[&ImageElement]) {
-        let Some(ref backdrop) = self.backdrop_texture else {
-            return;
-        };
-        // Create a new view to avoid borrow conflicts
-        let target = backdrop
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        self.render_images_ref(&target, images);
     }
 
     /// Pre-load images into cache (call before rendering)
@@ -1283,11 +1247,7 @@ impl RenderContext {
         for draw in draws {
             if *op_cursor < ops.len() && ops[*op_cursor].order() <= draw.order {
                 if let Some(image) = pending_image {
-                    self.flush_canvas_image_draw_batch(
-                        target,
-                        image,
-                        &mut pending_instances,
-                    );
+                    self.flush_canvas_image_draw_batch(target, image, &mut pending_instances);
                     pending_image = None;
                 }
             }
@@ -1298,11 +1258,7 @@ impl RenderContext {
 
             if pending_image.is_some_and(|image| image != draw.image) {
                 if let Some(image) = pending_image {
-                    self.flush_canvas_image_draw_batch(
-                        target,
-                        image,
-                        &mut pending_instances,
-                    );
+                    self.flush_canvas_image_draw_batch(target, image, &mut pending_instances);
                 }
                 pending_image = None;
             }
@@ -1323,11 +1279,7 @@ impl RenderContext {
 
             if pending_instances.len() >= MAX_CANVAS_IMAGE_INSTANCES_PER_SUBMIT {
                 if let Some(image) = pending_image {
-                    self.flush_canvas_image_draw_batch(
-                        target,
-                        image,
-                        &mut pending_instances,
-                    );
+                    self.flush_canvas_image_draw_batch(target, image, &mut pending_instances);
                 }
             }
         }
@@ -1369,129 +1321,6 @@ impl RenderContext {
         let mut op_cursor = 0usize;
         self.process_canvas_image_draws_with_ops(target, ops, draws, &mut op_cursor);
         self.process_remaining_canvas_image_ops(ops, &mut op_cursor);
-    }
-
-    /// Render an SVG element with clipping and opacity support
-    #[allow(dead_code)]
-    fn render_svg_element(&mut self, ctx: &mut GpuPaintContext, svg: &SvgElement) {
-        // Skip completely transparent SVGs
-        if svg.motion_opacity <= 0.001 {
-            return;
-        }
-
-        // Skip SVGs completely outside their clip bounds
-        if let Some([clip_x, clip_y, clip_w, clip_h]) = svg.clip_bounds {
-            let svg_right = svg.x + svg.width;
-            let svg_bottom = svg.y + svg.height;
-            let clip_right = clip_x + clip_w;
-            let clip_bottom = clip_y + clip_h;
-
-            // Check if SVG is completely outside clip bounds
-            if svg.x >= clip_right
-                || svg_right <= clip_x
-                || svg.y >= clip_bottom
-                || svg_bottom <= clip_y
-            {
-                return;
-            }
-        }
-
-        // Hash the SVG source for cache lookup (faster than using string as key)
-        let svg_hash = {
-            let mut hasher = DefaultHasher::new();
-            svg.source.hash(&mut hasher);
-            hasher.finish()
-        };
-
-        // Try cache lookup first, parse only on miss
-        let doc = if let Some(cached) = self.svg_cache.get(&svg_hash) {
-            cached.clone()
-        } else {
-            let Ok(parsed) = SvgDocument::from_str(&svg.source) else {
-                return;
-            };
-            self.svg_cache.put(svg_hash, parsed.clone());
-            parsed
-        };
-
-        // Apply clipping if present
-        if let Some([clip_x, clip_y, clip_w, clip_h]) = svg.clip_bounds {
-            ctx.push_clip(blinc_core::ClipShape::rect(Rect::new(
-                clip_x, clip_y, clip_w, clip_h,
-            )));
-        }
-
-        // Apply opacity if not fully opaque
-        if svg.motion_opacity < 1.0 {
-            ctx.push_opacity(svg.motion_opacity);
-        }
-
-        // Render the SVG with optional tint color override
-        if let Some(tint) = svg.tint {
-            // Render with tint - we need to modify the SVG commands
-            self.render_svg_with_tint(ctx, &doc, svg.x, svg.y, svg.width, svg.height, tint);
-        } else {
-            doc.render_fit(ctx, Rect::new(svg.x, svg.y, svg.width, svg.height));
-        }
-
-        // Pop opacity if applied
-        if svg.motion_opacity < 1.0 {
-            ctx.pop_opacity();
-        }
-
-        // Pop clip if applied
-        if svg.clip_bounds.is_some() {
-            ctx.pop_clip();
-        }
-    }
-
-    /// Render an SVG with a tint color applied to all fills and strokes
-    #[allow(dead_code)]
-    fn render_svg_with_tint(
-        &self,
-        ctx: &mut GpuPaintContext,
-        doc: &SvgDocument,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-        tint: blinc_core::Color,
-    ) {
-        use blinc_svg::SvgDrawCommand;
-
-        // Calculate scale to fit within bounds while maintaining aspect ratio
-        let scale_x = width / doc.width;
-        let scale_y = height / doc.height;
-        let scale = scale_x.min(scale_y);
-
-        // Center within bounds
-        let scaled_width = doc.width * scale;
-        let scaled_height = doc.height * scale;
-        let offset_x = x + (width - scaled_width) / 2.0;
-        let offset_y = y + (height - scaled_height) / 2.0;
-
-        let commands = doc.commands();
-        let tint_brush = Brush::Solid(tint);
-
-        for cmd in commands {
-            match cmd {
-                SvgDrawCommand::FillPath { path, brush: _ } => {
-                    let scaled = scale_and_translate_path(&path, offset_x, offset_y, scale);
-                    ctx.fill_path(&scaled, tint_brush.clone());
-                }
-                SvgDrawCommand::StrokePath {
-                    path,
-                    stroke,
-                    brush: _,
-                } => {
-                    let scaled = scale_and_translate_path(&path, offset_x, offset_y, scale);
-                    let scaled_stroke = Stroke::new(stroke.width * scale)
-                        .with_cap(stroke.cap)
-                        .with_join(stroke.join);
-                    ctx.stroke_path(&scaled, &scaled_stroke, tint_brush.clone());
-                }
-            }
-        }
     }
 
     /// Render SVG elements using CPU rasterization for high-quality anti-aliased output
@@ -1963,10 +1792,8 @@ impl RenderContext {
                         clip_bounds: scaled_clip,
                         motion_opacity: effective_motion_opacity,
                         wrap: text_data.wrap,
-                        line_height: text_data.line_height,
                         measured_width: scaled_measured_width,
                         font_family: text_data.font_family.clone(),
-                        word_spacing: text_data.word_spacing,
                         z_index: *z_layer,
                         ascender: text_data.ascender * effective_motion_scale.1 * scale,
                         strikethrough: text_data.strikethrough,
@@ -2227,10 +2054,8 @@ impl RenderContext {
                             clip_bounds: scaled_clip,
                             motion_opacity: effective_motion_opacity,
                             wrap: false, // Don't wrap individual segments
-                            line_height: styled_data.line_height,
                             measured_width: segment_width,
                             font_family: styled_data.font_family.clone(),
-                            word_spacing: 0.0,
                             z_index: *z_layer,
                             ascender: scaled_ascender * effective_motion_scale.1, // Scale ascender with motion
                             strikethrough,
@@ -3287,24 +3112,9 @@ fn collect_debug_bounds_recursive(
     scale: f32,
     bounds: &mut Vec<DebugBoundsElement>,
 ) {
-    use blinc_layout::renderer::ElementType;
-
     let Some(node_bounds) = tree.layout().get_bounds(node, parent_offset) else {
         return;
     };
-
-    // Determine element type name
-    let element_type = tree
-        .get_render_node(node)
-        .map(|n| match &n.element_type {
-            ElementType::Div => "Div".to_string(),
-            ElementType::Text(_) => "Text".to_string(),
-            ElementType::StyledText(_) => "StyledText".to_string(),
-            ElementType::Image(_) => "Image".to_string(),
-            ElementType::Svg(_) => "Svg".to_string(),
-            ElementType::Canvas(_) => "Canvas".to_string(),
-        })
-        .unwrap_or_else(|| "Unknown".to_string());
 
     // Add this element's bounds (with DPI scaling)
     bounds.push(DebugBoundsElement {
@@ -3312,7 +3122,6 @@ fn collect_debug_bounds_recursive(
         y: node_bounds.y * scale,
         width: node_bounds.width * scale,
         height: node_bounds.height * scale,
-        element_type,
         depth,
     });
 
@@ -3367,59 +3176,4 @@ fn generate_layout_debug_primitives(bounds: &[DebugBoundsElement]) -> Vec<GpuPri
     }
 
     primitives
-}
-
-/// Scale and translate a path for SVG rendering with tint
-#[allow(dead_code)]
-fn scale_and_translate_path(
-    path: &blinc_core::Path,
-    x: f32,
-    y: f32,
-    scale: f32,
-) -> blinc_core::Path {
-    use blinc_core::{PathCommand, Point, Vec2};
-
-    if scale == 1.0 && x == 0.0 && y == 0.0 {
-        return path.clone();
-    }
-
-    let transform_point = |p: Point| -> Point { Point::new(p.x * scale + x, p.y * scale + y) };
-
-    let new_commands: Vec<PathCommand> = path
-        .commands()
-        .iter()
-        .map(|cmd| match cmd {
-            PathCommand::MoveTo(p) => PathCommand::MoveTo(transform_point(*p)),
-            PathCommand::LineTo(p) => PathCommand::LineTo(transform_point(*p)),
-            PathCommand::QuadTo { control, end } => PathCommand::QuadTo {
-                control: transform_point(*control),
-                end: transform_point(*end),
-            },
-            PathCommand::CubicTo {
-                control1,
-                control2,
-                end,
-            } => PathCommand::CubicTo {
-                control1: transform_point(*control1),
-                control2: transform_point(*control2),
-                end: transform_point(*end),
-            },
-            PathCommand::ArcTo {
-                radii,
-                rotation,
-                large_arc,
-                sweep,
-                end,
-            } => PathCommand::ArcTo {
-                radii: Vec2::new(radii.x * scale, radii.y * scale),
-                rotation: *rotation,
-                large_arc: *large_arc,
-                sweep: *sweep,
-                end: transform_point(*end),
-            },
-            PathCommand::Close => PathCommand::Close,
-        })
-        .collect();
-
-    blinc_core::Path::from_commands(new_commands)
 }

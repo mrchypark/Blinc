@@ -7,7 +7,6 @@ use blinc_cn::components::select::{select, SelectSize};
 use blinc_cn::components::separator::separator;
 use blinc_cn::components::slider::{slider, SliderSize};
 use blinc_core::context_state::BlincContextState;
-use blinc_core::Color;
 use blinc_icons::icons;
 use blinc_layout::div::{Div, ElementBuilder};
 use blinc_layout::element::RenderProps;
@@ -15,7 +14,7 @@ use blinc_layout::event_handler::EventHandlers;
 use blinc_layout::prelude::*;
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_recorder::replay::ReplayState;
-use blinc_recorder::{RecordedEvent, Timestamp, TimestampedEvent};
+use blinc_recorder::{Timestamp, TimestampedEvent};
 use blinc_theme::{ColorToken, ThemeState};
 
 use crate::theme::DebuggerTokens;
@@ -257,11 +256,6 @@ impl TimelinePanel {
         self.built
             .get_or_init(|| BuiltTimelinePanel::from_config(&self.config))
     }
-
-    #[allow(dead_code)]
-    pub fn build(self) -> Div {
-        BuiltTimelinePanel::from_config(&self.config).inner
-    }
 }
 
 impl ElementBuilder for TimelinePanel {
@@ -284,26 +278,5 @@ impl ElementBuilder for TimelinePanel {
         } else {
             Some(handlers)
         }
-    }
-}
-
-#[allow(dead_code)]
-fn event_color(event: &RecordedEvent) -> Color {
-    let theme = ThemeState::get();
-    match event {
-        RecordedEvent::Click(_)
-        | RecordedEvent::DoubleClick(_)
-        | RecordedEvent::MouseDown(_)
-        | RecordedEvent::MouseUp(_)
-        | RecordedEvent::MouseMove(_) => theme.color(ColorToken::Primary),
-        RecordedEvent::KeyDown(_) | RecordedEvent::KeyUp(_) | RecordedEvent::TextInput(_) => {
-            theme.color(ColorToken::Info)
-        }
-        RecordedEvent::Scroll(_) => theme.color(ColorToken::Secondary),
-        RecordedEvent::FocusChange(_) => theme.color(ColorToken::Accent),
-        RecordedEvent::HoverEnter(_) | RecordedEvent::HoverLeave(_) => {
-            theme.color(ColorToken::Warning)
-        }
-        _ => theme.color(ColorToken::TextTertiary),
     }
 }
