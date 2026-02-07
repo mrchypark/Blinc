@@ -184,6 +184,20 @@ impl RenderContext {
         primitives
     }
 
+    fn render_foreground_text(
+        &mut self,
+        target: &wgpu::TextureView,
+        layout_glyphs: &[GpuGlyph],
+        canvas_glyphs: &[GpuGlyph],
+    ) {
+        if !layout_glyphs.is_empty() {
+            self.render_text(target, layout_glyphs);
+        }
+        if !canvas_glyphs.is_empty() {
+            self.render_text(target, canvas_glyphs);
+        }
+    }
+
     /// Create a new render context
     pub(crate) fn new(
         renderer: GpuRenderer,
@@ -255,7 +269,7 @@ impl RenderContext {
         tree.render_to_layer(&mut fg_ctx, RenderLayer::Foreground);
 
         // Take the batch from fg_ctx before reusing text_ctx for text elements
-        let mut fg_batch = fg_ctx.take_batch();
+        let fg_batch = fg_ctx.take_batch();
 
         // Collect text, SVG, and image elements
         let (texts, svgs, images) = self.collect_render_elements(tree);
@@ -425,10 +439,10 @@ impl RenderContext {
             let has_layer_effects = fg_batch.has_layer_effects();
             if has_layer_effects {
                 // Layer effects require batch-based rendering to process layer commands
-                fg_batch.convert_glyphs_to_primitives();
                 if !fg_batch.is_empty() {
                     self.renderer.render_overlay(target, &fg_batch);
                 }
+                self.render_foreground_text(target, &all_glyphs, &fg_batch.glyphs);
                 // Render SVGs as rasterized images for high-quality anti-aliasing
                 if !svgs.is_empty() {
                     self.render_rasterized_svgs(target, &svgs, scale_factor);
@@ -461,11 +475,7 @@ impl RenderContext {
                         self.renderer.render_overlay(target, &fg_batch);
                     }
                 }
-
-                // Step 7: Render text
-                if !all_glyphs.is_empty() {
-                    self.render_text(target, &all_glyphs);
-                }
+                self.render_foreground_text(target, &all_glyphs, &fg_batch.glyphs);
 
                 // Render SVGs as rasterized images for high-quality anti-aliasing
                 if !svgs.is_empty() {
@@ -525,13 +535,11 @@ impl RenderContext {
             let has_layer_effects = fg_batch.has_layer_effects();
             if has_layer_effects {
                 // Layer effects require batch-based rendering to process layer commands
-                // First convert glyphs to primitives so they're included in the batch
-                fg_batch.convert_glyphs_to_primitives();
-
                 // Use render_overlay which supports layer effect processing
                 if !fg_batch.is_empty() {
                     self.renderer.render_overlay(target, &fg_batch);
                 }
+                self.render_foreground_text(target, &all_glyphs, &fg_batch.glyphs);
                 // Render SVGs as rasterized images for high-quality anti-aliasing
                 if !svgs.is_empty() {
                     self.render_rasterized_svgs(target, &svgs, scale_factor);
@@ -565,11 +573,7 @@ impl RenderContext {
                         self.renderer.render_overlay(target, &fg_batch);
                     }
                 }
-
-                // Render text
-                if !all_glyphs.is_empty() {
-                    self.render_text(target, &all_glyphs);
-                }
+                self.render_foreground_text(target, &all_glyphs, &fg_batch.glyphs);
 
                 // Render SVGs as rasterized images for high-quality anti-aliasing
                 if !svgs.is_empty() {
