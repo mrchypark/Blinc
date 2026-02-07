@@ -65,9 +65,19 @@ impl GpuImage {
             .checked_mul(height as usize)
             .and_then(|v| v.checked_mul(4))
         else {
+            tracing::warn!(
+                "from_rgba: failed to compute required buffer size for {}x{} image",
+                width,
+                height
+            );
             return Self::empty(device, width, height, label);
         };
         if pixels.len() < required_len {
+            tracing::warn!(
+                "from_rgba: pixel buffer too small (required {}, got {}), falling back to empty image",
+                required_len,
+                pixels.len()
+            );
             debug_assert!(
                 pixels.len() >= required_len,
                 "from_rgba: pixel buffer too small (required {}, got {})",

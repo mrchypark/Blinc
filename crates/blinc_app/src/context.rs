@@ -27,7 +27,11 @@ use crate::error::Result;
 /// Maximum number of images to keep in cache (prevents unbounded memory growth)
 const IMAGE_CACHE_CAPACITY: usize = 128;
 /// Maximum number of canvas-created GPU images to keep alive.
+/// When capacity is exceeded, least-recently-used ImageId entries are evicted
+/// and subsequent draws/writes for those ids will be skipped until recreated.
 const CANVAS_IMAGE_CACHE_CAPACITY: usize = 512;
+/// Max image instances we submit in a single render_images call.
+const MAX_CANVAS_IMAGE_INSTANCES_PER_SUBMIT: usize = 1000;
 
 /// Maximum number of parsed SVG documents to cache
 const SVG_CACHE_CAPACITY: usize = 64;
@@ -1154,7 +1158,15 @@ impl RenderContext {
                         .create_empty_image_labeled(*width, *height, label),
                     (None, None) => self.image_ctx.create_empty_image(*width, *height),
                 };
-                self.canvas_image_cache.put(*image, gpu_image);
+                if let Some((evicted_image, _)) = self.canvas_image_cache.push(*image, gpu_image) {
+                    if evicted_image != *image {
+                        tracing::warn!(
+                            "canvas image cache evicted image id {:?} due to LRU capacity ({})",
+                            evicted_image,
+                            CANVAS_IMAGE_CACHE_CAPACITY
+                        );
+                    }
+                }
             }
             ImageOp::Write {
                 image,
@@ -1181,16 +1193,8 @@ impl RenderContext {
         }
     }
 
-    fn render_canvas_image_draw(&mut self, target: &wgpu::TextureView, draw: &ImageDraw) {
+    fn canvas_image_draw_instance(draw: &ImageDraw, gpu_image: &GpuImage) -> GpuImageInstance {
         use blinc_image::src_rect_to_uv;
-
-        let Some(gpu_image) = self.canvas_image_cache.get(&draw.image) else {
-            tracing::warn!(
-                "canvas image draw skipped: missing image id {:?}",
-                draw.image
-            );
-            return;
-        };
 
         let src_uv = if let Some(src) = draw.source_rect {
             src_rect_to_uv(
@@ -1225,8 +1229,29 @@ impl RenderContext {
             );
         }
 
-        self.renderer
-            .render_images(target, gpu_image.view(), &[instance]);
+        instance
+    }
+
+    fn flush_canvas_image_draw_batch(
+        &mut self,
+        target: &wgpu::TextureView,
+        image: blinc_core::ImageId,
+        instances: &mut Vec<GpuImageInstance>,
+    ) {
+        if instances.is_empty() {
+            return;
+        }
+
+        let Some(gpu_image) = self.canvas_image_cache.get(&image) else {
+            tracing::warn!("canvas image draw skipped: missing image id {:?}", image);
+            instances.clear();
+            return;
+        };
+
+        for chunk in instances.chunks(MAX_CANVAS_IMAGE_INSTANCES_PER_SUBMIT) {
+            self.renderer.render_images(target, gpu_image.view(), chunk);
+        }
+        instances.clear();
     }
 
     fn process_canvas_image_draws_with_ops(
@@ -1237,16 +1262,87 @@ impl RenderContext {
         op_cursor: &mut usize,
     ) {
         debug_assert!(
+            ops.windows(2).all(|w| w[0].order() <= w[1].order()),
+            "canvas image ops must be recorded in order"
+        );
+        debug_assert!(
             draws.windows(2).all(|w| w[0].order <= w[1].order),
             "canvas image draws must be recorded in order"
         );
 
+        let mut pending_image: Option<blinc_core::ImageId> = None;
+        let mut pending_instances: Vec<GpuImageInstance> = Vec::new();
+
         for draw in draws {
+            if *op_cursor < ops.len() && ops[*op_cursor].order() <= draw.order {
+                if let Some(image) = pending_image {
+                    self.flush_canvas_image_draw_batch(
+                        target,
+                        image,
+                        &mut pending_instances,
+                    );
+                    pending_image = None;
+                }
+            }
             while *op_cursor < ops.len() && ops[*op_cursor].order() <= draw.order {
                 self.apply_canvas_image_op(&ops[*op_cursor]);
                 *op_cursor += 1;
             }
-            self.render_canvas_image_draw(target, draw);
+
+            if pending_image.is_some_and(|image| image != draw.image) {
+                if let Some(image) = pending_image {
+                    self.flush_canvas_image_draw_batch(
+                        target,
+                        image,
+                        &mut pending_instances,
+                    );
+                }
+                pending_image = None;
+            }
+
+            let Some(gpu_image) = self.canvas_image_cache.get(&draw.image) else {
+                tracing::warn!(
+                    "canvas image draw skipped: missing image id {:?}",
+                    draw.image
+                );
+                continue;
+            };
+
+            let instance = Self::canvas_image_draw_instance(draw, gpu_image);
+            pending_instances.push(instance);
+            if pending_image.is_none() {
+                pending_image = Some(draw.image);
+            }
+
+            if pending_instances.len() >= MAX_CANVAS_IMAGE_INSTANCES_PER_SUBMIT {
+                if let Some(image) = pending_image {
+                    self.flush_canvas_image_draw_batch(
+                        target,
+                        image,
+                        &mut pending_instances,
+                    );
+                }
+            }
+        }
+
+        if let Some(image) = pending_image {
+            self.flush_canvas_image_draw_batch(target, image, &mut pending_instances);
+        }
+    }
+
+    fn debug_assert_canvas_image_phase_order(
+        image_draws: &[ImageDraw],
+        foreground_image_draws: &[ImageDraw],
+    ) {
+        let max_bg_order = image_draws.iter().map(|d| d.order).max();
+        let min_fg_order = foreground_image_draws.iter().map(|d| d.order).min();
+        if let (Some(max_bg_order), Some(min_fg_order)) = (max_bg_order, min_fg_order) {
+            debug_assert!(
+                max_bg_order <= min_fg_order,
+                "foreground canvas image draws must not precede background draws: max_bg_order={}, min_fg_order={}",
+                max_bg_order,
+                min_fg_order
+            );
         }
     }
 
@@ -2407,6 +2503,11 @@ impl RenderContext {
         let use_msaa_overlay = self.sample_count > 1;
         let mut image_op_cursor = 0usize;
 
+        Self::debug_assert_canvas_image_phase_order(
+            &batch.image_draws,
+            &batch.foreground_image_draws,
+        );
+
         if has_glass {
             // Glass path with layer effects support
             let (bg_images, fg_images): (Vec<_>, Vec<_>) = images
@@ -2790,6 +2891,11 @@ impl RenderContext {
 
         self.renderer.resize(width, height);
         let mut image_op_cursor = 0usize;
+
+        Self::debug_assert_canvas_image_phase_order(
+            &batch.image_draws,
+            &batch.foreground_image_draws,
+        );
 
         // For overlay rendering, we DON'T have glass effects (overlays are simple)
         // Render primitives without clearing (LoadOp::Load)
