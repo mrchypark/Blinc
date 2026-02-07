@@ -62,7 +62,7 @@ fn main() {
     // Sort alphabetically for consistent output
     icons.sort_by(|a, b| a.0.cmp(&b.0));
 
-    println!("cargo:warning=Generated {} icon constants", icons.len());
+    eprintln!("Generated {} icon constants", icons.len());
 
     // Generate const declarations
     for (const_name, path_data, doc) in &icons {

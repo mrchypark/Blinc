@@ -28,7 +28,7 @@ use blinc_core::{
 };
 use taffy::Style;
 
-use crate::div::{Div, ElementBuilder, ElementTypeId};
+use crate::div::{Div, ElementBuilder};
 use crate::element::{Material, RenderLayer, RenderProps};
 use crate::event_handler::EventHandlers;
 use crate::tree::LayoutNodeId;

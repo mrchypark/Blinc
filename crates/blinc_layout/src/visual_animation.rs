@@ -229,7 +229,7 @@ impl VisualAnimation {
     ///
     /// When layout changes while animating, we need to update what we're animating TO
     /// but keep animating smoothly from current visual position.
-    pub fn update_target(&mut self, new_to_bounds: ElementBounds, scheduler: SchedulerHandle) {
+    pub fn update_target(&mut self, new_to_bounds: ElementBounds, _scheduler: SchedulerHandle) {
         // Get current visual bounds (layout + current offset)
         let current_visual = self.current_visual_bounds();
 

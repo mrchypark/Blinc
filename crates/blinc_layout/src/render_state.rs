@@ -759,7 +759,7 @@ impl RenderState {
 
         // Remove existing springs if any
         if let Some(old_ids) = old_springs {
-            let mut scheduler = self.animations.lock().unwrap();
+            let scheduler = self.animations.lock().unwrap();
             for id in old_ids {
                 scheduler.remove_spring(id);
             }
@@ -767,7 +767,7 @@ impl RenderState {
 
         // Create springs for r, g, b, a
         let springs = {
-            let mut scheduler = self.animations.lock().unwrap();
+            let scheduler = self.animations.lock().unwrap();
             [
                 {
                     let mut s = Spring::new(config, current.r);
@@ -811,7 +811,7 @@ impl RenderState {
 
         // Remove any active animation
         if let Some(old_ids) = old_springs {
-            let mut scheduler = self.animations.lock().unwrap();
+            let scheduler = self.animations.lock().unwrap();
             for id in old_ids {
                 scheduler.remove_spring(id);
             }
@@ -1035,7 +1035,7 @@ impl RenderState {
     ///
     /// Motion exit is now triggered explicitly via `MotionHandle.exit()` /
     /// `start_stable_motion_exit()` instead of the old `is_exiting` flag.
-    pub fn start_stable_motion(&mut self, key: &str, config: MotionAnimation, replay: bool) {
+    pub fn start_stable_motion(&mut self, key: &str, config: MotionAnimation, _replay: bool) {
         // Mark this key as used this frame (for garbage collection)
         self.stable_motions_used.insert(key.to_string());
 

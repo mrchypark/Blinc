@@ -117,8 +117,8 @@ impl LabelConfig {
 
 /// Builder for creating Label components with fluent API
 pub struct LabelBuilder {
-    /// Internal configuration (pub for testing)
-    pub(crate) config: LabelConfig,
+    /// Internal configuration
+    config: LabelConfig,
     /// Cached built Label - built lazily on first access
     built: std::cell::OnceCell<Label>,
 }

@@ -89,6 +89,7 @@ pub enum ScrollAreaSize {
 }
 
 impl ScrollAreaSize {
+    #[allow(dead_code)]
     fn scrollbar_width(&self) -> f32 {
         match self {
             ScrollAreaSize::Small => 4.0,

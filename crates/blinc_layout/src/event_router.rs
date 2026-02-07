@@ -763,6 +763,9 @@ impl EventRouter {
     ///
     /// Emits KEY_DOWN to the focused element.
     pub fn on_key_down(&mut self, key_code: u32) -> Option<(LayoutNodeId, u32)> {
+        #[cfg(not(feature = "recorder"))]
+        let _ = key_code;
+
         if let Some(focused) = self.focused {
             // Record key down event (only if recording is enabled)
             #[cfg(feature = "recorder")]
@@ -784,6 +787,9 @@ impl EventRouter {
     ///
     /// Emits KEY_UP to the focused element.
     pub fn on_key_up(&mut self, key_code: u32) -> Option<(LayoutNodeId, u32)> {
+        #[cfg(not(feature = "recorder"))]
+        let _ = key_code;
+
         if let Some(focused) = self.focused {
             // Record key up event (only if recording is enabled)
             #[cfg(feature = "recorder")]
@@ -806,6 +812,9 @@ impl EventRouter {
     /// Emits TEXT_INPUT to the focused element.
     /// Returns the focused node if there is one.
     pub fn on_text_input(&mut self, ch: char) -> Option<(LayoutNodeId, u32)> {
+        #[cfg(not(feature = "recorder"))]
+        let _ = ch;
+
         if let Some(focused) = self.focused {
             // Record text input event (only if recording is enabled)
             #[cfg(feature = "recorder")]

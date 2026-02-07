@@ -214,10 +214,6 @@ impl PreviewPanel {
         self.built
             .get_or_init(|| BuiltPreviewPanel::from_config(&self.config))
     }
-
-    pub fn build(self) -> Div {
-        BuiltPreviewPanel::from_config(&self.config).inner
-    }
 }
 
 impl ElementBuilder for PreviewPanel {

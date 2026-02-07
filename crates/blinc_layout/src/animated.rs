@@ -461,7 +461,7 @@ mod tests {
     fn test_div_animate() {
         use crate::div::div;
 
-        let d = div()
+        let _d = div()
             .w(100.0)
             .animate(|a| a.opacity(0.5, 1.0).scale(0.8, 1.0));
 

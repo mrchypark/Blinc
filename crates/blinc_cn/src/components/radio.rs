@@ -524,13 +524,6 @@ mod tests {
         assert_eq!(RadioSize::Large.border_width(), 2.0);
     }
 
-    fn init_theme() {
-        let _ = ThemeState::try_get().unwrap_or_else(|| {
-            ThemeState::init_default();
-            ThemeState::get()
-        });
-    }
-
     // Note: RadioGroup builder test requires State which needs context
     // The RadioGroup API is tested through the size/layout tests above
 }

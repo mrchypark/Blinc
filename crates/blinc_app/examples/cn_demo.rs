@@ -11,7 +11,7 @@ use blinc_cn::prelude::*;
 use blinc_core::Color;
 use blinc_layout::selector::ScrollRef;
 use blinc_layout::widgets::text_input::text_input_data;
-use blinc_theme::{ColorScheme, ColorToken, ThemeState};
+use blinc_theme::{ColorToken, ThemeState};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -299,7 +299,7 @@ fn header(ctx: &WindowedContext) -> impl ElementBuilder {
     // let is_dark = ctx.use_state_keyed("theme_is_dark", || {
     //     ThemeState::get().scheme() == ColorScheme::Dark
     // });
-    let scheduler = ctx.animation_handle();
+    let _scheduler = ctx.animation_handle();
 
     div()
         .w_full()
@@ -2566,7 +2566,7 @@ fn hover_card_section() -> impl ElementBuilder {
 fn popover_section() -> impl ElementBuilder {
     let theme = ThemeState::get();
     let text_primary = theme.color(ColorToken::TextPrimary);
-    let text_secondary = theme.color(ColorToken::TextSecondary);
+    let _text_secondary = theme.color(ColorToken::TextSecondary);
 
     section_container()
         .child(section_title("Popover"))
@@ -3646,7 +3646,7 @@ fn aspect_ratio_section() -> impl ElementBuilder {
     let theme = ThemeState::get();
     let text_secondary = theme.color(ColorToken::TextSecondary);
     let text_primary = theme.color(ColorToken::TextPrimary);
-    let surface = theme.color(ColorToken::Surface);
+    let _surface = theme.color(ColorToken::Surface);
     let primary = theme.color(ColorToken::Primary);
 
     section_container()

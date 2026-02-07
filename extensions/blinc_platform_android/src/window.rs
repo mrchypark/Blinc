@@ -3,10 +3,11 @@
 //! Wraps an Android NativeWindow to implement the blinc_platform Window trait.
 
 use blinc_platform::{Cursor, Window};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "android")]
 use ndk::native_window::NativeWindow;
+#[cfg(target_os = "android")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Android window wrapping an NDK NativeWindow
 #[cfg(target_os = "android")]

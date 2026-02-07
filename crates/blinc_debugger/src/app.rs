@@ -37,8 +37,6 @@ pub struct AppState {
     pub preview_config: PreviewConfig,
     /// Timeline state
     pub timeline_state: TimelinePanelState,
-    /// Connected to debug server
-    pub connected: bool,
     /// Server address
     pub server_addr: Option<String>,
 }
@@ -53,7 +51,6 @@ impl Default for AppState {
             tree_state: TreePanelState::default(),
             preview_config: PreviewConfig::default(),
             timeline_state: TimelinePanelState::default(),
-            connected: false,
             server_addr: None,
         }
     }

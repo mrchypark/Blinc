@@ -565,7 +565,7 @@ impl TabsBuilder {
 
         // Theme colors - use SecondaryHover for better contrast with text
         let tab_list_bg = theme.color(ColorToken::SurfaceOverlay);
-        let radius = theme.radius(RadiusToken::Md);
+        let _radius = theme.radius(RadiusToken::Md);
         let content_margin = theme.spacing().space_1;
         let size = config.size;
 
@@ -644,7 +644,7 @@ impl TabsBuilder {
 
         let tab_content_area = stateful_with_key::<NoState>(&content_area_key)
             .deps([config.state.signal_id()])
-            .on_state(move |ctx| {
+            .on_state(move |_ctx| {
                 let active_value = state_for_content.get();
 
                 // Update transition tracking (triggers exit animation if tab changed)
@@ -755,7 +755,7 @@ fn build_tab_trigger(
     let text_primary = theme.color(ColorToken::TextPrimary);
     let text_secondary = theme.color(ColorToken::TextSecondary);
     let surface = theme.color(ColorToken::SurfaceElevated);
-    let radius = theme.radius(RadiusToken::Md);
+    let _radius = theme.radius(RadiusToken::Md);
 
     let value = menu_item.value.clone();
     let disabled = menu_item.disabled;
