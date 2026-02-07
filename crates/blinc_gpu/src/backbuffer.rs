@@ -352,7 +352,6 @@ impl<'a> FrameContext<'a> {
 
 #[cfg(test)]
 mod tests {
-    
 
     // Note: These tests require a GPU and are marked as ignored by default
     // Run with: cargo test --features test-gpu -- --ignored

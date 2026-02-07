@@ -6,6 +6,8 @@ use blinc_platform::{Cursor, Window};
 
 #[cfg(target_os = "android")]
 use ndk::native_window::NativeWindow;
+#[cfg(target_os = "android")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Android window wrapping an NDK NativeWindow
 #[cfg(target_os = "android")]

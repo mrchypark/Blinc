@@ -35,9 +35,7 @@
 
 use super::label::{label, LabelSize};
 use blinc_layout::prelude::*;
-use blinc_layout::widgets::text_area::{
-    text_area, SharedTextAreaState,
-};
+use blinc_layout::widgets::text_area::{text_area, SharedTextAreaState};
 use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState, TypographyTokens};
 
 /// Textarea size variants (affects default dimensions)
