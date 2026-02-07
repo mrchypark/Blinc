@@ -164,6 +164,26 @@ struct DebugBoundsElement {
 }
 
 impl RenderContext {
+    fn build_unified_foreground_primitives(
+        batch: &PrimitiveBatch,
+        text_glyphs: &[GpuGlyph],
+    ) -> Vec<GpuPrimitive> {
+        let mut primitives = Vec::with_capacity(
+            batch.primitives.len()
+                + batch.foreground_primitives.len()
+                + batch.glyphs.len()
+                + text_glyphs.len(),
+        );
+
+        // render_tree() builds a dedicated foreground context via render_to_layer(),
+        // so foreground-pass shapes are recorded into `batch.primitives`.
+        primitives.extend_from_slice(&batch.primitives);
+        primitives.extend_from_slice(&batch.foreground_primitives);
+        primitives.extend(batch.glyphs.iter().map(GpuPrimitive::from_glyph));
+        primitives.extend(text_glyphs.iter().map(GpuPrimitive::from_glyph));
+        primitives
+    }
+
     /// Create a new render context
     pub(crate) fn new(
         renderer: GpuRenderer,
@@ -414,8 +434,9 @@ impl RenderContext {
                     self.render_rasterized_svgs(target, &svgs, scale_factor);
                 }
             } else if self.renderer.unified_text_rendering() {
-                // Unified rendering: combine text glyphs with foreground primitives
-                let unified_primitives = fg_batch.get_unified_foreground_primitives();
+                // Unified rendering: combine foreground-pass shapes with all foreground text glyphs.
+                let unified_primitives =
+                    Self::build_unified_foreground_primitives(&fg_batch, &all_glyphs);
                 if !unified_primitives.is_empty() {
                     self.render_unified(target, &unified_primitives);
                 }
@@ -453,11 +474,13 @@ impl RenderContext {
             }
 
             // Step 8: Render foreground canvas images
-            if !fg_batch.image_ops.is_empty() || !fg_batch.foreground_image_draws.is_empty() {
+            if !fg_batch.image_ops.is_empty() || !fg_batch.image_draws.is_empty() {
+                // render_to_layer() records foreground-pass canvas draws into image_draws
+                // of this dedicated foreground batch.
                 self.process_canvas_image_commands(
                     target,
                     &fg_batch.image_ops,
-                    &fg_batch.foreground_image_draws,
+                    &fg_batch.image_draws,
                 );
             }
 
@@ -516,7 +539,8 @@ impl RenderContext {
             } else if self.renderer.unified_text_rendering() {
                 // Unified rendering: combine text glyphs with foreground primitives
                 // This ensures text and shapes transform together during animations
-                let unified_primitives = fg_batch.get_unified_foreground_primitives();
+                let unified_primitives =
+                    Self::build_unified_foreground_primitives(&fg_batch, &all_glyphs);
                 if !unified_primitives.is_empty() {
                     self.render_unified(target, &unified_primitives);
                 }
@@ -554,11 +578,13 @@ impl RenderContext {
             }
 
             // Render foreground canvas images
-            if !fg_batch.image_ops.is_empty() || !fg_batch.foreground_image_draws.is_empty() {
+            if !fg_batch.image_ops.is_empty() || !fg_batch.image_draws.is_empty() {
+                // render_to_layer() records foreground-pass canvas draws into image_draws
+                // of this dedicated foreground batch.
                 self.process_canvas_image_commands(
                     target,
                     &fg_batch.image_ops,
-                    &fg_batch.foreground_image_draws,
+                    &fg_batch.image_draws,
                 );
             }
 
