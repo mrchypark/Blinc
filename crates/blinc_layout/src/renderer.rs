@@ -4990,6 +4990,8 @@ impl RenderTree {
             self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Glass, false, false);
 
             // Pass 3: Foreground (includes children of glass elements, rendered after glass)
+            // This pass ordering is an invariant for canvas image command replay:
+            // background image draws must be recorded before foreground image draws.
             ctx.set_foreground_layer(true);
             self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Foreground, false, false);
             ctx.set_foreground_layer(false);
@@ -5039,6 +5041,8 @@ impl RenderTree {
             );
 
             // Pass 3: Foreground (primitives go to foreground batch, rendered after glass)
+            // This pass ordering is an invariant for canvas image command replay:
+            // background image draws must be recorded before foreground image draws.
             ctx.set_foreground_layer(true);
             self.render_layer_with_motion(
                 ctx,

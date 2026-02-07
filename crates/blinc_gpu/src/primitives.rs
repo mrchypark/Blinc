@@ -1289,14 +1289,54 @@ impl PrimitiveBatch {
     }
 
     pub fn push_image_op(&mut self, op: ImageOp) {
+        if let Some(prev) = self.image_ops.last() {
+            assert!(
+                prev.order() <= op.order(),
+                "canvas image ops must be recorded in non-decreasing order: prev={}, next={}",
+                prev.order(),
+                op.order()
+            );
+        }
         self.image_ops.push(op);
     }
 
     pub fn push_image_draw(&mut self, draw: ImageDraw) {
+        if let Some(prev) = self.image_draws.last() {
+            assert!(
+                prev.order <= draw.order,
+                "background canvas image draws must be recorded in non-decreasing order: prev={}, next={}",
+                prev.order,
+                draw.order
+            );
+        }
+        if let Some(first_fg) = self.foreground_image_draws.first() {
+            assert!(
+                draw.order <= first_fg.order,
+                "background canvas image draw order cannot exceed foreground draw order: bg_order={}, first_fg_order={}",
+                draw.order,
+                first_fg.order
+            );
+        }
         self.image_draws.push(draw);
     }
 
     pub fn push_foreground_image_draw(&mut self, draw: ImageDraw) {
+        if let Some(last_bg) = self.image_draws.last() {
+            assert!(
+                last_bg.order <= draw.order,
+                "foreground canvas image draw order cannot precede background draw order: last_bg_order={}, fg_order={}",
+                last_bg.order,
+                draw.order
+            );
+        }
+        if let Some(prev) = self.foreground_image_draws.last() {
+            assert!(
+                prev.order <= draw.order,
+                "foreground canvas image draws must be recorded in non-decreasing order: prev={}, next={}",
+                prev.order,
+                draw.order
+            );
+        }
         self.foreground_image_draws.push(draw);
     }
 

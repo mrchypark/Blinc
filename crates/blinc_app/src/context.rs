@@ -28,6 +28,9 @@ const IMAGE_CACHE_CAPACITY: usize = 128;
 /// When capacity is exceeded, least-recently-used ImageId entries are evicted
 /// and subsequent draws/writes for those ids will be skipped until recreated.
 const CANVAS_IMAGE_CACHE_CAPACITY: usize = 512;
+/// Maximum number of warning-level canvas image cache logs per render context.
+/// After this threshold, logs are downgraded to debug to avoid spam under churn.
+const CANVAS_IMAGE_WARN_LIMIT: u32 = 16;
 /// Max image instances we submit in a single render_images call.
 const MAX_CANVAS_IMAGE_INSTANCES_PER_SUBMIT: usize = 1000;
 
@@ -56,6 +59,8 @@ pub struct RenderContext {
     scratch_texts: Vec<TextElement>,
     scratch_svgs: Vec<SvgElement>,
     scratch_images: Vec<ImageElement>,
+    canvas_image_eviction_warns: u32,
+    canvas_image_missing_warns: u32,
 }
 
 struct CachedTexture {
@@ -187,6 +192,8 @@ impl RenderContext {
             scratch_texts: Vec::with_capacity(64),    // Pre-allocate for text elements
             scratch_svgs: Vec::with_capacity(32),     // Pre-allocate for SVG elements
             scratch_images: Vec::with_capacity(32),   // Pre-allocate for image elements
+            canvas_image_eviction_warns: 0,
+            canvas_image_missing_warns: 0,
         }
     }
 
@@ -1131,11 +1138,7 @@ impl RenderContext {
                 };
                 if let Some((evicted_image, _)) = self.canvas_image_cache.push(*image, gpu_image) {
                     if evicted_image != *image {
-                        tracing::warn!(
-                            "canvas image cache evicted image id {:?} due to LRU capacity ({})",
-                            evicted_image,
-                            CANVAS_IMAGE_CACHE_CAPACITY
-                        );
+                        self.log_canvas_image_eviction(evicted_image);
                     }
                 }
             }
@@ -1149,7 +1152,7 @@ impl RenderContext {
                 ..
             } => {
                 let Some(gpu_image) = self.canvas_image_cache.get(image) else {
-                    tracing::warn!("canvas image write skipped: missing image id {:?}", image);
+                    self.log_canvas_missing_image("write", *image);
                     return;
                 };
                 gpu_image.write_rgba_sub_rect(
@@ -1162,6 +1165,32 @@ impl RenderContext {
                 );
             }
         }
+    }
+
+    fn log_canvas_image_eviction(&mut self, evicted_image: blinc_core::ImageId) {
+        if self.canvas_image_eviction_warns < CANVAS_IMAGE_WARN_LIMIT {
+            tracing::warn!(
+                "canvas image cache evicted image id {:?} due to LRU capacity ({})",
+                evicted_image,
+                CANVAS_IMAGE_CACHE_CAPACITY
+            );
+        } else {
+            tracing::debug!(
+                "canvas image cache evicted image id {:?} due to LRU capacity ({})",
+                evicted_image,
+                CANVAS_IMAGE_CACHE_CAPACITY
+            );
+        }
+        self.canvas_image_eviction_warns = self.canvas_image_eviction_warns.saturating_add(1);
+    }
+
+    fn log_canvas_missing_image(&mut self, op: &'static str, image: blinc_core::ImageId) {
+        if self.canvas_image_missing_warns < CANVAS_IMAGE_WARN_LIMIT {
+            tracing::warn!("canvas image {} skipped: missing image id {:?}", op, image);
+        } else {
+            tracing::debug!("canvas image {} skipped: missing image id {:?}", op, image);
+        }
+        self.canvas_image_missing_warns = self.canvas_image_missing_warns.saturating_add(1);
     }
 
     fn canvas_image_draw_instance(draw: &ImageDraw, gpu_image: &GpuImage) -> GpuImageInstance {
@@ -1214,7 +1243,7 @@ impl RenderContext {
         }
 
         let Some(gpu_image) = self.canvas_image_cache.get(&image) else {
-            tracing::warn!("canvas image draw skipped: missing image id {:?}", image);
+            self.log_canvas_missing_image("draw", image);
             instances.clear();
             return;
         };
@@ -1232,6 +1261,8 @@ impl RenderContext {
         draws: &[ImageDraw],
         op_cursor: &mut usize,
     ) {
+        // Intentionally preserve call-order semantics between image ops and draws.
+        // A write recorded after a draw must not retroactively affect that earlier draw.
         debug_assert!(
             ops.windows(2).all(|w| w[0].order() <= w[1].order()),
             "canvas image ops must be recorded in order"
@@ -1264,10 +1295,7 @@ impl RenderContext {
             }
 
             let Some(gpu_image) = self.canvas_image_cache.get(&draw.image) else {
-                tracing::warn!(
-                    "canvas image draw skipped: missing image id {:?}",
-                    draw.image
-                );
+                self.log_canvas_missing_image("draw", draw.image);
                 continue;
             };
 
@@ -1289,14 +1317,14 @@ impl RenderContext {
         }
     }
 
-    fn debug_assert_canvas_image_phase_order(
+    fn assert_canvas_image_phase_order(
         image_draws: &[ImageDraw],
         foreground_image_draws: &[ImageDraw],
     ) {
         let max_bg_order = image_draws.iter().map(|d| d.order).max();
         let min_fg_order = foreground_image_draws.iter().map(|d| d.order).min();
         if let (Some(max_bg_order), Some(min_fg_order)) = (max_bg_order, min_fg_order) {
-            debug_assert!(
+            assert!(
                 max_bg_order <= min_fg_order,
                 "foreground canvas image draws must not precede background draws: max_bg_order={}, min_fg_order={}",
                 max_bg_order,
@@ -2337,10 +2365,7 @@ impl RenderContext {
         let use_msaa_overlay = self.sample_count > 1;
         let mut image_op_cursor = 0usize;
 
-        Self::debug_assert_canvas_image_phase_order(
-            &batch.image_draws,
-            &batch.foreground_image_draws,
-        );
+        Self::assert_canvas_image_phase_order(&batch.image_draws, &batch.foreground_image_draws);
 
         if has_glass {
             // Glass path with layer effects support
@@ -2726,10 +2751,7 @@ impl RenderContext {
         self.renderer.resize(width, height);
         let mut image_op_cursor = 0usize;
 
-        Self::debug_assert_canvas_image_phase_order(
-            &batch.image_draws,
-            &batch.foreground_image_draws,
-        );
+        Self::assert_canvas_image_phase_order(&batch.image_draws, &batch.foreground_image_draws);
 
         // For overlay rendering, we DON'T have glass effects (overlays are simple)
         // Render primitives without clearing (LoadOp::Load)
