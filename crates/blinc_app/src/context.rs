@@ -51,12 +51,14 @@ pub struct RenderContext {
     // Single texture for glass backdrop (rendered to and sampled from)
     backdrop_texture: Option<CachedTexture>,
     // Cached MSAA texture for anti-aliased rendering
+    #[allow(dead_code)]
     msaa_texture: Option<CachedTexture>,
     // LRU cache for images (prevents unbounded memory growth)
     image_cache: LruCache<String, GpuImage>,
     // Dynamic images created via DrawContext image APIs (keyed by ImageId)
     canvas_image_cache: LruCache<blinc_core::ImageId, GpuImage>,
     // LRU cache for parsed SVG documents (avoids re-parsing)
+    #[allow(dead_code)]
     svg_cache: LruCache<u64, SvgDocument>,
     // LRU cache for rasterized SVG textures (CPU-rasterized with proper AA)
     rasterized_svg_cache: LruCache<u64, GpuImage>,
@@ -68,6 +70,7 @@ pub struct RenderContext {
 }
 
 struct CachedTexture {
+    #[allow(dead_code)]
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     width: u32,
@@ -96,12 +99,14 @@ struct TextElement {
     /// Whether to wrap text at container bounds
     wrap: bool,
     /// Line height multiplier
+    #[allow(dead_code)]
     line_height: f32,
     /// Measured width (before layout constraints) - used to determine if wrap is needed
     measured_width: f32,
     /// Font family category
     font_family: FontFamily,
     /// Word spacing in pixels (0.0 = normal)
+    #[allow(dead_code)]
     word_spacing: f32,
     /// Z-index for rendering order (higher = on top)
     z_index: u32,
@@ -168,6 +173,7 @@ struct DebugBoundsElement {
     width: f32,
     height: f32,
     /// Element type name for labeling
+    #[allow(dead_code)]
     element_type: String,
     /// Depth in the tree (for color coding)
     depth: u32,
@@ -833,6 +839,7 @@ impl RenderContext {
     }
 
     /// Render images to the backdrop texture (for images that should be blurred by glass)
+    #[allow(dead_code)]
     fn render_images_to_backdrop(&mut self, images: &[&ImageElement]) {
         let Some(ref backdrop) = self.backdrop_texture else {
             return;
@@ -1365,6 +1372,7 @@ impl RenderContext {
     }
 
     /// Render an SVG element with clipping and opacity support
+    #[allow(dead_code)]
     fn render_svg_element(&mut self, ctx: &mut GpuPaintContext, svg: &SvgElement) {
         // Skip completely transparent SVGs
         if svg.motion_opacity <= 0.001 {
@@ -1438,6 +1446,7 @@ impl RenderContext {
     }
 
     /// Render an SVG with a tint color applied to all fills and strokes
+    #[allow(dead_code)]
     fn render_svg_with_tint(
         &self,
         ctx: &mut GpuPaintContext,
@@ -3361,6 +3370,7 @@ fn generate_layout_debug_primitives(bounds: &[DebugBoundsElement]) -> Vec<GpuPri
 }
 
 /// Scale and translate a path for SVG rendering with tint
+#[allow(dead_code)]
 fn scale_and_translate_path(
     path: &blinc_core::Path,
     x: f32,

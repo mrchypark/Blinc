@@ -28,12 +28,10 @@
 //! tree.compute_layout(800.0, 600.0);
 //! ```
 
-#![allow(dead_code)]
-#![allow(deprecated)]
-
 pub mod animated;
 pub mod canvas;
 pub mod diff;
+#[allow(deprecated)]
 pub mod div;
 pub mod element;
 pub mod notch;
@@ -44,13 +42,17 @@ pub mod event_handler;
 pub mod event_router;
 pub mod image;
 pub mod interactive;
+#[allow(deprecated)]
 pub mod layout_animation;
 pub mod motion;
 pub mod render_state;
+#[allow(deprecated)]
 pub mod renderer;
+#[allow(dead_code)]
 pub mod rich_text;
 pub mod scroll;
 pub mod stack;
+#[allow(dead_code, deprecated)]
 pub mod stateful;
 pub mod style;
 pub mod styled_text;
@@ -63,12 +65,15 @@ pub mod tree;
 pub mod typography;
 pub mod units;
 pub mod visual_animation;
+#[allow(dead_code)]
 pub mod widgets;
 
 // Markdown rendering
+#[allow(dead_code)]
 pub mod markdown;
 
 // Selector API for programmatic element access
+#[allow(dead_code)]
 pub mod selector;
 
 // Global overlay state singleton
@@ -79,6 +84,7 @@ pub mod overlay_state;
 pub mod recorder_bridge;
 
 // CSS subset parser for ElementStyle
+#[allow(dead_code)]
 pub mod css_parser;
 
 // Stable unique key generation for components
@@ -127,6 +133,7 @@ pub use svg::{svg, Svg};
 pub use text::{text, Text};
 
 // Renderer
+#[allow(deprecated)]
 pub use renderer::{
     GlassPanel, ImageData, LayoutRenderer, OnReadyCallback, OnReadyEntry, RenderTree,
     RenderTreeDebugStats, StyledTextData, StyledTextSpan, SvgData, TextData, UpdateResult,
@@ -144,6 +151,7 @@ pub use render_state::{
 };
 
 // Stateful elements
+#[allow(deprecated)]
 pub use stateful::{
     check_stateful_animations, check_stateful_deps, has_animating_statefuls,
     has_pending_subtree_rebuilds, peek_needs_redraw, queue_prop_update, queue_subtree_rebuild,
@@ -156,6 +164,7 @@ pub use stateful::{
 pub use animated::{AnimatedProperties, AnimationBuilder};
 
 // Layout animation (FLIP-style bounds animation)
+#[allow(deprecated)]
 pub use layout_animation::{LayoutAnimation, LayoutAnimationConfig, LayoutAnimationState};
 
 // CSS-like units
@@ -184,6 +193,8 @@ pub use text_selection::{
 
 /// Prelude module - import everything commonly needed
 pub mod prelude {
+    #![allow(deprecated)]
+
     pub use crate::div::{
         div, Div, ElementBuilder, ElementTypeId, FontFamily, FontWeight, GenericFont,
         ImageRenderInfo, TextAlign, TextVerticalAlign,

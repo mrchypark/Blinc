@@ -68,6 +68,7 @@ impl BlincApp {
     ///
     /// This is used internally for platform-specific initialization (Android, iOS)
     /// where the GPU setup is done differently.
+    #[allow(dead_code)]
     pub(crate) fn from_context(ctx: RenderContext, config: BlincConfig) -> Self {
         Self { ctx, config }
     }

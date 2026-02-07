@@ -44,8 +44,6 @@
 //! }
 //! ```
 
-#![allow(dead_code)]
-
 /// Get the paths to system default fonts, in priority order.
 ///
 /// Returns a list of font paths to try loading, with the best choice first.

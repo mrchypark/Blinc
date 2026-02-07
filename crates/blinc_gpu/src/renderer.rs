@@ -256,6 +256,7 @@ struct Buffers {
 }
 
 /// Bind groups for shader resources
+#[allow(dead_code)]
 struct BindGroups {
     /// Bind group for SDF pipeline
     sdf: wgpu::BindGroup,
@@ -266,6 +267,7 @@ struct BindGroups {
 }
 
 /// Cached MSAA textures and resources for overlay rendering
+#[allow(dead_code)]
 struct CachedMsaaTextures {
     msaa_texture: wgpu::Texture,
     msaa_view: wgpu::TextureView,
@@ -344,7 +346,7 @@ pub struct LayerTexture {
     /// Optional depth texture view (for 3D content)
     pub depth_view: Option<wgpu::TextureView>,
     /// Optional depth texture (kept alive for the view)
-    depth_texture: Option<wgpu::Texture>,
+    _depth_texture: Option<wgpu::Texture>,
 }
 
 impl LayerTexture {
@@ -402,7 +404,7 @@ impl LayerTexture {
             size,
             has_depth: with_depth,
             depth_view,
-            depth_texture,
+            _depth_texture: depth_texture,
         }
     }
 
@@ -527,6 +529,7 @@ impl LayerTextureCache {
     }
 
     /// Get the appropriate pool for a bucket
+    #[allow(dead_code)]
     fn get_pool(&self, bucket: TextureSizeBucket) -> &Vec<LayerTexture> {
         match bucket {
             TextureSizeBucket::Small => &self.pool_small,
@@ -537,6 +540,7 @@ impl LayerTextureCache {
     }
 
     /// Get mutable pool for a bucket
+    #[allow(dead_code)]
     fn get_pool_mut(&mut self, bucket: TextureSizeBucket) -> &mut Vec<LayerTexture> {
         match bucket {
             TextureSizeBucket::Small => &mut self.pool_small,
@@ -806,8 +810,10 @@ pub struct GpuRenderer {
     /// Cached text resources (avoids per-frame allocation)
     cached_text: Option<CachedTextResources>,
     /// Placeholder glyph atlas texture view (1x1 transparent) for SDF bind group
+    #[allow(dead_code)]
     placeholder_glyph_atlas_view: wgpu::TextureView,
     /// Placeholder color glyph atlas texture view (1x1 transparent) for SDF bind group
+    #[allow(dead_code)]
     placeholder_color_glyph_atlas_view: wgpu::TextureView,
     /// Sampler for glyph atlas textures
     glyph_sampler: wgpu::Sampler,
@@ -816,6 +822,7 @@ pub struct GpuRenderer {
     /// Gradient texture cache for multi-stop gradient support on paths
     gradient_texture_cache: GradientTextureCache,
     /// Placeholder image texture (1x1 white) for path bind group when no image is used
+    #[allow(dead_code)]
     placeholder_path_image_view: wgpu::TextureView,
     /// Sampler for path image textures
     path_image_sampler: wgpu::Sampler,
@@ -6837,6 +6844,7 @@ impl GpuRenderer {
     ///
     /// This is used for layer effects where we need to composite only the
     /// element's region back to the target at the correct position.
+    #[allow(dead_code)]
     fn blit_region_to_target(
         &mut self,
         source: &wgpu::TextureView,
@@ -6852,6 +6860,7 @@ impl GpuRenderer {
     }
 
     /// Blit a specific region with optional clip
+    #[allow(dead_code)]
     fn blit_region_to_target_with_clip(
         &mut self,
         source: &wgpu::TextureView,

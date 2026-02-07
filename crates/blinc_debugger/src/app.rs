@@ -38,6 +38,7 @@ pub struct AppState {
     /// Timeline state
     pub timeline_state: TimelinePanelState,
     /// Connected to debug server
+    #[allow(dead_code)]
     pub connected: bool,
     /// Server address
     pub server_addr: Option<String>,

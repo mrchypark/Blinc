@@ -1745,7 +1745,9 @@ impl WindowedApp {
                             /// Computed bounds dimensions of the element
                             bounds_width: f32,
                             bounds_height: f32,
+                            #[allow(dead_code)]
                             scroll_delta_x: f32,
+                            #[allow(dead_code)]
                             scroll_delta_y: f32,
                             /// Drag delta for DRAG/DRAG_END events
                             drag_delta_x: f32,

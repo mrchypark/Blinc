@@ -4,6 +4,8 @@
 //! All structures use `#[repr(C)]` and implement `bytemuck::Pod` for safe
 //! GPU buffer copies.
 
+#![allow(deprecated)]
+
 use blinc_core::{ImageId, Rect};
 
 /// Primitive types (must match shader constants)
@@ -674,6 +676,7 @@ impl GpuGlassPrimitive {
 /// Convert a layout GlassPanel to GPU primitive
 ///
 /// This bridges the layout system's material definitions to the GPU rendering system.
+#[allow(deprecated)]
 impl From<&blinc_layout::GlassPanel> for GpuGlassPrimitive {
     fn from(panel: &blinc_layout::GlassPanel) -> Self {
         let mat = &panel.material;
@@ -1764,6 +1767,7 @@ impl Default for ParticleViewport3D {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[deprecated(note = "Use GpuPrimitive instead")]
+#[allow(deprecated)]
 pub struct GpuRect {
     pub position: [f32; 2],
     pub size: [f32; 2],

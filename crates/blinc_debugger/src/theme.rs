@@ -10,6 +10,7 @@ use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
 /// Debugger-specific colors (extensions not in base theme)
 pub struct DebuggerColors;
 
+#[allow(dead_code)]
 impl DebuggerColors {
     // Access theme colors via ThemeState
     pub fn bg_base() -> Color {
@@ -118,6 +119,7 @@ impl DebuggerColors {
 /// Design tokens for the debugger UI
 pub struct DebuggerTokens;
 
+#[allow(dead_code)]
 impl DebuggerTokens {
     // Border radius - use theme tokens
     pub fn radius_sm() -> f32 {

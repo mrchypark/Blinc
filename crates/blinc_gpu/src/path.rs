@@ -899,6 +899,7 @@ pub fn tessellate_stroke(path: &Path, stroke: &Stroke, brush: &Brush) -> Tessell
 }
 
 /// Extract solid color from brush (gradients not yet supported for paths)
+#[allow(dead_code)]
 fn brush_to_color(brush: &Brush) -> Color {
     match brush {
         Brush::Solid(color) => *color,

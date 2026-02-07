@@ -258,6 +258,7 @@ impl TimelinePanel {
             .get_or_init(|| BuiltTimelinePanel::from_config(&self.config))
     }
 
+    #[allow(dead_code)]
     pub fn build(self) -> Div {
         BuiltTimelinePanel::from_config(&self.config).inner
     }

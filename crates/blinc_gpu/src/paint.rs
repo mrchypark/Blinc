@@ -98,16 +98,6 @@ impl Default for TransformState {
 /// so it can be properly restored when the layer is popped.
 #[derive(Clone, Debug)]
 struct LayerState {
-    /// The layer configuration
-    config: LayerConfig,
-    /// Starting primitive index when this layer was pushed
-    primitive_start: usize,
-    /// Starting foreground primitive index
-    foreground_primitive_start: usize,
-    /// Starting path vertex index
-    path_start: usize,
-    /// Starting foreground path vertex index
-    foreground_path_start: usize,
     /// Parent state stack indices (transform, opacity, blend, clip)
     parent_state_indices: (usize, usize, usize, usize),
 }
@@ -2191,11 +2181,6 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
     fn push_layer(&mut self, config: LayerConfig) {
         // Record current state indices for restoration on pop
         let state = LayerState {
-            config: config.clone(),
-            primitive_start: self.batch.primitive_count(),
-            foreground_primitive_start: self.batch.foreground_primitive_count(),
-            path_start: self.batch.path_vertex_count(),
-            foreground_path_start: self.batch.foreground_path_vertex_count(),
             parent_state_indices: (
                 self.transform_stack.len(),
                 self.opacity_stack.len(),

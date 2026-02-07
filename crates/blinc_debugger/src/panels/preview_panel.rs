@@ -215,6 +215,7 @@ impl PreviewPanel {
             .get_or_init(|| BuiltPreviewPanel::from_config(&self.config))
     }
 
+    #[allow(dead_code)]
     pub fn build(self) -> Div {
         BuiltPreviewPanel::from_config(&self.config).inner
     }

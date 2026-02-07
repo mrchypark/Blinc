@@ -19,8 +19,11 @@ use crate::theme::DebuggerTokens;
 /// State for the tree panel
 #[derive(Default)]
 pub struct TreePanelState {
+    #[allow(dead_code)]
     pub selected_id: Option<String>,
+    #[allow(dead_code)]
     pub expanded_ids: Vec<String>,
+    #[allow(dead_code)]
     pub filter_text: String,
 }
 
@@ -139,6 +142,7 @@ impl TreePanel {
             .get_or_init(|| BuiltTreePanel::from_config(&self.config))
     }
 
+    #[allow(dead_code)]
     pub fn build(self) -> Div {
         BuiltTreePanel::from_config(&self.config).inner
     }
