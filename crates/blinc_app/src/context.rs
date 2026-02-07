@@ -17,7 +17,7 @@ use blinc_layout::render_state::Overlay;
 use blinc_layout::renderer::ElementType;
 use blinc_svg::{RasterizedSvg, SvgDocument};
 use lru::LruCache;
-use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -26,6 +26,8 @@ use crate::error::Result;
 
 /// Maximum number of images to keep in cache (prevents unbounded memory growth)
 const IMAGE_CACHE_CAPACITY: usize = 128;
+/// Maximum number of canvas-created GPU images to keep alive.
+const CANVAS_IMAGE_CACHE_CAPACITY: usize = 512;
 
 /// Maximum number of parsed SVG documents to cache
 const SVG_CACHE_CAPACITY: usize = 64;
@@ -49,7 +51,7 @@ pub struct RenderContext {
     // LRU cache for images (prevents unbounded memory growth)
     image_cache: LruCache<String, GpuImage>,
     // Dynamic images created via DrawContext image APIs (keyed by ImageId)
-    canvas_image_cache: HashMap<blinc_core::ImageId, GpuImage>,
+    canvas_image_cache: LruCache<blinc_core::ImageId, GpuImage>,
     // LRU cache for parsed SVG documents (avoids re-parsing)
     svg_cache: LruCache<u64, SvgDocument>,
     // LRU cache for rasterized SVG textures (CPU-rasterized with proper AA)
@@ -187,7 +189,9 @@ impl RenderContext {
             backdrop_texture: None,
             msaa_texture: None,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAPACITY).unwrap()),
-            canvas_image_cache: HashMap::new(),
+            canvas_image_cache: LruCache::new(
+                NonZeroUsize::new(CANVAS_IMAGE_CACHE_CAPACITY).unwrap(),
+            ),
             svg_cache: LruCache::new(NonZeroUsize::new(SVG_CACHE_CAPACITY).unwrap()),
             rasterized_svg_cache: LruCache::new(
                 NonZeroUsize::new(RASTERIZED_SVG_CACHE_CAPACITY).unwrap(),
@@ -238,10 +242,6 @@ impl RenderContext {
 
         // Take the batch from fg_ctx before reusing text_ctx for text elements
         let mut fg_batch = fg_ctx.take_batch();
-
-        // Process canvas image upload operations before rendering
-        self.process_canvas_image_ops(&bg_batch.image_ops);
-        self.process_canvas_image_ops(&fg_batch.image_ops);
 
         // Collect text, SVG, and image elements
         let (texts, svgs, images) = self.collect_render_elements(tree);
@@ -392,8 +392,12 @@ impl RenderContext {
             }
 
             // Step 4: Render background-layer canvas images
-            if !bg_batch.image_draws.is_empty() {
-                self.render_canvas_images(target, &bg_batch.image_draws);
+            if !bg_batch.image_ops.is_empty() || !bg_batch.image_draws.is_empty() {
+                self.process_canvas_image_commands(
+                    target,
+                    &bg_batch.image_ops,
+                    &bg_batch.image_draws,
+                );
             }
 
             // Step 5: Render background-layer images to target (separate for now - images use different pipeline)
@@ -455,8 +459,12 @@ impl RenderContext {
             }
 
             // Step 8: Render foreground canvas images
-            if !fg_batch.foreground_image_draws.is_empty() {
-                self.render_canvas_images(target, &fg_batch.foreground_image_draws);
+            if !fg_batch.image_ops.is_empty() || !fg_batch.foreground_image_draws.is_empty() {
+                self.process_canvas_image_commands(
+                    target,
+                    &fg_batch.image_ops,
+                    &fg_batch.foreground_image_draws,
+                );
             }
 
             // Step 9: Render text decorations (strikethrough, underline)
@@ -483,8 +491,12 @@ impl RenderContext {
             }
 
             // Render canvas images after background primitives
-            if !bg_batch.image_draws.is_empty() {
-                self.render_canvas_images(target, &bg_batch.image_draws);
+            if !bg_batch.image_ops.is_empty() || !bg_batch.image_draws.is_empty() {
+                self.process_canvas_image_commands(
+                    target,
+                    &bg_batch.image_ops,
+                    &bg_batch.image_draws,
+                );
             }
 
             // Render images after background primitives
@@ -548,8 +560,12 @@ impl RenderContext {
             }
 
             // Render foreground canvas images
-            if !fg_batch.foreground_image_draws.is_empty() {
-                self.render_canvas_images(target, &fg_batch.foreground_image_draws);
+            if !fg_batch.image_ops.is_empty() || !fg_batch.foreground_image_draws.is_empty() {
+                self.process_canvas_image_commands(
+                    target,
+                    &fg_batch.image_ops,
+                    &fg_batch.foreground_image_draws,
+                );
             }
 
             // Render text decorations (strikethrough, underline)
@@ -1118,133 +1134,138 @@ impl RenderContext {
         }
     }
 
-    /// Process image upload operations recorded during canvas painting
-    fn process_canvas_image_ops(&mut self, ops: &[ImageOp]) {
-        for op in ops {
-            match op {
-                ImageOp::Create {
-                    image,
-                    width,
-                    height,
-                    label,
+    fn apply_canvas_image_op(&mut self, op: &ImageOp) {
+        match op {
+            ImageOp::Create {
+                image,
+                width,
+                height,
+                label,
+                pixels,
+                ..
+            } => {
+                let gpu_image = match (pixels.as_deref(), label.as_deref()) {
+                    (Some(bytes), Some(label)) => self
+                        .image_ctx
+                        .create_image_labeled(bytes, *width, *height, label),
+                    (Some(bytes), None) => self.image_ctx.create_image(bytes, *width, *height),
+                    (None, Some(label)) => self
+                        .image_ctx
+                        .create_empty_image_labeled(*width, *height, label),
+                    (None, None) => self.image_ctx.create_empty_image(*width, *height),
+                };
+                self.canvas_image_cache.put(*image, gpu_image);
+            }
+            ImageOp::Write {
+                image,
+                x,
+                y,
+                width,
+                height,
+                pixels,
+                ..
+            } => {
+                let Some(gpu_image) = self.canvas_image_cache.get(image) else {
+                    tracing::warn!("canvas image write skipped: missing image id {:?}", image);
+                    return;
+                };
+                gpu_image.write_rgba_sub_rect(
+                    self.image_ctx.queue(),
+                    *x,
+                    *y,
+                    *width,
+                    *height,
                     pixels,
-                } => {
-                    let gpu_image = match (pixels.as_deref(), label.as_deref()) {
-                        (Some(bytes), Some(label)) => self
-                            .image_ctx
-                            .create_image_labeled(bytes, *width, *height, label),
-                        (Some(bytes), None) => self.image_ctx.create_image(bytes, *width, *height),
-                        (None, Some(label)) => self
-                            .image_ctx
-                            .create_empty_image_labeled(*width, *height, label),
-                        (None, None) => self.image_ctx.create_empty_image(*width, *height),
-                    };
-                    self.canvas_image_cache.insert(*image, gpu_image);
-                }
-                ImageOp::Write {
-                    image,
-                    x,
-                    y,
-                    width,
-                    height,
-                    pixels,
-                } => {
-                    let Some(gpu_image) = self.canvas_image_cache.get(image) else {
-                        tracing::warn!("canvas image write skipped: missing image id {:?}", image);
-                        continue;
-                    };
-                    gpu_image.write_rgba_sub_rect(
-                        self.image_ctx.queue(),
-                        *x,
-                        *y,
-                        *width,
-                        *height,
-                        pixels,
-                    );
-                }
+                );
             }
         }
     }
 
-    fn flush_canvas_image_batch(
-        &mut self,
-        target: &wgpu::TextureView,
-        image_id: blinc_core::ImageId,
-        instances: &[GpuImageInstance],
-    ) {
-        if instances.is_empty() {
-            return;
-        }
-        let Some(gpu_image) = self.canvas_image_cache.get(&image_id) else {
-            return;
-        };
-        self.renderer
-            .render_images(target, gpu_image.view(), instances);
-    }
-
-    /// Render canvas images recorded via DrawContext::draw_image
-    fn render_canvas_images(&mut self, target: &wgpu::TextureView, draws: &[ImageDraw]) {
+    fn render_canvas_image_draw(&mut self, target: &wgpu::TextureView, draw: &ImageDraw) {
         use blinc_image::src_rect_to_uv;
 
-        let mut batched_image: Option<blinc_core::ImageId> = None;
-        let mut instances: Vec<GpuImageInstance> = Vec::new();
+        let Some(gpu_image) = self.canvas_image_cache.get(&draw.image) else {
+            tracing::warn!(
+                "canvas image draw skipped: missing image id {:?}",
+                draw.image
+            );
+            return;
+        };
+
+        let src_uv = if let Some(src) = draw.source_rect {
+            src_rect_to_uv(
+                [src.x(), src.y(), src.width(), src.height()],
+                gpu_image.width(),
+                gpu_image.height(),
+            )
+        } else {
+            [0.0, 0.0, 1.0, 1.0]
+        };
+
+        let mut instance = GpuImageInstance::new(
+            draw.dst_rect.x(),
+            draw.dst_rect.y(),
+            draw.dst_rect.width(),
+            draw.dst_rect.height(),
+        )
+        .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
+        .with_tint(draw.tint[0], draw.tint[1], draw.tint[2], draw.tint[3])
+        .with_opacity(draw.opacity);
+
+        if draw.clip_type == ClipType::Rect {
+            instance = instance.with_clip_rounded_rect_corners(
+                draw.clip_bounds[0],
+                draw.clip_bounds[1],
+                draw.clip_bounds[2],
+                draw.clip_bounds[3],
+                draw.clip_radius[0],
+                draw.clip_radius[1],
+                draw.clip_radius[2],
+                draw.clip_radius[3],
+            );
+        }
+
+        self.renderer
+            .render_images(target, gpu_image.view(), &[instance]);
+    }
+
+    fn process_canvas_image_draws_with_ops(
+        &mut self,
+        target: &wgpu::TextureView,
+        ops: &[ImageOp],
+        draws: &[ImageDraw],
+        op_cursor: &mut usize,
+    ) {
+        debug_assert!(
+            draws.windows(2).all(|w| w[0].order <= w[1].order),
+            "canvas image draws must be recorded in order"
+        );
 
         for draw in draws {
-            if batched_image != Some(draw.image) {
-                if let Some(image_id) = batched_image.take() {
-                    self.flush_canvas_image_batch(target, image_id, &instances);
-                    instances.clear();
-                }
-                batched_image = Some(draw.image);
+            while *op_cursor < ops.len() && ops[*op_cursor].order() <= draw.order {
+                self.apply_canvas_image_op(&ops[*op_cursor]);
+                *op_cursor += 1;
             }
-
-            let Some(gpu_image) = self.canvas_image_cache.get(&draw.image) else {
-                tracing::warn!(
-                    "canvas image draw skipped: missing image id {:?}",
-                    draw.image
-                );
-                continue;
-            };
-
-            let src_uv = if let Some(src) = draw.source_rect {
-                src_rect_to_uv(
-                    [src.x(), src.y(), src.width(), src.height()],
-                    gpu_image.width(),
-                    gpu_image.height(),
-                )
-            } else {
-                [0.0, 0.0, 1.0, 1.0]
-            };
-
-            let mut instance = GpuImageInstance::new(
-                draw.dst_rect.x(),
-                draw.dst_rect.y(),
-                draw.dst_rect.width(),
-                draw.dst_rect.height(),
-            )
-            .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
-            .with_tint(draw.tint[0], draw.tint[1], draw.tint[2], draw.tint[3])
-            .with_opacity(draw.opacity);
-
-            if draw.clip_type == ClipType::Rect {
-                instance = instance.with_clip_rounded_rect_corners(
-                    draw.clip_bounds[0],
-                    draw.clip_bounds[1],
-                    draw.clip_bounds[2],
-                    draw.clip_bounds[3],
-                    draw.clip_radius[0],
-                    draw.clip_radius[1],
-                    draw.clip_radius[2],
-                    draw.clip_radius[3],
-                );
-            }
-
-            instances.push(instance);
+            self.render_canvas_image_draw(target, draw);
         }
+    }
 
-        if let Some(image_id) = batched_image {
-            self.flush_canvas_image_batch(target, image_id, &instances);
+    fn process_remaining_canvas_image_ops(&mut self, ops: &[ImageOp], op_cursor: &mut usize) {
+        while *op_cursor < ops.len() {
+            self.apply_canvas_image_op(&ops[*op_cursor]);
+            *op_cursor += 1;
         }
+    }
+
+    fn process_canvas_image_commands(
+        &mut self,
+        target: &wgpu::TextureView,
+        ops: &[ImageOp],
+        draws: &[ImageDraw],
+    ) {
+        let mut op_cursor = 0usize;
+        self.process_canvas_image_draws_with_ops(target, ops, draws, &mut op_cursor);
+        self.process_remaining_canvas_image_ops(ops, &mut op_cursor);
     }
 
     /// Render an SVG element with clipping and opacity support
@@ -2384,6 +2405,7 @@ impl RenderContext {
             self.ensure_glass_textures(width, height);
         }
         let use_msaa_overlay = self.sample_count > 1;
+        let mut image_op_cursor = 0usize;
 
         if has_glass {
             // Glass path with layer effects support
@@ -2431,6 +2453,15 @@ impl RenderContext {
                     .render_paths_overlay_msaa(target, &batch, self.sample_count);
             }
 
+            if !batch.image_draws.is_empty() {
+                self.process_canvas_image_draws_with_ops(
+                    target,
+                    &batch.image_ops,
+                    &batch.image_draws,
+                    &mut image_op_cursor,
+                );
+            }
+
             self.render_images_ref(target, &bg_images);
             self.render_images_ref(target, &fg_images);
 
@@ -2447,6 +2478,20 @@ impl RenderContext {
             }
             self.scratch_glyphs = scratch; // Restore for next frame
 
+            // Render SVGs as rasterized images for high-quality anti-aliasing
+            if !svgs.is_empty() {
+                self.render_rasterized_svgs(target, &svgs, scale_factor);
+            }
+
+            if !batch.foreground_image_draws.is_empty() {
+                self.process_canvas_image_draws_with_ops(
+                    target,
+                    &batch.image_ops,
+                    &batch.foreground_image_draws,
+                    &mut image_op_cursor,
+                );
+            }
+
             // Render text decorations for glass path (all layers)
             let decorations_by_layer = generate_text_decoration_primitives_by_layer(&texts);
             for primitives in decorations_by_layer.values() {
@@ -2455,10 +2500,7 @@ impl RenderContext {
                 }
             }
 
-            // Render SVGs as rasterized images for high-quality anti-aliasing
-            if !svgs.is_empty() {
-                self.render_rasterized_svgs(target, &svgs, scale_factor);
-            }
+            self.process_remaining_canvas_image_ops(&batch.image_ops, &mut image_op_cursor);
         } else {
             // Simple path (no glass)
             // Pre-generate text decorations grouped by layer for interleaved rendering
@@ -2496,6 +2538,15 @@ impl RenderContext {
                         .render_paths_overlay_msaa(target, &z0_batch, self.sample_count);
                 }
 
+                if !batch.image_draws.is_empty() {
+                    self.process_canvas_image_draws_with_ops(
+                        target,
+                        &batch.image_ops,
+                        &batch.image_draws,
+                        &mut image_op_cursor,
+                    );
+                }
+
                 // Render z=0 images
                 if let Some(z0_images) = images_by_layer.get(&0) {
                     self.render_images_ref(target, z0_images);
@@ -2527,6 +2578,15 @@ impl RenderContext {
                         .render_primitives_overlay(target, &batch.foreground_primitives);
                 }
 
+                if !batch.foreground_image_draws.is_empty() {
+                    self.process_canvas_image_draws_with_ops(
+                        target,
+                        &batch.image_ops,
+                        &batch.foreground_image_draws,
+                        &mut image_op_cursor,
+                    );
+                }
+
                 // Render text on top (all z-layers)
                 for z in 0..=max_layer {
                     if let Some(glyphs) = glyphs_by_layer.get(&z) {
@@ -2547,12 +2607,30 @@ impl RenderContext {
                         .render_paths_overlay_msaa(target, &batch, self.sample_count);
                 }
 
+                if !batch.image_draws.is_empty() {
+                    self.process_canvas_image_draws_with_ops(
+                        target,
+                        &batch.image_ops,
+                        &batch.image_draws,
+                        &mut image_op_cursor,
+                    );
+                }
+
                 self.render_images(target, &images, width as f32, height as f32);
 
                 // Render foreground primitives on top of images (for .foreground() elements)
                 if !batch.foreground_primitives.is_empty() {
                     self.renderer
                         .render_primitives_overlay(target, &batch.foreground_primitives);
+                }
+
+                if !batch.foreground_image_draws.is_empty() {
+                    self.process_canvas_image_draws_with_ops(
+                        target,
+                        &batch.image_ops,
+                        &batch.foreground_image_draws,
+                        &mut image_op_cursor,
+                    );
                 }
 
                 // Render SVGs as rasterized images for high-quality anti-aliasing
@@ -2569,6 +2647,8 @@ impl RenderContext {
                 // Render text decorations (flat path - no z-layers)
                 self.render_text_decorations_for_layer(target, &decorations_by_layer, 0);
             }
+
+            self.process_remaining_canvas_image_ops(&batch.image_ops, &mut image_op_cursor);
         }
 
         // Poll the device to free completed command buffers
@@ -2709,6 +2789,7 @@ impl RenderContext {
         // They will be rendered later via render_rasterized_svgs
 
         self.renderer.resize(width, height);
+        let mut image_op_cursor = 0usize;
 
         // For overlay rendering, we DON'T have glass effects (overlays are simple)
         // Render primitives without clearing (LoadOp::Load)
@@ -2748,6 +2829,15 @@ impl RenderContext {
             }
         }
 
+        if !batch.image_draws.is_empty() {
+            self.process_canvas_image_draws_with_ops(
+                target,
+                &batch.image_ops,
+                &batch.image_draws,
+                &mut image_op_cursor,
+            );
+        }
+
         // Images render on top
         self.render_images(target, &images, width as f32, height as f32);
 
@@ -2756,6 +2846,17 @@ impl RenderContext {
             self.renderer
                 .render_primitives_overlay(target, &batch.foreground_primitives);
         }
+
+        if !batch.foreground_image_draws.is_empty() {
+            self.process_canvas_image_draws_with_ops(
+                target,
+                &batch.image_ops,
+                &batch.foreground_image_draws,
+                &mut image_op_cursor,
+            );
+        }
+
+        self.process_remaining_canvas_image_ops(&batch.image_ops, &mut image_op_cursor);
 
         // Poll the device to free completed command buffers
         self.renderer.poll();

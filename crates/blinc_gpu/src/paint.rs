@@ -149,6 +149,8 @@ pub struct GpuPaintContext<'a> {
     layer_stack: Vec<LayerState>,
     /// Known image sizes created in this context
     image_sizes: HashMap<ImageId, (u32, u32)>,
+    /// Monotonic order for image ops/draws to preserve call sequence.
+    image_order: u64,
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -169,6 +171,7 @@ impl<'a> GpuPaintContext<'a> {
             z_layer: 0,
             layer_stack: Vec::new(),
             image_sizes: HashMap::new(),
+            image_order: 0,
         }
     }
 
@@ -201,6 +204,7 @@ impl<'a> GpuPaintContext<'a> {
             z_layer: 0,
             layer_stack: Vec::new(),
             image_sizes: HashMap::new(),
+            image_order: 0,
         }
     }
 
@@ -530,7 +534,9 @@ impl<'a> GpuPaintContext<'a> {
         pixels: Option<Vec<u8>>,
     ) -> ImageId {
         let id = ImageId(NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed));
+        let order = self.next_image_order();
         self.batch.push_image_op(ImageOp::Create {
+            order,
             image: id,
             width,
             height,
@@ -781,6 +787,13 @@ impl<'a> GpuPaintContext<'a> {
         self.is_3d = false;
         self.camera = None;
         self.image_sizes.clear();
+        self.image_order = 0;
+    }
+
+    fn next_image_order(&mut self) -> u64 {
+        let order = self.image_order;
+        self.image_order = self.image_order.wrapping_add(1);
+        order
     }
 
     /// Apply opacity to a brush by modifying the color's alpha channel
@@ -1597,6 +1610,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         let draw = ImageDraw {
+            order: self.next_image_order(),
             image,
             dst_rect: transformed,
             source_rect: options.source_rect,
@@ -1640,7 +1654,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         if image.0 == 0 {
             return;
         }
+        let order = self.next_image_order();
         self.batch.push_image_op(ImageOp::Write {
+            order,
             image,
             x,
             y,
@@ -2537,6 +2553,32 @@ mod tests {
         ctx.execute_commands(&commands);
 
         assert_eq!(ctx.batch().primitive_count(), 1);
+    }
+
+    #[test]
+    fn test_canvas_image_command_order() {
+        let mut ctx = GpuPaintContext::new(800.0, 600.0);
+
+        let image = ctx.create_image_empty(4, 4, "test-image");
+        ctx.draw_image(
+            image,
+            Rect::new(10.0, 10.0, 20.0, 20.0),
+            &ImageOptions::default(),
+        );
+        ctx.write_image_rgba(image, 0, 0, 1, 1, &[255, 0, 0, 255]);
+        ctx.draw_image(
+            image,
+            Rect::new(30.0, 10.0, 20.0, 20.0),
+            &ImageOptions::default(),
+        );
+
+        let batch = ctx.take_batch();
+        assert_eq!(batch.image_ops.len(), 2);
+        assert_eq!(batch.image_draws.len(), 2);
+        assert_eq!(batch.image_ops[0].order(), 0);
+        assert_eq!(batch.image_draws[0].order, 1);
+        assert_eq!(batch.image_ops[1].order(), 2);
+        assert_eq!(batch.image_draws[1].order, 3);
     }
 
     #[test]

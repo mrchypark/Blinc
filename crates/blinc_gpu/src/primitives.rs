@@ -66,6 +66,7 @@ pub enum ClipType {
 pub enum ImageOp {
     /// Create a new image (optionally with initial pixels)
     Create {
+        order: u64,
         image: ImageId,
         width: u32,
         height: u32,
@@ -74,6 +75,7 @@ pub enum ImageOp {
     },
     /// Write RGBA pixels into a sub-rect of an existing image
     Write {
+        order: u64,
         image: ImageId,
         x: u32,
         y: u32,
@@ -83,9 +85,18 @@ pub enum ImageOp {
     },
 }
 
+impl ImageOp {
+    pub fn order(&self) -> u64 {
+        match self {
+            ImageOp::Create { order, .. } | ImageOp::Write { order, .. } => *order,
+        }
+    }
+}
+
 /// Image draw call recorded during painting
 #[derive(Clone, Debug)]
 pub struct ImageDraw {
+    pub order: u64,
     pub image: ImageId,
     pub dst_rect: Rect,
     pub source_rect: Option<Rect>,
