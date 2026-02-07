@@ -107,7 +107,7 @@ impl CollapsibleBuilder {
     }
 
     /// Create with explicit instance key (for multiple collapsibles)
-    pub fn with_key(key: InstanceKey, is_open: &State<bool>) -> Self {
+    pub fn with_key(_key: InstanceKey, is_open: &State<bool>) -> Self {
         let is_currently_open = is_open.get();
         let initial_scale = if is_currently_open { 1.0 } else { 0.0 };
         let initial_opacity = if is_currently_open { 1.0 } else { 0.0 };

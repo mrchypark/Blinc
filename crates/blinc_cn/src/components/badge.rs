@@ -81,7 +81,6 @@ impl BadgeVariant {
 pub struct Badge {
     inner: Div,
     label: String,
-    variant: BadgeVariant,
 }
 
 impl Badge {
@@ -119,7 +118,6 @@ impl Badge {
         Self {
             inner: badge,
             label,
-            variant,
         }
     }
 

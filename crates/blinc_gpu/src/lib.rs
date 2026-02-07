@@ -14,6 +14,9 @@
 //! - **Paint Context**: GPU-backed DrawContext implementation
 //! - **Path Rendering**: Vector path tessellation via lyon
 
+#![allow(dead_code)]
+#![allow(deprecated)]
+
 pub mod backbuffer;
 pub mod gradient_texture;
 pub mod image;

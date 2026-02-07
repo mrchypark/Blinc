@@ -573,7 +573,7 @@ fn test_render_tree_reuse() {
     let (texture, view) = create_test_texture(app.device(), 200, 200);
 
     // Render the same tree 3 times
-    for i in 0..3 {
+    for _i in 0..3 {
         app.render_tree(&tree, &view, 200, 200)
             .expect("Render failed");
     }

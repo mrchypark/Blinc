@@ -603,7 +603,7 @@ fn build_dropdown_content(
     options: &[SelectOption],
     current_selected: &str,
     value_state: &State<String>,
-    open_state: &State<bool>,
+    _open_state: &State<bool>,
     overlay_handle_state: &State<Option<u64>>,
     on_change: &Option<Arc<dyn Fn(&str) + Send + Sync>>,
     key: &str,

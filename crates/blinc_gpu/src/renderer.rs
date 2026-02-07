@@ -5749,8 +5749,8 @@ impl GpuRenderer {
         let size = input.size;
 
         // For ping-pong we need two temp textures
-        let mut temp_a = self.layer_texture_cache.acquire(&self.device, size, false);
-        let mut temp_b = self.layer_texture_cache.acquire(&self.device, size, false);
+        let temp_a = self.layer_texture_cache.acquire(&self.device, size, false);
+        let temp_b = self.layer_texture_cache.acquire(&self.device, size, false);
 
         // First pass: input -> temp_a
         self.apply_blur_pass(&input.view, &temp_a.view, size, radius, 0, blur_alpha);
@@ -6321,7 +6321,7 @@ impl GpuRenderer {
         bottom: &wgpu::TextureView,
         top: &wgpu::TextureView,
         output: &wgpu::TextureView,
-        size: (u32, u32),
+        _size: (u32, u32),
         blend_mode: blinc_core::BlendMode,
         opacity: f32,
     ) {
@@ -6519,7 +6519,7 @@ impl GpuRenderer {
         let offset_x = layer_pos.0 - effect_expansion.0;
         let offset_y = layer_pos.1 - effect_expansion.1;
 
-        let mut offset_primitives: Vec<GpuPrimitive> = primitives
+        let offset_primitives: Vec<GpuPrimitive> = primitives
             .iter()
             .map(|p| {
                 let mut op = *p;

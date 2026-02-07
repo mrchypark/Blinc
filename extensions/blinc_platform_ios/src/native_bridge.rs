@@ -218,6 +218,7 @@ pub extern "C" fn blinc_set_native_call_fn(call_fn: IOSNativeCallFn) {
 
 /// Check if the iOS native bridge is initialized
 #[no_mangle]
+#[allow(static_mut_refs)]
 pub extern "C" fn blinc_native_bridge_is_ready() -> bool {
     (unsafe { IOS_NATIVE_CALL_FN.is_some() }) && NativeBridgeState::is_initialized()
 }

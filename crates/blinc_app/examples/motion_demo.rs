@@ -13,6 +13,8 @@
 //!
 //! Run with: cargo run -p blinc_app --example motion_demo --features windowed
 
+#![allow(deprecated)]
+
 use blinc_animation::{AnimationPreset, SpringConfig};
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
@@ -20,13 +22,13 @@ use blinc_core::Color;
 use blinc_layout::motion::{motion, StaggerConfig};
 use blinc_layout::prelude::stateful_from_handle;
 use blinc_layout::widgets::scroll::Scroll;
-use blinc_theme::theme;
 use std::sync::{Arc, Mutex};
 
 /// Component for the pull-to-refresh demo.
 /// The BlincComponent derive generates type-safe animation hooks.
 /// Fields marked with #[animation] generate SharedAnimatedValue accessors.
 #[derive(BlincComponent)]
+#[allow(dead_code)]
 struct PullToRefresh {
     /// Y offset for dragging content down
     #[animation]

@@ -265,7 +265,7 @@ impl BuiltAvatar {
             let status_size = config.size.status_size();
             let status_offset = config.size.status_offset();
             let status_color = status.color(&theme);
-            let border_color = theme.color(ColorToken::Background);
+            let _border_color = theme.color(ColorToken::Background);
 
             // Status indicator positioned at bottom-right of the circular avatar
             let status_indicator = div()

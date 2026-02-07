@@ -4,7 +4,7 @@
 //! rendered via the DrawContext API.
 
 use blinc_core::{
-    BlurQuality, Brush, Color, CornerRadius, DynFloat, DynValue, LayerEffect, Rect, Shadow,
+    Brush, Color, CornerRadius, DynFloat, DynValue, LayerEffect, Rect, Shadow,
     Transform, ValueContext,
 };
 use taffy::Layout;

@@ -66,7 +66,6 @@ const CHEVRON_DOWN_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 /// Icon for chevron up
 const CHEVRON_UP_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>"#;
-use crate::button::use_button_state;
 use crate::ButtonVariant;
 use blinc_layout::InstanceKey;
 
@@ -602,7 +601,7 @@ fn build_submenu_content(
     text_color: Color,
     text_secondary: Color,
     text_tertiary: Color,
-    surface_elevated: Color,
+    _surface_elevated: Color,
     radius: f32,
     font_size: f32,
     padding: f32,
@@ -747,7 +746,7 @@ fn build_submenu_content(
             if has_submenu && !item_disabled {
                 let submenu_items_for_hover = submenu_items.clone();
                 let parent_handle_for_submenu = parent_handle_state.clone();
-                let submenu_handle_for_submenu = submenu_handle_state.clone();
+                let _submenu_handle_for_submenu = submenu_handle_state.clone();
                 let submenu_key_for_hover = submenu_key.clone();
 
                 row = row.on_hover_enter(move |ctx| {
@@ -808,14 +807,14 @@ fn build_dropdown_content(
     items: &[ContextMenuItem],
     width: f32,
     overlay_handle_state: &State<Option<u64>>,
-    open_state: &State<bool>,
+    _open_state: &State<bool>,
     key: &str,
     bg: Color,
     border: Color,
     text_color: Color,
     text_secondary: Color,
     text_tertiary: Color,
-    surface_elevated: Color,
+    _surface_elevated: Color,
     radius: f32,
     font_size: f32,
     padding: f32,

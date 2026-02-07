@@ -126,10 +126,12 @@ impl HeadlessContext {
 }
 
 /// Builder for HeadlessContext with fluent API.
+#[allow(dead_code)]
 pub struct HeadlessContextBuilder {
     config: HeadlessConfig,
 }
 
+#[allow(dead_code)]
 impl HeadlessContextBuilder {
     /// Create a new builder with default configuration.
     pub fn new() -> Self {

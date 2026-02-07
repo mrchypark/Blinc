@@ -28,6 +28,9 @@
 //! tree.compute_layout(800.0, 600.0);
 //! ```
 
+#![allow(dead_code)]
+#![allow(deprecated)]
+
 pub mod animated;
 pub mod canvas;
 pub mod diff;

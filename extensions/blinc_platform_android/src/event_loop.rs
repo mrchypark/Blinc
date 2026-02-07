@@ -4,7 +4,7 @@
 
 use crate::window::AndroidWindow;
 use blinc_platform::{
-    ControlFlow, Event, EventLoop, LifecycleEvent, PlatformError, Window, WindowEvent,
+    ControlFlow, Event, EventLoop, PlatformError,
 };
 
 #[cfg(target_os = "android")]

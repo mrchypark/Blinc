@@ -18,7 +18,6 @@
 
 use bytemuck::{Pod, Zeroable};
 use std::collections::HashMap;
-use wgpu::util::DeviceExt;
 
 /// Maximum particles per system for buffer allocation
 pub const MAX_PARTICLES_PER_SYSTEM: u32 = 100_000;

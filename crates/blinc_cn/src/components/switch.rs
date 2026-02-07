@@ -37,8 +37,8 @@
 //!     .spring(SpringConfig::wobbly())
 //! ```
 
-use blinc_animation::{get_scheduler, AnimatedValue, SchedulerHandle, SpringConfig};
-use blinc_core::{Color, State, Transform};
+use blinc_animation::{get_scheduler, AnimatedValue, SpringConfig};
+use blinc_core::{Color, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::RenderProps;
 use blinc_layout::motion::SharedAnimatedValue;
@@ -134,7 +134,7 @@ impl Switch {
 
         let disabled = config.disabled;
         let on_change = config.on_change.clone();
-        let on_state = config.on_state.clone();
+        let _on_state = config.on_state.clone();
         let on_state_for_click = config.on_state.clone();
         let thumb_anim = config.thumb_anim.clone();
         let thumb_anim_for_click = config.thumb_anim.clone();

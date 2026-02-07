@@ -9,6 +9,8 @@
 //!
 //! Layout based on Phase 12 of the blinc_recorder implementation plan.
 
+#![allow(dead_code)]
+
 mod app;
 mod panels;
 mod theme;

@@ -57,7 +57,7 @@ pub use testing::{
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-/// Thread-local storage for the current recorder session.
+// Thread-local storage for the current recorder session.
 std::thread_local! {
     static RECORDER: RwLock<Option<Arc<SharedRecordingSession>>> = const { RwLock::new(None) };
 }

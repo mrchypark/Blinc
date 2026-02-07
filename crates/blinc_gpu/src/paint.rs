@@ -604,9 +604,6 @@ impl<'a> GpuPaintContext<'a> {
             ), // bottom_left
         ];
 
-        // Track whether the topmost clip is a plain Rect (not rounded)
-        let mut topmost_is_plain_rect = false;
-
         for clip in &self.clip_stack {
             match clip {
                 ClipShape::Rect(rect) => {
@@ -616,7 +613,6 @@ impl<'a> GpuPaintContext<'a> {
                     intersect_max_x = intersect_max_x.min(rect.x() + rect.width());
                     intersect_max_y = intersect_max_y.min(rect.y() + rect.height());
                     has_rect_clips = true;
-                    topmost_is_plain_rect = true;
                 }
                 ClipShape::RoundedRect {
                     rect,
@@ -649,14 +645,9 @@ impl<'a> GpuPaintContext<'a> {
                     }
 
                     has_rect_clips = true;
-                    topmost_is_plain_rect = false;
                 }
                 // For non-rect clips, fall back to topmost-only behavior
-                ClipShape::Circle { .. } | ClipShape::Ellipse { .. } | ClipShape::Path(_) => {
-                    // Can't easily intersect with circles/ellipses/paths
-                    // Fall through to use the topmost clip
-                    topmost_is_plain_rect = false;
-                }
+                ClipShape::Circle { .. } | ClipShape::Ellipse { .. } | ClipShape::Path(_) => {}
             }
         }
 

@@ -351,7 +351,7 @@ impl Combobox {
                     // Don't update state here - let on_close callback handle it after animation
                 } else {
                     // Use EventContext bounds which are computed absolutely by the event router
-                    let (trigger_x, trigger_y, _trigger_w, trigger_h) = (
+                    let (trigger_x, trigger_y, _trigger_w, _trigger_h) = (
                         ctx.bounds_x,
                         ctx.bounds_y,
                         ctx.bounds_width,
@@ -791,11 +791,11 @@ fn build_dropdown_content(
                 if allow_custom && !search_text.is_empty() {
                     let custom_value = search_text.clone();
                     let value_state_for_custom = value_state_for_opts.clone();
-                    let open_state_for_custom = open_state_for_opts.clone();
+                    let _open_state_for_custom = open_state_for_opts.clone();
                     let handle_state_for_custom = handle_state_for_opts.clone();
                     let on_change_for_custom = on_change_for_opts.clone();
                     let search_data_for_custom = search_data_for_opts.clone();
-                    let search_query_for_custom = search_query_for_opts.clone();
+                    let _search_query_for_custom = search_query_for_opts.clone();
 
                     let custom_item_key = format!("{}_custom", key_for_opts);
 
@@ -869,12 +869,12 @@ fn build_dropdown_content(
                     let is_opt_disabled = opt.disabled;
 
                     let value_state_for_opt = value_state_for_opts.clone();
-                    let open_state_for_opt = open_state_for_opts.clone();
+                    let _open_state_for_opt = open_state_for_opts.clone();
                     let handle_state_for_opt = handle_state_for_opts.clone();
                     let on_change_for_opt = on_change_for_opts.clone();
                     let opt_value_for_click = opt_value.clone();
-                    let search_data_for_opt = search_data_for_opts.clone();
-                    let search_query_for_opt = search_query_for_opts.clone();
+                    let _search_data_for_opt = search_data_for_opts.clone();
+                    let _search_query_for_opt = search_query_for_opts.clone();
 
                     let option_text_color = if is_opt_disabled {
                         text_tertiary

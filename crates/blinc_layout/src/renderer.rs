@@ -1209,7 +1209,7 @@ impl RenderTree {
     /// Collect render props from a boxed element builder
     fn collect_render_props_boxed(&mut self, element: &dyn ElementBuilder, node_id: LayoutNodeId) {
         // Debug: See all element types being collected
-        let eid = element.element_type_id();
+        let _eid = element.element_type_id();
         // eprintln!("collect_render_props_boxed: node={:?}, type_id={:?}", node_id, eid);
 
         let mut props = element.render_props();
@@ -1235,7 +1235,7 @@ impl RenderTree {
         // Use the element_type_id to determine type
         let type_id_boxed = element.element_type_id();
         if matches!(type_id_boxed, ElementTypeId::Canvas) {
-            let render_fn = element.canvas_render_info();
+            let _render_fn = element.canvas_render_info();
             // eprintln!(
             //     "collect_render_props_boxed: ElementTypeId::Canvas detected! has_render_fn={}",
             //     render_fn.is_some()
@@ -5300,7 +5300,7 @@ impl RenderTree {
         // Debug: see what layers we're checking
         let is_canvas = matches!(&render_node.element_type, ElementType::Canvas(_));
         if is_canvas {
-            let matches = effective_layer == target_layer;
+            let _matches = effective_layer == target_layer;
             // eprintln!(
             //     "render_layer_with_motion: Canvas node {:?}, effective_layer={:?}, target_layer={:?}, matches={}",
             //     node, effective_layer, target_layer, matches

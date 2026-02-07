@@ -4,7 +4,6 @@
 //! and streams recording data in real-time.
 
 use crate::{RecordingExport, SharedRecordingSession};
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -109,24 +108,12 @@ impl Drop for ServerHandle {
 pub struct DebugServer {
     config: DebugServerConfig,
     session: Arc<SharedRecordingSession>,
-    clients: Arc<Mutex<Vec<ClientConnection>>>,
-}
-
-struct ClientConnection {
-    #[cfg(unix)]
-    stream: std::os::unix::net::UnixStream,
-    #[cfg(windows)]
-    stream: std::net::TcpStream, // Fallback for Windows (TODO: named pipes)
 }
 
 impl DebugServer {
     /// Create a new debug server with the given config and recording session.
     pub fn new(config: DebugServerConfig, session: Arc<SharedRecordingSession>) -> Self {
-        Self {
-            config,
-            session,
-            clients: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self { config, session }
     }
 
     /// Start the server in a background thread.

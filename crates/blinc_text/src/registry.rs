@@ -201,6 +201,7 @@ impl FontRegistry {
     ///
     /// Emoji and Symbol fonts are NOT preloaded - they're loaded lazily on first use.
     /// This saves ~180MB of memory if emoji aren't used (Apple Color Emoji is huge).
+    #[allow(dead_code)]
     fn preload_generic_fonts(&mut self) {
         // Only preload essential text fonts - NOT emoji/symbol
         // Emoji font is 180MB+ on macOS, so lazy loading saves significant memory

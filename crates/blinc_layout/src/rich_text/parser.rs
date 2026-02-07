@@ -362,7 +362,7 @@ impl<'a> Parser<'a> {
 
     fn handle_closing_tag(&mut self, name: &str) {
         // Find matching opening tag on stack
-        let tag_matches = |tag_name: &str| match name {
+        let _tag_matches = |tag_name: &str| match name {
             "b" | "strong" => tag_name == "b" || tag_name == "strong",
             "i" | "em" => tag_name == "i" || tag_name == "em",
             "u" => tag_name == "u",
