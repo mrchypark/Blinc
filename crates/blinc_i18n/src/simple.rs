@@ -371,7 +371,7 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
         let value = if let Some(map) = args_map.as_ref() {
             map.get(key).copied()
         } else {
-            args.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+            args.iter().find(|&&(k, _)| k == key).map(|(_, v)| *v)
         };
 
         if let Some(v) = value {
