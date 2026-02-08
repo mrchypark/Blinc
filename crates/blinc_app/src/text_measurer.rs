@@ -193,17 +193,40 @@ impl TextMeasurer for FontTextMeasurer {
         // Determine which font to use based on options
         let generic_font = to_text_generic_font(options.generic_font);
 
-        // Fast path: use cached fonts only (never load during measurement)
-        // Use weight and italic from options to get the correct font variant
+        // Fast path: use cached fonts only (never load during measurement).
+        //
+        // Keep selection consistent with the renderer:
+        // - try requested family+style first
+        // - if unavailable, fall back to cached generic
+        // - if requested style isn't available, fall back to normal style (if cached)
         let mut registry = self.font_registry.lock().unwrap();
-        let font = match registry.get_for_render_with_style(
+        let mut font = registry.get_for_render_with_style(
             options.font_name.as_deref(),
             generic_font,
             options.font_weight,
             options.italic,
-        ) {
-            Some(f) => f,
-            None => return Self::estimate_size(text, font_size, options),
+        );
+        if font.is_none() {
+            font = registry.get_for_render_with_style(
+                None,
+                generic_font,
+                options.font_weight,
+                options.italic,
+            );
+        }
+        if font.is_none() && (options.font_weight != 400 || options.italic) {
+            font = registry.get_for_render_with_style(
+                options.font_name.as_deref(),
+                generic_font,
+                400,
+                false,
+            );
+            if font.is_none() {
+                font = registry.get_for_render_with_style(None, generic_font, 400, false);
+            }
+        }
+        let Some(font) = font else {
+            return Self::estimate_size(text, font_size, options);
         };
         drop(registry); // Release lock before layout
 
@@ -231,12 +254,17 @@ impl TextMeasurer for FontTextMeasurer {
             letter_spacing: layout_opts.letter_spacing,
             gid_resolver: blinc_text::fallback::FallbackGlyphIdResolver::new(),
         };
+        let resolved_weight = font.weight().to_number();
+        let resolved_italic = matches!(
+            font.style(),
+            blinc_text::FontStyle::Italic | blinc_text::FontStyle::Oblique
+        );
         let corrected_width = blinc_text::fallback::walk_layout_with_fallback(
             &layout,
             &font,
             self.font_registry.as_ref(),
-            options.font_weight,
-            options.italic,
+            resolved_weight,
+            resolved_italic,
             &mut walker,
         )
         .unwrap_or(0.0);
