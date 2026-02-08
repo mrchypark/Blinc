@@ -208,7 +208,16 @@ impl FontRegistry {
             // New faces can change fallback resolution; clear caches so we can discover them.
             self.fallback_char_cache.clear();
             self.fallback_codepoint_cache.clear();
-            self.faces.clear();
+            // `faces` also caches misses; drop only cached misses so dynamically loaded fonts
+            // can become visible without blowing away hot successful lookups.
+            let missing_keys: Vec<String> = self
+                .faces
+                .iter()
+                .filter_map(|(k, v)| if v.is_none() { Some(k.clone()) } else { None })
+                .collect();
+            for key in missing_keys {
+                self.faces.pop(&key);
+            }
         }
         loaded
     }
