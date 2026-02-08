@@ -387,7 +387,6 @@ impl TextLayoutEngine {
             .collect();
 
         let mut last_word_end = 0;
-        let mut last_word_width = 0.0f32;
 
         for glyph in shaped.glyphs.iter() {
             // Handle explicit newline - always force a line break
@@ -395,7 +394,6 @@ impl TextLayoutEngine {
                 lines.push(std::mem::take(&mut current_line));
                 line_width = 0.0;
                 last_word_end = 0;
-                last_word_width = 0.0;
                 continue; // Don't include the newline glyph itself
             }
 
@@ -430,14 +428,12 @@ impl TextLayoutEngine {
                                 .map(|g| shaped.scale(g.x_advance) + options.letter_spacing)
                                 .sum();
                             last_word_end = 0;
-                            last_word_width = 0.0;
                             broke_line = true;
                         } else {
                             // No word boundary found - break at current position (character break)
                             lines.push(std::mem::take(&mut current_line));
                             line_width = 0.0;
                             last_word_end = 0;
-                            last_word_width = 0.0;
                             broke_line = true;
                         }
                     }
@@ -446,7 +442,6 @@ impl TextLayoutEngine {
                         lines.push(std::mem::take(&mut current_line));
                         line_width = 0.0;
                         last_word_end = 0;
-                        last_word_width = 0.0;
                         broke_line = true;
                     }
                     LineBreakMode::None => {
@@ -468,7 +463,6 @@ impl TextLayoutEngine {
                     // Update word boundary if this glyph is a word break
                     if is_word_break {
                         last_word_end = current_line.len();
-                        last_word_width = line_width;
                     }
                     continue; // Move to next glyph
                 }
@@ -489,7 +483,6 @@ impl TextLayoutEngine {
             if is_word_break {
                 // Mark position AFTER this whitespace as potential break point
                 last_word_end = current_line.len();
-                last_word_width = line_width;
             }
         }
 

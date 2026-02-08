@@ -120,6 +120,12 @@ pub struct FontRegistry {
     db: Database,
     /// Cached FontFace instances (Some = found, None = not found)
     faces: FxHashMap<String, Option<Arc<FontFace>>>,
+    /// Cache loaded faces by fontdb ID (avoids re-parsing the same face repeatedly)
+    faces_by_id: FxHashMap<fontdb::ID, Arc<FontFace>>,
+    /// Codepoint -> best fallback face id cache (None = no supporting face found)
+    ///
+    /// Key includes requested weight/italic so style-sensitive lookups can be cached.
+    fallback_char_cache: FxHashMap<(u32, u16, bool), Option<fontdb::ID>>,
     /// Whether full system font scan has been performed
     system_fonts_loaded: bool,
 }
@@ -158,6 +164,8 @@ impl FontRegistry {
         Self {
             db,
             faces: FxHashMap::default(),
+            faces_by_id: FxHashMap::default(),
+            fallback_char_cache: FxHashMap::default(),
             system_fonts_loaded: false,
         }
         // Note: We don't preload generic fonts here anymore.
@@ -178,8 +186,242 @@ impl FontRegistry {
         let loaded = after - before;
         if loaded > 0 {
             tracing::debug!("Loaded {} font faces from data", loaded);
+            // New faces can change fallback resolution; clear caches so we can discover them.
+            self.fallback_char_cache.clear();
         }
         loaded
+    }
+
+    fn load_face_by_id_arc(&mut self, id: fontdb::ID) -> Result<Arc<FontFace>> {
+        if let Some(face) = self.faces_by_id.get(&id) {
+            return Ok(Arc::clone(face));
+        }
+        let face = Arc::new(self.load_face_by_id(id)?);
+        self.faces_by_id.insert(id, Arc::clone(&face));
+        Ok(face)
+    }
+
+    fn face_supports_char(&self, id: fontdb::ID, c: char) -> bool {
+        // Use fontdb's with_face_data to avoid loading/caching the whole FontFace for probes.
+        // This is still fairly fast (ttf-parser reads tables lazily).
+        self.db
+            .with_face_data(id, |data, face_index| {
+                let Ok(face) = ttf_parser::Face::parse(data, face_index) else {
+                    return false;
+                };
+                match face.glyph_index(c) {
+                    Some(gid) => gid.0 != 0, // glyph 0 is ".notdef"
+                    None => false,
+                }
+            })
+            .unwrap_or(false)
+    }
+
+    /// Find a best-effort system fallback font for a codepoint.
+    ///
+    /// This is a pragmatic implementation of "system fallback":
+    /// - Prefer an exact style match (italic/non-italic) and closest weight.
+    /// - Avoid emoji fonts for non-emoji characters.
+    /// - Cache results per (codepoint, weight, italic).
+    ///
+    /// Note: this may trigger a full system font scan on first use.
+    pub fn load_fallback_for_char(
+        &mut self,
+        c: char,
+        weight: u16,
+        italic: bool,
+    ) -> Option<Arc<FontFace>> {
+        // Don't try to fallback for control chars (including '\n'); layout uses these for breaks.
+        if c.is_control() {
+            return None;
+        }
+
+        // Use a script-ish "bucket" key to avoid O(unique-codepoints) font scans for scripts
+        // with lots of unique characters (CJK/Hangul/etc). We still validate cached faces
+        // cover the specific codepoint and re-resolve if they don't.
+        fn bucket_key(c: char) -> u32 {
+            let cp = c as u32;
+
+            // Hangul (Korean)
+            if (0x1100..=0x11FF).contains(&cp) // Hangul Jamo
+                || (0x3130..=0x318F).contains(&cp) // Hangul Compatibility Jamo
+                || (0xA960..=0xA97F).contains(&cp) // Hangul Jamo Extended-A
+                || (0xAC00..=0xD7A3).contains(&cp) // Hangul Syllables
+                || (0xD7B0..=0xD7FF).contains(&cp)
+            // Hangul Jamo Extended-B
+            {
+                return 0x11_0000;
+            }
+
+            // Hiragana/Katakana (Japanese)
+            if (0x3040..=0x309F).contains(&cp)
+                || (0x30A0..=0x30FF).contains(&cp)
+                || (0x31F0..=0x31FF).contains(&cp)
+                || (0xFF66..=0xFF9D).contains(&cp)
+            {
+                return 0x11_0001;
+            }
+
+            // Han ideographs (CJK)
+            if (0x3400..=0x4DBF).contains(&cp)
+                || (0x4E00..=0x9FFF).contains(&cp)
+                || (0x20000..=0x2A6DF).contains(&cp)
+                || (0x2A700..=0x2B73F).contains(&cp)
+                || (0x2B740..=0x2B81F).contains(&cp)
+                || (0x2B820..=0x2CEAF).contains(&cp)
+                || (0x2CEB0..=0x2EBEF).contains(&cp)
+            {
+                return 0x11_0002;
+            }
+
+            // Arabic
+            if (0x0600..=0x06FF).contains(&cp)
+                || (0x0750..=0x077F).contains(&cp)
+                || (0x08A0..=0x08FF).contains(&cp)
+                || (0xFB50..=0xFDFF).contains(&cp)
+                || (0xFE70..=0xFEFF).contains(&cp)
+            {
+                return 0x11_0003;
+            }
+
+            // Devanagari
+            if (0x0900..=0x097F).contains(&cp) || (0xA8E0..=0xA8FF).contains(&cp) {
+                return 0x11_0004;
+            }
+
+            // Thai
+            if (0x0E00..=0x0E7F).contains(&cp) {
+                return 0x11_0005;
+            }
+
+            // Hebrew
+            if (0x0590..=0x05FF).contains(&cp) {
+                return 0x11_0006;
+            }
+
+            // Cyrillic
+            if (0x0400..=0x04FF).contains(&cp) || (0x0500..=0x052F).contains(&cp) {
+                return 0x11_0007;
+            }
+
+            // Greek
+            if (0x0370..=0x03FF).contains(&cp) {
+                return 0x11_0008;
+            }
+
+            cp
+        }
+
+        let key = (bucket_key(c), weight, italic);
+        if let Some(&cached) = self.fallback_char_cache.get(&key) {
+            match cached {
+                None => return None,
+                Some(id) => {
+                    if let Some(face) = self
+                        .faces_by_id
+                        .get(&id)
+                        .map(Arc::clone)
+                        .or_else(|| self.load_face_by_id_arc(id).ok())
+                    {
+                        if face.has_glyph(c) {
+                            return Some(face);
+                        }
+                    }
+
+                    // Cached face doesn't actually cover this codepoint; invalidate and re-resolve.
+                    self.fallback_char_cache.remove(&key);
+                }
+            }
+        }
+
+        // Fast path: try the symbol font first. This covers common UI symbols (✓, arrows, etc.)
+        if let Ok(symbol) = self.load_generic_with_style(GenericFont::Symbol, weight, italic) {
+            if symbol.has_glyph(c) {
+                // Don't cache "None" here: symbol coverage depends on platform and we
+                // don't want to block later lookups that might find a better face
+                // (or a styled variant) after additional fonts are loaded.
+                return Some(symbol);
+            }
+        }
+
+        // Score faces that *actually* cover the character.
+        // Lower score is better.
+        fn style_mismatch_score(face_style: Style, italic: bool) -> u32 {
+            if italic {
+                match face_style {
+                    Style::Italic | Style::Oblique => 0,
+                    Style::Normal => 10_000,
+                }
+            } else {
+                match face_style {
+                    Style::Normal => 0,
+                    Style::Italic | Style::Oblique => 10_000,
+                }
+            }
+        }
+
+        fn pick_best_face_id(
+            reg: &FontRegistry,
+            c: char,
+            weight: u16,
+            italic: bool,
+        ) -> Option<fontdb::ID> {
+            let mut best: Option<(u32, fontdb::ID)> = None;
+            for face in reg.db.faces() {
+                // Avoid picking emoji fonts for non-emoji chars; they are huge and usually not desired.
+                // Emoji is handled by the caller via GenericFont::Emoji and emoji detection.
+                if face
+                    .families
+                    .first()
+                    .map(|(name, _)| name.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains("emoji")
+                {
+                    continue;
+                }
+
+                if !reg.face_supports_char(face.id, c) {
+                    continue;
+                }
+
+                let weight_dist = face.weight.0.abs_diff(weight) as u32;
+                let score = style_mismatch_score(face.style, italic) + weight_dist;
+
+                match best {
+                    Some((best_score, _)) if score >= best_score => {}
+                    _ => {
+                        best = Some((score, face.id));
+                        if score == 0 {
+                            break; // Can't do better than exact style + exact weight.
+                        }
+                    }
+                }
+            }
+            best.map(|(_, id)| id)
+        }
+
+        // First try only fonts that are already loaded (KNOWN_FONT_PATHS + any app-loaded fonts).
+        // If that fails and we haven't scanned the whole system font set yet, do the slow scan and retry.
+        let mut best_id = pick_best_face_id(self, c, weight, italic);
+        if best_id.is_none() && !self.system_fonts_loaded {
+            self.ensure_system_fonts_loaded();
+            best_id = pick_best_face_id(self, c, weight, italic);
+        }
+
+        let result = match best_id {
+            Some(id) => {
+                let loaded = self.load_face_by_id_arc(id).ok();
+                self.fallback_char_cache
+                    .insert(key, loaded.as_ref().map(|_| id));
+                loaded
+            }
+            None => {
+                self.fallback_char_cache.insert(key, None);
+                None
+            }
+        };
+        result
     }
 
     /// Ensure all system fonts are loaded (lazy initialization)

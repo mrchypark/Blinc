@@ -3,7 +3,7 @@
 //! Provides functions to detect emoji characters in text and render them
 //! as RGBA images for display.
 
-use crate::rasterizer::{GlyphFormat, GlyphRasterizer, RasterizedGlyph};
+use crate::rasterizer::GlyphRasterizer;
 use crate::registry::{FontRegistry, GenericFont};
 use crate::shaper::TextShaper;
 use crate::{Result, TextError};

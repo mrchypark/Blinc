@@ -1551,18 +1551,60 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             TextBaseline::Bottom => TextAnchor::Baseline, // Approximate with baseline
         };
 
+        // Map TextStyle font family to (font_name, generic fallback).
+        // TextStyle.family is a single string and often uses CSS-like generic names.
+        let family_raw = style.family.trim();
+        let family_first = family_raw
+            .split(',')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'');
+
+        let (font_name, generic) = match family_first.to_ascii_lowercase().as_str() {
+            "" | "system-ui" => (None, blinc_text::GenericFont::System),
+            "sans-serif" => (None, blinc_text::GenericFont::SansSerif),
+            "serif" => (None, blinc_text::GenericFont::Serif),
+            "monospace" => (None, blinc_text::GenericFont::Monospace),
+            // Treat "emoji"/"symbol" as explicit generic requests if provided.
+            "emoji" => (None, blinc_text::GenericFont::Emoji),
+            "symbol" => (None, blinc_text::GenericFont::Symbol),
+            _ => (Some(family_first), blinc_text::GenericFont::System),
+        };
+
+        // Map blinc_core::FontWeight to numeric weight (100..900).
+        let weight: u16 = match style.weight {
+            blinc_core::FontWeight::Thin => 100,
+            blinc_core::FontWeight::Light => 300,
+            blinc_core::FontWeight::Regular => 400,
+            blinc_core::FontWeight::Medium => 500,
+            blinc_core::FontWeight::Bold => 700,
+            blinc_core::FontWeight::Black => 900,
+        };
+
+        // Build full layout options so canvas text honors letter spacing and line height.
+        let mut layout_options = blinc_text::LayoutOptions::default();
+        layout_options.anchor = anchor;
+        layout_options.alignment = alignment;
+        layout_options.line_break = blinc_text::LineBreakMode::None; // no wrap for canvas text
+        layout_options.letter_spacing = style.letter_spacing;
+        layout_options.line_height = style.line_height;
+
         // Now borrow text_ctx and prepare glyphs
         let text_ctx = self.text_ctx.as_mut().unwrap();
-        if let Ok(mut glyphs) = text_ctx.prepare_text_with_options(
+        if let Ok(mut glyphs) = text_ctx.prepare_text_with_layout_options_and_style(
             text,
             transformed_origin.x,
             transformed_origin.y,
             style.size,
             color,
-            anchor,
-            alignment,
-            None,  // No width constraint
-            false, // No wrap for canvas text
+            &layout_options,
+            font_name,
+            generic,
+            weight,
+            false, // italic (not yet exposed on TextStyle)
+            None,  // layout_height
         ) {
             // Apply current clip bounds to all glyphs
             for glyph in &mut glyphs {

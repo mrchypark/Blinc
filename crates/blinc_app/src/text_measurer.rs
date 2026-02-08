@@ -6,7 +6,53 @@
 use blinc_layout::text_measure::{TextLayoutOptions, TextMeasurer, TextMetrics};
 use blinc_layout::GenericFont as LayoutGenericFont;
 use blinc_text::{FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+fn fallback_bucket_key(c: char) -> u32 {
+    let cp = c as u32;
+
+    // Hangul (Korean)
+    if (0x1100..=0x11FF).contains(&cp)
+        || (0x3130..=0x318F).contains(&cp)
+        || (0xA960..=0xA97F).contains(&cp)
+        || (0xAC00..=0xD7A3).contains(&cp)
+        || (0xD7B0..=0xD7FF).contains(&cp)
+    {
+        return 0x11_0000;
+    }
+
+    // Hiragana/Katakana (Japanese)
+    if (0x3040..=0x309F).contains(&cp)
+        || (0x30A0..=0x30FF).contains(&cp)
+        || (0x31F0..=0x31FF).contains(&cp)
+        || (0xFF66..=0xFF9D).contains(&cp)
+    {
+        return 0x11_0001;
+    }
+
+    // Han ideographs (CJK)
+    if (0x3400..=0x4DBF).contains(&cp) || (0x4E00..=0x9FFF).contains(&cp) {
+        return 0x11_0002;
+    }
+
+    // Arabic
+    if (0x0600..=0x06FF).contains(&cp)
+        || (0x0750..=0x077F).contains(&cp)
+        || (0x08A0..=0x08FF).contains(&cp)
+        || (0xFB50..=0xFDFF).contains(&cp)
+        || (0xFE70..=0xFEFF).contains(&cp)
+    {
+        return 0x11_0003;
+    }
+
+    // Devanagari
+    if (0x0900..=0x097F).contains(&cp) || (0xA8E0..=0xA8FF).contains(&cp) {
+        return 0x11_0004;
+    }
+
+    cp
+}
 
 /// Convert from layout's GenericFont to text's GenericFont
 fn to_text_generic_font(layout_font: LayoutGenericFont) -> GenericFont {
@@ -178,13 +224,126 @@ impl TextMeasurer for FontTextMeasurer {
         let layout_engine = self.layout_engine.lock().unwrap();
         let layout = layout_engine.layout(text, &font, font_size, &layout_opts);
 
+        // Width correction for font fallback:
+        // Layout positions/width are based on the primary font only. If the primary font is missing
+        // glyphs (common for CJK/Arabic/etc), rendering will fallback to system fonts which often
+        // have different advance widths. We apply the same "x_offset" correction logic as the
+        // renderer so measurement matches what will be drawn.
+        let mut corrected_width: f32 = 0.0;
+        let mut x_offset: f32;
+
+        // Local per-call cache: codepoint -> fallback face (or None)
+        let mut sys_fallback_cache: HashMap<u32, Option<Arc<FontFace>>> = HashMap::new();
+
+        // Lazy-loaded symbol/emoji fonts (avoid loading Apple Color Emoji unless needed)
+        let mut symbol_font: Option<Arc<FontFace>> = None;
+        let mut emoji_font: Option<Arc<FontFace>> = None;
+
+        for line in &layout.lines {
+            x_offset = 0.0;
+
+            for (i, glyph) in line.glyphs.iter().enumerate() {
+                if glyph.codepoint.is_whitespace() {
+                    continue;
+                }
+                if blinc_text::emoji::is_variation_selector(glyph.codepoint)
+                    || blinc_text::emoji::is_zwj(glyph.codepoint)
+                {
+                    continue;
+                }
+
+                let is_emoji_char = blinc_text::is_emoji(glyph.codepoint);
+                let primary_has_glyph = glyph.glyph_id != 0 && font.has_glyph(glyph.codepoint);
+                let needs_fallback = !primary_has_glyph || is_emoji_char;
+
+                if !needs_fallback {
+                    continue;
+                }
+
+                // Choose a fallback font
+                let mut fallback_font: Option<Arc<FontFace>> = None;
+
+                // Emoji: prefer emoji font for correct advances, fall back to symbol/system
+                if is_emoji_char {
+                    if emoji_font.is_none() {
+                        let mut registry = self.font_registry.lock().unwrap();
+                        emoji_font = registry.load_generic(GenericFont::Emoji).ok();
+                    }
+                    fallback_font = emoji_font.clone();
+                }
+
+                // Non-emoji: try system fallback (covers CJK/Arabic/etc), then symbol.
+                if fallback_font.is_none() && !is_emoji_char {
+                    let bucket = fallback_bucket_key(glyph.codepoint);
+                    let entry = sys_fallback_cache.entry(bucket).or_insert_with(|| {
+                        let mut registry = self.font_registry.lock().unwrap();
+                        registry.load_fallback_for_char(
+                            glyph.codepoint,
+                            options.font_weight,
+                            options.italic,
+                        )
+                    });
+
+                    // Rare: a cached face for this bucket may not cover every codepoint in the bucket.
+                    // If it doesn't, refresh the entry.
+                    if let Some(face) = entry.as_ref() {
+                        if !face.has_glyph(glyph.codepoint) {
+                            let mut registry = self.font_registry.lock().unwrap();
+                            *entry = registry.load_fallback_for_char(
+                                glyph.codepoint,
+                                options.font_weight,
+                                options.italic,
+                            );
+                        }
+                    }
+
+                    fallback_font = entry.clone();
+                }
+
+                if fallback_font.is_none() {
+                    if symbol_font.is_none() {
+                        let mut registry = self.font_registry.lock().unwrap();
+                        symbol_font = registry.load_generic(GenericFont::Symbol).ok();
+                    }
+                    fallback_font = symbol_font.clone();
+                }
+
+                let Some(fallback_font) = fallback_font else {
+                    continue;
+                };
+
+                // Compute fallback advance in pixels (include letter spacing to match layout)
+                let Some(fallback_gid) = fallback_font.glyph_id(glyph.codepoint) else {
+                    continue;
+                };
+                if fallback_gid == 0 {
+                    continue;
+                }
+
+                let adv_units = fallback_font.glyph_advance(fallback_gid).unwrap_or(0) as f32;
+                let scale = font_size / fallback_font.metrics().units_per_em as f32;
+                let fallback_advance = adv_units * scale + layout_opts.letter_spacing;
+
+                // Primary advance as implied by the primary layout (distance to next glyph)
+                let primary_advance = if i + 1 < line.glyphs.len() {
+                    (line.glyphs[i + 1].x - glyph.x).max(0.0)
+                } else {
+                    fallback_advance
+                };
+
+                x_offset += fallback_advance - primary_advance;
+            }
+
+            corrected_width = corrected_width.max((line.width + x_offset).max(0.0));
+        }
+
         // Get font metrics
         let metrics = font.metrics();
         let ascender = metrics.ascender_px(font_size);
         let descender = metrics.descender_px(font_size);
 
         TextMetrics {
-            width: layout.width,
+            width: corrected_width.max(layout.width),
             height: layout.height,
             ascender,
             descender,
