@@ -7,7 +7,7 @@
 //! have a glyph for an emoji character, the system emoji font is used.
 
 use crate::atlas::{ColorGlyphAtlas, GlyphAtlas, GlyphInfo};
-use crate::emoji::{is_emoji, is_variation_selector, is_zwj, should_skip_duplicate_emoji};
+use crate::emoji::is_emoji;
 use crate::font::{FontFace, FontStyle};
 use crate::layout::{LayoutOptions, PositionedGlyph, TextLayout, TextLayoutEngine};
 use crate::rasterizer::GlyphRasterizer;
@@ -69,6 +69,145 @@ struct ResolvedGlyphData {
     is_color: bool,
 }
 
+struct RenderFallbackWalker<'a> {
+    renderer: &'a mut TextRenderer,
+    glyph_infos: &'a mut Vec<Option<ResolvedGlyphData>>,
+    font: &'a FontFace,
+    font_id: u32,
+    font_size: f32,
+    options: &'a LayoutOptions,
+
+    fallback_font_id_cache: &'a mut rustc_hash::FxHashMap<usize, u32>,
+    shaper: &'a TextShaper,
+    fallback_shape_calls: &'a mut usize,
+    fallback_shaped_gid_cache: &'a mut rustc_hash::FxHashMap<(usize, u32), u16>,
+}
+
+impl RenderFallbackWalker<'_> {
+    fn needs_single_char_shaping(&self, c: char) -> bool {
+        matches!(
+            crate::fallback::fallback_bucket_key(c),
+            0x11_0003 | 0x11_0004 | 0x11_0005 | 0x11_0006
+        )
+    }
+}
+
+impl crate::fallback::FallbackWalkHandler for RenderFallbackWalker<'_> {
+    type Error = TextError;
+
+    fn on_skip(&mut self) -> std::result::Result<(), Self::Error> {
+        self.glyph_infos.push(None);
+        Ok(())
+    }
+
+    fn on_primary(&mut self, glyph: PositionedGlyph) -> std::result::Result<(), Self::Error> {
+        let glyph_info = self.renderer.rasterize_glyph_for_font(
+            self.font,
+            self.font_id,
+            glyph.glyph_id,
+            self.font_size,
+        )?;
+        self.glyph_infos.push(Some(ResolvedGlyphData {
+            info: glyph_info,
+            positioned: glyph,
+            is_color: false,
+        }));
+        Ok(())
+    }
+
+    fn on_fallback(
+        &mut self,
+        glyph: PositionedGlyph,
+        candidate: &crate::fallback::FallbackCandidate,
+    ) -> std::result::Result<Option<f32>, Self::Error> {
+        let Some(nominal_gid) = candidate.face.glyph_id(glyph.codepoint) else {
+            return Ok(None);
+        };
+        if nominal_gid == 0 {
+            return Ok(None);
+        }
+
+        let is_emoji_char = is_emoji(glyph.codepoint);
+
+        // Prefer shaping only for scripts that need it.
+        // If the shape budget is exceeded, fall back to cmap glyph id.
+        const MAX_FALLBACK_SHAPES_PER_CALL: usize = 1024;
+        let mut fallback_gid = nominal_gid;
+        if !candidate.use_color
+            && self.needs_single_char_shaping(glyph.codepoint)
+            && *self.fallback_shape_calls < MAX_FALLBACK_SHAPES_PER_CALL
+        {
+            let face_key = Arc::as_ptr(&candidate.face) as usize;
+            let cp = glyph.codepoint as u32;
+            if let Some(&cached) = self.fallback_shaped_gid_cache.get(&(face_key, cp)) {
+                if cached != 0 {
+                    fallback_gid = cached;
+                }
+            } else {
+                *self.fallback_shape_calls += 1;
+                let mut char_buf = [0u8; 4];
+                let char_str = glyph.codepoint.encode_utf8(&mut char_buf);
+                let shaped = self.shaper.shape(char_str, &candidate.face, self.font_size);
+                let shaped_gid = shaped.glyphs.first().map(|g| g.glyph_id).unwrap_or(0);
+                self.fallback_shaped_gid_cache
+                    .insert((face_key, cp), shaped_gid);
+                if shaped_gid != 0 {
+                    fallback_gid = shaped_gid;
+                }
+            }
+        }
+
+        let fallback_font_id = match candidate.kind {
+            crate::fallback::FallbackKind::Emoji => self.renderer.font_id(None, GenericFont::Emoji),
+            crate::fallback::FallbackKind::Symbol => {
+                self.renderer.font_id(None, GenericFont::Symbol)
+            }
+            crate::fallback::FallbackKind::System => {
+                let key = Arc::as_ptr(&candidate.face) as usize;
+                *self
+                    .fallback_font_id_cache
+                    .entry(key)
+                    .or_insert_with(|| self.renderer.font_id_for_fallback_face(&candidate.face))
+            }
+        };
+
+        let (glyph_info, is_color) = if candidate.use_color && is_emoji_char {
+            let info = self.renderer.rasterize_color_glyph_for_font(
+                &candidate.face,
+                fallback_font_id,
+                fallback_gid,
+                self.font_size,
+            )?;
+            (info, true)
+        } else {
+            let info = self.renderer.rasterize_glyph_for_font(
+                &candidate.face,
+                fallback_font_id,
+                fallback_gid,
+                self.font_size,
+            )?;
+            (info, false)
+        };
+
+        let fallback_positioned = PositionedGlyph {
+            glyph_id: fallback_gid,
+            cluster: glyph.cluster,
+            codepoint: glyph.codepoint,
+            x: glyph.x,
+            y: glyph.y,
+        };
+
+        let fallback_advance = glyph_info.advance as f32 + self.options.letter_spacing;
+        self.glyph_infos.push(Some(ResolvedGlyphData {
+            info: glyph_info,
+            positioned: fallback_positioned,
+            is_color,
+        }));
+
+        Ok(Some(fallback_advance))
+    }
+}
+
 /// Text renderer that manages fonts, atlas, and glyph rendering
 pub struct TextRenderer {
     /// Default font (legacy support)
@@ -114,184 +253,42 @@ impl TextRenderer {
         italic: bool,
     ) -> Result<(Vec<Option<ResolvedGlyphData>>, f32)> {
         let registry = Arc::clone(&self.font_registry);
-        let mut resolver = crate::fallback::FallbackResolver::new(weight, italic);
         let shaper = TextShaper::new();
 
         // Cache computed system fallback face IDs to reduce hashing overhead.
         let mut fallback_font_id_cache: rustc_hash::FxHashMap<usize, u32> =
             rustc_hash::FxHashMap::default();
 
-        // Shaping each fallback glyph can be expensive. We only shape for scripts where
-        // a single-codepoint GSUB substitution is likely (Arabic/Indic/etc), and cap the
-        // number of shape calls per prepare to avoid pathological CPU usage.
-        const MAX_FALLBACK_SHAPES_PER_CALL: usize = 1024;
         let mut fallback_shape_calls: usize = 0;
         let mut fallback_shaped_gid_cache: rustc_hash::FxHashMap<(usize, u32), u16> =
             rustc_hash::FxHashMap::default();
-        let needs_single_char_shaping = |c: char| {
-            matches!(
-                crate::fallback::fallback_bucket_key(c),
-                0x11_0003 | 0x11_0004 | 0x11_0005 | 0x11_0006
-            )
-        };
 
         let mut glyph_infos: Vec<Option<ResolvedGlyphData>> =
             Vec::with_capacity(layout.glyph_count());
 
-        let mut width_corrector = crate::fallback::WidthCorrector::new();
+        let mut walker = RenderFallbackWalker {
+            renderer: self,
+            glyph_infos: &mut glyph_infos,
+            font,
+            font_id,
+            font_size,
+            options,
+            fallback_font_id_cache: &mut fallback_font_id_cache,
+            shaper: &shaper,
+            fallback_shape_calls: &mut fallback_shape_calls,
+            fallback_shaped_gid_cache: &mut fallback_shaped_gid_cache,
+        };
 
-        for line in &layout.lines {
-            // Track advance correction when using fallback fonts (per line).
-            width_corrector.begin_line();
+        let corrected_width = crate::fallback::walk_layout_with_fallback(
+            layout,
+            font,
+            registry.as_ref(),
+            weight,
+            italic,
+            &mut walker,
+        )?;
 
-            for (i, positioned) in line.glyphs.iter().enumerate() {
-                if positioned.codepoint.is_whitespace() {
-                    glyph_infos.push(None);
-                    continue;
-                }
-
-                // Skip invisible combining characters when codepoint mapping is exact.
-                // (Note: for many multi-codepoint clusters HarfBuzz reports the cluster
-                // start codepoint for multiple glyphs; see duplicate-emoji suppression below.)
-                if is_variation_selector(positioned.codepoint) || is_zwj(positioned.codepoint) {
-                    glyph_infos.push(None);
-                    continue;
-                }
-
-                // Suppress duplicate emoji glyphs produced by cluster mapping.
-                if i > 0 && should_skip_duplicate_emoji(&line.glyphs[i - 1], positioned) {
-                    glyph_infos.push(None);
-                    continue;
-                }
-
-                let is_emoji_char = is_emoji(positioned.codepoint);
-
-                let primary_has_glyph =
-                    positioned.glyph_id != 0 && font.has_glyph(positioned.codepoint);
-                let needs_fallback = !primary_has_glyph || is_emoji_char;
-
-                if needs_fallback {
-                    let mut found_fallback = false;
-                    let candidates = resolver.candidates_for_char(
-                        registry.as_ref(),
-                        positioned.codepoint,
-                        is_emoji_char,
-                    );
-
-                    for candidate in &candidates {
-                        let Some(nominal_gid) = candidate.face.glyph_id(positioned.codepoint)
-                        else {
-                            continue;
-                        };
-                        if nominal_gid == 0 {
-                            continue;
-                        }
-
-                        // Prefer shaping only for scripts that need it.
-                        // If the shape budget is exceeded, fall back to cmap glyph id.
-                        let mut fallback_gid = nominal_gid;
-                        if !candidate.use_color
-                            && needs_single_char_shaping(positioned.codepoint)
-                            && fallback_shape_calls < MAX_FALLBACK_SHAPES_PER_CALL
-                        {
-                            let face_key = Arc::as_ptr(&candidate.face) as usize;
-                            let cp = positioned.codepoint as u32;
-                            if let Some(&cached) = fallback_shaped_gid_cache.get(&(face_key, cp)) {
-                                if cached != 0 {
-                                    fallback_gid = cached;
-                                }
-                            } else {
-                                fallback_shape_calls += 1;
-                                let mut char_buf = [0u8; 4];
-                                let char_str = positioned.codepoint.encode_utf8(&mut char_buf);
-                                let shaped = shaper.shape(char_str, &candidate.face, font_size);
-                                let shaped_gid =
-                                    shaped.glyphs.first().map(|g| g.glyph_id).unwrap_or(0);
-                                fallback_shaped_gid_cache.insert((face_key, cp), shaped_gid);
-                                if shaped_gid != 0 {
-                                    fallback_gid = shaped_gid;
-                                }
-                            }
-                        }
-
-                        let fallback_font_id = match candidate.kind {
-                            crate::fallback::FallbackKind::Emoji => {
-                                self.font_id(None, GenericFont::Emoji)
-                            }
-                            crate::fallback::FallbackKind::Symbol => {
-                                self.font_id(None, GenericFont::Symbol)
-                            }
-                            crate::fallback::FallbackKind::System => {
-                                let key = Arc::as_ptr(&candidate.face) as usize;
-                                *fallback_font_id_cache.entry(key).or_insert_with(|| {
-                                    self.font_id_for_fallback_face(&candidate.face)
-                                })
-                            }
-                        };
-
-                        let fallback_positioned = PositionedGlyph {
-                            glyph_id: fallback_gid,
-                            cluster: positioned.cluster,
-                            codepoint: positioned.codepoint,
-                            x: positioned.x + width_corrector.x_offset(),
-                            y: positioned.y,
-                        };
-
-                        let (glyph_info, is_color) = if candidate.use_color && is_emoji_char {
-                            let info = self.rasterize_color_glyph_for_font(
-                                &candidate.face,
-                                fallback_font_id,
-                                fallback_gid,
-                                font_size,
-                            )?;
-                            (info, true)
-                        } else {
-                            let info = self.rasterize_glyph_for_font(
-                                &candidate.face,
-                                fallback_font_id,
-                                fallback_gid,
-                                font_size,
-                            )?;
-                            (info, false)
-                        };
-
-                        let fallback_advance = glyph_info.advance as f32 + options.letter_spacing;
-                        let primary_advance = if i + 1 < line.glyphs.len() {
-                            (line.glyphs[i + 1].x - positioned.x).max(0.0)
-                        } else {
-                            fallback_advance
-                        };
-                        width_corrector.apply_advance(primary_advance, fallback_advance);
-
-                        glyph_infos.push(Some(ResolvedGlyphData {
-                            info: glyph_info,
-                            positioned: fallback_positioned,
-                            is_color,
-                        }));
-                        found_fallback = true;
-                        break;
-                    }
-
-                    if found_fallback {
-                        continue;
-                    }
-                }
-
-                let glyph_info =
-                    self.rasterize_glyph_for_font(font, font_id, positioned.glyph_id, font_size)?;
-                let mut adjusted_positioned = *positioned;
-                adjusted_positioned.x += width_corrector.x_offset();
-                glyph_infos.push(Some(ResolvedGlyphData {
-                    info: glyph_info,
-                    positioned: adjusted_positioned,
-                    is_color: false,
-                }));
-            }
-
-            width_corrector.end_line(line.width);
-        }
-
-        Ok((glyph_infos, width_corrector.corrected_width()))
+        Ok((glyph_infos, corrected_width))
     }
 
     /// Create a new text renderer with default atlas size.

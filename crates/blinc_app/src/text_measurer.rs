@@ -5,10 +5,45 @@
 
 use blinc_layout::text_measure::{TextLayoutOptions, TextMeasurer, TextMetrics};
 use blinc_layout::GenericFont as LayoutGenericFont;
-use blinc_text::{
-    FallbackResolver, FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine,
-};
+use blinc_text::{FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine};
 use std::sync::{Arc, Mutex};
+
+struct MeasureFallbackWalker {
+    font_size: f32,
+    letter_spacing: f32,
+}
+
+impl blinc_text::fallback::FallbackWalkHandler for MeasureFallbackWalker {
+    type Error = std::convert::Infallible;
+
+    fn on_skip(&mut self) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn on_primary(
+        &mut self,
+        _glyph: blinc_text::PositionedGlyph,
+    ) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn on_fallback(
+        &mut self,
+        glyph: blinc_text::PositionedGlyph,
+        candidate: &blinc_text::FallbackCandidate,
+    ) -> std::result::Result<Option<f32>, Self::Error> {
+        let Some(gid) = candidate.face.glyph_id(glyph.codepoint) else {
+            return Ok(None);
+        };
+        if gid == 0 {
+            return Ok(None);
+        }
+
+        let adv_units = candidate.face.glyph_advance(gid).unwrap_or(0) as f32;
+        let scale = self.font_size / candidate.face.metrics().units_per_em as f32;
+        Ok(Some(adv_units * scale + self.letter_spacing))
+    }
+}
 
 /// Convert from layout's GenericFont to text's GenericFont
 fn to_text_generic_font(layout_font: LayoutGenericFont) -> GenericFont {
@@ -183,74 +218,21 @@ impl TextMeasurer for FontTextMeasurer {
         // Width correction for font fallback:
         // Layout positions/width are based on the primary font only. If the primary font is missing
         // glyphs (common for CJK/Arabic/etc), rendering will fallback to system fonts which often
-        // have different advance widths. We apply the same "x_offset" correction logic as the
+        // have different advance widths. We apply the same x-offset correction logic as the
         // renderer so measurement matches what will be drawn.
-        let mut width_corrector = blinc_text::fallback::WidthCorrector::new();
-
-        let mut resolver = FallbackResolver::new(options.font_weight, options.italic);
-
-        for line in &layout.lines {
-            width_corrector.begin_line();
-
-            for (i, glyph) in line.glyphs.iter().enumerate() {
-                if glyph.codepoint.is_whitespace() {
-                    continue;
-                }
-                if blinc_text::emoji::is_variation_selector(glyph.codepoint)
-                    || blinc_text::emoji::is_zwj(glyph.codepoint)
-                {
-                    continue;
-                }
-
-                // Suppress duplicate emoji glyphs produced by HarfBuzz cluster mapping.
-                if i > 0
-                    && blinc_text::emoji::should_skip_duplicate_emoji(&line.glyphs[i - 1], glyph)
-                {
-                    continue;
-                }
-
-                let is_emoji_char = blinc_text::is_emoji(glyph.codepoint);
-                let primary_has_glyph = glyph.glyph_id != 0 && font.has_glyph(glyph.codepoint);
-                let needs_fallback = !primary_has_glyph || is_emoji_char;
-
-                if !needs_fallback {
-                    continue;
-                }
-
-                let candidates = resolver.candidates_for_char(
-                    self.font_registry.as_ref(),
-                    glyph.codepoint,
-                    is_emoji_char,
-                );
-                let fallback = candidates.into_iter().find_map(|c| {
-                    let gid = c.face.glyph_id(glyph.codepoint)?;
-                    if gid == 0 {
-                        None
-                    } else {
-                        Some((c.face, gid))
-                    }
-                });
-                let Some((fallback_font, fallback_gid)) = fallback else {
-                    continue;
-                };
-
-                // Compute fallback advance in pixels (include letter spacing to match layout)
-                let adv_units = fallback_font.glyph_advance(fallback_gid).unwrap_or(0) as f32;
-                let scale = font_size / fallback_font.metrics().units_per_em as f32;
-                let fallback_advance = adv_units * scale + layout_opts.letter_spacing;
-
-                // Primary advance as implied by the primary layout (distance to next glyph)
-                let primary_advance = if i + 1 < line.glyphs.len() {
-                    (line.glyphs[i + 1].x - glyph.x).max(0.0)
-                } else {
-                    fallback_advance
-                };
-
-                width_corrector.apply_advance(primary_advance, fallback_advance);
-            }
-
-            width_corrector.end_line(line.width);
-        }
+        let mut walker = MeasureFallbackWalker {
+            font_size,
+            letter_spacing: layout_opts.letter_spacing,
+        };
+        let corrected_width = blinc_text::fallback::walk_layout_with_fallback(
+            &layout,
+            &font,
+            self.font_registry.as_ref(),
+            options.font_weight,
+            options.italic,
+            &mut walker,
+        )
+        .unwrap_or(0.0);
 
         // Get font metrics
         let metrics = font.metrics();
@@ -258,7 +240,7 @@ impl TextMeasurer for FontTextMeasurer {
         let descender = metrics.descender_px(font_size);
 
         TextMetrics {
-            width: width_corrector.corrected_width().max(layout.width),
+            width: corrected_width.max(layout.width),
             height: layout.height,
             ascender,
             descender,

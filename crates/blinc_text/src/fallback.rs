@@ -5,7 +5,9 @@
 //! buckets for caching, while still validating that the chosen face covers the
 //! exact character at use sites.
 
+use crate::emoji::{is_emoji, is_variation_selector, is_zwj, should_skip_duplicate_emoji};
 use crate::font::FontFace;
+use crate::layout::{PositionedGlyph, TextLayout};
 use crate::registry::{FontRegistry, GenericFont};
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
@@ -49,6 +51,92 @@ impl WidthCorrector {
     pub fn corrected_width(&self) -> f32 {
         self.corrected_width
     }
+}
+
+pub trait FallbackWalkHandler {
+    type Error;
+
+    fn on_skip(&mut self) -> std::result::Result<(), Self::Error>;
+    fn on_primary(&mut self, glyph: PositionedGlyph) -> std::result::Result<(), Self::Error>;
+
+    /// Return `Ok(Some(fallback_advance_px))` to accept this candidate and apply width correction.
+    /// Return `Ok(None)` to reject this candidate and try the next one.
+    fn on_fallback(
+        &mut self,
+        glyph: PositionedGlyph,
+        candidate: &FallbackCandidate,
+    ) -> std::result::Result<Option<f32>, Self::Error>;
+}
+
+/// Walk a laid out text run and apply fallback + width correction in one place.
+///
+/// This centralizes the common loop used by both the renderer (rasterization) and the measurer
+/// (metrics-only), to reduce drift over time.
+pub fn walk_layout_with_fallback<H: FallbackWalkHandler>(
+    layout: &TextLayout,
+    primary_font: &FontFace,
+    registry: &Mutex<FontRegistry>,
+    weight: u16,
+    italic: bool,
+    handler: &mut H,
+) -> std::result::Result<f32, H::Error> {
+    let mut resolver = FallbackResolver::new(weight, italic);
+    let mut width_corrector = WidthCorrector::new();
+
+    for line in &layout.lines {
+        width_corrector.begin_line();
+
+        for (i, positioned) in line.glyphs.iter().enumerate() {
+            if positioned.codepoint.is_whitespace() {
+                handler.on_skip()?;
+                continue;
+            }
+            if is_variation_selector(positioned.codepoint) || is_zwj(positioned.codepoint) {
+                handler.on_skip()?;
+                continue;
+            }
+            if i > 0 && should_skip_duplicate_emoji(&line.glyphs[i - 1], positioned) {
+                handler.on_skip()?;
+                continue;
+            }
+
+            let is_emoji_char = is_emoji(positioned.codepoint);
+            let primary_has_glyph =
+                positioned.glyph_id != 0 && primary_font.has_glyph(positioned.codepoint);
+            let needs_fallback = !primary_has_glyph || is_emoji_char;
+
+            let mut adjusted = *positioned;
+            adjusted.x += width_corrector.x_offset();
+
+            if needs_fallback {
+                let candidates =
+                    resolver.candidates_for_char(registry, positioned.codepoint, is_emoji_char);
+
+                let mut handled = false;
+                for candidate in &candidates {
+                    if let Some(fallback_advance) = handler.on_fallback(adjusted, candidate)? {
+                        let primary_advance = if i + 1 < line.glyphs.len() {
+                            (line.glyphs[i + 1].x - positioned.x).max(0.0)
+                        } else {
+                            fallback_advance
+                        };
+                        width_corrector.apply_advance(primary_advance, fallback_advance);
+                        handled = true;
+                        break;
+                    }
+                }
+                if handled {
+                    continue;
+                }
+            }
+
+            handler.on_primary(adjusted)?;
+        }
+
+        width_corrector.end_line(line.width);
+    }
+
+    Ok(width_corrector.corrected_width())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
