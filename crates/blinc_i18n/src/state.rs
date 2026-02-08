@@ -115,8 +115,12 @@ impl I18nState {
 
     /// Translate a message using the locale fallback chain.
     pub fn tr(&self, msg: &Message) -> String {
-        let loc = self.locale();
-        let chain = locale_fallback_chain(&loc);
+        // Avoid cloning the locale string on the hot path; only hold the read lock
+        // long enough to build the fallback chain.
+        let chain = {
+            let loc_guard = self.locale.read().unwrap();
+            locale_fallback_chain(loc_guard.as_str())
+        };
 
         #[cfg(feature = "fluent")]
         let fluent = self.fluent.read().unwrap();
