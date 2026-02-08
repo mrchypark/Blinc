@@ -120,7 +120,7 @@ impl Checkbox {
         let box_size = config.size.size();
         let border_width = config.size.border_width();
         let checkmark_size = config.size.checkmark_size();
-        let radius = config.size.corner_radius(&theme);
+        let radius = config.size.corner_radius(theme);
 
         // Get colors
         let checked_bg = config

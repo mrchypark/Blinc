@@ -363,6 +363,7 @@ impl TabsTransition {
 
 /// Configuration for the tabs component
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 struct TabsConfig {
     state: State<String>,
     tabs: Vec<TabItem>,
@@ -742,6 +743,7 @@ impl TabsBuilder {
 }
 
 /// Build a simple tab trigger without nested Stateful (no hover effects)
+#[allow(clippy::type_complexity)]
 fn build_tab_trigger(
     trigger_key: &str,
     menu_item: &TabMenuItem,

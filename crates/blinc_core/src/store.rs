@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity, clippy::incompatible_msrv)]
 //! Blinc Store - Zustand-inspired centralized state management
 //!
 //! This module provides non-reactive external state that lives outside the
@@ -159,7 +160,7 @@ impl<T: Clone + Send + Sync + 'static> Store<T> {
         F: Fn(&T) + Send + Sync + 'static,
     {
         let mut subscribers = self.subscribers.write().unwrap();
-        let subs = subscribers.entry(key.to_string()).or_insert_with(Vec::new);
+        let subs = subscribers.entry(key.to_string()).or_default();
         let index = subs.len();
         subs.push(Box::new(callback));
 

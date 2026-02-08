@@ -122,8 +122,20 @@ pub struct KeyframeProperties {
     pub translate_x: Option<f32>,
     /// Translation Y in pixels
     pub translate_y: Option<f32>,
-    /// Rotation in degrees
+    /// Rotation in degrees (Z-axis)
     pub rotate: Option<f32>,
+    /// Rotation X in degrees (3D tilt)
+    pub rotate_x: Option<f32>,
+    /// Rotation Y in degrees (3D turn)
+    pub rotate_y: Option<f32>,
+    /// Perspective distance in pixels
+    pub perspective: Option<f32>,
+    /// 3D extrusion depth in pixels
+    pub depth: Option<f32>,
+    /// Z-axis translation in pixels (positive = toward viewer)
+    pub translate_z: Option<f32>,
+    /// Blend radius for smooth boolean operations (in pixels)
+    pub blend_3d: Option<f32>,
 }
 
 impl KeyframeProperties {
@@ -194,6 +206,42 @@ impl KeyframeProperties {
         self
     }
 
+    /// Builder: set X rotation (3D tilt)
+    pub fn with_rotate_x(mut self, degrees: f32) -> Self {
+        self.rotate_x = Some(degrees);
+        self
+    }
+
+    /// Builder: set Y rotation (3D turn)
+    pub fn with_rotate_y(mut self, degrees: f32) -> Self {
+        self.rotate_y = Some(degrees);
+        self
+    }
+
+    /// Builder: set perspective distance
+    pub fn with_perspective(mut self, px: f32) -> Self {
+        self.perspective = Some(px);
+        self
+    }
+
+    /// Builder: set 3D depth
+    pub fn with_depth(mut self, px: f32) -> Self {
+        self.depth = Some(px);
+        self
+    }
+
+    /// Builder: set translate-z
+    pub fn with_translate_z(mut self, px: f32) -> Self {
+        self.translate_z = Some(px);
+        self
+    }
+
+    /// Builder: set 3D blend radius
+    pub fn with_blend_3d(mut self, px: f32) -> Self {
+        self.blend_3d = Some(px);
+        self
+    }
+
     /// Interpolate between two property sets
     pub fn lerp(&self, other: &Self, t: f32) -> Self {
         Self {
@@ -203,6 +251,12 @@ impl KeyframeProperties {
             translate_x: lerp_opt(self.translate_x, other.translate_x, t),
             translate_y: lerp_opt(self.translate_y, other.translate_y, t),
             rotate: lerp_opt(self.rotate, other.rotate, t),
+            rotate_x: lerp_opt(self.rotate_x, other.rotate_x, t),
+            rotate_y: lerp_opt(self.rotate_y, other.rotate_y, t),
+            perspective: lerp_opt(self.perspective, other.perspective, t),
+            depth: lerp_opt(self.depth, other.depth, t),
+            translate_z: lerp_opt(self.translate_z, other.translate_z, t),
+            blend_3d: lerp_opt(self.blend_3d, other.blend_3d, t),
         }
     }
 
@@ -227,6 +281,26 @@ impl KeyframeProperties {
     /// Get the resolved rotation (defaults to 0.0 if not set)
     pub fn resolved_rotate(&self) -> f32 {
         self.rotate.unwrap_or(0.0)
+    }
+
+    /// Get the resolved X rotation in degrees (defaults to 0.0)
+    pub fn resolved_rotate_x(&self) -> f32 {
+        self.rotate_x.unwrap_or(0.0)
+    }
+
+    /// Get the resolved Y rotation in degrees (defaults to 0.0)
+    pub fn resolved_rotate_y(&self) -> f32 {
+        self.rotate_y.unwrap_or(0.0)
+    }
+
+    /// Get the resolved perspective distance (defaults to 0.0 = no perspective)
+    pub fn resolved_perspective(&self) -> f32 {
+        self.perspective.unwrap_or(0.0)
+    }
+
+    /// Get the resolved 3D depth (defaults to 0.0 = flat)
+    pub fn resolved_depth(&self) -> f32 {
+        self.depth.unwrap_or(0.0)
     }
 }
 

@@ -1005,20 +1005,24 @@ struct StackChild {
 
 impl StackChild {
     fn new(child: Box<dyn ElementBuilder>) -> Self {
-        let mut style = Style::default();
-        style.position = Position::Absolute;
-        // Set all inset values to 0 to fill the entire containing block
-        // This stretches the wrapper to match the Stack's size
-        style.inset = Rect {
-            left: LengthPercentageAuto::Length(0.0),
-            right: LengthPercentageAuto::Length(0.0),
-            top: LengthPercentageAuto::Length(0.0),
-            bottom: LengthPercentageAuto::Length(0.0),
+        let style = Style {
+            position: Position::Absolute,
+            // Set all inset values to 0 to fill the entire containing block
+            // This stretches the wrapper to match the Stack's size
+            inset: Rect {
+                left: LengthPercentageAuto::Length(0.0),
+                right: LengthPercentageAuto::Length(0.0),
+                top: LengthPercentageAuto::Length(0.0),
+                bottom: LengthPercentageAuto::Length(0.0),
+            },
+            // Clip children to this layer's bounds - important for z-ordering
+            // Each Stack layer clips its own content so text doesn't bleed through
+            overflow: taffy::Point {
+                x: Overflow::Clip,
+                y: Overflow::Clip,
+            },
+            ..Style::default()
         };
-        // Clip children to this layer's bounds - important for z-ordering
-        // Each Stack layer clips its own content so text doesn't bleed through
-        style.overflow.x = Overflow::Clip;
-        style.overflow.y = Overflow::Clip;
 
         Self {
             children: vec![child],

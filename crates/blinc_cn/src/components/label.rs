@@ -97,7 +97,7 @@ impl Label {
 
 /// Internal configuration for building a Label
 #[derive(Clone)]
-struct LabelConfig {
+pub(crate) struct LabelConfig {
     text: String,
     size: LabelSize,
     required: bool,

@@ -152,11 +152,9 @@ impl GlyphAtlas {
 
         for (i, shelf) in self.shelves.iter().enumerate() {
             // Check if glyph fits in this shelf
-            if shelf.height >= padded_height && shelf.x + padded_width <= self.width {
-                if shelf.y < best_y {
-                    best_y = shelf.y;
-                    best_shelf = Some(i);
-                }
+            if shelf.height >= padded_height && shelf.x + padded_width <= self.width && shelf.y < best_y {
+                best_y = shelf.y;
+                best_shelf = Some(i);
             }
         }
 
@@ -197,6 +195,7 @@ impl GlyphAtlas {
     }
 
     /// Insert a rasterized glyph into the atlas
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_glyph(
         &mut self,
         font_id: u32,
@@ -358,11 +357,9 @@ impl ColorGlyphAtlas {
         let mut best_y = u32::MAX;
 
         for (i, shelf) in self.shelves.iter().enumerate() {
-            if shelf.height >= padded_height && shelf.x + padded_width <= self.width {
-                if shelf.y < best_y {
-                    best_y = shelf.y;
-                    best_shelf = Some(i);
-                }
+            if shelf.height >= padded_height && shelf.x + padded_width <= self.width && shelf.y < best_y {
+                best_y = shelf.y;
+                best_shelf = Some(i);
             }
         }
 
@@ -402,6 +399,7 @@ impl ColorGlyphAtlas {
     }
 
     /// Insert a rasterized color glyph (RGBA) into the atlas
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_glyph(
         &mut self,
         font_id: u32,

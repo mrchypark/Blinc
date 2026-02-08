@@ -48,7 +48,7 @@ impl IOSWakeProxy {
 
 /// Placeholder wake proxy for non-iOS builds
 #[cfg(not(target_os = "ios"))]
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct IOSWakeProxy;
 
 #[cfg(not(target_os = "ios"))]
@@ -122,6 +122,7 @@ impl EventLoop for IOSEventLoop {
 
 /// Placeholder for non-iOS builds
 #[cfg(not(target_os = "ios"))]
+#[derive(Default)]
 pub struct IOSEventLoop {
     _private: (),
 }

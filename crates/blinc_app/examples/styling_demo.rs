@@ -39,7 +39,8 @@ fn main() -> Result<()> {
         // Load CSS stylesheet once — base styles, hover states, and animations
         // are applied automatically to elements with matching IDs.
         if !css_loaded {
-            ctx.add_css(r#"
+            ctx.add_css(
+                r#"
             #css-card {
                 background: #3b82f6;
                 border-radius: 12px;
@@ -122,7 +123,68 @@ fn main() -> Result<()> {
                 border-radius: 12px;
                 animation: glow 3000ms ease-in-out infinite;
             }
-            "#);
+
+            @keyframes spin-y {
+                0% { rotate-y: 0deg; }
+                100% { rotate-y: 360deg; }
+            }
+            #anim-spin-3d {
+                background: #3b82f6;
+                border-radius: 8px;
+                perspective: 800px;
+                animation: spin-y 4000ms linear infinite;
+            }
+
+            @keyframes wobble-3d {
+                0% { rotate-x: -15deg; rotate-y: -15deg; }
+                50% { rotate-x: 15deg; rotate-y: 15deg; }
+                100% { rotate-x: -15deg; rotate-y: -15deg; }
+            }
+            #anim-wobble-3d {
+                background: #22c55e;
+                border-radius: 12px;
+                perspective: 800px;
+                animation: wobble-3d 3000ms ease-in-out infinite;
+            }
+
+            @keyframes float-z {
+                0% { translate-z: 0px; }
+                50% { translate-z: 40px; }
+                100% { translate-z: 0px; }
+            }
+            #anim-float-3d {
+                shape-3d: box;
+                depth: 80px;
+                perspective: 600px;
+                rotate-y: 15deg;
+                background: #f97316;
+                border-radius: 8px;
+                animation: float-z 2000ms ease-in-out infinite;
+            }
+
+            #uv-box-gradient {
+                shape-3d: box;
+                depth: 80px;
+                perspective: 800px;
+                rotate-x: 15deg;
+                rotate-y: 20deg;
+                background: linear-gradient(45deg, #4488ff, #ff4488);
+            }
+            #uv-sphere-gradient {
+                shape-3d: sphere;
+                depth: 120px;
+                perspective: 800px;
+                background: linear-gradient(0deg, #00ff88, #0088ff);
+            }
+            #uv-cylinder-gradient {
+                shape-3d: cylinder;
+                depth: 120px;
+                perspective: 800px;
+                background: radial-gradient(circle, #ffaa00, #ff4400);
+            }
+
+            "#,
+            );
             css_loaded = true;
         }
 
@@ -163,6 +225,13 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(transforms_section())
                     .child(opacity_section())
                     .child(materials_section())
+                    // 3D features
+                    .child(transforms_3d_section())
+                    .child(sdf_3d_shapes_section())
+                    .child(lighting_3d_section())
+                    .child(translate_z_section())
+                    .child(uv_mapping_3d_section())
+                    .child(animation_3d_section())
                     .child(api_comparison_section()),
             ),
         )
@@ -191,7 +260,7 @@ fn header() -> impl ElementBuilder {
                 .color(text_primary),
         )
         .child(
-            text("Stylesheets | Hover | Animations | css! | style! | CSS Parser")
+            text("Stylesheets | Hover | Animations | css! | style! | 3D SDF | Boolean Ops")
                 .size(14.0)
                 .color(text_secondary),
         )
@@ -1066,6 +1135,360 @@ fn materials_section() -> impl ElementBuilder {
 }
 
 // ============================================================================
+// 3D TRANSFORMS SECTION
+// ============================================================================
+
+fn transforms_3d_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("3D Transforms"))
+        .child(section_description(
+            "rotate-x, rotate-y with perspective for 3D element rotation.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                .child(labeled_3d_box(
+                    "rotate-x: 30",
+                    css! {
+                        background: Color::from_hex(0x3b82f6);
+                        border-radius: 8.0;
+                        rotate-x: 30.0;
+                        perspective: 800.0;
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "rotate-y: 30",
+                    css! {
+                        background: Color::from_hex(0x22c55e);
+                        border-radius: 8.0;
+                        rotate-y: 30.0;
+                        perspective: 800.0;
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "rotate-x + rotate-y",
+                    style! {
+                        bg: Color::from_hex(0xf97316),
+                        rounded: 8.0,
+                        rotate_x: 20.0,
+                        rotate_y: 25.0,
+                        perspective: 800.0,
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "perspective: 200",
+                    style! {
+                        bg: Color::from_hex(0xa855f7),
+                        rounded: 8.0,
+                        rotate_y: 30.0,
+                        perspective: 200.0,
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "perspective: 2000",
+                    style! {
+                        bg: Color::from_hex(0xec4899),
+                        rounded: 8.0,
+                        rotate_y: 30.0,
+                        perspective: 2000.0,
+                    },
+                )),
+        )
+}
+
+// ============================================================================
+// 3D SDF SHAPES SECTION
+// ============================================================================
+
+fn sdf_3d_shapes_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("3D SDF Shapes"))
+        .child(section_description(
+            "Raymarched signed distance field shapes via shape-3d with depth and perspective.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(16.0)
+                .child(labeled_3d_box(
+                    "box",
+                    style! {
+                        bg: Color::from_hex(0x3b82f6),
+                        shape_3d: "box",
+                        depth: 80.0,
+                        perspective: 800.0,
+                        rotate_x: 15.0,
+                        rotate_y: 20.0,
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "sphere",
+                    style! {
+                        bg: Color::from_hex(0x22c55e),
+                        shape_3d: "sphere",
+                        depth: 120.0,
+                        perspective: 800.0,
+                        rotate_x: 10.0,
+                        rotate_y: 15.0,
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "cylinder",
+                    style! {
+                        bg: Color::from_hex(0xf97316),
+                        shape_3d: "cylinder",
+                        depth: 120.0,
+                        perspective: 800.0,
+                        rotate_x: 20.0,
+                        rotate_y: 15.0,
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "torus",
+                    style! {
+                        bg: Color::from_hex(0xa855f7),
+                        shape_3d: "torus",
+                        depth: 120.0,
+                        perspective: 800.0,
+                        rotate_x: 25.0,
+                        rotate_y: 15.0,
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "capsule",
+                    style! {
+                        bg: Color::from_hex(0xec4899),
+                        shape_3d: "capsule",
+                        depth: 120.0,
+                        perspective: 800.0,
+                        rotate_x: 15.0,
+                        rotate_y: 20.0,
+                    },
+                )),
+        )
+}
+
+// ============================================================================
+// 3D LIGHTING SECTION
+// ============================================================================
+
+fn lighting_3d_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("3D Lighting"))
+        .child(section_description(
+            "Blinn-Phong shading with configurable light direction, intensity, ambient, and specular.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(16.0)
+                .child(labeled_3d_box(
+                    "Default lighting",
+                    style! {
+                        bg: Color::from_hex(0x3b82f6),
+                        shape_3d: "sphere",
+                        depth: 120.0,
+                        perspective: 800.0,
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "Top light",
+                    style! {
+                        bg: Color::from_hex(0x3b82f6),
+                        shape_3d: "sphere",
+                        depth: 120.0,
+                        perspective: 800.0,
+                        light_direction: (0.0, -1.0, 0.5),
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "Side light",
+                    style! {
+                        bg: Color::from_hex(0x3b82f6),
+                        shape_3d: "sphere",
+                        depth: 120.0,
+                        perspective: 800.0,
+                        light_direction: (1.0, 0.0, 0.5),
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "High specular",
+                    style! {
+                        bg: Color::from_hex(0x3b82f6),
+                        shape_3d: "sphere",
+                        depth: 120.0,
+                        perspective: 800.0,
+                        specular: 64.0,
+                        light_intensity: 1.5,
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "High ambient",
+                    style! {
+                        bg: Color::from_hex(0x3b82f6),
+                        shape_3d: "sphere",
+                        depth: 120.0,
+                        perspective: 800.0,
+                        ambient: 0.8,
+                    },
+                )),
+        )
+}
+
+// ============================================================================
+// TRANSLATE-Z SECTION
+// ============================================================================
+
+fn translate_z_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("translate-z"))
+        .child(section_description(
+            "Z-axis positioning on 3D shapes. Positive moves toward viewer (appears larger), negative moves away.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                .child(labeled_3d_box(
+                    "translate-z: 0",
+                    css! {
+                        background: Color::from_hex(0x3b82f6);
+                        shape-3d: "box";
+                        depth: 80.0;
+                        perspective: 600.0;
+                        rotate-y: 15.0;
+                        translate-z: 0.0;
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "translate-z: 100",
+                    css! {
+                        background: Color::from_hex(0x3b82f6);
+                        shape-3d: "box";
+                        depth: 80.0;
+                        perspective: 600.0;
+                        rotate-y: 15.0;
+                        translate-z: 100.0;
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "translate-z: 200",
+                    css! {
+                        background: Color::from_hex(0x3b82f6);
+                        shape-3d: "box";
+                        depth: 80.0;
+                        perspective: 600.0;
+                        rotate-y: 15.0;
+                        translate-z: 200.0;
+                    },
+                ))
+                .child(labeled_3d_box(
+                    "translate-z: -100",
+                    css! {
+                        background: Color::from_hex(0x3b82f6);
+                        shape-3d: "box";
+                        depth: 80.0;
+                        perspective: 600.0;
+                        rotate-y: 15.0;
+                        translate-z: -100.0;
+                    },
+                )),
+        )
+}
+
+// ============================================================================
+// UV MAPPING SECTION
+// ============================================================================
+
+fn uv_mapping_3d_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("3D UV Mapping"))
+        .child(section_description(
+            "Background colors and gradients automatically mapped onto 3D surfaces.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(16.0)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("Box + linear gradient"))
+                        .child(div().w(120.0).h(120.0).id("uv-box-gradient")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("Sphere + linear gradient"))
+                        .child(div().w(120.0).h(120.0).id("uv-sphere-gradient")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("Cylinder + radial gradient"))
+                        .child(div().w(120.0).h(120.0).id("uv-cylinder-gradient")),
+                )
+                .child(labeled_3d_box(
+                    "Solid on sphere",
+                    style! {
+                        bg: Color::from_hex(0xD4AF37),
+                        shape_3d: "sphere",
+                        depth: 120.0,
+                        perspective: 800.0,
+                    },
+                )),
+        )
+}
+
+// ============================================================================
+// 3D ANIMATION SECTION
+// ============================================================================
+
+fn animation_3d_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("3D Animations"))
+        .child(section_description(
+            "CSS @keyframes animating rotate-x, rotate-y, and translate-z.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(16.0)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("spin-y (4s infinite)"))
+                        .child(div().w(120.0).h(120.0).id("anim-spin-3d")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("wobble-3d (3s infinite)"))
+                        .child(div().w(120.0).h(120.0).id("anim-wobble-3d")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("float-z (2s infinite)"))
+                        .child(div().w(120.0).h(120.0).id("anim-float-3d")),
+                ),
+        )
+}
+
+// ============================================================================
 // API COMPARISON SECTION
 // ============================================================================
 
@@ -1160,4 +1583,18 @@ fn labeled_box(label: &str, style: ElementStyle) -> impl ElementBuilder {
         .gap(8.0)
         .child(code_label(label))
         .child(styled_box_with_element_style(style))
+}
+
+/// Create a 120x120 box for 3D demos
+fn styled_3d_box(es: ElementStyle) -> Div {
+    div().w(120.0).h(120.0).style(&es)
+}
+
+/// Create a labeled 3D demo box (120x120)
+fn labeled_3d_box(label: &str, style: ElementStyle) -> impl ElementBuilder {
+    div()
+        .flex_col()
+        .gap(8.0)
+        .child(code_label(label))
+        .child(styled_3d_box(style))
 }

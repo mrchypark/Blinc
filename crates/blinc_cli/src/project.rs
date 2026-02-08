@@ -171,7 +171,7 @@ Edit `.blincproj` to configure:
 
 /// Create platform-specific files
 fn create_platform_files(path: &Path, name: &str) -> Result<()> {
-    let package_name = name.replace('-', "_").replace(' ', "_").to_lowercase();
+    let package_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Android
     create_android_files(path, name, &package_name)?;
@@ -781,7 +781,7 @@ blinc build --target windows --release
 
 fn create_linux_files(path: &Path, name: &str) -> Result<()> {
     let linux_path = path.join("platforms/linux");
-    let binary_name = name.to_lowercase().replace(' ', "_").replace('-', "_");
+    let binary_name = name.to_lowercase().replace([' ', '-'], "_");
 
     // Desktop entry file
     fs::write(
@@ -864,7 +864,7 @@ cp {binary_name}.desktop ~/.local/share/applications/
 
 fn create_wasm_files(path: &Path, name: &str) -> Result<()> {
     let wasm_path = path.join("platforms/wasm");
-    let binary_name = name.to_lowercase().replace(' ', "_").replace('-', "_");
+    let binary_name = name.to_lowercase().replace([' ', '-'], "_");
 
     // index.html - Main HTML entry point
     fs::write(
@@ -1296,7 +1296,7 @@ fn template_counter(name: &str) -> String {
 /// This creates a native Rust project with Cargo.toml instead of .blinc DSL files.
 /// Ideal for testing mobile platforms with full control over the Rust code.
 pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
-    let package_name = name.replace('-', "_").replace(' ', "_").to_lowercase();
+    let package_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Get blinc workspace path (relative to the generated project)
     let blinc_path = std::env::var("BLINC_PATH").unwrap_or_else(|_| {

@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Application state
+#[derive(Default)]
 pub struct AppState {
     /// Loaded recording (if any)
     pub recording: Option<RecordingExport>,
@@ -41,22 +42,6 @@ pub struct AppState {
     pub connected: bool,
     /// Server address
     pub server_addr: Option<String>,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            recording: None,
-            player: None,
-            current_snapshot: None,
-            selected_element_id: None,
-            tree_state: TreePanelState::default(),
-            preview_config: PreviewConfig::default(),
-            timeline_state: TimelinePanelState::default(),
-            connected: false,
-            server_addr: None,
-        }
-    }
 }
 
 impl AppState {

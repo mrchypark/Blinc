@@ -52,14 +52,13 @@ impl FontTextMeasurer {
     /// ensuring consistent font loading and metrics between measurement
     /// and rendering.
     pub fn with_shared_registry(font_registry: Arc<Mutex<FontRegistry>>) -> Self {
-        let measurer = Self {
+        // Note: system font loading is skipped since the registry is shared
+        // and should already be initialized by the renderer
+        Self {
             font: Arc::new(Mutex::new(None)),
             font_registry,
             layout_engine: Mutex::new(TextLayoutEngine::new()),
-        };
-        // Note: system font loading is skipped since the registry is shared
-        // and should already be initialized by the renderer
-        measurer
+        }
     }
 
     /// Load the system default font
@@ -165,15 +164,19 @@ impl TextMeasurer for FontTextMeasurer {
         drop(registry); // Release lock before layout
 
         // Convert our options to blinc_text options
-        let mut layout_opts = LayoutOptions::default();
-        layout_opts.line_height = options.line_height;
-        layout_opts.letter_spacing = options.letter_spacing;
-        if let Some(max_width) = options.max_width {
-            layout_opts.max_width = Some(max_width);
+        let (max_width, line_break) = if let Some(mw) = options.max_width {
+            (Some(mw), blinc_text::LineBreakMode::Word)
         } else {
             // No wrapping for single-line measurement
-            layout_opts.line_break = blinc_text::LineBreakMode::None;
-        }
+            (None, blinc_text::LineBreakMode::None)
+        };
+        let layout_opts = LayoutOptions {
+            line_height: options.line_height,
+            letter_spacing: options.letter_spacing,
+            max_width,
+            line_break,
+            ..LayoutOptions::default()
+        };
 
         let layout_engine = self.layout_engine.lock().unwrap();
         let layout = layout_engine.layout(text, &font, font_size, &layout_opts);

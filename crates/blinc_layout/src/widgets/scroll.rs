@@ -1162,14 +1162,13 @@ impl ScrollPhysics {
 
         // Auto-detect scrolling activity from physics state
         // This shows the scrollbar even if scroll events don't go through handlers
-        if self.state == ScrollState::Scrolling || self.state == ScrollState::Bouncing {
-            if self.scrollbar_state == ScrollbarState::Idle
-                || self.scrollbar_state == ScrollbarState::FadingOut
-            {
-                self.scrollbar_state = ScrollbarState::Scrolling;
-                self.idle_time = 0.0;
-                self.update_scrollbar_visibility();
-            }
+        if (self.state == ScrollState::Scrolling || self.state == ScrollState::Bouncing)
+            && (self.scrollbar_state == ScrollbarState::Idle
+                || self.scrollbar_state == ScrollbarState::FadingOut)
+        {
+            self.scrollbar_state = ScrollbarState::Scrolling;
+            self.idle_time = 0.0;
+            self.update_scrollbar_visibility();
         }
 
         // Update idle timer for auto-dismiss

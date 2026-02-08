@@ -42,7 +42,7 @@ fn main() {
     for entry in walkdir::WalkDir::new(icons_dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "svg"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "svg"))
     {
         let file_name = entry.path().file_stem().unwrap().to_str().unwrap();
         let content = match fs::read_to_string(entry.path()) {
@@ -173,7 +173,7 @@ fn parse_svg(content: &str, file_name: &str) -> Option<(String, String)> {
     }
 
     // Convert filename to SCREAMING_SNAKE_CASE const name
-    let const_name = file_name.to_uppercase().replace('-', "_").replace('.', "_");
+    let const_name = file_name.to_uppercase().replace(['-', '.'], "_");
 
     Some((const_name, elements.join("")))
 }

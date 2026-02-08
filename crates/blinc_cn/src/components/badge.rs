@@ -94,9 +94,9 @@ impl Badge {
         let theme = ThemeState::get();
         let label = label.into();
 
-        let bg = variant.background(&theme);
-        let fg = variant.foreground(&theme);
-        let border = variant.border(&theme);
+        let bg = variant.background(theme);
+        let fg = variant.foreground(theme);
+        let border = variant.border(theme);
 
         let padding_x = theme.spacing_value(SpacingToken::Space2_5); // 10px
         let padding_y = theme.spacing_value(SpacingToken::Space0_5); // 2px

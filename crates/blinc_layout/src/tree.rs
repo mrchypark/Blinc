@@ -270,7 +270,7 @@ impl LayoutTree {
         };
 
         // Collect children to remove
-        let children_to_remove: Vec<_> = children.iter().copied().collect();
+        let children_to_remove: Vec<_> = children.to_vec();
 
         // Remove each child from taffy and our maps
         for child_taffy in children_to_remove {

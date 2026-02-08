@@ -245,7 +245,7 @@ impl EmojiRenderer {
         // Get glyph ID for this emoji
         let glyph_id = emoji_font
             .glyph_id(emoji)
-            .ok_or_else(|| TextError::GlyphNotFound(emoji))?;
+            .ok_or(TextError::GlyphNotFound(emoji))?;
 
         if glyph_id == 0 {
             return Err(TextError::GlyphNotFound(emoji));

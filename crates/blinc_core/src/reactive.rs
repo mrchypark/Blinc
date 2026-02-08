@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Fine-grained reactive signal system
 //!
 //! Inspired by Leptos/SolidJS signals with automatic dependency tracking.

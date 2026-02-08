@@ -328,7 +328,12 @@ impl IOSRenderContext {
             .map(|tree| !tree.css_animations_empty())
             .unwrap_or(false);
 
-        dirty || wake_requested || animations_active || has_stateful_updates || has_pending_rebuilds || css_animating
+        dirty
+            || wake_requested
+            || animations_active
+            || has_stateful_updates
+            || has_pending_rebuilds
+            || css_animating
     }
     /// Update the window size
     ///

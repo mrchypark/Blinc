@@ -116,6 +116,7 @@ unsafe impl Sync for AndroidWindow {}
 
 /// Placeholder for non-Android builds
 #[cfg(not(target_os = "android"))]
+#[derive(Default)]
 pub struct AndroidWindow {
     _private: (),
 }
@@ -124,7 +125,7 @@ pub struct AndroidWindow {
 impl AndroidWindow {
     /// Create a placeholder window (panics on non-Android)
     pub fn new() -> Self {
-        Self { _private: () }
+        Self::default()
     }
 }
 

@@ -173,7 +173,7 @@ impl ImageFilter {
         }
     }
 
-    fn to_array(&self) -> [f32; 8] {
+    fn to_array(self) -> [f32; 8] {
         [
             self.grayscale,
             self.sepia,
@@ -774,28 +774,14 @@ impl ElementBuilder for Image {
     #[allow(deprecated)]
     fn render_props(&self) -> RenderProps {
         RenderProps {
-            background: None,
             border_radius: blinc_core::CornerRadius::uniform(self.border_radius),
             border_color: self.border_color,
             border_width: self.border_width,
-            border_sides: Default::default(),
             layer: self.render_layer,
-            material: None,
-            node_id: None,
             shadow: self.shadow,
             transform: self.transform.clone(),
             opacity: self.opacity,
-            clips_content: false,
-            motion: None,
-            motion_stable_id: None,
-            motion_should_replay: false,
-            motion_is_suspended: false,
-            motion_on_ready_callback: None,
-            is_stack_layer: false,
-            pointer_events_none: false,
-            cursor: None,
-            layer_effects: Vec::new(),
-            motion_is_exiting: false,
+            ..Default::default()
         }
     }
 

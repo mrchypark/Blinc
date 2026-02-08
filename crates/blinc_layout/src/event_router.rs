@@ -1092,6 +1092,7 @@ impl EventRouter {
     }
 
     /// Recursive hit test for a single node
+    #[allow(clippy::too_many_arguments)]
     fn hit_test_node(
         &self,
         tree: &RenderTree,
@@ -1193,6 +1194,7 @@ impl EventRouter {
     }
 
     /// Recursive hit test collecting all hits
+    #[allow(clippy::too_many_arguments)]
     fn hit_test_node_all(
         &self,
         tree: &RenderTree,

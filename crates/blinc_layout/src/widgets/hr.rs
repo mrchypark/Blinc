@@ -70,8 +70,10 @@ pub fn hr_with_config(config: HrConfig) -> Div {
 
 /// Create a horizontal rule with custom color
 pub fn hr_color(color: Color) -> Div {
-    let mut config = HrConfig::default();
-    config.color = color;
+    let config = HrConfig {
+        color,
+        ..HrConfig::default()
+    };
     hr_with_config(config)
 }
 
@@ -91,8 +93,10 @@ pub fn hr_with_bg(wrapper_bg: Color) -> Div {
 
 /// Create a horizontal rule with custom thickness
 pub fn hr_thick(thickness: f32) -> Div {
-    let mut config = HrConfig::default();
-    config.thickness = thickness;
+    let config = HrConfig {
+        thickness,
+        ..HrConfig::default()
+    };
     hr_with_config(config)
 }
 

@@ -92,7 +92,7 @@ impl GpuImage {
 /// - `params`: `vec4<f32>` (16 bytes) - border_radius, opacity, padding, padding
 /// - `clip_bounds`: `vec4<f32>` (16 bytes) - clip region
 /// - `clip_radius`: `vec4<f32>` (16 bytes) - clip corner radii
-/// Total: 96 bytes
+///   Total: 96 bytes
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuImageInstance {
@@ -179,6 +179,7 @@ impl GpuImageInstance {
     }
 
     /// Set rounded rectangular clip region with per-corner radii
+    #[allow(clippy::too_many_arguments)]
     pub fn with_clip_rounded_rect_corners(
         mut self,
         x: f32,

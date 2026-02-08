@@ -46,7 +46,7 @@ pub fn suite() -> TestSuite {
 
         for (i, name) in names.iter().enumerate() {
             ctx.draw_text(
-                *name,
+                name,
                 50.0,
                 50.0 + i as f32 * 40.0,
                 20.0,
@@ -66,7 +66,7 @@ pub fn suite() -> TestSuite {
 
         for (i, (name, color)) in colors.iter().enumerate() {
             ctx.draw_text(
-                *name,
+                name,
                 50.0,
                 50.0 + i as f32 * 40.0,
                 24.0,
@@ -120,7 +120,7 @@ pub fn suite() -> TestSuite {
 
         for (i, line) in lines.iter().enumerate() {
             ctx.draw_text(
-                *line,
+                line,
                 50.0,
                 50.0 + i as f32 * 24.0,
                 16.0,

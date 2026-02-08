@@ -68,6 +68,7 @@ pub fn create_shared_motion_states() -> SharedMotionStates {
 ///
 /// This allows components to access animations without needing explicit context.
 /// Set by RenderState on initialization, used by blinc_cn components.
+#[allow(clippy::incompatible_msrv)]
 static GLOBAL_SCHEDULER: LazyLock<RwLock<Option<SchedulerHandle>>> =
     LazyLock::new(|| RwLock::new(None));
 
@@ -109,6 +110,7 @@ pub fn has_global_scheduler() -> bool {
 ///
 /// This allows motion elements to request replay during tree building,
 /// without needing direct access to RenderState.
+#[allow(clippy::incompatible_msrv)]
 static PENDING_MOTION_REPLAYS: LazyLock<Mutex<Vec<String>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -139,6 +141,7 @@ pub fn take_global_motion_replays() -> Vec<String> {
 ///
 /// This allows components to request exit cancellation without needing direct
 /// access to RenderState.
+#[allow(clippy::incompatible_msrv)]
 static PENDING_MOTION_EXIT_CANCELS: LazyLock<Mutex<Vec<String>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -169,6 +172,7 @@ pub fn take_global_motion_exit_cancels() -> Vec<String> {
 ///
 /// This allows components to explicitly trigger exit animations without needing
 /// direct access to RenderState.
+#[allow(clippy::incompatible_msrv)]
 static PENDING_MOTION_EXIT_STARTS: LazyLock<Mutex<Vec<String>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -198,6 +202,7 @@ pub fn take_global_motion_exit_starts() -> Vec<String> {
 ///
 /// This allows components to explicitly start suspended animations without needing
 /// direct access to RenderState.
+#[allow(clippy::incompatible_msrv)]
 static PENDING_MOTION_STARTS: LazyLock<Mutex<Vec<String>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -224,7 +229,7 @@ pub fn take_global_motion_starts() -> Vec<String> {
 const VIEWPORT_BUFFER: f32 = 100.0;
 
 /// State of a motion animation
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum MotionState {
     /// Animation is suspended (waiting for explicit start)
     /// Content is rendered with opacity 0, waiting for `MotionHandle.start()` to trigger
@@ -234,17 +239,12 @@ pub enum MotionState {
     /// Animation is playing (enter animation)
     Entering { progress: f32, duration_ms: f32 },
     /// Element is fully visible (enter complete)
+    #[default]
     Visible,
     /// Animation is playing (exit animation)
     Exiting { progress: f32, duration_ms: f32 },
     /// Element should be removed (exit complete)
     Removed,
-}
-
-impl Default for MotionState {
-    fn default() -> Self {
-        MotionState::Visible
-    }
 }
 
 /// Active motion animation for a node
@@ -636,7 +636,7 @@ impl RenderState {
         // Update node states from their animation springs and motion animations
         {
             let scheduler = self.animations.lock().unwrap();
-            for (_node_id, state) in &mut self.node_states {
+            for state in self.node_states.values_mut() {
                 // Update opacity from spring
                 if let Some(spring_id) = state.opacity_spring {
                     if let Some(value) = scheduler.get_spring_value(spring_id) {
@@ -788,7 +788,7 @@ impl RenderState {
     pub fn get_or_create(&mut self, node_id: LayoutNodeId) -> &mut NodeRenderState {
         self.node_states
             .entry(node_id)
-            .or_insert_with(NodeRenderState::new)
+            .or_default()
     }
 
     /// Get render state for a node (if exists)
@@ -822,7 +822,7 @@ impl RenderState {
             let state = self
                 .node_states
                 .entry(node_id)
-                .or_insert_with(NodeRenderState::new);
+                .or_default();
             (state.opacity, state.opacity_spring.take())
         };
 
@@ -854,7 +854,7 @@ impl RenderState {
             let state = self
                 .node_states
                 .entry(node_id)
-                .or_insert_with(NodeRenderState::new);
+                .or_default();
             let current = state.background_color.unwrap_or(Color::TRANSPARENT);
             (current, state.bg_color_springs.take())
         };
@@ -907,7 +907,7 @@ impl RenderState {
             let state = self
                 .node_states
                 .entry(node_id)
-                .or_insert_with(NodeRenderState::new);
+                .or_default();
             state.bg_color_springs.take()
         };
 
@@ -932,7 +932,7 @@ impl RenderState {
             let state = self
                 .node_states
                 .entry(node_id)
-                .or_insert_with(NodeRenderState::new);
+                .or_default();
             state.opacity_spring.take()
         };
 
@@ -967,6 +967,7 @@ impl RenderState {
     }
 
     /// Add a focus ring overlay
+    #[allow(clippy::too_many_arguments)]
     pub fn add_focus_ring(
         &mut self,
         x: f32,
@@ -1269,6 +1270,7 @@ impl RenderState {
     ///
     /// * `key` - Stable string key for this motion
     /// * `config` - Animation configuration (enter/exit animations)
+    ///
     /// Returns `true` if a new motion was created or an existing one was reset
     /// (meaning the on_ready callback should be re-registered).
     pub fn start_stable_motion_suspended(&mut self, key: &str, config: MotionAnimation) -> bool {

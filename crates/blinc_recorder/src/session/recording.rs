@@ -229,8 +229,7 @@ impl RecordingSession {
     pub fn snapshot_at(&self, timestamp: Timestamp) -> Option<&TreeSnapshot> {
         self.snapshots
             .iter()
-            .filter(|s| s.timestamp <= timestamp)
-            .last()
+            .rfind(|s| s.timestamp <= timestamp)
     }
 
     /// Get the recording duration.

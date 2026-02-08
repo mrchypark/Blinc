@@ -49,17 +49,32 @@ pub struct SpacingRect {
 impl SpacingRect {
     /// All sides equal
     pub fn uniform(px: f32) -> Self {
-        Self { top: px, right: px, bottom: px, left: px }
+        Self {
+            top: px,
+            right: px,
+            bottom: px,
+            left: px,
+        }
     }
 
     /// Horizontal and vertical
     pub fn xy(x: f32, y: f32) -> Self {
-        Self { top: y, right: x, bottom: y, left: x }
+        Self {
+            top: y,
+            right: x,
+            bottom: y,
+            left: x,
+        }
     }
 
     /// Individual sides
     pub fn new(top: f32, right: f32, bottom: f32, left: f32) -> Self {
-        Self { top, right, bottom, left }
+        Self {
+            top,
+            right,
+            bottom,
+            left,
+        }
     }
 }
 
@@ -119,7 +134,6 @@ pub struct ElementStyle {
     // =========================================================================
     // Visual Properties
     // =========================================================================
-
     /// Background brush (solid color, gradient, or glass)
     pub background: Option<Brush>,
     /// Corner radius
@@ -138,9 +152,36 @@ pub struct ElementStyle {
     pub animation: Option<CssAnimation>,
 
     // =========================================================================
+    // 3D Transform Properties
+    // =========================================================================
+    /// X-axis rotation in degrees (3D tilt)
+    pub rotate_x: Option<f32>,
+    /// Y-axis rotation in degrees (3D turn)
+    pub rotate_y: Option<f32>,
+    /// Perspective distance in pixels
+    pub perspective: Option<f32>,
+    /// 3D shape type: "box", "sphere", "cylinder", "torus", "capsule"
+    pub shape_3d: Option<String>,
+    /// 3D extrusion depth in pixels
+    pub depth: Option<f32>,
+    /// Light direction (x, y, z)
+    pub light_direction: Option<[f32; 3]>,
+    /// Light intensity (0.0 - 1.0+)
+    pub light_intensity: Option<f32>,
+    /// Ambient light level (0.0 - 1.0)
+    pub ambient: Option<f32>,
+    /// Specular power (higher = sharper highlights)
+    pub specular: Option<f32>,
+    /// Z-axis translation in pixels (positive = toward viewer)
+    pub translate_z: Option<f32>,
+    /// 3D boolean operation type: "union", "subtract", "intersect", "smooth-union", "smooth-subtract", "smooth-intersect"
+    pub op_3d: Option<String>,
+    /// Blend radius for smooth boolean operations (in pixels)
+    pub blend_3d: Option<f32>,
+
+    // =========================================================================
     // Layout Properties
     // =========================================================================
-
     /// Width in pixels
     pub width: Option<f32>,
     /// Height in pixels
@@ -358,6 +399,82 @@ impl ElementStyle {
     /// Rotate by angle in degrees
     pub fn rotate_deg(self, degrees: f32) -> Self {
         self.rotate(degrees * std::f32::consts::PI / 180.0)
+    }
+
+    // =========================================================================
+    // 3D Transform
+    // =========================================================================
+
+    /// Set X-axis rotation in degrees (3D tilt)
+    pub fn rotate_x_deg(mut self, degrees: f32) -> Self {
+        self.rotate_x = Some(degrees);
+        self
+    }
+
+    /// Set Y-axis rotation in degrees (3D turn)
+    pub fn rotate_y_deg(mut self, degrees: f32) -> Self {
+        self.rotate_y = Some(degrees);
+        self
+    }
+
+    /// Set perspective distance in pixels
+    pub fn perspective_px(mut self, px: f32) -> Self {
+        self.perspective = Some(px);
+        self
+    }
+
+    /// Set 3D shape type
+    pub fn shape_3d(mut self, shape: impl Into<String>) -> Self {
+        self.shape_3d = Some(shape.into());
+        self
+    }
+
+    /// Set 3D extrusion depth in pixels
+    pub fn depth_px(mut self, px: f32) -> Self {
+        self.depth = Some(px);
+        self
+    }
+
+    /// Set light direction
+    pub fn light_direction(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.light_direction = Some([x, y, z]);
+        self
+    }
+
+    /// Set light intensity
+    pub fn light_intensity(mut self, intensity: f32) -> Self {
+        self.light_intensity = Some(intensity);
+        self
+    }
+
+    /// Set ambient light level
+    pub fn ambient_light(mut self, level: f32) -> Self {
+        self.ambient = Some(level);
+        self
+    }
+
+    /// Set specular power
+    pub fn specular_power(mut self, power: f32) -> Self {
+        self.specular = Some(power);
+        self
+    }
+
+    /// Set translate-z offset in pixels (positive = toward viewer)
+    pub fn translate_z_px(mut self, px: f32) -> Self {
+        self.translate_z = Some(px);
+        self
+    }
+
+    /// Set 3D boolean operation type
+    pub fn op_3d_type(mut self, op: &str) -> Self {
+        self.op_3d = Some(op.to_string());
+        self
+    }
+
+    /// Set blend radius for smooth boolean operations
+    pub fn blend_3d_px(mut self, px: f32) -> Self {
+        self.blend_3d = Some(px);
+        self
     }
 
     // =========================================================================
@@ -740,12 +857,25 @@ impl ElementStyle {
             // Visual
             background: other.background.clone().or_else(|| self.background.clone()),
             corner_radius: other.corner_radius.or(self.corner_radius),
-            shadow: other.shadow.clone().or_else(|| self.shadow.clone()),
+            shadow: other.shadow.or(self.shadow),
             transform: other.transform.clone().or_else(|| self.transform.clone()),
             material: other.material.clone().or_else(|| self.material.clone()),
             render_layer: other.render_layer.or(self.render_layer),
             opacity: other.opacity.or(self.opacity),
             animation: other.animation.clone().or_else(|| self.animation.clone()),
+            // 3D
+            rotate_x: other.rotate_x.or(self.rotate_x),
+            rotate_y: other.rotate_y.or(self.rotate_y),
+            perspective: other.perspective.or(self.perspective),
+            shape_3d: other.shape_3d.clone().or_else(|| self.shape_3d.clone()),
+            depth: other.depth.or(self.depth),
+            light_direction: other.light_direction.or(self.light_direction),
+            light_intensity: other.light_intensity.or(self.light_intensity),
+            ambient: other.ambient.or(self.ambient),
+            specular: other.specular.or(self.specular),
+            translate_z: other.translate_z.or(self.translate_z),
+            op_3d: other.op_3d.clone().or_else(|| self.op_3d.clone()),
+            blend_3d: other.blend_3d.or(self.blend_3d),
             // Layout
             width: other.width.or(self.width),
             height: other.height.or(self.height),
@@ -891,6 +1021,26 @@ pub fn style() -> ElementStyle {
 /// - `opacity`: f32 (0.0-1.0)
 /// - `transform`: Transform
 ///
+/// ## 3D Transform Properties
+/// - `rotate-x`: f32 (degrees)
+/// - `rotate-y`: f32 (degrees)
+/// - `perspective`: f32 (pixels)
+/// - `translate-z`: f32 (pixels)
+///
+/// ## 3D SDF Shape Properties
+/// - `shape-3d`: &str ("box", "sphere", "cylinder", "torus", "capsule", "group")
+/// - `depth`: f32 (pixels)
+///
+/// ## 3D Lighting Properties
+/// - `light-direction`: (f32, f32, f32)
+/// - `light-intensity`: f32
+/// - `ambient`: f32
+/// - `specular`: f32
+///
+/// ## 3D Boolean Operation Properties
+/// - `3d-op`: &str ("union", "subtract", "intersect", "smooth-union", "smooth-subtract", "smooth-intersect")
+/// - `3d-blend`: f32 (pixels)
+///
 /// ## Blinc Extensions
 /// - `backdrop-filter`: `glass`, `metallic`, `chrome`, `gold`, `wood`
 /// - `render-layer`: RenderLayer
@@ -1030,6 +1180,106 @@ macro_rules! css_impl {
     ($style:ident; transform: rotate($deg:expr); $($rest:tt)*) => {
         $style = $style.rotate_deg($deg);
         $crate::css_impl!($style; $($rest)*);
+    };
+
+    // =========================================================================
+    // 3D Transform Properties
+    // =========================================================================
+    ($style:ident; rotate-x: $value:expr; $($rest:tt)*) => {
+        $style = $style.rotate_x_deg($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; rotate-x: $value:expr) => {
+        $style = $style.rotate_x_deg($value);
+    };
+    ($style:ident; rotate-y: $value:expr; $($rest:tt)*) => {
+        $style = $style.rotate_y_deg($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; rotate-y: $value:expr) => {
+        $style = $style.rotate_y_deg($value);
+    };
+    ($style:ident; perspective: $value:expr; $($rest:tt)*) => {
+        $style = $style.perspective_px($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; perspective: $value:expr) => {
+        $style = $style.perspective_px($value);
+    };
+    ($style:ident; translate-z: $value:expr; $($rest:tt)*) => {
+        $style = $style.translate_z_px($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; translate-z: $value:expr) => {
+        $style = $style.translate_z_px($value);
+    };
+
+    // =========================================================================
+    // 3D SDF Shape Properties
+    // =========================================================================
+    ($style:ident; shape-3d: $value:expr; $($rest:tt)*) => {
+        $style = $style.shape_3d($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; shape-3d: $value:expr) => {
+        $style = $style.shape_3d($value);
+    };
+    ($style:ident; depth: $value:expr; $($rest:tt)*) => {
+        $style = $style.depth_px($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; depth: $value:expr) => {
+        $style = $style.depth_px($value);
+    };
+
+    // =========================================================================
+    // 3D Lighting Properties
+    // =========================================================================
+    ($style:ident; light-direction: ($x:expr, $y:expr, $z:expr); $($rest:tt)*) => {
+        $style = $style.light_direction($x, $y, $z);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; light-direction: ($x:expr, $y:expr, $z:expr)) => {
+        $style = $style.light_direction($x, $y, $z);
+    };
+    ($style:ident; light-intensity: $value:expr; $($rest:tt)*) => {
+        $style = $style.light_intensity($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; light-intensity: $value:expr) => {
+        $style = $style.light_intensity($value);
+    };
+    ($style:ident; ambient: $value:expr; $($rest:tt)*) => {
+        $style = $style.ambient_light($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; ambient: $value:expr) => {
+        $style = $style.ambient_light($value);
+    };
+    ($style:ident; specular: $value:expr; $($rest:tt)*) => {
+        $style = $style.specular_power($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; specular: $value:expr) => {
+        $style = $style.specular_power($value);
+    };
+
+    // =========================================================================
+    // 3D Boolean Operation Properties
+    // =========================================================================
+    ($style:ident; 3d-op: $value:expr; $($rest:tt)*) => {
+        $style = $style.op_3d_type($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; 3d-op: $value:expr) => {
+        $style = $style.op_3d_type($value);
+    };
+    ($style:ident; 3d-blend: $value:expr; $($rest:tt)*) => {
+        $style = $style.blend_3d_px($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; 3d-blend: $value:expr) => {
+        $style = $style.blend_3d_px($value);
     };
 
     // =========================================================================
@@ -1482,6 +1732,70 @@ macro_rules! style_impl {
     };
     ($style:ident; rotate_deg: $value:expr $(, $($rest:tt)*)?) => {
         $style = $style.rotate_deg($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // 3D Transform properties
+    // =========================================================================
+    ($style:ident; rotate_x: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.rotate_x_deg($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rotate_y: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.rotate_y_deg($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; perspective: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.perspective_px($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; translate_z: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.translate_z_px($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // 3D SDF Shape properties
+    // =========================================================================
+    ($style:ident; shape_3d: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.shape_3d($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; depth: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.depth_px($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // 3D Lighting properties
+    // =========================================================================
+    ($style:ident; light_direction: ($x:expr, $y:expr, $z:expr) $(, $($rest:tt)*)?) => {
+        $style = $style.light_direction($x, $y, $z);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; light_intensity: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.light_intensity($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; ambient: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.ambient_light($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; specular: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.specular_power($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // 3D Boolean Operation properties
+    // =========================================================================
+    ($style:ident; op_3d: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.op_3d_type($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; blend_3d: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.blend_3d_px($value);
         $crate::style_impl!($style; $($($rest)*)?);
     };
 

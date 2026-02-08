@@ -291,7 +291,7 @@ impl<T> ElementRef<T> {
     /// }
     /// ```
     pub fn get_layout_bounds(&self) -> Option<ElementBounds> {
-        self.layout_bounds.lock().unwrap().clone()
+        *self.layout_bounds.lock().unwrap()
     }
 
     /// Set the computed layout bounds for this element
@@ -388,6 +388,19 @@ pub struct Div {
     pub(crate) event_handlers: crate::event_handler::EventHandlers,
     /// Element ID for selector API queries
     pub(crate) element_id: Option<String>,
+    // 3D transform properties (stored separately to flow through to render_props)
+    pub(crate) rotate_x: Option<f32>,
+    pub(crate) rotate_y: Option<f32>,
+    pub(crate) perspective_3d: Option<f32>,
+    pub(crate) shape_3d: Option<f32>,
+    pub(crate) depth: Option<f32>,
+    pub(crate) light_direction: Option<[f32; 3]>,
+    pub(crate) light_intensity: Option<f32>,
+    pub(crate) ambient: Option<f32>,
+    pub(crate) specular: Option<f32>,
+    pub(crate) translate_z: Option<f32>,
+    pub(crate) op_3d: Option<f32>,
+    pub(crate) blend_3d: Option<f32>,
     /// Layout animation configuration for FLIP-style bounds animation
     pub(crate) layout_animation: Option<crate::layout_animation::LayoutAnimationConfig>,
     /// Visual animation configuration (new FLIP-style system, read-only layout)
@@ -427,6 +440,18 @@ impl Div {
             is_stack_layer: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
+            rotate_x: None,
+            rotate_y: None,
+            perspective_3d: None,
+            shape_3d: None,
+            depth: None,
+            light_direction: None,
+            light_intensity: None,
+            ambient: None,
+            specular: None,
+            translate_z: None,
+            op_3d: None,
+            blend_3d: None,
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
@@ -457,6 +482,18 @@ impl Div {
             is_stack_layer: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
+            rotate_x: None,
+            rotate_y: None,
+            perspective_3d: None,
+            shape_3d: None,
+            depth: None,
+            light_direction: None,
+            light_intensity: None,
+            ambient: None,
+            specular: None,
+            translate_z: None,
+            op_3d: None,
+            blend_3d: None,
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
@@ -820,7 +857,9 @@ impl Div {
     /// ```
     #[inline]
     pub fn set_style(&mut self, style: &ElementStyle) {
-        use crate::element_style::{SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify, StyleOverflow};
+        use crate::element_style::{
+            SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify, StyleOverflow,
+        };
 
         // Visual properties
         if let Some(ref bg) = style.background {
@@ -830,7 +869,7 @@ impl Div {
             self.border_radius = radius;
         }
         if let Some(ref shadow) = style.shadow {
-            self.shadow = Some(shadow.clone());
+            self.shadow = Some(*shadow);
         }
         if let Some(ref transform) = style.transform {
             self.transform = Some(transform.clone());
@@ -882,7 +921,11 @@ impl Div {
             };
         }
         if let Some(wrap) = style.flex_wrap {
-            self.style.flex_wrap = if wrap { FlexWrap::Wrap } else { FlexWrap::NoWrap };
+            self.style.flex_wrap = if wrap {
+                FlexWrap::Wrap
+            } else {
+                FlexWrap::NoWrap
+            };
         }
         if let Some(grow) = style.flex_grow {
             self.style.flex_grow = grow;
@@ -922,7 +965,13 @@ impl Div {
         }
 
         // Layout: spacing
-        if let Some(SpacingRect { top, right, bottom, left }) = style.padding {
+        if let Some(SpacingRect {
+            top,
+            right,
+            bottom,
+            left,
+        }) = style.padding
+        {
             self.style.padding = Rect {
                 top: LengthPercentage::Length(top),
                 right: LengthPercentage::Length(right),
@@ -930,7 +979,13 @@ impl Div {
                 left: LengthPercentage::Length(left),
             };
         }
-        if let Some(SpacingRect { top, right, bottom, left }) = style.margin {
+        if let Some(SpacingRect {
+            top,
+            right,
+            bottom,
+            left,
+        }) = style.margin
+        {
             self.style.margin = Rect {
                 top: LengthPercentageAuto::Length(top),
                 right: LengthPercentageAuto::Length(right),
@@ -962,6 +1017,44 @@ impl Div {
         }
         if let Some(color) = style.border_color {
             self.border_color = Some(color);
+        }
+
+        // 3D properties
+        if let Some(v) = style.rotate_x {
+            self.rotate_x = Some(v);
+        }
+        if let Some(v) = style.rotate_y {
+            self.rotate_y = Some(v);
+        }
+        if let Some(v) = style.perspective {
+            self.perspective_3d = Some(v);
+        }
+        if let Some(ref s) = style.shape_3d {
+            self.shape_3d = Some(crate::css_parser::shape_3d_to_float(s));
+        }
+        if let Some(v) = style.depth {
+            self.depth = Some(v);
+        }
+        if let Some(dir) = style.light_direction {
+            self.light_direction = Some(dir);
+        }
+        if let Some(v) = style.light_intensity {
+            self.light_intensity = Some(v);
+        }
+        if let Some(v) = style.ambient {
+            self.ambient = Some(v);
+        }
+        if let Some(v) = style.specular {
+            self.specular = Some(v);
+        }
+        if let Some(v) = style.translate_z {
+            self.translate_z = Some(v);
+        }
+        if let Some(ref op) = style.op_3d {
+            self.op_3d = Some(crate::css_parser::op_3d_to_float(op));
+        }
+        if let Some(v) = style.blend_3d {
+            self.blend_3d = Some(v);
         }
     }
 
@@ -1034,6 +1127,44 @@ impl Div {
         // Merge layout animation config (deprecated) - take other's if set
         if other.layout_animation.is_some() {
             self.layout_animation = other.layout_animation;
+        }
+
+        // Merge 3D properties
+        if other.rotate_x.is_some() {
+            self.rotate_x = other.rotate_x;
+        }
+        if other.rotate_y.is_some() {
+            self.rotate_y = other.rotate_y;
+        }
+        if other.perspective_3d.is_some() {
+            self.perspective_3d = other.perspective_3d;
+        }
+        if other.shape_3d.is_some() {
+            self.shape_3d = other.shape_3d;
+        }
+        if other.depth.is_some() {
+            self.depth = other.depth;
+        }
+        if other.light_direction.is_some() {
+            self.light_direction = other.light_direction;
+        }
+        if other.light_intensity.is_some() {
+            self.light_intensity = other.light_intensity;
+        }
+        if other.ambient.is_some() {
+            self.ambient = other.ambient;
+        }
+        if other.specular.is_some() {
+            self.specular = other.specular;
+        }
+        if other.translate_z.is_some() {
+            self.translate_z = other.translate_z;
+        }
+        if other.op_3d.is_some() {
+            self.op_3d = other.op_3d;
+        }
+        if other.blend_3d.is_some() {
+            self.blend_3d = other.blend_3d;
         }
 
         // Note: event_handlers are NOT merged - they're set on the base element
@@ -3450,21 +3581,27 @@ impl ElementBuilder for Div {
             border_sides: self.border_sides,
             layer: self.render_layer,
             material: self.material.clone(),
-            node_id: None,
             shadow: self.shadow,
             transform: self.transform.clone(),
             opacity: self.opacity,
             clips_content,
-            motion: None,
-            motion_stable_id: None,
-            motion_should_replay: false,
-            motion_is_suspended: false,
-            motion_on_ready_callback: None,
             is_stack_layer: self.is_stack_layer,
             pointer_events_none: self.pointer_events_none,
             cursor: self.cursor,
             layer_effects: self.layer_effects.clone(),
-            motion_is_exiting: false,
+            rotate_x: self.rotate_x,
+            rotate_y: self.rotate_y,
+            perspective: self.perspective_3d,
+            shape_3d: self.shape_3d,
+            depth: self.depth,
+            light_direction: self.light_direction,
+            light_intensity: self.light_intensity,
+            ambient: self.ambient,
+            specular: self.specular,
+            translate_z: self.translate_z,
+            op_3d: self.op_3d,
+            blend_3d: self.blend_3d,
+            ..Default::default()
         }
     }
 

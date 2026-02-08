@@ -963,10 +963,10 @@ impl ParticleSystemGpu {
                 0.0,
             ],
             random_seed: [
-                viewport.time * 12345.6789,
-                viewport.time * 98765.4321,
-                (viewport.time * 11111.1111).fract(),
-                (viewport.time * 22222.2222).fract(),
+                viewport.time * 12_345.679,
+                viewport.time * 98_765.43,
+                (viewport.time * 11_111.111).fract(),
+                (viewport.time * 22_222.223).fract(),
             ],
             force_config: [viewport.forces.len() as f32, 0.0, 0.0, 0.0],
         };
@@ -984,7 +984,7 @@ impl ParticleSystemGpu {
         queue.write_buffer(&self.forces_buffer, 0, bytemuck::cast_slice(&forces));
 
         // Dispatch compute shader
-        let workgroups = (self.max_particles + 63) / 64;
+        let workgroups = self.max_particles.div_ceil(64);
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Particle Compute Pass"),
             timestamp_writes: None,

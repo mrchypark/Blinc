@@ -41,6 +41,7 @@ use std::ffi::c_void;
 /// XComponent callback functions
 ///
 /// These are registered via OH_NativeXComponent_RegisterCallback
+#[derive(Default)]
 pub struct XComponentCallbacks {
     /// Called when surface is created
     pub on_surface_created: Option<extern "C" fn(component: *mut c_void, window: *mut c_void)>,
@@ -52,16 +53,6 @@ pub struct XComponentCallbacks {
     pub dispatch_touch_event: Option<extern "C" fn(component: *mut c_void, window: *mut c_void)>,
 }
 
-impl Default for XComponentCallbacks {
-    fn default() -> Self {
-        Self {
-            on_surface_created: None,
-            on_surface_changed: None,
-            on_surface_destroyed: None,
-            dispatch_touch_event: None,
-        }
-    }
-}
 
 /// N-API module initialization
 ///

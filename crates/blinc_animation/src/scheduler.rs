@@ -886,7 +886,7 @@ impl SchedulerHandle {
                 .unwrap()
                 .timelines
                 .get_mut(id)
-                .map(|timeline| f(timeline))
+                .map(f)
         })
     }
 

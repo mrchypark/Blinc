@@ -52,18 +52,13 @@ pub enum RecordedEvent {
 }
 
 /// Mouse button identifiers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MouseButton {
+    #[default]
     Left,
     Right,
     Middle,
     Other(u8),
-}
-
-impl Default for MouseButton {
-    fn default() -> Self {
-        MouseButton::Left
-    }
 }
 
 /// Mouse event data.

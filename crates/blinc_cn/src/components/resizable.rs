@@ -214,6 +214,7 @@ struct PanelConstraints {
 }
 
 /// Configuration for the resizable group
+#[allow(clippy::type_complexity)]
 struct ResizableGroupConfig {
     /// Direction of resize (horizontal or vertical)
     direction: ResizeDirection,
@@ -286,7 +287,7 @@ impl ResizableGroup {
         let drag_index = ctx.use_state_keyed(&format!("{}_drag_idx", key), || -1i32);
         let drag_start_pos = ctx.use_state_keyed(&format!("{}_drag_start", key), || 0.0f32);
         let drag_start_sizes =
-            ctx.use_state_keyed(&format!("{}_drag_sizes", key), || Vec::<f32>::new());
+            ctx.use_state_keyed(&format!("{}_drag_sizes", key), Vec::<f32>::new);
 
         // Build container
         let mut container = div().w_full().h_full();
@@ -433,6 +434,7 @@ impl ResizableGroup {
         Self { inner: container }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_handle(
         index: usize,
         direction: ResizeDirection,

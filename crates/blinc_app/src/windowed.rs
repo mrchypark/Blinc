@@ -115,6 +115,7 @@ pub struct WindowedContext {
 }
 
 impl WindowedContext {
+    #[allow(clippy::too_many_arguments)]
     fn from_window<W: Window>(
         window: &W,
         event_router: EventRouter,
@@ -1334,11 +1335,7 @@ impl WindowedContext {
     /// // Then just give the element an ID:
     /// div().id("card").w(200.0).h(100.0)
     /// ```
-    pub fn set_style(
-        &mut self,
-        id: &str,
-        style: blinc_layout::element_style::ElementStyle,
-    ) {
+    pub fn set_style(&mut self, id: &str, style: blinc_layout::element_style::ElementStyle) {
         match self.stylesheet.as_mut() {
             Some(existing) => {
                 Arc::make_mut(existing).insert(id, style);
@@ -1617,6 +1614,7 @@ impl WindowedApp {
         // Initialize global context state singleton (if not already initialized)
         // This allows components to create internal state without context parameters
         if !BlincContextState::is_initialized() {
+            #[allow(clippy::type_complexity)]
             let stateful_callback: std::sync::Arc<dyn Fn(&[SignalId]) + Send + Sync> =
                 Arc::new(|signal_ids| {
                     blinc_layout::check_stateful_deps(signal_ids);
@@ -1739,7 +1737,7 @@ impl WindowedApp {
                                         view_formats: vec![],
                                         desired_maximum_frame_latency: 2,
                                     };
-                                    surf.configure(&blinc_app.device(), &config);
+                                    surf.configure(blinc_app.device(), &config);
 
                                     // Update text measurer with shared font registry for accurate measurement
                                     crate::text_measurer::init_text_measurer_with_registry(
@@ -1792,7 +1790,7 @@ impl WindowedApp {
                             if width > 0 && height > 0 {
                                 config.width = width;
                                 config.height = height;
-                                surf.configure(&blinc_app.device(), config);
+                                surf.configure(blinc_app.device(), config);
                                 needs_rebuild = true;
                                 needs_relayout = true;
 
@@ -2176,11 +2174,11 @@ impl WindowedApp {
                                         KeyState::Pressed => {
                                             // Handle Escape key for overlays first
                                             // If an overlay handles it, don't propagate further
-                                            if kb_event.key == Key::Escape {
-                                                if windowed_ctx.overlay_manager.handle_escape() {
-                                                    // Escape was consumed by overlay, skip further processing
-                                                    // (but continue collecting events for non-overlay targets)
-                                                }
+                                            if kb_event.key == Key::Escape
+                                                && windowed_ctx.overlay_manager.handle_escape()
+                                            {
+                                                // Escape was consumed by overlay, skip further processing
+                                                // (but continue collecting events for non-overlay targets)
                                             }
 
                                             // Dispatch KEY_DOWN for all keys
@@ -2484,7 +2482,7 @@ impl WindowedApp {
                             let frame = match surf.get_current_texture() {
                                 Ok(f) => f,
                                 Err(wgpu::SurfaceError::Lost) => {
-                                    surf.configure(&blinc_app.device(), config);
+                                    surf.configure(blinc_app.device(), config);
                                     return ControlFlow::Continue;
                                 }
                                 Err(wgpu::SurfaceError::OutOfMemory) => {

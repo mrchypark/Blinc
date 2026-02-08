@@ -355,6 +355,7 @@ fn calculate_page_range(current: usize, total: usize, visible: usize) -> (usize,
 }
 
 /// Build a navigation button (prev/next/first/last)
+#[allow(clippy::too_many_arguments)]
 fn build_nav_button<F>(
     key: &str,
     icon_svg: &'static str,
@@ -420,6 +421,7 @@ where
 }
 
 /// Build a page number button
+#[allow(clippy::too_many_arguments)]
 fn build_page_button<F>(
     key: &str,
     page: usize,

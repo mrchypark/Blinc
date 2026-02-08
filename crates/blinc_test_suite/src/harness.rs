@@ -252,6 +252,7 @@ impl<'a> TestContext<'a> {
     }
 
     /// Render text and SVG content from the layout tree
+    #[allow(clippy::type_complexity)]
     fn render_layout_content(&mut self, tree: &RenderTree) {
         // Collect text and SVG data first
         // (content, x, y, w, h, font_size, color, font_family)
@@ -277,6 +278,7 @@ impl<'a> TestContext<'a> {
     }
 
     /// Recursively collect text/SVG elements from layout tree
+    #[allow(clippy::type_complexity)]
     fn collect_layout_elements(
         tree: &RenderTree,
         node: LayoutNodeId,
@@ -478,6 +480,7 @@ impl TestHarness {
     /// Prepare text for rendering with a specific font
     ///
     /// Returns GPU glyphs that can be rendered with render_text
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_text_with_font(
         &self,
         text: &str,
@@ -588,7 +591,7 @@ impl TestHarness {
     fn padded_bytes_per_row(width: u32) -> u32 {
         let unpadded = width * 4; // 4 bytes per pixel (RGBA)
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        ((unpadded + align - 1) / align) * align
+        unpadded.div_ceil(align) * align
     }
 
     /// Render a batch to a PNG file
@@ -600,9 +603,7 @@ impl TestHarness {
         path: &Path,
     ) -> Result<()> {
         // Determine which texture to copy from based on MSAA
-        let copy_texture: wgpu::Texture;
-
-        if self.sample_count > 1 {
+        let copy_texture: wgpu::Texture = if self.sample_count > 1 {
             // MSAA path: render to multisampled texture, resolve to single-sampled
             let msaa_texture = self.create_render_texture(width, height, self.sample_count);
             let msaa_view = msaa_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -617,7 +618,7 @@ impl TestHarness {
                 renderer.render_msaa(&msaa_view, &resolve_view, batch, [1.0, 1.0, 1.0, 1.0]);
             }
 
-            copy_texture = resolve_texture;
+            resolve_texture
         } else {
             // Non-MSAA path: render directly to single-sampled texture
             let texture = self.create_resolve_texture(width, height);
@@ -629,8 +630,8 @@ impl TestHarness {
                 renderer.render_with_clear(&view, batch, [1.0, 1.0, 1.0, 1.0]);
             }
 
-            copy_texture = texture;
-        }
+            texture
+        };
 
         // Create readback buffer
         let buffer = self.create_readback_buffer(width, height);

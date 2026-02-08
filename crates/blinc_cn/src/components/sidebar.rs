@@ -247,7 +247,7 @@ impl Sidebar {
                             )
                             .when(!is_collapsed, |d| {
                                 d.px(3.0).py(2.0).child(
-                                    text(&title.to_uppercase())
+                                    text(title.to_uppercase())
                                         .size(11.0)
                                         .color(text_tertiary)
                                         .weight(FontWeight::SemiBold)

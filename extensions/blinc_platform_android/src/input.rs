@@ -95,11 +95,7 @@ pub fn detect_pinch(pointers: &[TouchPointer], state: &mut PinchState) -> Option
         },
         Some(prev_span) if prev_span > 0.0 => {
             let mut scale = span / prev_span;
-            if scale < 0.90 {
-                scale = 0.90;
-            } else if scale > 1.10 {
-                scale = 1.10;
-            }
+            scale = scale.clamp(0.90, 1.10);
             PinchGesture {
                 scale,
                 center,

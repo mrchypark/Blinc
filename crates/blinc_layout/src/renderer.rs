@@ -253,6 +253,7 @@ pub trait LayoutRenderer {
     ///
     /// Called for text elements that are children of glass elements.
     /// Position is absolute (after applying all parent transforms).
+    #[allow(clippy::too_many_arguments)]
     fn render_text_foreground(
         &mut self,
         content: &str,
@@ -267,6 +268,7 @@ pub trait LayoutRenderer {
     );
 
     /// Render text to the background layer at absolute position
+    #[allow(clippy::too_many_arguments)]
     fn render_text_background(
         &mut self,
         content: &str,
@@ -1482,7 +1484,7 @@ impl RenderTree {
     }
 
     /// Collect render props with motion animation config from parent
-    #[allow(deprecated)]
+    #[allow(deprecated, clippy::too_many_arguments)]
     fn collect_render_props_boxed_with_motion(
         &mut self,
         element: &dyn ElementBuilder,
@@ -2322,11 +2324,9 @@ impl RenderTree {
                         new_bounds
                     );
                     self.layout_animations.insert(node_id, anim_state);
-                } else {
-                    if let Some(existing) = self.layout_animations.get(&node_id) {
-                        if !existing.is_animating() {
-                            self.layout_animations.remove(&node_id);
-                        }
+                } else if let Some(existing) = self.layout_animations.get(&node_id) {
+                    if !existing.is_animating() {
+                        self.layout_animations.remove(&node_id);
                     }
                 }
             }
@@ -2481,7 +2481,7 @@ impl RenderTree {
     /// don't influence the new layout computation. Each element will get
     /// fresh bounds on the next `compute_layout` call.
     pub fn clear_layout_bounds_storages(&self) {
-        for (_, entry) in &self.layout_bounds_storages {
+        for entry in self.layout_bounds_storages.values() {
             if let Ok(mut guard) = entry.storage.lock() {
                 *guard = None;
             }
@@ -2795,15 +2795,10 @@ impl RenderTree {
         let pending_from_registry = self.element_registry.take_pending_on_ready();
         for (string_id, callback) in pending_from_registry {
             // Only add if not already registered (avoid duplicates)
-            if !self.on_ready_callbacks.contains_key(&string_id) {
-                self.on_ready_callbacks.insert(
-                    string_id,
-                    OnReadyEntry {
-                        callback,
-                        triggered: false,
-                    },
-                );
-            }
+            self.on_ready_callbacks.entry(string_id).or_insert(OnReadyEntry {
+                callback,
+                triggered: false,
+            });
         }
 
         // Collect callbacks that need invocation
@@ -3212,6 +3207,7 @@ impl RenderTree {
     /// Dispatch a key event with key code and modifiers
     ///
     /// This is used for KEY_DOWN and KEY_UP events.
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch_key_event(
         &mut self,
         node_id: LayoutNodeId,
@@ -3236,6 +3232,7 @@ impl RenderTree {
     ///
     /// This is used for KEY_DOWN and KEY_UP events. The event bubbles up
     /// through ancestors until a handler is found.
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch_key_event_bubbling(
         &mut self,
         ancestors: &[LayoutNodeId],
@@ -3464,6 +3461,7 @@ impl RenderTree {
     /// Dispatch scroll with time for touch velocity tracking (mobile)
     ///
     /// Same as dispatch_scroll_chain but includes time for momentum scrolling.
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch_scroll_chain_with_time(
         &mut self,
         hit_node: LayoutNodeId,
@@ -4287,8 +4285,8 @@ impl RenderTree {
         if let Some(ref cr) = style.corner_radius {
             props.border_radius = *cr;
         }
-        if let Some(ref shadow) = style.shadow {
-            props.shadow = Some(shadow.clone());
+        if let Some(shadow) = style.shadow {
+            props.shadow = Some(shadow);
         }
         if let Some(ref transform) = style.transform {
             props.transform = Some(transform.clone());
@@ -4302,6 +4300,43 @@ impl RenderTree {
         if let Some(ref material) = style.material {
             props.material = Some(material.clone());
         }
+        // 3D transform properties
+        if let Some(rx) = style.rotate_x {
+            props.rotate_x = Some(rx);
+        }
+        if let Some(ry) = style.rotate_y {
+            props.rotate_y = Some(ry);
+        }
+        if let Some(p) = style.perspective {
+            props.perspective = Some(p);
+        }
+        if let Some(ref s) = style.shape_3d {
+            props.shape_3d = Some(crate::css_parser::shape_3d_to_float(s));
+        }
+        if let Some(d) = style.depth {
+            props.depth = Some(d);
+        }
+        if let Some(dir) = style.light_direction {
+            props.light_direction = Some(dir);
+        }
+        if let Some(v) = style.light_intensity {
+            props.light_intensity = Some(v);
+        }
+        if let Some(v) = style.ambient {
+            props.ambient = Some(v);
+        }
+        if let Some(v) = style.specular {
+            props.specular = Some(v);
+        }
+        if let Some(v) = style.translate_z {
+            props.translate_z = Some(v);
+        }
+        if let Some(ref op) = style.op_3d {
+            props.op_3d = Some(crate::css_parser::op_3d_to_float(op));
+        }
+        if let Some(v) = style.blend_3d {
+            props.blend_3d = Some(v);
+        }
     }
 
     /// Apply layout properties from the stylesheet to taffy nodes
@@ -4311,7 +4346,9 @@ impl RenderTree {
     /// (width, height, padding, margin, gap, flex-direction, alignment, etc.)
     /// from the stylesheet to the corresponding taffy nodes.
     pub fn apply_stylesheet_layout_overrides(&mut self) {
-        use crate::element_style::{SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify, StyleOverflow};
+        use crate::element_style::{
+            SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify, StyleOverflow,
+        };
 
         let stylesheet = match &self.stylesheet {
             Some(s) => s.clone(),
@@ -4375,7 +4412,11 @@ impl RenderTree {
                 };
             }
             if let Some(wrap) = es.flex_wrap {
-                style.flex_wrap = if wrap { FlexWrap::Wrap } else { FlexWrap::NoWrap };
+                style.flex_wrap = if wrap {
+                    FlexWrap::Wrap
+                } else {
+                    FlexWrap::NoWrap
+                };
             }
             if let Some(grow) = es.flex_grow {
                 style.flex_grow = grow;
@@ -4415,13 +4456,25 @@ impl RenderTree {
             }
 
             // Spacing
-            if let Some(SpacingRect { top, right, bottom, left }) = es.padding {
+            if let Some(SpacingRect {
+                top,
+                right,
+                bottom,
+                left,
+            }) = es.padding
+            {
                 style.padding.top = LengthPercentage::Length(top);
                 style.padding.right = LengthPercentage::Length(right);
                 style.padding.bottom = LengthPercentage::Length(bottom);
                 style.padding.left = LengthPercentage::Length(left);
             }
-            if let Some(SpacingRect { top, right, bottom, left }) = es.margin {
+            if let Some(SpacingRect {
+                top,
+                right,
+                bottom,
+                left,
+            }) = es.margin
+            {
                 style.margin.top = LengthPercentageAuto::Length(top);
                 style.margin.right = LengthPercentageAuto::Length(right);
                 style.margin.bottom = LengthPercentageAuto::Length(bottom);
@@ -4672,7 +4725,11 @@ impl RenderTree {
             }
             let started = self.start_css_animation_for_element(*node_id);
             if started {
-                tracing::debug!("CSS animation started for element '{}' (node={:?})", element_id, node_id);
+                tracing::debug!(
+                    "CSS animation started for element '{}' (node={:?})",
+                    element_id,
+                    node_id
+                );
             }
         }
     }
@@ -4735,6 +4792,26 @@ impl RenderTree {
             }
 
             props.transform = Some(Transform::Affine2D(affine));
+        }
+
+        // 3D animation properties
+        if let Some(rx) = anim_props.rotate_x {
+            props.rotate_x = Some(rx);
+        }
+        if let Some(ry) = anim_props.rotate_y {
+            props.rotate_y = Some(ry);
+        }
+        if let Some(p) = anim_props.perspective {
+            props.perspective = Some(p);
+        }
+        if let Some(d) = anim_props.depth {
+            props.depth = Some(d);
+        }
+        if let Some(tz) = anim_props.translate_z {
+            props.translate_z = Some(tz);
+        }
+        if let Some(b) = anim_props.blend_3d {
+            props.blend_3d = Some(b);
         }
     }
 
@@ -5117,14 +5194,14 @@ impl RenderTree {
                 brightness: glass.brightness,
                 noise: glass.noise,
                 border_thickness: glass.border_thickness,
-                shadow: render_node.props.shadow.clone(),
+                shadow: render_node.props.shadow,
                 simple: glass.simple,
             });
             ctx.fill_rect(rect, radius, glass_brush);
         } else {
             // For non-glass elements, draw shadow first (renders behind the element)
             if let Some(ref shadow) = render_node.props.shadow {
-                ctx.draw_shadow(rect, radius, shadow.clone());
+                ctx.draw_shadow(rect, radius, *shadow);
             }
 
             // Check if we can use optimized per-side border rendering
@@ -5521,6 +5598,7 @@ impl RenderTree {
     ///
     /// The `inside_foreground` parameter tracks whether we're inside a foreground element,
     /// ensuring all descendants of foreground elements also render in the foreground pass.
+    #[allow(clippy::too_many_arguments)]
     fn render_layer_with_motion(
         &self,
         ctx: &mut dyn DrawContext,
@@ -5679,9 +5757,7 @@ impl RenderTree {
         // - Children of foreground elements also render in foreground
         // - Glass elements render in glass layer
         // - Otherwise, use the node's explicit layer setting
-        let effective_layer = if inside_glass && !is_glass {
-            RenderLayer::Foreground
-        } else if inside_foreground {
+        let effective_layer = if (inside_glass && !is_glass) || inside_foreground {
             RenderLayer::Foreground
         } else if is_glass {
             RenderLayer::Glass
@@ -5765,6 +5841,40 @@ impl RenderTree {
             //     eprintln!("  >>> Canvas layer MATCHES - will invoke callback");
             // }
         }
+        // Set up 3D transform params on the paint context if this element has any
+        let has_3d = render_node.props.rotate_x.is_some()
+            || render_node.props.rotate_y.is_some()
+            || render_node.props.perspective.is_some()
+            || render_node.props.depth.unwrap_or(0.0) > 0.0
+            || render_node.props.translate_z.is_some();
+
+        if has_3d {
+            let rx = render_node.props.rotate_x.unwrap_or(0.0).to_radians();
+            let ry = render_node.props.rotate_y.unwrap_or(0.0).to_radians();
+            let d = render_node.props.perspective.unwrap_or(800.0);
+            ctx.set_3d_transform(rx, ry, d);
+
+            if render_node.props.depth.unwrap_or(0.0) > 0.0 {
+                ctx.set_3d_shape(
+                    render_node.props.shape_3d.unwrap_or(1.0),
+                    render_node.props.depth.unwrap_or(0.0),
+                    render_node.props.ambient.unwrap_or(0.3),
+                    render_node.props.specular.unwrap_or(32.0),
+                );
+                ctx.set_3d_light(
+                    render_node
+                        .props
+                        .light_direction
+                        .unwrap_or([-0.5, -1.0, 0.5]),
+                    render_node.props.light_intensity.unwrap_or(0.8),
+                );
+            }
+
+            if let Some(tz) = render_node.props.translate_z {
+                ctx.set_3d_translate_z(tz);
+            }
+        }
+
         if effective_layer == target_layer {
             // Motion opacity is now handled via push_layer when has_opacity_layer=true
             // The opacity layer applies opacity to all content via GPU composition
@@ -5777,7 +5887,7 @@ impl RenderTree {
                     brightness: glass.brightness,
                     noise: glass.noise,
                     border_thickness: glass.border_thickness,
-                    shadow: render_node.props.shadow.clone(),
+                    shadow: render_node.props.shadow,
                     simple: glass.simple,
                 });
                 ctx.fill_rect(rect, radius, glass_brush);
@@ -5986,7 +6096,80 @@ impl RenderTree {
         } else {
             motion_opacity
         };
+
+        // 3D Group composition: collect child shapes into compound SDF
+        let is_3d_group = render_node.props.shape_3d == Some(6.0);
+        let mut group_3d_children: Vec<LayoutNodeId> = Vec::new();
+
+        if is_3d_group {
+            let mut raw_descs: Vec<[f32; 16]> = Vec::new();
+            let group_cx = bounds.x + bounds.width * 0.5;
+            let group_cy = bounds.y + bounds.height * 0.5;
+
+            for child_id in self.layout_tree.children(node) {
+                if let Some(child_node) = self.render_nodes.get(&child_id) {
+                    if let Some(child_shape) = child_node.props.shape_3d {
+                        if child_shape > 0.0 && child_shape < 6.0 {
+                            group_3d_children.push(child_id);
+                            let child_bounds = self.get_render_bounds(child_id, (0.0, 0.0));
+                            if let Some(cb) = child_bounds {
+                                let ox = cb.x + cb.width * 0.5 - group_cx;
+                                let oy = cb.y + cb.height * 0.5 - group_cy;
+                                let oz = child_node.props.translate_z.unwrap_or(0.0);
+                                let cr = child_node
+                                    .props
+                                    .border_radius
+                                    .top_left
+                                    .min(child_node.props.depth.unwrap_or(20.0) * 0.5);
+                                let child_depth = child_node.props.depth.unwrap_or(20.0);
+                                let half_w = cb.width * 0.5;
+                                let half_h = cb.height * 0.5;
+                                let half_d = child_depth * 0.5;
+                                let op_type = child_node.props.op_3d.unwrap_or(0.0);
+                                let blend = child_node.props.blend_3d.unwrap_or(0.0);
+
+                                // Get child color for per-shape coloring
+                                let color = if let Some(blinc_core::Brush::Solid(c)) = &child_node.props.background {
+                                    [c.r, c.g, c.b, c.a]
+                                } else {
+                                    [0.8, 0.8, 0.8, 1.0]
+                                };
+
+                                // Pack as [offset(4), params(4), half_ext(4), color(4)]
+                                raw_descs.push([
+                                    ox,
+                                    oy,
+                                    oz,
+                                    cr,
+                                    child_shape,
+                                    child_depth,
+                                    op_type,
+                                    blend,
+                                    half_w,
+                                    half_h,
+                                    half_d,
+                                    0.0,
+                                    color[0],
+                                    color[1],
+                                    color[2],
+                                    color[3],
+                                ]);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !raw_descs.is_empty() {
+                ctx.set_3d_group_raw(&raw_descs);
+            }
+        }
+
         for child_id in self.layout_tree.children(node) {
+            // Skip 3D children of a group node — they're composed into the group SDF
+            if is_3d_group && group_3d_children.contains(&child_id) {
+                continue;
+            }
             self.render_layer_with_motion(
                 ctx,
                 child_id,
@@ -6075,6 +6258,11 @@ impl RenderTree {
             .unwrap_or(false)
         {
             ctx.pop_transform();
+        }
+
+        // Clear 3D transient state
+        if has_3d {
+            ctx.clear_3d();
         }
 
         // Pop position transform
@@ -6294,14 +6482,14 @@ impl RenderTree {
                     brightness: glass.brightness,
                     noise: glass.noise,
                     border_thickness: glass.border_thickness,
-                    shadow: render_node.props.shadow.clone(),
+                    shadow: render_node.props.shadow,
                     simple: glass.simple,
                 });
                 ctx.fill_rect(rect, radius, glass_brush);
             } else {
                 // For non-glass elements, draw shadow first (renders behind the element)
                 if let Some(ref shadow) = render_node.props.shadow {
-                    ctx.draw_shadow(rect, radius, shadow.clone());
+                    ctx.draw_shadow(rect, radius, *shadow);
                 }
                 // Draw regular background
                 if let Some(ref bg) = render_node.props.background {
@@ -6669,14 +6857,14 @@ impl RenderTree {
                             brightness: glass.brightness,
                             noise: glass.noise,
                             border_thickness: glass.border_thickness,
-                            shadow: render_node.props.shadow.clone(),
+                            shadow: render_node.props.shadow,
                             simple: glass.simple,
                         });
                         ctx.fill_rect(rect, radius, glass_brush);
                     } else {
                         // For non-glass elements, draw shadow first (renders behind the element)
                         if let Some(ref shadow) = render_node.props.shadow {
-                            ctx.draw_shadow(rect, radius, shadow.clone());
+                            ctx.draw_shadow(rect, radius, *shadow);
                         }
                         // Draw regular background
                         if let Some(ref bg) = render_node.props.background {
@@ -7184,7 +7372,7 @@ fn apply_opacity_to_brush(brush: &Brush, opacity: f32) -> Brush {
         }
         Brush::Glass(glass) => {
             // Glass already has its own opacity handling
-            Brush::Glass(glass.clone())
+            Brush::Glass(*glass)
         }
         Brush::Image(image) => {
             // Image brushes - return as-is for now

@@ -189,7 +189,7 @@ impl InspectorPanel {
         Self {
             config: InspectorPanelConfig {
                 element_id: selected.map(|e| e.id.clone()),
-                element_bounds: selected.map(|e| e.bounds.clone()),
+                element_bounds: selected.map(|e| e.bounds),
                 is_visible: selected.map(|e| e.is_visible).unwrap_or(false),
                 is_focused: selected.map(|e| e.is_focused).unwrap_or(false),
             },

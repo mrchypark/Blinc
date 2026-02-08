@@ -262,6 +262,7 @@ pub fn button(label: impl Into<String>) -> ButtonBuilder {
 
 /// Internal configuration for ButtonBuilder
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 struct ButtonConfig {
     label: String,
     variant: ButtonVariant,
@@ -291,12 +292,12 @@ impl Button {
         let px = config.btn_size.padding_x();
         let py = config.btn_size.padding_y();
         let font_size = config.btn_size.font_size();
-        let radius = config.btn_size.border_radius(&theme);
+        let radius = config.btn_size.border_radius(theme);
         let variant = config.variant;
         let label = config.label.clone();
         let icon = config.icon.clone();
         let icon_position = config.icon_position;
-        let border = variant.border(&theme);
+        let border = variant.border(theme);
         let disabled = config.disabled;
 
         // Create stateful container with FSM button state
@@ -309,10 +310,10 @@ impl Button {
             .on_state(move |ctx| {
                 let state = ctx.state();
                 let theme = ThemeState::get();
-                let bg = variant.background(&theme, state);
+                let bg = variant.background(theme, state);
 
                 // Get foreground color for this state
-                let fg = variant.foreground(&theme);
+                let fg = variant.foreground(theme);
 
                 // Scale for pressed state
                 let scale = if matches!(state, ButtonState::Pressed) && !disabled {
@@ -371,7 +372,7 @@ impl Button {
                     .transform(blinc_core::Transform::scale(scale, scale));
 
                 // Include border for outline variant
-                if let Some(border_color) = variant.border(&theme) {
+                if let Some(border_color) = variant.border(theme) {
                     visual = visual.border(1.0, border_color);
                 }
 
@@ -393,7 +394,10 @@ impl Button {
 
         // Add click handler if provided
         if let Some(handler) = config.on_click {
-            stateful = stateful.on_click(move |ctx| handler(ctx));
+            #[allow(clippy::redundant_closure)]
+            {
+                stateful = stateful.on_click(move |ctx| handler(ctx));
+            }
         }
 
         if variant != ButtonVariant::Link && variant != ButtonVariant::Ghost {

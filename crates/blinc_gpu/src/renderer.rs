@@ -1845,6 +1845,7 @@ impl GpuRenderer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_pipelines(
         device: &wgpu::Device,
         layouts: &BindGroupLayouts,
@@ -2191,7 +2192,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: path_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[path_vertex_layout.clone()],
+                buffers: std::slice::from_ref(&path_vertex_layout),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -2554,6 +2555,7 @@ impl GpuRenderer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_bind_groups(
         device: &wgpu::Device,
         layouts: &BindGroupLayouts,
@@ -5466,6 +5468,7 @@ impl GpuRenderer {
     ///
     /// Uses the LAYER_COMPOSITE_SHADER to blend the layer onto the target
     /// with the specified blend mode and opacity.
+    #[allow(clippy::too_many_arguments)]
     pub fn composite_layer(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -5535,6 +5538,7 @@ impl GpuRenderer {
     ///
     /// Allows sampling a sub-region of the layer texture and placing it
     /// at a specific destination in the target.
+    #[allow(clippy::too_many_arguments)]
     pub fn composite_layer_region(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -5871,6 +5875,7 @@ impl GpuRenderer {
     /// Takes a pre-blurred texture (for shadow shape) and the original texture (for compositing).
     /// The blurred texture's alpha is used to create the shadow, which is then colored and
     /// composited behind the original content.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_drop_shadow(
         &mut self,
         blurred_input: &wgpu::TextureView,
@@ -5955,6 +5960,7 @@ impl GpuRenderer {
     ///
     /// Creates a radial glow around the shape by finding distance to nearest opaque pixels
     /// and applying a smooth falloff based on blur and range parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_glow(
         &mut self,
         input: &wgpu::TextureView,
@@ -6492,8 +6498,8 @@ impl GpuRenderer {
             .max(1.0) as u32;
 
         // Round up to reasonable sizes for cache efficiency (64px increments)
-        let texture_width = ((texture_width + 63) / 64 * 64).min(self.viewport_size.0);
-        let texture_height = ((texture_height + 63) / 64 * 64).min(self.viewport_size.1);
+        let texture_width = (texture_width.div_ceil(64) * 64).min(self.viewport_size.0);
+        let texture_height = (texture_height.div_ceil(64) * 64).min(self.viewport_size.1);
 
         // This is the actual content size (64px rounded), which may differ from
         // the texture returned by acquire() due to bucket rounding
@@ -6600,6 +6606,7 @@ impl GpuRenderer {
     }
 
     /// Blit a tight texture to the target at the correct position
+    #[allow(clippy::too_many_arguments)]
     fn blit_tight_texture_to_target(
         &mut self,
         source: &wgpu::TextureView,
@@ -6852,6 +6859,7 @@ impl GpuRenderer {
     }
 
     /// Blit a specific region with optional clip
+    #[allow(clippy::too_many_arguments)]
     fn blit_region_to_target_with_clip(
         &mut self,
         source: &wgpu::TextureView,
