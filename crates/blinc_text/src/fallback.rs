@@ -9,6 +9,7 @@ use crate::emoji::{is_emoji, is_variation_selector, is_zwj, should_skip_duplicat
 use crate::font::FontFace;
 use crate::layout::{PositionedGlyph, TextLayout};
 use crate::registry::{FontRegistry, GenericFont};
+use crate::shaper::TextShaper;
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
 
@@ -21,6 +22,8 @@ const BUCKET_THAI: u32 = 0x11_0005;
 const BUCKET_HEBREW: u32 = 0x11_0006;
 const BUCKET_CYRILLIC: u32 = 0x11_0007;
 const BUCKET_GREEK: u32 = 0x11_0008;
+
+pub const MAX_FALLBACK_SHAPES_PER_CALL: usize = 1024;
 
 /// Shared helper for applying per-line fallback width correction.
 ///
@@ -162,6 +165,67 @@ pub fn needs_single_char_shaping(c: char) -> bool {
         fallback_bucket_key(c),
         BUCKET_ARABIC | BUCKET_DEVANAGARI | BUCKET_THAI | BUCKET_HEBREW
     )
+}
+
+/// Per-call helper for resolving a fallback glyph id, using single-codepoint shaping
+/// for scripts that likely require GSUB/GPOS.
+///
+/// This is shared by the renderer (rasterization path) and the measurer (metrics path)
+/// so both produce consistent advances for complex scripts.
+pub struct FallbackGlyphIdResolver {
+    shaper: TextShaper,
+    shape_calls: usize,
+    shaped_gid_cache: FxHashMap<(usize, u32), u16>,
+}
+
+impl FallbackGlyphIdResolver {
+    pub fn new() -> Self {
+        Self {
+            shaper: TextShaper::new(),
+            shape_calls: 0,
+            shaped_gid_cache: FxHashMap::default(),
+        }
+    }
+
+    pub fn resolve_gid(
+        &mut self,
+        candidate: &FallbackCandidate,
+        c: char,
+        font_size: f32,
+        nominal_gid: u16,
+    ) -> u16 {
+        if candidate.use_color || !needs_single_char_shaping(c) {
+            return nominal_gid;
+        }
+        if self.shape_calls >= MAX_FALLBACK_SHAPES_PER_CALL {
+            return nominal_gid;
+        }
+
+        let face_key = Arc::as_ptr(&candidate.face) as usize;
+        let cp = c as u32;
+        if let Some(&cached) = self.shaped_gid_cache.get(&(face_key, cp)) {
+            return if cached != 0 { cached } else { nominal_gid };
+        }
+
+        self.shape_calls += 1;
+        let mut char_buf = [0u8; 4];
+        let char_str = c.encode_utf8(&mut char_buf);
+        let shaped = self.shaper.shape(char_str, &candidate.face, font_size);
+        let shaped_gid = shaped.glyphs.first().map(|g| g.glyph_id).unwrap_or(0);
+        self.shaped_gid_cache.insert((face_key, cp), shaped_gid);
+
+        if shaped_gid != 0 {
+            shaped_gid
+        } else {
+            nominal_gid
+        }
+    }
+}
+
+impl Default for FallbackGlyphIdResolver {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

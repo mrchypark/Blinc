@@ -12,7 +12,6 @@ use crate::font::{FontFace, FontStyle};
 use crate::layout::{LayoutOptions, PositionedGlyph, TextLayout, TextLayoutEngine};
 use crate::rasterizer::GlyphRasterizer;
 use crate::registry::{FontRegistry, GenericFont};
-use crate::shaper::TextShaper;
 use crate::{Result, TextError};
 use lru::LruCache;
 use std::num::NonZeroUsize;
@@ -78,15 +77,7 @@ struct RenderFallbackWalker<'a> {
     options: &'a LayoutOptions,
 
     fallback_font_id_cache: &'a mut rustc_hash::FxHashMap<usize, u32>,
-    shaper: &'a TextShaper,
-    fallback_shape_calls: &'a mut usize,
-    fallback_shaped_gid_cache: &'a mut rustc_hash::FxHashMap<(usize, u32), u16>,
-}
-
-impl RenderFallbackWalker<'_> {
-    fn needs_single_char_shaping(&self, c: char) -> bool {
-        crate::fallback::needs_single_char_shaping(c)
-    }
+    gid_resolver: &'a mut crate::fallback::FallbackGlyphIdResolver,
 }
 
 impl crate::fallback::FallbackWalkHandler for RenderFallbackWalker<'_> {
@@ -126,33 +117,9 @@ impl crate::fallback::FallbackWalkHandler for RenderFallbackWalker<'_> {
 
         let is_emoji_char = is_emoji(glyph.codepoint);
 
-        // Prefer shaping only for scripts that need it.
-        // If the shape budget is exceeded, fall back to cmap glyph id.
-        const MAX_FALLBACK_SHAPES_PER_CALL: usize = 1024;
-        let mut fallback_gid = nominal_gid;
-        if !candidate.use_color
-            && self.needs_single_char_shaping(glyph.codepoint)
-            && *self.fallback_shape_calls < MAX_FALLBACK_SHAPES_PER_CALL
-        {
-            let face_key = Arc::as_ptr(&candidate.face) as usize;
-            let cp = glyph.codepoint as u32;
-            if let Some(&cached) = self.fallback_shaped_gid_cache.get(&(face_key, cp)) {
-                if cached != 0 {
-                    fallback_gid = cached;
-                }
-            } else {
-                *self.fallback_shape_calls += 1;
-                let mut char_buf = [0u8; 4];
-                let char_str = glyph.codepoint.encode_utf8(&mut char_buf);
-                let shaped = self.shaper.shape(char_str, &candidate.face, self.font_size);
-                let shaped_gid = shaped.glyphs.first().map(|g| g.glyph_id).unwrap_or(0);
-                self.fallback_shaped_gid_cache
-                    .insert((face_key, cp), shaped_gid);
-                if shaped_gid != 0 {
-                    fallback_gid = shaped_gid;
-                }
-            }
-        }
+        let fallback_gid =
+            self.gid_resolver
+                .resolve_gid(candidate, glyph.codepoint, self.font_size, nominal_gid);
 
         let fallback_font_id = match candidate.kind {
             crate::fallback::FallbackKind::Emoji => self.renderer.font_id(None, GenericFont::Emoji),
@@ -250,14 +217,10 @@ impl TextRenderer {
         italic: bool,
     ) -> Result<(Vec<Option<ResolvedGlyphData>>, f32)> {
         let registry = Arc::clone(&self.font_registry);
-        let shaper = TextShaper::new();
+        let mut gid_resolver = crate::fallback::FallbackGlyphIdResolver::new();
 
         // Cache computed system fallback face IDs to reduce hashing overhead.
         let mut fallback_font_id_cache: rustc_hash::FxHashMap<usize, u32> =
-            rustc_hash::FxHashMap::default();
-
-        let mut fallback_shape_calls: usize = 0;
-        let mut fallback_shaped_gid_cache: rustc_hash::FxHashMap<(usize, u32), u16> =
             rustc_hash::FxHashMap::default();
 
         let mut glyph_infos: Vec<Option<ResolvedGlyphData>> =
@@ -271,9 +234,7 @@ impl TextRenderer {
             font_size,
             options,
             fallback_font_id_cache: &mut fallback_font_id_cache,
-            shaper: &shaper,
-            fallback_shape_calls: &mut fallback_shape_calls,
-            fallback_shaped_gid_cache: &mut fallback_shaped_gid_cache,
+            gid_resolver: &mut gid_resolver,
         };
 
         let corrected_width = crate::fallback::walk_layout_with_fallback(
