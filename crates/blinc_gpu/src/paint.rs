@@ -1520,26 +1520,48 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         // Map TextStyle font family to (font_name, generic fallback).
-        // TextStyle.family is a single string and often uses CSS-like generic names.
+        //
+        // `TextStyle.family` is a single string and often uses CSS-like lists, e.g.
+        // "Fira Code, monospace". Preserve the generic fallback instead of discarding it.
         let family_raw = style.family.trim();
-        let family_first = family_raw
-            .split(',')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'');
+        let mut font_name: Option<&str> = None;
+        let mut generic: Option<blinc_text::GenericFont> = None;
 
-        let (font_name, generic) = match family_first.to_ascii_lowercase().as_str() {
-            "" | "system-ui" => (None, blinc_text::GenericFont::System),
-            "sans-serif" => (None, blinc_text::GenericFont::SansSerif),
-            "serif" => (None, blinc_text::GenericFont::Serif),
-            "monospace" => (None, blinc_text::GenericFont::Monospace),
-            // Treat "emoji"/"symbol" as explicit generic requests if provided.
-            "emoji" => (None, blinc_text::GenericFont::Emoji),
-            "symbol" => (None, blinc_text::GenericFont::Symbol),
-            _ => (Some(family_first), blinc_text::GenericFont::System),
-        };
+        for token in family_raw.split(',') {
+            let t = token.trim().trim_matches('"').trim_matches('\'');
+            if t.is_empty() {
+                continue;
+            }
+
+            match t.to_ascii_lowercase().as_str() {
+                "system-ui" => {
+                    generic.get_or_insert(blinc_text::GenericFont::System);
+                }
+                "sans-serif" => {
+                    generic.get_or_insert(blinc_text::GenericFont::SansSerif);
+                }
+                "serif" => {
+                    generic.get_or_insert(blinc_text::GenericFont::Serif);
+                }
+                "monospace" => {
+                    generic.get_or_insert(blinc_text::GenericFont::Monospace);
+                }
+                "emoji" => {
+                    generic.get_or_insert(blinc_text::GenericFont::Emoji);
+                }
+                "symbol" => {
+                    generic.get_or_insert(blinc_text::GenericFont::Symbol);
+                }
+                _ => {
+                    if font_name.is_none() {
+                        font_name = Some(t);
+                    }
+                }
+            };
+        }
+
+        let font_name = font_name.filter(|_| !family_raw.is_empty());
+        let generic = generic.unwrap_or(blinc_text::GenericFont::System);
 
         // Map blinc_core::FontWeight to numeric weight (100..900).
         let weight: u16 = match style.weight {

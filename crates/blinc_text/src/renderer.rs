@@ -487,6 +487,8 @@ impl TextRenderer {
         // Resolve the font to use
         let font = self.resolve_font_with_style(font_name, generic, weight, italic)?;
         let font_id = self.font_id_with_style(font_name, generic, weight, italic);
+        let resolved_weight = font.weight().to_number();
+        let resolved_italic = matches!(font.style(), FontStyle::Italic | FontStyle::Oblique);
 
         // Get font metrics for the PreparedText result
         let (ascender, descender) = {
@@ -505,7 +507,13 @@ impl TextRenderer {
         let atlas_dims = self.atlas.dimensions();
         let color_atlas_dims = self.color_atlas.dimensions();
         let (glyph_infos, corrected_width) = self.build_glyph_infos_with_fallback(
-            &layout, &font, font_id, font_size, options, weight, italic,
+            &layout,
+            &font,
+            font_id,
+            font_size,
+            options,
+            resolved_weight,
+            resolved_italic,
         )?;
 
         // Second pass: build glyph instances
