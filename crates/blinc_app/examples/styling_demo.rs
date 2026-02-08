@@ -12,10 +12,10 @@
 
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
-use blinc_core::{Brush, Color, Shadow, Transform};
+use blinc_core::{Color, Shadow, Transform};
 use blinc_layout::css;
 use blinc_layout::css_parser::Stylesheet;
-use blinc_layout::element_style::{style, ElementStyle};
+use blinc_layout::element_style::ElementStyle;
 use blinc_layout::style;
 use blinc_theme::{ColorToken, ThemeState};
 
@@ -136,16 +136,7 @@ fn section_description(desc: &str) -> impl ElementBuilder {
 }
 
 fn code_label(label: &str) -> impl ElementBuilder {
-    let theme = ThemeState::get();
-    let text_secondary = theme.color(ColorToken::TextSecondary);
-    let surface_elevated = theme.color(ColorToken::SurfaceElevated);
-
-    div()
-        .bg(surface_elevated)
-        .rounded(4.0)
-        .px(8.0)
-        .py(4.0)
-        .child(text(label).size(12.0).color(text_secondary))
+    inline_code(label).size(12.0)
 }
 
 // ============================================================================
