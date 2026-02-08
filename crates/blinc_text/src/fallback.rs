@@ -318,9 +318,8 @@ impl FallbackResolver {
     ) -> Vec<FallbackCandidate> {
         let mut out: Vec<FallbackCandidate> = Vec::with_capacity(3);
 
-        // Emoji: emoji(color) -> symbol(gray) -> system(gray)
-        // Non-emoji: system(gray) -> symbol(gray)
         if is_emoji_char {
+            // Emoji: emoji(color) -> symbol(gray) -> system(gray)
             self.ensure_emoji_loaded(registry);
             if let Some(face) = self.emoji_font.as_ref() {
                 out.push(FallbackCandidate {
@@ -329,17 +328,25 @@ impl FallbackResolver {
                     use_color: true,
                 });
             }
+            self.ensure_symbol_loaded(registry);
+            if let Some(face) = self.symbol_font.as_ref() {
+                out.push(FallbackCandidate {
+                    face: Arc::clone(face),
+                    kind: FallbackKind::Symbol,
+                    use_color: false,
+                });
+            }
+            if let Some(face) = self.system_fallback_for_char(registry, c) {
+                out.push(FallbackCandidate {
+                    face,
+                    kind: FallbackKind::System,
+                    use_color: false,
+                });
+            }
+            return out;
         }
 
-        self.ensure_symbol_loaded(registry);
-        if let Some(face) = self.symbol_font.as_ref() {
-            out.push(FallbackCandidate {
-                face: Arc::clone(face),
-                kind: FallbackKind::Symbol,
-                use_color: false,
-            });
-        }
-
+        // Non-emoji: system(gray) -> symbol(gray)
         if let Some(face) = self.system_fallback_for_char(registry, c) {
             out.push(FallbackCandidate {
                 face,
@@ -347,13 +354,12 @@ impl FallbackResolver {
                 use_color: false,
             });
         }
-
-        if !is_emoji_char {
-            // For non-emoji, prefer system over symbol if both exist.
-            out.sort_by_key(|c| match c.kind {
-                FallbackKind::System => 0,
-                FallbackKind::Symbol => 1,
-                FallbackKind::Emoji => 2,
+        self.ensure_symbol_loaded(registry);
+        if let Some(face) = self.symbol_font.as_ref() {
+            out.push(FallbackCandidate {
+                face: Arc::clone(face),
+                kind: FallbackKind::Symbol,
+                use_color: false,
             });
         }
 
