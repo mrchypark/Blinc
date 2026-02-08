@@ -88,8 +88,7 @@ impl Text {
         let label = content.into();
         let resolved = resolve_label_ref(&label);
         // Decode HTML entities (e.g., &amp; -> &, &copy; -> ©)
-        let raw_content = resolved;
-        let decoded_content = decode_html_entities(&raw_content).into_owned();
+        let decoded_content = decode_html_entities(&resolved).into_owned();
 
         let mut text = Self {
             content: decoded_content,

@@ -193,8 +193,10 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
         return tmpl.to_string();
     }
 
+    const LINEAR_SEARCH_THRESHOLD: usize = 8;
+
     // `args` is usually tiny; avoid allocating a HashMap for small argument sets.
-    let args_map = if args.len() > 8 {
+    let args_map = if args.len() > LINEAR_SEARCH_THRESHOLD {
         Some(
             args.iter()
                 .copied()
