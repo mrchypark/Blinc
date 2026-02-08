@@ -118,25 +118,24 @@ impl I18nState {
         let loc = self.locale();
         let chain = locale_fallback_chain(&loc);
 
-        // 1) Fluent (if enabled)
         #[cfg(feature = "fluent")]
-        {
-            let fluent = self.fluent.read().unwrap();
-            for l in &chain {
-                if let Some(s) = fluent.format_message(l, msg) {
-                    return s;
-                }
-            }
-        }
+        let fluent = self.fluent.read().unwrap();
 
-        // 2) Simple catalog
-        {
-            let simple = self.simple.read().unwrap();
-            for l in &chain {
-                if let Some(cat) = simple.get(l) {
-                    if let Some(s) = cat.format_message(msg) {
-                        return s;
-                    }
+        // Lazily acquire the simple catalog lock only if we need it.
+        let mut simple_guard = None;
+
+        for l in &chain {
+            // 1) Fluent (if enabled)
+            #[cfg(feature = "fluent")]
+            if let Some(s) = fluent.format_message(l, msg) {
+                return s;
+            }
+
+            // 2) Simple catalog
+            let simple = simple_guard.get_or_insert_with(|| self.simple.read().unwrap());
+            if let Some(cat) = simple.get(l) {
+                if let Some(s) = cat.format_message(msg) {
+                    return s;
                 }
             }
         }

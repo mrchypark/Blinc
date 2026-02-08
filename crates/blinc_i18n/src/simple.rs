@@ -189,7 +189,7 @@ fn arg_to_string(v: &ArgValue) -> String {
 }
 
 fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
-    if !tmpl.contains('{') {
+    if !tmpl.contains('{') && !tmpl.contains('}') {
         return tmpl.to_string();
     }
 
@@ -209,8 +209,24 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
     let mut chars = tmpl.chars().peekable();
 
     while let Some(c) = chars.next() {
+        // Support escaped braces: `{{` -> `{`, `}}` -> `}`.
+        if c == '}' {
+            if chars.peek() == Some(&'}') {
+                chars.next();
+                out.push('}');
+                continue;
+            }
+            out.push('}');
+            continue;
+        }
         if c != '{' {
             out.push(c);
+            continue;
+        }
+
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            out.push('{');
             continue;
         }
 
@@ -290,5 +306,18 @@ demo-hello: "Hello, {name}!"
             .format_message(&Message::new("demo-hello").arg("name", "Chris"))
             .unwrap();
         assert_eq!(s, "Hello, Chris!");
+    }
+
+    #[test]
+    fn escaped_braces() {
+        let name = ArgValue::from("Chris");
+        let args = &[("name", &name)];
+        assert_eq!(
+            apply_placeholders("Hello, {{name}}!", args),
+            "Hello, {name}!"
+        );
+        assert_eq!(apply_placeholders("{{{name}}}", args), "{Chris}");
+        assert_eq!(apply_placeholders("}}", args), "}");
+        assert_eq!(apply_placeholders("{{", args), "{");
     }
 }
