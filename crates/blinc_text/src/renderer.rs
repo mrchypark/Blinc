@@ -138,12 +138,11 @@ impl TextRenderer {
         let mut glyph_infos: Vec<Option<ResolvedGlyphData>> =
             Vec::with_capacity(layout.glyph_count());
 
-        // Track corrected width across lines (layout.width is based on primary font only).
-        let mut corrected_width: f32 = 0.0;
+        let mut width_corrector = crate::fallback::WidthCorrector::new();
 
         for line in &layout.lines {
             // Track advance correction when using fallback fonts (per line).
-            let mut x_offset: f32 = 0.0;
+            width_corrector.begin_line();
 
             for (i, positioned) in line.glyphs.iter().enumerate() {
                 if positioned.codepoint.is_whitespace() {
@@ -234,7 +233,7 @@ impl TextRenderer {
                             glyph_id: fallback_gid,
                             cluster: positioned.cluster,
                             codepoint: positioned.codepoint,
-                            x: positioned.x + x_offset,
+                            x: positioned.x + width_corrector.x_offset(),
                             y: positioned.y,
                         };
 
@@ -262,7 +261,7 @@ impl TextRenderer {
                         } else {
                             fallback_advance
                         };
-                        x_offset += fallback_advance - primary_advance;
+                        width_corrector.apply_advance(primary_advance, fallback_advance);
 
                         glyph_infos.push(Some(ResolvedGlyphData {
                             info: glyph_info,
@@ -281,7 +280,7 @@ impl TextRenderer {
                 let glyph_info =
                     self.rasterize_glyph_for_font(font, font_id, positioned.glyph_id, font_size)?;
                 let mut adjusted_positioned = *positioned;
-                adjusted_positioned.x += x_offset;
+                adjusted_positioned.x += width_corrector.x_offset();
                 glyph_infos.push(Some(ResolvedGlyphData {
                     info: glyph_info,
                     positioned: adjusted_positioned,
@@ -289,10 +288,10 @@ impl TextRenderer {
                 }));
             }
 
-            corrected_width = corrected_width.max((line.width + x_offset).max(0.0));
+            width_corrector.end_line(line.width);
         }
 
-        Ok((glyph_infos, corrected_width))
+        Ok((glyph_infos, width_corrector.corrected_width()))
     }
 
     /// Create a new text renderer with default atlas size.

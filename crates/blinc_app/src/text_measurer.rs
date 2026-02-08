@@ -185,13 +185,12 @@ impl TextMeasurer for FontTextMeasurer {
         // glyphs (common for CJK/Arabic/etc), rendering will fallback to system fonts which often
         // have different advance widths. We apply the same "x_offset" correction logic as the
         // renderer so measurement matches what will be drawn.
-        let mut corrected_width: f32 = 0.0;
-        let mut x_offset: f32;
+        let mut width_corrector = blinc_text::fallback::WidthCorrector::new();
 
         let mut resolver = FallbackResolver::new(options.font_weight, options.italic);
 
         for line in &layout.lines {
-            x_offset = 0.0;
+            width_corrector.begin_line();
 
             for (i, glyph) in line.glyphs.iter().enumerate() {
                 if glyph.codepoint.is_whitespace() {
@@ -247,10 +246,10 @@ impl TextMeasurer for FontTextMeasurer {
                     fallback_advance
                 };
 
-                x_offset += fallback_advance - primary_advance;
+                width_corrector.apply_advance(primary_advance, fallback_advance);
             }
 
-            corrected_width = corrected_width.max((line.width + x_offset).max(0.0));
+            width_corrector.end_line(line.width);
         }
 
         // Get font metrics
@@ -259,7 +258,7 @@ impl TextMeasurer for FontTextMeasurer {
         let descender = metrics.descender_px(font_size);
 
         TextMetrics {
-            width: corrected_width.max(layout.width),
+            width: width_corrector.corrected_width().max(layout.width),
             height: layout.height,
             ascender,
             descender,
