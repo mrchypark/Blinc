@@ -19,7 +19,7 @@ fn is_valid_key(key: &str) -> bool {
     it.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
 }
 
-fn looks_like_yaml_mapping(src: &str) -> bool {
+fn looks_like_legacy_kv(src: &str) -> bool {
     for raw in src.lines() {
         let line = raw.trim();
         if line.is_empty() {
@@ -28,23 +28,29 @@ fn looks_like_yaml_mapping(src: &str) -> bool {
         if line.starts_with('#') || line.starts_with("//") {
             continue;
         }
-        // YAML mapping lines typically contain `:` as a key/value separator.
-        // If `=` appears before `:`, it's more likely the legacy `key = value` format.
-        if let Some(colon) = line.find(':') {
-            match line.find('=') {
-                Some(eq) if eq < colon => {}
-                _ => return true,
-            }
-        }
-        // If the first meaningful line looks like legacy, bail out early.
-        if line.contains('=') {
+
+        // YAML document marker; not legacy.
+        if line.starts_with("---") {
             return false;
         }
+
+        // Legacy format: `key = value` where key matches the catalog key schema.
+        if let Some((lhs, _rhs)) = line.split_once('=') {
+            return is_valid_key(lhs.trim());
+        }
+
+        return false;
     }
     false
 }
 
 fn try_parse_yaml_map(src: &str) -> Result<Option<HashMap<String, String>>, SimpleParseError> {
+    // If the source clearly looks like legacy key=value, skip YAML parsing entirely so we don't
+    // accidentally hide YAML parse errors behind a fallback to legacy parsing.
+    if looks_like_legacy_kv(src) {
+        return Ok(None);
+    }
+
     match serde_yaml::from_str::<serde_yaml::Value>(src) {
         Ok(serde_yaml::Value::Mapping(raw)) => {
             if raw.len() > MAX_CATALOG_ENTRIES {
@@ -84,12 +90,7 @@ fn try_parse_yaml_map(src: &str) -> Result<Option<HashMap<String, String>>, Simp
             Ok(Some(out))
         }
         Ok(_) => Ok(None),
-        Err(e) => {
-            if looks_like_yaml_mapping(src) {
-                return Err(SimpleParseError::Yaml(format!("yaml parse error: {e}")));
-            }
-            Ok(None)
-        }
+        Err(e) => Err(SimpleParseError::Yaml(format!("yaml parse error: {e}"))),
     }
 }
 
@@ -391,9 +392,7 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
                     // Keep it simple; formatting control is a future concern.
                     let mut s = f.to_string();
                     if s.contains('.') {
-                        while s.ends_with('0') {
-                            s.pop();
-                        }
+                        s.truncate(s.trim_end_matches('0').len());
                         if s.ends_with('.') {
                             s.pop();
                         }
