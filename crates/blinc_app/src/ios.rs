@@ -91,11 +91,9 @@ impl IOSApp {
 
             // If the native bridge has been wired by Swift, use it to get the device locale.
             if blinc_core::native_bridge::NativeBridgeState::is_initialized() {
-                if let Ok(l) =
+                locale =
                     blinc_core::native_bridge::native_call::<String, _>("device", "get_locale", ())
-                {
-                    locale = Some(l);
-                }
+                        .ok();
             }
 
             I18nState::init(locale.unwrap_or_else(|| "en-US".to_string()));

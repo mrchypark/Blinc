@@ -137,9 +137,6 @@ impl I18nState {
                     if let Some(s) = cat.format_message(msg) {
                         return s;
                     }
-                    if let Some(v) = cat.get(msg.id.as_ref()) {
-                        return v.to_string();
-                    }
                 }
             }
         }

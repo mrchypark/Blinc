@@ -77,6 +77,14 @@ impl FluentStore {
         let s = bundle
             .format_pattern(pattern, Some(&args), &mut errs)
             .to_string();
+        if !errs.is_empty() {
+            tracing::warn!(
+                locale = %loc,
+                message_id = %msg.id,
+                errors = ?errs,
+                "Fluent formatting errors"
+            );
+        }
         Some(s)
     }
 }
