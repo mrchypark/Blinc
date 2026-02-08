@@ -840,6 +840,19 @@ impl AndroidApp {
                 needs_rebuild = true;
             }
 
+            // Check if a full rebuild was requested by widgets (e.g., theme/locale changes).
+            if blinc_layout::widgets::take_needs_rebuild() {
+                tracing::debug!("Rebuild triggered by: widgets::request_full_rebuild()");
+                needs_rebuild = true;
+            }
+
+            // A relayout request implies a full rebuild on mobile paths (they don't have a
+            // separate layout-only refresh path).
+            if blinc_layout::widgets::take_needs_relayout() {
+                tracing::debug!("Rebuild triggered by: widgets::request_relayout()");
+                needs_rebuild = true;
+            }
+
             // Check if tree was marked dirty by event handlers
             if let Some(ref tree) = render_tree {
                 if tree.needs_rebuild() {

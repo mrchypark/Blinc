@@ -859,7 +859,17 @@ pub extern "C" fn blinc_build_frame(ctx: *mut IOSRenderContext) {
         }
 
         // PHASE 2: Check if full rebuild is needed
-        let needs_rebuild = ctx.ref_dirty_flag.swap(false, Ordering::SeqCst);
+        let mut needs_rebuild = ctx.ref_dirty_flag.swap(false, Ordering::SeqCst);
+
+        // Check if widgets requested a full rebuild (e.g., theme/locale changes).
+        if blinc_layout::widgets::take_needs_rebuild() {
+            needs_rebuild = true;
+        }
+
+        // A relayout request implies a full rebuild on iOS path.
+        if blinc_layout::widgets::take_needs_relayout() {
+            needs_rebuild = true;
+        }
         let no_tree_yet = ctx.render_tree.is_none();
 
         if !needs_rebuild && !no_tree_yet {
