@@ -71,7 +71,7 @@ use tracing::debug;
 use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, WoodMaterial};
 use crate::element_style::{
     ElementStyle, SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify,
-    StyleOverflow,
+    StyleOverflow, StylePosition,
 };
 use crate::units::Length;
 
@@ -1970,8 +1970,15 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.opacity = Some(opacity.clamp(0.0, 1.0));
             }
         }
-        "render-layer" | "z-index" => {
+        "render-layer" => {
             if let Ok((_, layer)) = parse_render_layer::<nom::error::Error<&str>>(value) {
+                style.render_layer = Some(layer);
+            }
+        }
+        "z-index" => {
+            if let Ok(z) = value.trim().parse::<i32>() {
+                style.z_index = Some(z);
+            } else if let Ok((_, layer)) = parse_render_layer::<nom::error::Error<&str>>(value) {
                 style.render_layer = Some(layer);
             }
         }
@@ -2251,6 +2258,42 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.border_color = Some(color);
             }
         }
+        "position" => match value.trim() {
+            "static" => style.position = Some(StylePosition::Static),
+            "relative" => style.position = Some(StylePosition::Relative),
+            "absolute" => style.position = Some(StylePosition::Absolute),
+            "fixed" => style.position = Some(StylePosition::Fixed),
+            "sticky" => style.position = Some(StylePosition::Sticky),
+            _ => {}
+        },
+        "top" => {
+            if let Some(px) = parse_css_px(value) {
+                style.top = Some(px);
+            }
+        }
+        "right" => {
+            if let Some(px) = parse_css_px(value) {
+                style.right = Some(px);
+            }
+        }
+        "bottom" => {
+            if let Some(px) = parse_css_px(value) {
+                style.bottom = Some(px);
+            }
+        }
+        "left" => {
+            if let Some(px) = parse_css_px(value) {
+                style.left = Some(px);
+            }
+        }
+        "inset" => {
+            if let Some(px) = parse_css_px(value) {
+                style.top = Some(px);
+                style.right = Some(px);
+                style.bottom = Some(px);
+                style.left = Some(px);
+            }
+        }
         _ => {
             // Unknown property - log at debug level for forward compatibility
             debug!(
@@ -2307,8 +2350,17 @@ fn apply_property_with_errors(
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
-        "render-layer" | "z-index" => {
+        "render-layer" => {
             if let Ok((_, layer)) = parse_render_layer::<nom::error::Error<&str>>(value) {
+                style.render_layer = Some(layer);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "z-index" => {
+            if let Ok(z) = value.trim().parse::<i32>() {
+                style.z_index = Some(z);
+            } else if let Ok((_, layer)) = parse_render_layer::<nom::error::Error<&str>>(value) {
                 style.render_layer = Some(layer);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
@@ -2654,6 +2706,52 @@ fn apply_property_with_errors(
         "border-color" => {
             if let Some(color) = parse_color(value) {
                 style.border_color = Some(color);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "position" => match value.trim() {
+            "static" => style.position = Some(StylePosition::Static),
+            "relative" => style.position = Some(StylePosition::Relative),
+            "absolute" => style.position = Some(StylePosition::Absolute),
+            "fixed" => style.position = Some(StylePosition::Fixed),
+            "sticky" => style.position = Some(StylePosition::Sticky),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "top" => {
+            if let Some(px) = parse_css_px(value) {
+                style.top = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "right" => {
+            if let Some(px) = parse_css_px(value) {
+                style.right = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "bottom" => {
+            if let Some(px) = parse_css_px(value) {
+                style.bottom = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "left" => {
+            if let Some(px) = parse_css_px(value) {
+                style.left = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "inset" => {
+            if let Some(px) = parse_css_px(value) {
+                style.top = Some(px);
+                style.right = Some(px);
+                style.bottom = Some(px);
+                style.left = Some(px);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }

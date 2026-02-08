@@ -263,6 +263,36 @@ fn main() -> Result<()> {
                 background: #ea580c;
             }
 
+            /* --- CSS position demos --- */
+            #pos-container {
+                position: relative;
+                width: 300px;
+                height: 200px;
+                background: #1e293b;
+            }
+            #pos-static-child {
+                width: 100px;
+                height: 40px;
+                background: #3b82f6;
+            }
+            #pos-floating {
+                position: absolute;
+                top: 12px;
+                right: 12px;
+                width: 80px;
+                height: 80px;
+                background: #ef4444;
+            }
+            #pos-bottom-bar {
+                position: absolute;
+                bottom: 0px;
+                left: 0px;
+                right: 0px;
+                height: 32px;
+                background: #22c55e;
+            }
+
+            /* Fixed & Sticky positioning — using inline styles for now */
             /* --- CSS clip-path demos --- */
             #clip-circle {
                 background: #3b82f6;
@@ -340,6 +370,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(animation_3d_section())
                     .child(group_composition_section())
                     .child(clip_path_section())
+                    .child(css_position_section())
                     .child(api_comparison_section()),
             ),
         )
@@ -1690,6 +1721,85 @@ fn group_composition_section() -> impl ElementBuilder {
                                 .id("group-smooth-subtract")
                                 .child(div().absolute().inset(0.0).id("group-smooth-subtract-base"))
                                 .child(div().absolute().inset(0.0).id("group-smooth-subtract-scoop")),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// CSS POSITION SECTION
+// ============================================================================
+
+fn css_position_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("CSS Position"))
+        .child(section_description(
+            "position: relative | absolute | fixed | sticky with top, right, bottom, left inset properties.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("relative + absolute children"))
+                        .child(
+                            div()
+                                .id("pos-container")
+                                .child(div().id("pos-static-child"))
+                                .child(div().id("pos-floating"))
+                                .child(div().id("pos-bottom-bar")),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("sticky header + fixed button"))
+                        .child(
+                            scroll()
+                                .w(300.0)
+                                .h(300.0)
+                                .bg(Color::from_hex(0x0f172a))
+                                .rounded(8.0)
+                                .child(
+                                    div()
+                                    .w_full()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .sticky(0.0)
+                                                .h(36.0)
+                                                .w_full()
+                                                .z_index(10)
+                                                .bg(Color::from_hex(0x7c3aed)),
+                                        )
+                                        .child(
+                                            div()
+                                                .fixed()
+                                                .top(224.0)
+                                                .right(12.0)
+                                                .w(64.0)
+                                                .h(64.0)
+                                                .rounded(32.0)
+                                                .z_index(10)
+                                                .bg(Color::from_hex(0xef4444)),
+                                        )
+                                        .child(
+                                            div().p(5.0).flex_col().gap(5.0).w_full().child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0)),
+                                        )
+                                        
+                                ),
                         ),
                 ),
         )

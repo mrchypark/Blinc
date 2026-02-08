@@ -3756,6 +3756,11 @@ impl RenderTree {
     /// Note: Returns rounded values to prevent subpixel jitter during scrolling.
     /// Fractional scroll offsets cause content to shift between pixel boundaries,
     /// resulting in wobbling text and lines.
+    /// Check if a node is a scroll container
+    pub fn is_scroll_container(&self, node_id: LayoutNodeId) -> bool {
+        self.scroll_physics.contains_key(&node_id)
+    }
+
     pub fn get_scroll_offset(&self, node_id: LayoutNodeId) -> (f32, f32) {
         // Check scroll physics first (has direction-aware scroll from element)
         let (x, y) = if let Some(physics) = self.scroll_physics.get(&node_id) {
@@ -4342,6 +4347,30 @@ impl RenderTree {
         if let Some(ref cp) = style.clip_path {
             props.clip_path = Some(cp.clone());
         }
+        // Position flags (fixed/sticky are rendering concerns, not layout)
+        if let Some(pos) = style.position {
+            use crate::element_style::StylePosition;
+            match pos {
+                StylePosition::Fixed => {
+                    props.is_fixed = true;
+                    props.is_sticky = false;
+                }
+                StylePosition::Sticky => {
+                    props.is_fixed = false;
+                    props.is_sticky = true;
+                    props.sticky_top = style.top;
+                    props.sticky_bottom = style.bottom;
+                }
+                _ => {
+                    props.is_fixed = false;
+                    props.is_sticky = false;
+                }
+            }
+        }
+        // Numeric z-index for stacking order
+        if let Some(z) = style.z_index {
+            props.z_index = z;
+        }
     }
 
     /// Resolve a CSS `ClipPath` into a concrete `ClipShape` given element bounds.
@@ -4458,6 +4487,7 @@ impl RenderTree {
     pub fn apply_stylesheet_layout_overrides(&mut self) {
         use crate::element_style::{
             SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify, StyleOverflow,
+            StylePosition,
         };
 
         let stylesheet = match &self.stylesheet {
@@ -4606,6 +4636,37 @@ impl RenderTree {
                 };
                 style.overflow.x = val;
                 style.overflow.y = val;
+            }
+
+            // Position
+            if let Some(pos) = es.position {
+                style.position = match pos {
+                    StylePosition::Static | StylePosition::Relative | StylePosition::Sticky => {
+                        taffy::Position::Relative
+                    }
+                    StylePosition::Absolute | StylePosition::Fixed => {
+                        taffy::Position::Absolute
+                    }
+                };
+            }
+
+            // Inset (top, right, bottom, left)
+            // For sticky elements, inset values are scroll-lock thresholds, not layout offsets.
+            // They go into RenderProps instead (via apply_element_style_to_props).
+            let is_sticky = es.position == Some(StylePosition::Sticky);
+            if !is_sticky {
+                if let Some(top) = es.top {
+                    style.inset.top = LengthPercentageAuto::Length(top);
+                }
+                if let Some(right) = es.right {
+                    style.inset.right = LengthPercentageAuto::Length(right);
+                }
+                if let Some(bottom) = es.bottom {
+                    style.inset.bottom = LengthPercentageAuto::Length(bottom);
+                }
+                if let Some(left) = es.left {
+                    style.inset.left = LengthPercentageAuto::Length(left);
+                }
             }
 
             self.layout_tree.set_style(node_id, style);
@@ -5215,7 +5276,7 @@ impl RenderTree {
             self.motion_bindings.len()
         );
         if let Some(root) = self.root {
-            self.render_node(ctx, root, (0.0, 0.0));
+            self.render_node(ctx, root, (0.0, 0.0), (0.0, 0.0));
         }
     }
 
@@ -5225,6 +5286,7 @@ impl RenderTree {
         ctx: &mut dyn DrawContext,
         node: LayoutNodeId,
         parent_offset: (f32, f32),
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -5544,8 +5606,57 @@ impl RenderTree {
         }
 
         // Render children (relative to this node's transform + scroll offset)
+        // Reset cumulative scroll when entering a scroll container.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
         for child_id in self.layout_tree.children(node) {
-            self.render_node(ctx, child_id, (0.0, 0.0));
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let has_counter = child_is_fixed
+                && (new_cumulative.0.abs() > 0.001 || new_cumulative.1.abs() > 0.001);
+            if has_counter {
+                ctx.push_transform(Transform::translate(
+                    -new_cumulative.0,
+                    -new_cumulative.1,
+                ));
+            }
+
+            // Sticky: compute corrective offset when element would scroll past threshold
+            let mut has_sticky_correction = false;
+            if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.get_render_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            ctx.push_transform(Transform::translate(0.0, correction));
+                            has_sticky_correction = true;
+                        }
+                    }
+                }
+            }
+
+            let child_cum = if child_is_fixed {
+                (0.0, 0.0)
+            } else {
+                new_cumulative
+            };
+            self.render_node(ctx, child_id, (0.0, 0.0), child_cum);
+            if has_sticky_correction {
+                ctx.pop_transform();
+            }
+            if has_counter {
+                ctx.pop_transform();
+            }
         }
 
         // Pop scroll transform if we pushed one
@@ -5626,14 +5737,14 @@ impl RenderTree {
         if let Some(root) = self.root {
             // Pass 1: Background (excludes children of glass elements)
             ctx.set_foreground_layer(false);
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Background, false, false);
+            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Background, false, false, (0.0, 0.0));
 
             // Pass 2: Glass - these render as Brush::Glass which becomes glass primitives
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Glass, false, false);
+            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Glass, false, false, (0.0, 0.0));
 
             // Pass 3: Foreground (includes children of glass elements, rendered after glass)
             ctx.set_foreground_layer(true);
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Foreground, false, false);
+            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Foreground, false, false, (0.0, 0.0));
             ctx.set_foreground_layer(false);
         }
     }
@@ -5666,6 +5777,7 @@ impl RenderTree {
                 false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
+                (0.0, 0.0),
             );
 
             // Pass 2: Glass (primitives go to glass batch)
@@ -5678,6 +5790,7 @@ impl RenderTree {
                 false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
+                (0.0, 0.0),
             );
 
             // Pass 3: Foreground (primitives go to foreground batch, rendered after glass)
@@ -5691,6 +5804,7 @@ impl RenderTree {
                 false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
+                (0.0, 0.0),
             );
             ctx.set_foreground_layer(false);
 
@@ -5719,6 +5833,7 @@ impl RenderTree {
         inside_foreground: bool,
         render_state: &crate::render_state::RenderState,
         inherited_opacity: f32,
+        cumulative_scroll: (f32, f32),
     ) {
         // Debug: uncomment to trace all nodes
         // eprintln!("render_layer_with_motion: visiting node {:?}, target_layer={:?}", node, target_layer);
@@ -5860,6 +5975,14 @@ impl RenderTree {
         if is_stack_layer {
             let current_z = ctx.z_layer();
             ctx.set_z_layer(current_z + 1);
+        }
+
+        // Apply CSS z-index to z_layer for stacking order
+        // Save current z_layer so we can restore it after this subtree
+        let saved_z_layer = ctx.z_layer();
+        let has_z_index = render_node.props.z_index > 0;
+        if has_z_index {
+            ctx.set_z_layer(render_node.props.z_index as u32);
         }
 
         // Determine effective layer:
@@ -6285,11 +6408,67 @@ impl RenderTree {
             motion_opacity
         };
 
+        // Compute new cumulative scroll for children
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
+
         for child_id in self.layout_tree.children(node) {
             // Skip 3D children of a group node — they're composed into the group SDF
             if is_3d_group && group_3d_children.contains(&child_id) {
                 continue;
             }
+
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render
+                .map(|n| n.props.is_fixed)
+                .unwrap_or(false);
+            let child_is_sticky = child_render
+                .map(|n| n.props.is_sticky)
+                .unwrap_or(false);
+
+            // Fixed: push counter-scroll to cancel ALL accumulated scroll
+            let has_fixed_counter = child_is_fixed
+                && (new_cumulative_scroll.0.abs() > 0.001
+                    || new_cumulative_scroll.1.abs() > 0.001);
+            if has_fixed_counter {
+                ctx.push_transform(Transform::translate(
+                    -new_cumulative_scroll.0,
+                    -new_cumulative_scroll.1,
+                ));
+            }
+
+            // Sticky: compute corrective offset when element would scroll past threshold
+            let mut has_sticky_correction = false;
+            if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.get_render_bounds(child_id, (0.0, 0.0)) {
+                        // cb.y = element's layout y relative to parent
+                        // new_cumulative_scroll.1 = total scroll from ALL ancestors
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            ctx.push_transform(Transform::translate(0.0, correction));
+                            has_sticky_correction = true;
+                        }
+                    }
+                }
+            }
+
+            let child_cumulative = if child_is_fixed {
+                (0.0, 0.0) // Fixed cancels all accumulated scroll
+            } else {
+                new_cumulative_scroll
+            };
+
             self.render_layer_with_motion(
                 ctx,
                 child_id,
@@ -6299,7 +6478,17 @@ impl RenderTree {
                 children_inside_foreground,
                 render_state,
                 child_inherited_opacity,
+                child_cumulative,
             );
+
+            // Pop sticky correction
+            if has_sticky_correction {
+                ctx.pop_transform();
+            }
+            // Pop fixed counter-scroll
+            if has_fixed_counter {
+                ctx.pop_transform();
+            }
         }
 
         // Pop children inset clip
@@ -6390,6 +6579,11 @@ impl RenderTree {
             ctx.clear_3d();
         }
 
+        // Restore z_layer after this subtree
+        if has_z_index {
+            ctx.set_z_layer(saved_z_layer);
+        }
+
         // Pop position transform
         ctx.pop_transform();
     }
@@ -6419,6 +6613,7 @@ impl RenderTree {
                 RenderLayer::Background,
                 false,
                 false,
+                (0.0, 0.0),
             );
 
             // Pass 2: Glass - render as Brush::Glass
@@ -6429,6 +6624,7 @@ impl RenderTree {
                 RenderLayer::Glass,
                 false,
                 false,
+                (0.0, 0.0),
             );
 
             // Pass 3: Foreground (includes children of glass elements)
@@ -6439,6 +6635,7 @@ impl RenderTree {
                 RenderLayer::Foreground,
                 false,
                 false,
+                (0.0, 0.0),
             );
         }
     }
@@ -6458,7 +6655,7 @@ impl RenderTree {
                 ctx.push_transform(Transform::scale(self.scale_factor, self.scale_factor));
             }
 
-            self.render_layer(ctx, root, (0.0, 0.0), target_layer, false, false);
+            self.render_layer(ctx, root, (0.0, 0.0), target_layer, false, false, (0.0, 0.0));
 
             // Pop the DPI scale transform
             if has_scale {
@@ -6474,6 +6671,7 @@ impl RenderTree {
     ///
     /// The `inside_foreground` flag tracks whether we're descending through a foreground element.
     /// Children of foreground elements are also rendered in the foreground pass.
+    #[allow(clippy::too_many_arguments)]
     fn render_layer(
         &self,
         ctx: &mut dyn DrawContext,
@@ -6482,6 +6680,7 @@ impl RenderTree {
         target_layer: RenderLayer,
         inside_glass: bool,
         inside_foreground: bool,
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -6739,7 +6938,50 @@ impl RenderTree {
         }
 
         // Traverse children (they inherit our transform and layer inheritance)
+        // Reset cumulative scroll when entering a scroll container.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
         for child_id in self.layout_tree.children(node) {
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let has_counter = child_is_fixed
+                && (new_cumulative.0.abs() > 0.001 || new_cumulative.1.abs() > 0.001);
+            if has_counter {
+                ctx.push_transform(Transform::translate(
+                    -new_cumulative.0,
+                    -new_cumulative.1,
+                ));
+            }
+
+            // Sticky: compute corrective offset when element would scroll past threshold
+            let mut has_sticky_correction = false;
+            if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.get_render_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            ctx.push_transform(Transform::translate(0.0, correction));
+                            has_sticky_correction = true;
+                        }
+                    }
+                }
+            }
+
+            let child_cum = if child_is_fixed {
+                (0.0, 0.0)
+            } else {
+                new_cumulative
+            };
             self.render_layer(
                 ctx,
                 child_id,
@@ -6747,7 +6989,14 @@ impl RenderTree {
                 target_layer,
                 children_inside_glass,
                 children_inside_foreground,
+                child_cum,
             );
+            if has_sticky_correction {
+                ctx.pop_transform();
+            }
+            if has_counter {
+                ctx.pop_transform();
+            }
         }
 
         // Pop scroll transform if we pushed one
@@ -6858,13 +7107,21 @@ impl RenderTree {
                     (0.0, 0.0),
                     RenderLayer::Background,
                     false,
+                    (0.0, 0.0),
                 );
             }
 
             // Pass 2: Glass elements (to background context)
             {
                 let ctx = renderer.background();
-                self.render_layer_with_content(ctx, root, (0.0, 0.0), RenderLayer::Glass, false);
+                self.render_layer_with_content(
+                    ctx,
+                    root,
+                    (0.0, 0.0),
+                    RenderLayer::Glass,
+                    false,
+                    (0.0, 0.0),
+                );
             }
 
             // Pass 3: Foreground elements (including glass children)
@@ -6876,6 +7133,7 @@ impl RenderTree {
                     (0.0, 0.0),
                     RenderLayer::Foreground,
                     false,
+                    (0.0, 0.0),
                 );
             }
 
@@ -6895,6 +7153,7 @@ impl RenderTree {
         parent_offset: (f32, f32),
         target_layer: RenderLayer,
         inside_glass: bool,
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -7103,15 +7362,78 @@ impl RenderTree {
             ctx.push_transform(Transform::translate(scroll_offset.0, scroll_offset.1));
         }
 
+        // Update cumulative scroll for children
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
+
         // Traverse children
         for child_id in self.layout_tree.children(node) {
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render
+                .map(|n| n.props.is_fixed)
+                .unwrap_or(false);
+            let child_is_sticky = child_render
+                .map(|n| n.props.is_sticky)
+                .unwrap_or(false);
+
+            // Fixed: push counter-scroll to cancel ALL accumulated scroll
+            let has_fixed_counter = child_is_fixed
+                && (new_cumulative_scroll.0.abs() > 0.001
+                    || new_cumulative_scroll.1.abs() > 0.001);
+            if has_fixed_counter {
+                ctx.push_transform(Transform::translate(
+                    -new_cumulative_scroll.0,
+                    -new_cumulative_scroll.1,
+                ));
+            }
+
+            // Sticky: compute corrective offset when element would scroll past threshold
+            let mut has_sticky_correction = false;
+            if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.layout_tree.get_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            ctx.push_transform(Transform::translate(0.0, correction));
+                            has_sticky_correction = true;
+                        }
+                    }
+                }
+            }
+
+            let child_cumulative = if child_is_fixed {
+                (0.0, 0.0)
+            } else {
+                new_cumulative_scroll
+            };
+
             self.render_layer_with_content(
                 ctx,
                 child_id,
                 (0.0, 0.0),
                 target_layer,
                 children_inside_glass,
+                child_cumulative,
             );
+
+            // Pop sticky correction
+            if has_sticky_correction {
+                ctx.pop_transform();
+            }
+            // Pop fixed counter-scroll
+            if has_fixed_counter {
+                ctx.pop_transform();
+            }
         }
 
         // Pop scroll transform if we pushed one
@@ -7137,7 +7459,7 @@ impl RenderTree {
     /// Render all text elements via the LayoutRenderer
     fn render_text_elements<R: LayoutRenderer>(&self, renderer: &mut R) {
         if let Some(root) = self.root {
-            self.render_text_recursive(renderer, root, (0.0, 0.0), false, false);
+            self.render_text_recursive(renderer, root, (0.0, 0.0), false, false, (0.0, 0.0));
         }
     }
 
@@ -7149,6 +7471,7 @@ impl RenderTree {
         parent_offset: (f32, f32),
         inside_glass: bool,
         inside_foreground: bool,
+        cumulative_scroll: (f32, f32),
     ) {
         // Use get_render_bounds to get animated bounds if layout animation is active
         // This ensures text respects layout animations (FLIP-style bounds animation)
@@ -7222,13 +7545,54 @@ impl RenderTree {
             parent_offset.0 + bounds.x + scroll_offset.0 + motion_offset.0,
             parent_offset.1 + bounds.y + scroll_offset.1 + motion_offset.1,
         );
+
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
+
         for child_id in self.layout_tree.children(node) {
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let mut child_offset = new_offset;
+            let child_cumulative;
+
+            if child_is_fixed {
+                // Cancel all accumulated scroll from the offset
+                child_offset.0 -= new_cumulative_scroll.0;
+                child_offset.1 -= new_cumulative_scroll.1;
+                child_cumulative = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.layout_tree.get_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            child_offset.1 += correction;
+                        }
+                    }
+                }
+                child_cumulative = new_cumulative_scroll;
+            } else {
+                child_cumulative = new_cumulative_scroll;
+            }
+
             self.render_text_recursive(
                 renderer,
                 child_id,
-                new_offset,
+                child_offset,
                 children_inside_glass,
                 children_inside_foreground,
+                child_cumulative,
             );
         }
     }
@@ -7236,7 +7600,7 @@ impl RenderTree {
     /// Render all SVG elements via the LayoutRenderer
     fn render_svg_elements<R: LayoutRenderer>(&self, renderer: &mut R) {
         if let Some(root) = self.root {
-            self.render_svg_recursive(renderer, root, (0.0, 0.0), false, false);
+            self.render_svg_recursive(renderer, root, (0.0, 0.0), false, false, (0.0, 0.0));
         }
     }
 
@@ -7248,6 +7612,7 @@ impl RenderTree {
         parent_offset: (f32, f32),
         inside_glass: bool,
         inside_foreground: bool,
+        cumulative_scroll: (f32, f32),
     ) {
         // Use get_render_bounds to get animated bounds if layout animation is active
         // This ensures SVG respects layout animations (FLIP-style bounds animation)
@@ -7314,13 +7679,53 @@ impl RenderTree {
             parent_offset.0 + bounds.x + scroll_offset.0 + motion_offset.0,
             parent_offset.1 + bounds.y + scroll_offset.1 + motion_offset.1,
         );
+
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
+
         for child_id in self.layout_tree.children(node) {
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let mut child_offset = new_offset;
+            let child_cumulative;
+
+            if child_is_fixed {
+                child_offset.0 -= new_cumulative_scroll.0;
+                child_offset.1 -= new_cumulative_scroll.1;
+                child_cumulative = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.layout_tree.get_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            child_offset.1 += correction;
+                        }
+                    }
+                }
+                child_cumulative = new_cumulative_scroll;
+            } else {
+                child_cumulative = new_cumulative_scroll;
+            }
+
             self.render_svg_recursive(
                 renderer,
                 child_id,
-                new_offset,
+                child_offset,
                 children_inside_glass,
                 children_inside_foreground,
+                child_cumulative,
             );
         }
     }
@@ -7392,7 +7797,7 @@ impl RenderTree {
     pub fn text_elements(&self) -> Vec<(TextData, ElementBounds)> {
         let mut result = Vec::new();
         if let Some(root) = self.root {
-            self.collect_text_elements(root, (0.0, 0.0), &mut result);
+            self.collect_text_elements(root, (0.0, 0.0), &mut result, (0.0, 0.0));
         }
         result
     }
@@ -7402,6 +7807,7 @@ impl RenderTree {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         result: &mut Vec<(TextData, ElementBounds)>,
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -7425,8 +7831,45 @@ impl RenderTree {
             parent_offset.0 + bounds.x + scroll_offset.0,
             parent_offset.1 + bounds.y + scroll_offset.1,
         );
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
         for child_id in self.layout_tree.children(node) {
-            self.collect_text_elements(child_id, new_offset, result);
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let mut child_offset = new_offset;
+            let child_cumulative;
+
+            if child_is_fixed {
+                child_offset.0 -= new_cumulative_scroll.0;
+                child_offset.1 -= new_cumulative_scroll.1;
+                child_cumulative = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.layout_tree.get_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            child_offset.1 += correction;
+                        }
+                    }
+                }
+                child_cumulative = new_cumulative_scroll;
+            } else {
+                child_cumulative = new_cumulative_scroll;
+            }
+
+            self.collect_text_elements(child_id, child_offset, result, child_cumulative);
         }
     }
 
@@ -7444,7 +7887,7 @@ impl RenderTree {
     pub fn svg_elements(&self) -> Vec<(SvgData, ElementBounds)> {
         let mut result = Vec::new();
         if let Some(root) = self.root {
-            self.collect_svg_elements(root, (0.0, 0.0), &mut result);
+            self.collect_svg_elements(root, (0.0, 0.0), &mut result, (0.0, 0.0));
         }
         result
     }
@@ -7454,6 +7897,7 @@ impl RenderTree {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         result: &mut Vec<(SvgData, ElementBounds)>,
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -7477,8 +7921,45 @@ impl RenderTree {
             parent_offset.0 + bounds.x + scroll_offset.0,
             parent_offset.1 + bounds.y + scroll_offset.1,
         );
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
         for child_id in self.layout_tree.children(node) {
-            self.collect_svg_elements(child_id, new_offset, result);
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let mut child_offset = new_offset;
+            let child_cumulative;
+
+            if child_is_fixed {
+                child_offset.0 -= new_cumulative_scroll.0;
+                child_offset.1 -= new_cumulative_scroll.1;
+                child_cumulative = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.layout_tree.get_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            child_offset.1 += correction;
+                        }
+                    }
+                }
+                child_cumulative = new_cumulative_scroll;
+            } else {
+                child_cumulative = new_cumulative_scroll;
+            }
+
+            self.collect_svg_elements(child_id, child_offset, result, child_cumulative);
         }
     }
 }

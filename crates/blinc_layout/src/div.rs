@@ -403,6 +403,14 @@ pub struct Div {
     pub(crate) blend_3d: Option<f32>,
     /// CSS clip-path shape function
     pub(crate) clip_path: Option<ClipPath>,
+    /// Fixed positioning (stays in place when ancestors scroll)
+    pub(crate) is_fixed: bool,
+    /// Sticky positioning (sticks when scrolled past threshold)
+    pub(crate) is_sticky: bool,
+    /// Sticky top threshold
+    pub(crate) sticky_top: Option<f32>,
+    /// CSS z-index for stacking order
+    pub(crate) z_index: i32,
     /// Layout animation configuration for FLIP-style bounds animation
     pub(crate) layout_animation: Option<crate::layout_animation::LayoutAnimationConfig>,
     /// Visual animation configuration (new FLIP-style system, read-only layout)
@@ -455,6 +463,10 @@ impl Div {
             op_3d: None,
             blend_3d: None,
             clip_path: None,
+            is_fixed: false,
+            is_sticky: false,
+            sticky_top: None,
+            z_index: 0,
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
@@ -498,6 +510,10 @@ impl Div {
             op_3d: None,
             blend_3d: None,
             clip_path: None,
+            is_fixed: false,
+            is_sticky: false,
+            sticky_top: None,
+            z_index: 0,
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
@@ -2070,6 +2086,23 @@ impl Div {
         self
     }
 
+    /// Set position to fixed (stays in place when ancestors scroll)
+    pub fn fixed(mut self) -> Self {
+        self.style.position = Position::Absolute;
+        self.is_fixed = true;
+        self.is_sticky = false;
+        self
+    }
+
+    /// Set position to sticky with a top threshold
+    pub fn sticky(mut self, top: f32) -> Self {
+        self.style.position = Position::Relative;
+        self.is_sticky = true;
+        self.is_fixed = false;
+        self.sticky_top = Some(top);
+        self
+    }
+
     /// Set inset (position from all edges)
     pub fn inset(mut self, px: f32) -> Self {
         let val = LengthPercentageAuto::Length(px);
@@ -2823,6 +2856,12 @@ impl Div {
     /// render above other content.
     pub fn stack_layer(mut self) -> Self {
         self.is_stack_layer = true;
+        self
+    }
+
+    /// Set CSS z-index for stacking order (higher values render on top)
+    pub fn z_index(mut self, z: i32) -> Self {
+        self.z_index = z;
         self
     }
 
@@ -3612,6 +3651,10 @@ impl ElementBuilder for Div {
             op_3d: self.op_3d,
             blend_3d: self.blend_3d,
             clip_path: self.clip_path.clone(),
+            is_fixed: self.is_fixed,
+            is_sticky: self.is_sticky,
+            sticky_top: self.sticky_top,
+            z_index: self.z_index,
             ..Default::default()
         }
     }

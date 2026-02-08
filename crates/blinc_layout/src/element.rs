@@ -991,6 +991,18 @@ pub struct RenderProps {
     /// When true, this element will not capture clicks/hovers - only its children can.
     /// Used by Stack layers to allow clicks to pass through to siblings.
     pub pointer_events_none: bool,
+    /// Whether this element has `position: fixed` behavior.
+    /// Fixed elements are immune to scroll transforms from ancestor scroll containers.
+    pub is_fixed: bool,
+    /// Whether this element has `position: sticky` behavior.
+    /// Sticky elements clamp their position when scrolling past thresholds.
+    pub is_sticky: bool,
+    /// Sticky scroll-lock threshold from top (in pixels).
+    pub sticky_top: Option<f32>,
+    /// Sticky scroll-lock threshold from bottom (in pixels).
+    pub sticky_bottom: Option<f32>,
+    /// CSS z-index for controlling render order within a layer
+    pub z_index: i32,
     /// Layer effects applied to this element (blur, drop shadow, glow, color matrix)
     /// Effects are applied during layer composition when the element is rendered
     pub layer_effects: Vec<LayerEffect>,
@@ -1060,6 +1072,10 @@ impl Default for RenderProps {
             is_stack_layer: false,
             cursor: None,
             pointer_events_none: false,
+            is_fixed: false,
+            is_sticky: false,
+            sticky_top: None,
+            sticky_bottom: None,
             layer_effects: Vec::new(),
             rotate_x: None,
             rotate_y: None,
@@ -1075,6 +1091,7 @@ impl Default for RenderProps {
             blend_3d: None,
             clip_path: None,
             motion_is_exiting: false,
+            z_index: 0,
         }
     }
 }

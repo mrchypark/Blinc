@@ -1514,6 +1514,16 @@ impl RenderContext {
             *z_layer += 1;
         }
 
+        // Apply CSS z-index to z_layer for stacking order
+        let saved_z_layer = *z_layer;
+        let node_z_index = tree
+            .get_render_node(node)
+            .map(|n| n.props.z_index)
+            .unwrap_or(0);
+        if node_z_index > 0 {
+            *z_layer = node_z_index as u32;
+        }
+
         // Update clip bounds for children if this node clips (either via clips_content or layout animation)
         // When a node clips, we INTERSECT its bounds with any existing clip
         // This ensures nested clipping works correctly (inner clips can't expand outer clips)
@@ -2004,6 +2014,11 @@ impl RenderContext {
                 images,
             );
         }
+
+        // Restore z_layer after this subtree
+        if node_z_index > 0 {
+            *z_layer = saved_z_layer;
+        }
     }
 
     /// Get device arc
@@ -2287,6 +2302,20 @@ impl RenderContext {
             self.render_images_ref(target, &bg_images);
             self.render_images_ref(target, &fg_images);
 
+            // Render z>0 primitives as overlays for z-index support
+            // The main batch rendered all primitives in tree order; z>0 elements
+            // need a second pass to appear on top of z=0 elements.
+            let max_z = batch.max_z_layer();
+            if max_z > 0 {
+                for z in 1..=max_z {
+                    let layer_primitives = batch.primitives_for_layer(z);
+                    if !layer_primitives.is_empty() {
+                        self.renderer
+                            .render_primitives_overlay(target, &layer_primitives);
+                    }
+                }
+            }
+
             // Collect all glyphs for glass path using scratch buffer to avoid allocation
             // (TODO: implement interleaved glass rendering)
             // Take ownership temporarily to avoid borrow conflict with self.render_text
@@ -2390,7 +2419,7 @@ impl RenderContext {
                     self.render_text_decorations_for_layer(target, &decorations_by_layer, z);
                 }
             } else {
-                // No z-layers, use original fast path
+                // Fast path: render full batch (handles layer effects like backdrop-filter)
                 self.renderer
                     .render_with_clear(target, &batch, [0.0, 0.0, 0.0, 1.0]);
 
@@ -2411,6 +2440,20 @@ impl RenderContext {
                 // Render SVGs as rasterized images for high-quality anti-aliasing
                 if !svgs.is_empty() {
                     self.render_rasterized_svgs(target, &svgs, scale_factor);
+                }
+
+                // If we have z-layers (e.g. z-index elements) but also layer effects,
+                // render z>0 primitives as overlays on top of the main batch.
+                // The main batch rendered ALL primitives in tree order (including z>0),
+                // but z>0 elements need to appear on top of z=0 elements.
+                if max_layer > 0 {
+                    for z in 1..=max_layer {
+                        let layer_primitives = batch.primitives_for_layer(z);
+                        if !layer_primitives.is_empty() {
+                            self.renderer
+                                .render_primitives_overlay(target, &layer_primitives);
+                        }
+                    }
                 }
 
                 // Collect all glyphs for flat rendering

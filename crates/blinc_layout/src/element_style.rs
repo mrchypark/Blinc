@@ -124,6 +124,16 @@ pub enum StyleOverflow {
     Scroll,
 }
 
+/// CSS position property
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StylePosition {
+    Static,
+    Relative,
+    Absolute,
+    Fixed,
+    Sticky,
+}
+
 /// Visual style properties for an element
 ///
 /// All properties are optional - when merging styles, only set properties
@@ -233,6 +243,19 @@ pub struct ElementStyle {
     pub border_width: Option<f32>,
     /// Border color
     pub border_color: Option<Color>,
+
+    /// CSS position (static, relative, absolute)
+    pub position: Option<StylePosition>,
+    /// Top inset in pixels (for positioned elements)
+    pub top: Option<f32>,
+    /// Right inset in pixels (for positioned elements)
+    pub right: Option<f32>,
+    /// Bottom inset in pixels (for positioned elements)
+    pub bottom: Option<f32>,
+    /// Left inset in pixels (for positioned elements)
+    pub left: Option<f32>,
+    /// CSS z-index for controlling render order
+    pub z_index: Option<i32>,
 }
 
 impl ElementStyle {
@@ -918,6 +941,12 @@ impl ElementStyle {
             overflow: other.overflow.or(self.overflow),
             border_width: other.border_width.or(self.border_width),
             border_color: other.border_color.or(self.border_color),
+            position: other.position.or(self.position),
+            top: other.top.or(self.top),
+            right: other.right.or(self.right),
+            bottom: other.bottom.or(self.bottom),
+            left: other.left.or(self.left),
+            z_index: other.z_index.or(self.z_index),
         }
     }
 
@@ -931,6 +960,7 @@ impl ElementStyle {
             || self.render_layer.is_some()
             || self.opacity.is_some()
             || self.animation.is_some()
+            || self.z_index.is_some()
     }
 
     /// Check if any layout property is set
@@ -955,6 +985,11 @@ impl ElementStyle {
             || self.overflow.is_some()
             || self.border_width.is_some()
             || self.border_color.is_some()
+            || self.position.is_some()
+            || self.top.is_some()
+            || self.right.is_some()
+            || self.bottom.is_some()
+            || self.left.is_some()
     }
 
     /// Check if no property is set
