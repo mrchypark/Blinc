@@ -161,10 +161,37 @@ pub fn walk_layout_with_fallback<H: FallbackWalkHandler>(
 /// This helper exists so the renderer and the measurer stay consistent about when
 /// to invoke HarfBuzz for fallback glyph resolution.
 pub fn needs_single_char_shaping(c: char) -> bool {
-    matches!(
-        fallback_bucket_key(c),
-        BUCKET_ARABIC | BUCKET_DEVANAGARI | BUCKET_THAI | BUCKET_HEBREW
-    )
+    let cp = c as u32;
+    match cp {
+        // Arabic family (joining).
+        0x0600..=0x06FF
+        | 0x0750..=0x077F
+        | 0x08A0..=0x08FF
+        | 0xFB50..=0xFDFF
+        | 0xFE70..=0xFEFF => true,
+
+        // Hebrew.
+        0x0590..=0x05FF => true,
+
+        // Indic blocks (many require GSUB/GPOS for correct forms/marks).
+        0x0900..=0x0DFF // Devanagari..Sinhala
+        | 0xA8E0..=0xA8FF // Devanagari Extended
+        => true,
+
+        // Thai / Lao.
+        0x0E00..=0x0EFF => true,
+
+        // Tibetan.
+        0x0F00..=0x0FFF => true,
+
+        // Myanmar.
+        0x1000..=0x109F => true,
+
+        // Khmer.
+        0x1780..=0x17FF => true,
+
+        _ => false,
+    }
 }
 
 /// Per-call helper for resolving a fallback glyph id, using single-codepoint shaping
