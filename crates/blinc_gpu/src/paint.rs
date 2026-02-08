@@ -63,32 +63,6 @@ const NO_CLIP_BOUNDS: [f32; 4] = [-10000.0, -10000.0, 100000.0, 100000.0];
 const NO_CLIP_RADIUS: [f32; 4] = [0.0; 4];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Transform Stack
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Combined 2D transform state (for future optimization)
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct TransformState {
-    /// Combined affine transform
-    affine: Affine2D,
-    /// Combined opacity
-    opacity: f32,
-    /// Current blend mode
-    blend_mode: BlendMode,
-}
-
-impl Default for TransformState {
-    fn default() -> Self {
-        Self {
-            affine: Affine2D::IDENTITY,
-            opacity: 1.0,
-            blend_mode: BlendMode::Normal,
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Layer Stack
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -98,16 +72,6 @@ impl Default for TransformState {
 /// so it can be properly restored when the layer is popped.
 #[derive(Clone, Debug)]
 struct LayerState {
-    /// The layer configuration
-    config: LayerConfig,
-    /// Starting primitive index when this layer was pushed
-    primitive_start: usize,
-    /// Starting foreground primitive index
-    foreground_primitive_start: usize,
-    /// Starting path vertex index
-    path_start: usize,
-    /// Starting foreground path vertex index
-    foreground_path_start: usize,
     /// Parent state stack indices (transform, opacity, blend, clip)
     parent_state_indices: (usize, usize, usize, usize),
 }
@@ -149,6 +113,8 @@ pub struct GpuPaintContext<'a> {
     layer_stack: Vec<LayerState>,
     /// Known image sizes created in this context
     image_sizes: HashMap<ImageId, (u32, u32)>,
+    /// Monotonic order for image ops/draws to preserve call sequence.
+    image_order: u64,
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -169,6 +135,7 @@ impl<'a> GpuPaintContext<'a> {
             z_layer: 0,
             layer_stack: Vec::new(),
             image_sizes: HashMap::new(),
+            image_order: 0,
         }
     }
 
@@ -201,6 +168,7 @@ impl<'a> GpuPaintContext<'a> {
             z_layer: 0,
             layer_stack: Vec::new(),
             image_sizes: HashMap::new(),
+            image_order: 0,
         }
     }
 
@@ -530,7 +498,9 @@ impl<'a> GpuPaintContext<'a> {
         pixels: Option<Vec<u8>>,
     ) -> ImageId {
         let id = ImageId(NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed));
+        let order = self.next_image_order();
         self.batch.push_image_op(ImageOp::Create {
+            order,
             image: id,
             width,
             height,
@@ -598,9 +568,6 @@ impl<'a> GpuPaintContext<'a> {
             ), // bottom_left
         ];
 
-        // Track whether the topmost clip is a plain Rect (not rounded)
-        let mut topmost_is_plain_rect = false;
-
         for clip in &self.clip_stack {
             match clip {
                 ClipShape::Rect(rect) => {
@@ -610,7 +577,6 @@ impl<'a> GpuPaintContext<'a> {
                     intersect_max_x = intersect_max_x.min(rect.x() + rect.width());
                     intersect_max_y = intersect_max_y.min(rect.y() + rect.height());
                     has_rect_clips = true;
-                    topmost_is_plain_rect = true;
                 }
                 ClipShape::RoundedRect {
                     rect,
@@ -643,14 +609,9 @@ impl<'a> GpuPaintContext<'a> {
                     }
 
                     has_rect_clips = true;
-                    topmost_is_plain_rect = false;
                 }
                 // For non-rect clips, fall back to topmost-only behavior
-                ClipShape::Circle { .. } | ClipShape::Ellipse { .. } | ClipShape::Path(_) => {
-                    // Can't easily intersect with circles/ellipses/paths
-                    // Fall through to use the topmost clip
-                    topmost_is_plain_rect = false;
-                }
+                ClipShape::Circle { .. } | ClipShape::Ellipse { .. } | ClipShape::Path(_) => {}
             }
         }
 
@@ -781,6 +742,13 @@ impl<'a> GpuPaintContext<'a> {
         self.is_3d = false;
         self.camera = None;
         self.image_sizes.clear();
+        self.image_order = 0;
+    }
+
+    fn next_image_order(&mut self) -> u64 {
+        let order = self.image_order;
+        self.image_order = self.image_order.wrapping_add(1);
+        order
     }
 
     /// Apply opacity to a brush by modifying the color's alpha channel
@@ -1639,6 +1607,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         let draw = ImageDraw {
+            order: self.next_image_order(),
             image,
             dst_rect: transformed,
             source_rect: options.source_rect,
@@ -1682,7 +1651,9 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         if image.0 == 0 {
             return;
         }
+        let order = self.next_image_order();
         self.batch.push_image_op(ImageOp::Write {
+            order,
             image,
             x,
             y,
@@ -2226,11 +2197,6 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
     fn push_layer(&mut self, config: LayerConfig) {
         // Record current state indices for restoration on pop
         let state = LayerState {
-            config: config.clone(),
-            primitive_start: self.batch.primitive_count(),
-            foreground_primitive_start: self.batch.foreground_primitive_count(),
-            path_start: self.batch.path_vertex_count(),
-            foreground_path_start: self.batch.foreground_path_vertex_count(),
             parent_state_indices: (
                 self.transform_stack.len(),
                 self.opacity_stack.len(),
@@ -2579,6 +2545,32 @@ mod tests {
         ctx.execute_commands(&commands);
 
         assert_eq!(ctx.batch().primitive_count(), 1);
+    }
+
+    #[test]
+    fn test_canvas_image_command_order() {
+        let mut ctx = GpuPaintContext::new(800.0, 600.0);
+
+        let image = ctx.create_image_empty(4, 4, "test-image");
+        ctx.draw_image(
+            image,
+            Rect::new(10.0, 10.0, 20.0, 20.0),
+            &ImageOptions::default(),
+        );
+        ctx.write_image_rgba(image, 0, 0, 1, 1, &[255, 0, 0, 255]);
+        ctx.draw_image(
+            image,
+            Rect::new(30.0, 10.0, 20.0, 20.0),
+            &ImageOptions::default(),
+        );
+
+        let batch = ctx.take_batch();
+        assert_eq!(batch.image_ops.len(), 2);
+        assert_eq!(batch.image_draws.len(), 2);
+        assert_eq!(batch.image_ops[0].order(), 0);
+        assert_eq!(batch.image_draws[0].order, 1);
+        assert_eq!(batch.image_ops[1].order(), 2);
+        assert_eq!(batch.image_draws[1].order, 3);
     }
 
     #[test]

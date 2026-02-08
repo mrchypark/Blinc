@@ -1904,7 +1904,7 @@ impl TextArea {
     }
 
     /// Set placeholder text
-    pub fn placeholder(mut self, text: impl Into<String>) -> Self {
+    pub fn placeholder(self, text: impl Into<String>) -> Self {
         let placeholder = text.into();
         self.config.lock().unwrap().placeholder = placeholder.clone();
         if let Ok(mut s) = self.state.lock() {
@@ -1970,14 +1970,14 @@ impl TextArea {
     }
 
     /// Set font size
-    pub fn font_size(mut self, size: f32) -> Self {
+    pub fn font_size(self, size: f32) -> Self {
         self.config.lock().unwrap().font_size = size;
         self.update_scroll_dimensions();
         self
     }
 
     /// Set disabled state
-    pub fn disabled(mut self, disabled: bool) -> Self {
+    pub fn disabled(self, disabled: bool) -> Self {
         self.config.lock().unwrap().disabled = disabled;
         if let Ok(mut s) = self.state.lock() {
             s.disabled = disabled;
@@ -1989,7 +1989,7 @@ impl TextArea {
     }
 
     /// Set maximum length
-    pub fn max_length(mut self, max: usize) -> Self {
+    pub fn max_length(self, max: usize) -> Self {
         self.config.lock().unwrap().max_length = max;
         self
     }
@@ -1998,7 +1998,7 @@ impl TextArea {
     ///
     /// When wrapping is enabled (default), long lines wrap to the next visual line.
     /// When disabled, text scrolls horizontally instead.
-    pub fn wrap(mut self, wrap: bool) -> Self {
+    pub fn wrap(self, wrap: bool) -> Self {
         self.config.lock().unwrap().wrap = wrap;
         self
     }

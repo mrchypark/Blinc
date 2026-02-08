@@ -1273,7 +1273,7 @@ fn identifier<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&'a str,
 }
 
 /// Parse an ID selector: #identifier or #identifier:state
-fn id_selector(input: &str) -> ParseResult<CssSelector> {
+fn id_selector(input: &str) -> ParseResult<'_, CssSelector> {
     context("ID selector", |input| {
         let (input, _) = char('#')(input)?;
         let (input, id) = cut(identifier)(input)?;
@@ -1298,7 +1298,7 @@ fn id_selector(input: &str) -> ParseResult<CssSelector> {
 }
 
 /// Parse a property name (including CSS custom properties like --var-name)
-fn property_name(input: &str) -> ParseResult<&str> {
+fn property_name(input: &str) -> ParseResult<'_, &str> {
     context(
         "property name",
         take_while1(|c: char| c.is_alphanumeric() || c == '-' || c == '_'),
@@ -1306,14 +1306,14 @@ fn property_name(input: &str) -> ParseResult<&str> {
 }
 
 /// Parse a CSS variable name: --identifier
-fn variable_name(input: &str) -> ParseResult<&str> {
+fn variable_name(input: &str) -> ParseResult<'_, &str> {
     let (input, _) = tag("--")(input)?;
     let (input, name) = identifier(input)?;
     Ok((input, name))
 }
 
 /// Parse a property value (everything until ; or })
-fn property_value(input: &str) -> ParseResult<&str> {
+fn property_value(input: &str) -> ParseResult<'_, &str> {
     let (input, value) = context(
         "property value",
         take_while1(|c: char| c != ';' && c != '}'),
@@ -1322,7 +1322,7 @@ fn property_value(input: &str) -> ParseResult<&str> {
 }
 
 /// Parse a single property declaration: name: value;
-fn property_declaration(input: &str) -> ParseResult<(&str, &str)> {
+fn property_declaration(input: &str) -> ParseResult<'_, (&str, &str)> {
     let (input, _) = ws(input)?;
     let (input, name) = context("property name", property_name)(input)?;
     let (input, _) = ws(input)?;
@@ -1335,7 +1335,7 @@ fn property_declaration(input: &str) -> ParseResult<(&str, &str)> {
 }
 
 /// Parse a rule block: { property: value; ... }
-fn rule_block(input: &str) -> ParseResult<Vec<(&str, &str)>> {
+fn rule_block(input: &str) -> ParseResult<'_, Vec<(&str, &str)>> {
     let (input, _) = ws::<VerboseError<&str>>(input)?;
     let (input, _) = context("opening brace", char('{'))(input)?;
     let (input, _) = ws::<VerboseError<&str>>(input)?;
@@ -1346,7 +1346,7 @@ fn rule_block(input: &str) -> ParseResult<Vec<(&str, &str)>> {
 }
 
 /// Parse a :root block for CSS variables
-fn root_block(input: &str) -> ParseResult<Vec<(String, String)>> {
+fn root_block(input: &str) -> ParseResult<'_, Vec<(String, String)>> {
     let (input, _) = ws(input)?;
     let (input, _) = tag(":root")(input)?;
     let (input, _) = ws(input)?;
@@ -1462,7 +1462,7 @@ where
 }
 
 /// Parse keyframe position(s): `from`, `to`, `50%`, or `0%, 100%`
-fn keyframe_positions(input: &str) -> ParseResult<Vec<f32>> {
+fn keyframe_positions(input: &str) -> ParseResult<'_, Vec<f32>> {
     let (input, first) = keyframe_position(input)?;
     let (input, rest) = many0(|i| {
         let (i, _) = ws(i)?;
@@ -1477,7 +1477,7 @@ fn keyframe_positions(input: &str) -> ParseResult<Vec<f32>> {
 }
 
 /// Parse a single keyframe position: `from`, `to`, or percentage like `50%`
-fn keyframe_position(input: &str) -> ParseResult<f32> {
+fn keyframe_position(input: &str) -> ParseResult<'_, f32> {
     alt((
         // `from` = 0%
         value(0.0, tag_no_case("from")),
@@ -1499,7 +1499,7 @@ enum CssBlock {
 }
 
 /// Parse a complete rule: #id { ... } or #id:state { ... }
-fn css_rule(input: &str) -> ParseResult<(String, ElementStyle)> {
+fn css_rule(input: &str) -> ParseResult<'_, (String, ElementStyle)> {
     let (input, _) = ws(input)?;
     let (input, selector) = context("CSS rule selector", id_selector)(input)?;
     let (input, _) = ws(input)?;
@@ -1516,7 +1516,7 @@ fn css_rule(input: &str) -> ParseResult<(String, ElementStyle)> {
 
 /// Parse an entire stylesheet
 #[allow(dead_code)]
-fn parse_stylesheet(input: &str) -> ParseResult<Vec<(String, ElementStyle)>> {
+fn parse_stylesheet(input: &str) -> ParseResult<'_, Vec<(String, ElementStyle)>> {
     let (input, _) = ws(input)?;
     let (input, rules) = many0(css_rule)(input)?;
     let (input, _) = ws(input)?;
@@ -2988,7 +2988,7 @@ fn default_position(index: usize, total: usize) -> f32 {
 }
 
 /// Fill in missing/default positions with even distribution
-fn distribute_stop_positions(stops: &mut [GradientStop]) {
+fn distribute_stop_positions(_stops: &mut [GradientStop]) {
     // The positions are already set during parsing
     // This function could be enhanced to handle "auto" positions
     // For now, we rely on default_position during parsing

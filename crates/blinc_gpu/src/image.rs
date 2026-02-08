@@ -58,6 +58,35 @@ impl GpuImage {
         height: u32,
         label: Option<&str>,
     ) -> Self {
+        let max_dim = device.limits().max_texture_dimension_2d;
+        let width = width.clamp(1, max_dim);
+        let height = height.clamp(1, max_dim);
+        let Some(required_len) = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|v| v.checked_mul(4))
+        else {
+            tracing::warn!(
+                "from_rgba: failed to compute required buffer size for {}x{} image",
+                width,
+                height
+            );
+            return Self::empty(device, width, height, label);
+        };
+        if pixels.len() < required_len {
+            tracing::warn!(
+                "from_rgba: pixel buffer too small (required {}, got {}), falling back to empty image",
+                required_len,
+                pixels.len()
+            );
+            debug_assert!(
+                pixels.len() >= required_len,
+                "from_rgba: pixel buffer too small (required {}, got {})",
+                required_len,
+                pixels.len()
+            );
+            return Self::empty(device, width, height, label);
+        }
+
         let texture = device.create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
@@ -75,7 +104,7 @@ impl GpuImage {
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
-            pixels,
+            &pixels[..required_len],
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

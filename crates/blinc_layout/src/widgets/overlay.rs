@@ -40,7 +40,6 @@ use blinc_core::Color;
 use indexmap::IndexMap;
 
 use crate::div::{div, Div};
-use crate::key::InstanceKey;
 use crate::renderer::RenderTree;
 use crate::stack::stack;
 use crate::stateful::StateTransitions;
@@ -1756,7 +1755,7 @@ impl OverlayManagerInner {
 
         // Create container with proper corner alignment
         // pointer_events_none allows scroll events to pass through to UI below
-        let mut container = div()
+        let container = div()
             .w(vp_width)
             .h(vp_height)
             .pointer_events_none()
@@ -2068,7 +2067,7 @@ impl OverlayManagerInner {
         let mut positions = Vec::new();
         let mut y_offset = margin;
 
-        for (i, toast) in toasts.iter().take(self.max_toasts).enumerate() {
+        for (_i, toast) in toasts.iter().take(self.max_toasts).enumerate() {
             // Estimate toast height (will be refined after layout)
             let estimated_height = toast.cached_size.map(|(_, h)| h).unwrap_or(60.0);
 

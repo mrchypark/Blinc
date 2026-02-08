@@ -935,7 +935,7 @@ impl ScrollPhysics {
             return;
         };
 
-        let mut scheduler = scheduler_arc.lock().unwrap();
+        let scheduler = scheduler_arc.lock().unwrap();
 
         // Use a snappy spring for scroll animations - fast but smooth
         let scroll_spring_config = SpringConfig::new(400.0, 30.0, 1.0);
@@ -1127,7 +1127,7 @@ impl ScrollPhysics {
 
         // Animate opacity using spring if scheduler available
         if let Some(scheduler_arc) = self.scheduler.upgrade() {
-            let mut scheduler = scheduler_arc.lock().unwrap();
+            let scheduler = scheduler_arc.lock().unwrap();
 
             // Remove existing spring if any
             if let Some(spring_id) = self.scrollbar_opacity_spring.take() {

@@ -18,11 +18,7 @@ use crate::theme::DebuggerTokens;
 
 /// State for the tree panel
 #[derive(Default)]
-pub struct TreePanelState {
-    pub selected_id: Option<String>,
-    pub expanded_ids: Vec<String>,
-    pub filter_text: String,
-}
+pub struct TreePanelState;
 
 struct TreePanelConfig {
     has_snapshot: bool,
@@ -137,10 +133,6 @@ impl TreePanel {
     fn get_or_build(&self) -> &BuiltTreePanel {
         self.built
             .get_or_init(|| BuiltTreePanel::from_config(&self.config))
-    }
-
-    pub fn build(self) -> Div {
-        BuiltTreePanel::from_config(&self.config).inner
     }
 }
 

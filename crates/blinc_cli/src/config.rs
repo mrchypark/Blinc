@@ -474,6 +474,7 @@ impl BlincConfig {
     }
 
     /// Create a new configuration with the given project name
+    #[allow(dead_code)]
     pub fn new(name: &str) -> Self {
         Self {
             project: ProjectConfig {
@@ -489,6 +490,7 @@ impl BlincConfig {
     }
 
     /// Serialize to TOML string
+    #[allow(dead_code)]
     pub fn to_toml(&self) -> Result<String> {
         toml::to_string_pretty(self).context("Failed to serialize config")
     }

@@ -595,7 +595,6 @@ mod tests {
             let is_word_break = word_breaks.contains(&(glyph.cluster as usize));
 
             if line_width + advance > max_width && !current_line.is_empty() {
-                let mut broke_line = false;
                 if last_word_end > 0 {
                     let remaining: Vec<_> = current_line.drain(last_word_end..).collect();
                     lines.push(std::mem::take(&mut current_line));
@@ -612,27 +611,23 @@ mod tests {
                         .map(|g| shaped.scale(g.x_advance) + options.letter_spacing)
                         .sum();
                     last_word_end = 0;
-                    broke_line = true;
                 } else {
                     lines.push(std::mem::take(&mut current_line));
                     line_width = 0.0;
                     last_word_end = 0;
-                    broke_line = true;
                 }
 
-                if broke_line {
-                    if current_line.is_empty() && glyph.codepoint.is_whitespace() {
-                        continue;
-                    }
-
-                    current_line.push(*glyph);
-                    line_width += advance;
-
-                    if is_word_break {
-                        last_word_end = current_line.len();
-                    }
+                if current_line.is_empty() && glyph.codepoint.is_whitespace() {
                     continue;
                 }
+
+                current_line.push(*glyph);
+                line_width += advance;
+
+                if is_word_break {
+                    last_word_end = current_line.len();
+                }
+                continue;
             }
 
             if current_line.is_empty() && glyph.codepoint.is_whitespace() {

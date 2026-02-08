@@ -2073,7 +2073,7 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
             });
 
         // Create Stateful using the existing infrastructure
-        let mut stateful = Stateful::with_shared_state(shared_state);
+        let stateful = Stateful::with_shared_state(shared_state);
 
         // Set the callback
         stateful.shared_state.lock().unwrap().state_callback = Some(legacy_callback);

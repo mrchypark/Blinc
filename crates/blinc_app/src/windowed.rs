@@ -1745,8 +1745,6 @@ impl WindowedApp {
                             /// Computed bounds dimensions of the element
                             bounds_width: f32,
                             bounds_height: f32,
-                            scroll_delta_x: f32,
-                            scroll_delta_y: f32,
                             /// Drag delta for DRAG/DRAG_END events
                             drag_delta_x: f32,
                             drag_delta_y: f32,
@@ -1771,8 +1769,6 @@ impl WindowedApp {
                                     bounds_y: 0.0,
                                     bounds_width: 0.0,
                                     bounds_height: 0.0,
-                                    scroll_delta_x: 0.0,
-                                    scroll_delta_y: 0.0,
                                     drag_delta_x: 0.0,
                                     drag_delta_y: 0.0,
                                     key_char: None,

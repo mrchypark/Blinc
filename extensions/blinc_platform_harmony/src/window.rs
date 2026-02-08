@@ -2,7 +2,7 @@
 //!
 //! Wraps XComponent's NativeWindow for rendering.
 
-use blinc_platform::{Cursor, PlatformError, Window};
+use blinc_platform::{Cursor, Window};
 
 /// HarmonyOS window backed by XComponent's NativeWindow
 pub struct HarmonyWindow {

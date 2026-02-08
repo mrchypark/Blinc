@@ -39,9 +39,9 @@
 //!     .disabled(true)
 //! ```
 
-use blinc_animation::{get_scheduler, AnimationContext, SpringConfig};
+use blinc_animation::{get_scheduler, SpringConfig};
 use blinc_core::events::event_types;
-use blinc_core::{BlincContext, BlincContextState, Color, State};
+use blinc_core::{BlincContextState, Color, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
 use blinc_layout::motion::motion;
@@ -105,6 +105,7 @@ impl StateTransitions for SliderThumbState {
 /// - SliderState::use_thumb_offset(ctx, initial, config) -> SharedAnimatedValue
 /// - SliderState::use_drag_start_x(ctx, 0.0) -> State<f32>
 #[derive(BlincComponent)]
+#[allow(dead_code)]
 struct SliderState {
     /// Animated X offset for thumb position
     #[animation]

@@ -146,7 +146,7 @@ impl Breadcrumb {
     fn from_builder(builder: &BreadcrumbBuilder) -> Self {
         let theme = ThemeState::get();
         let text_primary = theme.color(ColorToken::TextPrimary);
-        let text_secondary = theme.color(ColorToken::TextSecondary);
+        let _text_secondary = theme.color(ColorToken::TextSecondary);
         let text_tertiary = theme.color(ColorToken::TextTertiary);
 
         let font_size = builder.size.font_size();

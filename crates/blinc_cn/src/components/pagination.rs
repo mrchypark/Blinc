@@ -106,7 +106,7 @@ impl Pagination {
         let text_tertiary = theme.color(ColorToken::TextTertiary);
         let primary = theme.color(ColorToken::Primary);
         let primary_hover = theme.color(ColorToken::PrimaryHover);
-        let surface = theme.color(ColorToken::Surface);
+        let _surface = theme.color(ColorToken::Surface);
         let surface_elevated = theme.color(ColorToken::SurfaceElevated);
         let border = theme.color(ColorToken::Border);
         let radius = theme.radius(RadiusToken::Md);
@@ -428,7 +428,7 @@ fn build_page_button<F>(
     font_size: f32,
     radius: f32,
     primary: blinc_core::Color,
-    primary_hover: blinc_core::Color,
+    _primary_hover: blinc_core::Color,
     surface_elevated: blinc_core::Color,
     border: blinc_core::Color,
     text_primary: blinc_core::Color,
