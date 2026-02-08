@@ -820,6 +820,9 @@ impl Div {
     /// ```
     #[inline]
     pub fn set_style(&mut self, style: &ElementStyle) {
+        use crate::element_style::{SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify, StyleOverflow};
+
+        // Visual properties
         if let Some(ref bg) = style.background {
             self.background = Some(bg.clone());
         }
@@ -840,6 +843,125 @@ impl Div {
         }
         if let Some(opacity) = style.opacity {
             self.opacity = opacity;
+        }
+
+        // Layout: sizing
+        if let Some(w) = style.width {
+            self.style.size.width = Dimension::Length(w);
+        }
+        if let Some(h) = style.height {
+            self.style.size.height = Dimension::Length(h);
+        }
+        if let Some(w) = style.min_width {
+            self.style.min_size.width = Dimension::Length(w);
+        }
+        if let Some(h) = style.min_height {
+            self.style.min_size.height = Dimension::Length(h);
+        }
+        if let Some(w) = style.max_width {
+            self.style.max_size.width = Dimension::Length(w);
+        }
+        if let Some(h) = style.max_height {
+            self.style.max_size.height = Dimension::Length(h);
+        }
+
+        // Layout: display & flex direction
+        if let Some(display) = style.display {
+            self.style.display = match display {
+                StyleDisplay::Flex => Display::Flex,
+                StyleDisplay::Block => Display::Block,
+                StyleDisplay::None => Display::None,
+            };
+        }
+        if let Some(dir) = style.flex_direction {
+            self.style.flex_direction = match dir {
+                StyleFlexDirection::Row => FlexDirection::Row,
+                StyleFlexDirection::Column => FlexDirection::Column,
+                StyleFlexDirection::RowReverse => FlexDirection::RowReverse,
+                StyleFlexDirection::ColumnReverse => FlexDirection::ColumnReverse,
+            };
+        }
+        if let Some(wrap) = style.flex_wrap {
+            self.style.flex_wrap = if wrap { FlexWrap::Wrap } else { FlexWrap::NoWrap };
+        }
+        if let Some(grow) = style.flex_grow {
+            self.style.flex_grow = grow;
+        }
+        if let Some(shrink) = style.flex_shrink {
+            self.style.flex_shrink = shrink;
+        }
+
+        // Layout: alignment
+        if let Some(align) = style.align_items {
+            self.style.align_items = Some(match align {
+                StyleAlign::Start => AlignItems::Start,
+                StyleAlign::Center => AlignItems::Center,
+                StyleAlign::End => AlignItems::End,
+                StyleAlign::Stretch => AlignItems::Stretch,
+                StyleAlign::Baseline => AlignItems::Baseline,
+            });
+        }
+        if let Some(justify) = style.justify_content {
+            self.style.justify_content = Some(match justify {
+                StyleJustify::Start => JustifyContent::Start,
+                StyleJustify::Center => JustifyContent::Center,
+                StyleJustify::End => JustifyContent::End,
+                StyleJustify::SpaceBetween => JustifyContent::SpaceBetween,
+                StyleJustify::SpaceAround => JustifyContent::SpaceAround,
+                StyleJustify::SpaceEvenly => JustifyContent::SpaceEvenly,
+            });
+        }
+        if let Some(align) = style.align_self {
+            self.style.align_self = Some(match align {
+                StyleAlign::Start => AlignSelf::Start,
+                StyleAlign::Center => AlignSelf::Center,
+                StyleAlign::End => AlignSelf::End,
+                StyleAlign::Stretch => AlignSelf::Stretch,
+                StyleAlign::Baseline => AlignSelf::Baseline,
+            });
+        }
+
+        // Layout: spacing
+        if let Some(SpacingRect { top, right, bottom, left }) = style.padding {
+            self.style.padding = Rect {
+                top: LengthPercentage::Length(top),
+                right: LengthPercentage::Length(right),
+                bottom: LengthPercentage::Length(bottom),
+                left: LengthPercentage::Length(left),
+            };
+        }
+        if let Some(SpacingRect { top, right, bottom, left }) = style.margin {
+            self.style.margin = Rect {
+                top: LengthPercentageAuto::Length(top),
+                right: LengthPercentageAuto::Length(right),
+                bottom: LengthPercentageAuto::Length(bottom),
+                left: LengthPercentageAuto::Length(left),
+            };
+        }
+        if let Some(gap) = style.gap {
+            self.style.gap = taffy::Size {
+                width: LengthPercentage::Length(gap),
+                height: LengthPercentage::Length(gap),
+            };
+        }
+
+        // Layout: overflow
+        if let Some(overflow) = style.overflow {
+            let val = match overflow {
+                StyleOverflow::Visible => Overflow::Visible,
+                StyleOverflow::Clip => Overflow::Clip,
+                StyleOverflow::Scroll => Overflow::Scroll,
+            };
+            self.style.overflow.x = val;
+            self.style.overflow.y = val;
+        }
+
+        // Layout: border
+        if let Some(width) = style.border_width {
+            self.border_width = width;
+        }
+        if let Some(color) = style.border_color {
+            self.border_color = Some(color);
         }
     }
 

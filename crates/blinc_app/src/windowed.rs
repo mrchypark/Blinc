@@ -109,6 +109,9 @@ pub struct WindowedContext {
     element_registry: SharedElementRegistry,
     /// Callbacks to run after UI is ready (motion bindings registered)
     ready_callbacks: SharedReadyCallbacks,
+    /// CSS stylesheet for automatic style application (hover, animations, base styles)
+    /// Multiple stylesheets cascade — later rules override earlier ones.
+    pub stylesheet: Option<Arc<blinc_layout::css_parser::Stylesheet>>,
 }
 
 impl WindowedContext {
@@ -150,6 +153,7 @@ impl WindowedContext {
             had_visible_overlays: false,
             element_registry,
             ready_callbacks,
+            stylesheet: None,
         }
     }
 
@@ -189,6 +193,7 @@ impl WindowedContext {
             had_visible_overlays: false,
             element_registry,
             ready_callbacks,
+            stylesheet: None,
         }
     }
 
@@ -228,6 +233,7 @@ impl WindowedContext {
             had_visible_overlays: false,
             element_registry,
             ready_callbacks,
+            stylesheet: None,
         }
     }
 
@@ -267,6 +273,7 @@ impl WindowedContext {
             had_visible_overlays: false,
             element_registry,
             ready_callbacks,
+            stylesheet: None,
         }
     }
 
@@ -1263,6 +1270,117 @@ impl WindowedContext {
     pub fn theme_radius(&self, token: blinc_theme::RadiusToken) -> f32 {
         blinc_theme::ThemeState::get().radius(token)
     }
+
+    // =========================================================================
+    // CSS Stylesheet API
+    // =========================================================================
+
+    /// Add inline CSS to the application stylesheet.
+    ///
+    /// Multiple calls cascade — later rules override earlier ones.
+    /// Stylesheets are visual-only: they update render props on existing nodes
+    /// and trigger redraws. They never cause tree rebuilds.
+    pub fn add_css(&mut self, css: &str) {
+        match blinc_layout::css_parser::Stylesheet::parse(css) {
+            Ok(sheet) => self.add_stylesheet(sheet),
+            Err(e) => {
+                tracing::warn!("Failed to parse CSS: {}", e);
+            }
+        }
+    }
+
+    /// Load and add a `.css` file to the application stylesheet.
+    ///
+    /// Multiple calls cascade — later rules override earlier ones.
+    pub fn load_css(&mut self, path: &str) {
+        match blinc_layout::css_parser::Stylesheet::from_file(path) {
+            Ok(sheet) => self.add_stylesheet(sheet),
+            Err(e) => {
+                tracing::warn!("Failed to load CSS file '{}': {}", path, e);
+            }
+        }
+    }
+
+    /// Add a pre-parsed stylesheet to the application.
+    ///
+    /// Multiple calls cascade — later rules override earlier ones.
+    pub fn add_stylesheet(&mut self, sheet: blinc_layout::css_parser::Stylesheet) {
+        match self.stylesheet.as_mut() {
+            Some(existing) => {
+                // Cascade: merge into existing (Arc::make_mut for COW)
+                Arc::make_mut(existing).merge(sheet);
+            }
+            None => {
+                self.stylesheet = Some(Arc::new(sheet));
+            }
+        }
+    }
+
+    /// Set a style for an element by ID.
+    ///
+    /// This is the Rust-native alternative to `add_css()`. Use with `css!` or `style!`
+    /// macros to define styles in Rust syntax that are applied automatically to matching
+    /// elements — just like CSS stylesheets.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.set_style("card", css! {
+    ///     background: Color::BLUE;
+    ///     border-radius: 12.0;
+    ///     box-shadow: md;
+    /// });
+    ///
+    /// // Then just give the element an ID:
+    /// div().id("card").w(200.0).h(100.0)
+    /// ```
+    pub fn set_style(
+        &mut self,
+        id: &str,
+        style: blinc_layout::element_style::ElementStyle,
+    ) {
+        match self.stylesheet.as_mut() {
+            Some(existing) => {
+                Arc::make_mut(existing).insert(id, style);
+            }
+            None => {
+                let mut sheet = blinc_layout::css_parser::Stylesheet::new();
+                sheet.insert(id, style);
+                self.stylesheet = Some(Arc::new(sheet));
+            }
+        }
+    }
+
+    /// Set a state-specific style for an element by ID.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use blinc_layout::css_parser::ElementState;
+    ///
+    /// ctx.set_style("button", style! { bg: Color::BLUE, rounded: 8.0 });
+    /// ctx.set_state_style("button", ElementState::Hover, style! {
+    ///     bg: Color::from_hex(0x2563EB),
+    ///     shadow_md,
+    /// });
+    /// ```
+    pub fn set_state_style(
+        &mut self,
+        id: &str,
+        state: blinc_layout::css_parser::ElementState,
+        style: blinc_layout::element_style::ElementStyle,
+    ) {
+        match self.stylesheet.as_mut() {
+            Some(existing) => {
+                Arc::make_mut(existing).insert_with_state(id, state, style);
+            }
+            None => {
+                let mut sheet = blinc_layout::css_parser::Stylesheet::new();
+                sheet.insert_with_state(id, state, style);
+                self.stylesheet = Some(Arc::new(sheet));
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -1483,6 +1601,8 @@ impl WindowedApp {
         let mut ctx: Option<WindowedContext> = None;
         // Persistent render tree for hit testing and dirty tracking
         let mut render_tree: Option<RenderTree> = None;
+        // Track last frame time for CSS animation delta calculation
+        let mut last_frame_time_ms: u64 = 0;
         // Track if we need to rebuild UI (e.g., after resize)
         let mut needs_rebuild = true;
         // Track if we need to relayout (e.g., after resize even if tree unchanged)
@@ -2521,12 +2641,15 @@ impl WindowedApp {
                                 if needs_layout {
                                     if let Some(ref mut tree) = render_tree {
                                         tracing::debug!("Subtree rebuilds processed, recomputing layout");
+                                        tree.apply_stylesheet_layout_overrides();
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
                                         // Begin/end motion frame to track which motions are still in tree
                                         rs.begin_stable_motion_frame();
                                         tree.initialize_motion_animations(rs);
                                         rs.end_stable_motion_frame();
                                         rs.process_global_motion_replays();
+                                        // Start CSS animations for elements with animation properties
+                                        tree.start_all_css_animations();
                                     }
                                 }
                                 if had_prop_updates && !needs_layout {
@@ -2595,6 +2718,16 @@ impl WindowedApp {
                                         // Set DPI scale factor for HiDPI rendering
                                         tree.set_scale_factor(windowed_ctx.scale_factor as f32);
 
+                                        // Set CSS stylesheet for automatic style application
+                                        if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                                            tree.set_stylesheet_arc(stylesheet.clone());
+                                        }
+                                        // Apply base CSS styles to all registered elements
+                                        // (stylesheet was set after tree construction, so collect_render_props missed them)
+                                        tree.apply_stylesheet_base_styles();
+                                        // Apply stylesheet layout overrides before layout computation
+                                        tree.apply_stylesheet_layout_overrides();
+
                                         // Compute layout with new viewport dimensions
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
 
@@ -2604,6 +2737,8 @@ impl WindowedApp {
                                         rs.end_stable_motion_frame();
                                         // Process any motion replay requests queued during tree building
                                         rs.process_global_motion_replays();
+                                        // Start CSS animations for elements with animation properties
+                                        tree.start_all_css_animations();
 
                                         // Replace existing tree with fresh one
                                         *existing_tree = tree;
@@ -2613,6 +2748,11 @@ impl WindowedApp {
                                     } else {
                                         // Normal incremental update (no resize)
                                         use blinc_layout::UpdateResult;
+
+                                        // Update stylesheet in case it changed between frames
+                                        if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                                            existing_tree.set_stylesheet_arc(stylesheet.clone());
+                                        }
 
                                         let update_result = existing_tree.incremental_update(&ui);
 
@@ -2627,6 +2767,7 @@ impl WindowedApp {
                                             UpdateResult::LayoutChanged => {
                                                 // Layout changed - recompute layout
                                                 tracing::debug!("Incremental update: LayoutChanged - recomputing layout");
+                                                existing_tree.apply_stylesheet_layout_overrides();
                                                 existing_tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
                                             }
                                             UpdateResult::ChildrenChanged => {
@@ -2634,6 +2775,7 @@ impl WindowedApp {
                                                 tracing::debug!("Incremental update: ChildrenChanged - subtrees rebuilt");
 
                                                 // Recompute layout since structure changed
+                                                existing_tree.apply_stylesheet_layout_overrides();
                                                 existing_tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
 
                                                 // Initialize motion animations for any new nodes wrapped in motion() containers
@@ -2643,6 +2785,8 @@ impl WindowedApp {
 
                                                 // Process any global motion replays that were queued during tree building
                                                 rs.process_global_motion_replays();
+                                                // Start CSS animations for elements with animation properties
+                                                existing_tree.start_all_css_animations();
                                             }
                                         }
                                     }
@@ -2659,6 +2803,16 @@ impl WindowedApp {
                                     // Set DPI scale factor for HiDPI rendering
                                     tree.set_scale_factor(windowed_ctx.scale_factor as f32);
 
+                                    // Set CSS stylesheet for automatic style application
+                                    if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                                        tree.set_stylesheet_arc(stylesheet.clone());
+                                    }
+                                    // Apply base CSS styles to all registered elements
+                                    // (stylesheet was set after tree construction, so collect_render_props missed them)
+                                    tree.apply_stylesheet_base_styles();
+                                    // Apply stylesheet layout overrides before layout computation
+                                    tree.apply_stylesheet_layout_overrides();
+
                                     // Compute layout in logical pixels
                                     tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
 
@@ -2669,6 +2823,8 @@ impl WindowedApp {
 
                                     // Process any global motion replays that were queued during tree building
                                     rs.process_global_motion_replays();
+                                    // Start CSS animations for elements with animation properties
+                                    tree.start_all_css_animations();
 
                                     render_tree = Some(tree);
                                 }
@@ -2718,6 +2874,19 @@ impl WindowedApp {
                             // This updates dynamic properties without touching tree structure
                             let _animations_active = rs.tick(current_time);
 
+                            // Tick CSS animations (but don't apply yet — state styles must go first)
+                            let css_animating = if let Some(ref mut tree) = render_tree {
+                                let dt_ms = if last_frame_time_ms > 0 {
+                                    (current_time - last_frame_time_ms) as f32
+                                } else {
+                                    16.0 // Assume ~60fps for first frame
+                                };
+                                tree.tick_css_animations(dt_ms)
+                            } else {
+                                false
+                            };
+                            last_frame_time_ms = current_time;
+
                             // Sync motion states to shared store for query_motion API
                             rs.sync_shared_motion_states();
 
@@ -2731,6 +2900,22 @@ impl WindowedApp {
                             // PHASE 4: Render
                             // Combines stable tree structure with dynamic render state
                             // =========================================================
+
+                            // Apply CSS state styles (:hover, :active, :focus) from stylesheet
+                            // This is visual-only — no tree rebuild, just prop mutation
+                            if let Some(ref mut tree) = render_tree {
+                                if tree.stylesheet().is_some() {
+                                    tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
+                                }
+                            }
+
+                            // Apply CSS animation values AFTER state styles
+                            // (state styles reset to base, animations must override)
+                            if css_animating {
+                                if let Some(ref mut tree) = render_tree {
+                                    tree.apply_all_css_animation_props();
+                                }
+                            }
 
                             if let Some(ref tree) = render_tree {
                                 // Render with motion animations
@@ -2797,7 +2982,7 @@ impl WindowedApp {
                                 mgr.take_dirty() || mgr.has_visible_overlays()
                             };
 
-                            if needs_animation_redraw || needs_cursor_redraw || needs_motion_redraw || scroll_animating || needs_overlay_redraw || theme_animating {
+                            if needs_animation_redraw || needs_cursor_redraw || needs_motion_redraw || scroll_animating || needs_overlay_redraw || theme_animating || css_animating {
                                 // Request another frame to render updated animation values
                                 // For cursor blink, also re-request continuous redraw for next frame
                                 if needs_cursor_redraw {

@@ -67,8 +67,11 @@ use nom::{
 };
 use tracing::debug;
 
-use crate::element::RenderLayer;
-use crate::element_style::ElementStyle;
+use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, WoodMaterial};
+use crate::element_style::{
+    ElementStyle, SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify,
+    StyleOverflow,
+};
 use crate::units::Length;
 
 /// Custom parser result type using VerboseError for better diagnostics
@@ -1000,6 +1003,27 @@ impl Stylesheet {
         Self::parse(css).unwrap_or_default()
     }
 
+    /// Insert a style for an element ID (without the # prefix)
+    ///
+    /// This is the programmatic equivalent of parsing `#id { ... }` in CSS.
+    /// If a style already exists for this ID, it is replaced.
+    pub fn insert(&mut self, id: impl Into<String>, style: ElementStyle) {
+        self.styles.insert(id.into(), style);
+    }
+
+    /// Insert a state-specific style for an element ID
+    ///
+    /// This is the programmatic equivalent of parsing `#id:hover { ... }` in CSS.
+    pub fn insert_with_state(
+        &mut self,
+        id: impl Into<String>,
+        state: ElementState,
+        style: ElementStyle,
+    ) {
+        let key = format!("{}:{}", id.into(), state);
+        self.styles.insert(key, style);
+    }
+
     /// Get a style by element ID (without the # prefix)
     ///
     /// Returns `None` if no style is defined for the given ID.
@@ -1085,6 +1109,36 @@ impl Stylesheet {
     /// Check if the stylesheet is empty
     pub fn is_empty(&self) -> bool {
         self.styles.is_empty()
+    }
+
+    /// Merge another stylesheet into this one (cascade — later rules override earlier)
+    ///
+    /// This follows CSS cascade rules: styles from `other` override matching
+    /// styles in `self`. Variables and keyframes are also merged.
+    pub fn merge(&mut self, other: Stylesheet) {
+        for (key, style) in other.styles {
+            self.styles.insert(key, style);
+        }
+        for (key, value) in other.variables {
+            self.variables.insert(key, value);
+        }
+        for (key, kf) in other.keyframes {
+            self.keyframes.insert(key, kf);
+        }
+    }
+
+    /// Load and parse a `.css` file from disk
+    pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, ParseError> {
+        let path = path.as_ref();
+        let css = std::fs::read_to_string(path).map_err(|e| {
+            ParseError::new(
+                Severity::Error,
+                format!("Failed to read CSS file '{}': {}", path.display(), e),
+                0,
+                0,
+            )
+        })?;
+        Self::parse(&css)
     }
 
     // =========================================================================
@@ -1958,6 +2012,162 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.animation = Some(anim);
             }
         }
+        "backdrop-filter" => {
+            let trimmed = value.trim().to_lowercase();
+            match trimmed.as_str() {
+                "glass" => {
+                    style.material = Some(Material::Glass(GlassMaterial::new()));
+                    style.render_layer = Some(RenderLayer::Glass);
+                }
+                "metallic" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::new()));
+                }
+                "chrome" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::chrome()));
+                }
+                "gold" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::gold()));
+                }
+                "wood" => {
+                    style.material = Some(Material::Wood(WoodMaterial::new()));
+                }
+                _ if trimmed.starts_with("blur(") => {
+                    // backdrop-filter: blur(10px) → glass material
+                    style.material = Some(Material::Glass(GlassMaterial::new()));
+                    style.render_layer = Some(RenderLayer::Glass);
+                }
+                _ => {}
+            }
+        }
+        // =====================================================================
+        // Layout Properties
+        // =====================================================================
+        "width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.width = Some(px);
+            }
+        }
+        "height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.height = Some(px);
+            }
+        }
+        "min-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.min_width = Some(px);
+            }
+        }
+        "min-height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.min_height = Some(px);
+            }
+        }
+        "max-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.max_width = Some(px);
+            }
+        }
+        "max-height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.max_height = Some(px);
+            }
+        }
+        "display" => match value.trim() {
+            "flex" => style.display = Some(StyleDisplay::Flex),
+            "block" => style.display = Some(StyleDisplay::Block),
+            "none" => style.display = Some(StyleDisplay::None),
+            _ => {}
+        },
+        "flex-direction" => match value.trim() {
+            "row" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::Row);
+            }
+            "column" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::Column);
+            }
+            "row-reverse" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::RowReverse);
+            }
+            "column-reverse" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::ColumnReverse);
+            }
+            _ => {}
+        },
+        "flex-wrap" => match value.trim() {
+            "wrap" => style.flex_wrap = Some(true),
+            "nowrap" => style.flex_wrap = Some(false),
+            _ => {}
+        },
+        "flex-grow" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.flex_grow = Some(v);
+            }
+        }
+        "flex-shrink" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.flex_shrink = Some(v);
+            }
+        }
+        "align-items" => match value.trim() {
+            "center" => style.align_items = Some(StyleAlign::Center),
+            "start" | "flex-start" => style.align_items = Some(StyleAlign::Start),
+            "end" | "flex-end" => style.align_items = Some(StyleAlign::End),
+            "stretch" => style.align_items = Some(StyleAlign::Stretch),
+            "baseline" => style.align_items = Some(StyleAlign::Baseline),
+            _ => {}
+        },
+        "justify-content" => match value.trim() {
+            "center" => style.justify_content = Some(StyleJustify::Center),
+            "start" | "flex-start" => style.justify_content = Some(StyleJustify::Start),
+            "end" | "flex-end" => style.justify_content = Some(StyleJustify::End),
+            "space-between" => style.justify_content = Some(StyleJustify::SpaceBetween),
+            "space-around" => style.justify_content = Some(StyleJustify::SpaceAround),
+            "space-evenly" => style.justify_content = Some(StyleJustify::SpaceEvenly),
+            _ => {}
+        },
+        "align-self" => match value.trim() {
+            "center" => style.align_self = Some(StyleAlign::Center),
+            "start" | "flex-start" => style.align_self = Some(StyleAlign::Start),
+            "end" | "flex-end" => style.align_self = Some(StyleAlign::End),
+            "stretch" => style.align_self = Some(StyleAlign::Stretch),
+            "baseline" => style.align_self = Some(StyleAlign::Baseline),
+            _ => {}
+        },
+        "padding" => {
+            if let Some(rect) = parse_css_spacing(value) {
+                style.padding = Some(rect);
+            }
+        }
+        "margin" => {
+            if let Some(rect) = parse_css_spacing(value) {
+                style.margin = Some(rect);
+            }
+        }
+        "gap" => {
+            if let Some(px) = parse_css_px(value) {
+                style.gap = Some(px);
+            }
+        }
+        "overflow" => match value.trim() {
+            "hidden" | "clip" => style.overflow = Some(StyleOverflow::Clip),
+            "visible" => style.overflow = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow = Some(StyleOverflow::Scroll),
+            _ => {}
+        },
+        "border-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.border_width = Some(px);
+            }
+        }
+        "border-color" => {
+            if let Some(color) = parse_color(value) {
+                style.border_color = Some(color);
+            }
+        }
         _ => {
             // Unknown property - log at debug level for forward compatibility
             debug!(
@@ -2088,6 +2298,189 @@ fn apply_property_with_errors(
                 let mut anim = style.animation.take().unwrap_or_default();
                 anim.fill_mode = fill_mode;
                 style.animation = Some(anim);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "backdrop-filter" => {
+            let trimmed = value.trim().to_lowercase();
+            match trimmed.as_str() {
+                "glass" => {
+                    style.material = Some(Material::Glass(GlassMaterial::new()));
+                    style.render_layer = Some(RenderLayer::Glass);
+                }
+                "metallic" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::new()));
+                }
+                "chrome" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::chrome()));
+                }
+                "gold" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::gold()));
+                }
+                "wood" => {
+                    style.material = Some(Material::Wood(WoodMaterial::new()));
+                }
+                _ if trimmed.starts_with("blur(") => {
+                    style.material = Some(Material::Glass(GlassMaterial::new()));
+                    style.render_layer = Some(RenderLayer::Glass);
+                }
+                _ => {
+                    errors.push(ParseError::invalid_value(name, value, line, column));
+                }
+            }
+        }
+        // =====================================================================
+        // Layout Properties
+        // =====================================================================
+        "width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.height = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "min-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.min_width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "min-height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.min_height = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "max-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.max_width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "max-height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.max_height = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "display" => match value.trim() {
+            "flex" => style.display = Some(StyleDisplay::Flex),
+            "block" => style.display = Some(StyleDisplay::Block),
+            "none" => style.display = Some(StyleDisplay::None),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "flex-direction" => match value.trim() {
+            "row" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::Row);
+            }
+            "column" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::Column);
+            }
+            "row-reverse" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::RowReverse);
+            }
+            "column-reverse" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::ColumnReverse);
+            }
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "flex-wrap" => match value.trim() {
+            "wrap" => style.flex_wrap = Some(true),
+            "nowrap" => style.flex_wrap = Some(false),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "flex-grow" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.flex_grow = Some(v);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "flex-shrink" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.flex_shrink = Some(v);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "align-items" => match value.trim() {
+            "center" => style.align_items = Some(StyleAlign::Center),
+            "start" | "flex-start" => style.align_items = Some(StyleAlign::Start),
+            "end" | "flex-end" => style.align_items = Some(StyleAlign::End),
+            "stretch" => style.align_items = Some(StyleAlign::Stretch),
+            "baseline" => style.align_items = Some(StyleAlign::Baseline),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "justify-content" => match value.trim() {
+            "center" => style.justify_content = Some(StyleJustify::Center),
+            "start" | "flex-start" => style.justify_content = Some(StyleJustify::Start),
+            "end" | "flex-end" => style.justify_content = Some(StyleJustify::End),
+            "space-between" => style.justify_content = Some(StyleJustify::SpaceBetween),
+            "space-around" => style.justify_content = Some(StyleJustify::SpaceAround),
+            "space-evenly" => style.justify_content = Some(StyleJustify::SpaceEvenly),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "align-self" => match value.trim() {
+            "center" => style.align_self = Some(StyleAlign::Center),
+            "start" | "flex-start" => style.align_self = Some(StyleAlign::Start),
+            "end" | "flex-end" => style.align_self = Some(StyleAlign::End),
+            "stretch" => style.align_self = Some(StyleAlign::Stretch),
+            "baseline" => style.align_self = Some(StyleAlign::Baseline),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "padding" => {
+            if let Some(rect) = parse_css_spacing(value) {
+                style.padding = Some(rect);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "margin" => {
+            if let Some(rect) = parse_css_spacing(value) {
+                style.margin = Some(rect);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "gap" => {
+            if let Some(px) = parse_css_px(value) {
+                style.gap = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "overflow" => match value.trim() {
+            "hidden" | "clip" => style.overflow = Some(StyleOverflow::Clip),
+            "visible" => style.overflow = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow = Some(StyleOverflow::Scroll),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "border-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.border_width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "border-color" => {
+            if let Some(color) = parse_color(value) {
+                style.border_color = Some(color);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
@@ -2578,6 +2971,42 @@ fn parse_time_value(input: &str) -> Option<u32> {
 
     // Try plain number (assume milliseconds)
     input.parse::<f32>().ok().map(|ms| ms as u32)
+}
+
+/// Parse a CSS length value in pixels (e.g. "100px", "50", "10.5px")
+fn parse_css_px(input: &str) -> Option<f32> {
+    let trimmed = input.trim();
+    if let Some(px_str) = trimmed.strip_suffix("px") {
+        return px_str.trim().parse::<f32>().ok();
+    }
+    // Unitless number = px
+    trimmed.parse::<f32>().ok()
+}
+
+/// Parse a CSS spacing value (uniform or per-side)
+/// Supports: "10px", "10px 20px" (vert horiz), "10px 20px 30px 40px" (top right bottom left)
+fn parse_css_spacing(input: &str) -> Option<SpacingRect> {
+    let trimmed = input.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    match parts.len() {
+        1 => {
+            let v = parse_css_px(parts[0])?;
+            Some(SpacingRect::uniform(v))
+        }
+        2 => {
+            let vert = parse_css_px(parts[0])?;
+            let horiz = parse_css_px(parts[1])?;
+            Some(SpacingRect::xy(horiz, vert))
+        }
+        4 => {
+            let top = parse_css_px(parts[0])?;
+            let right = parse_css_px(parts[1])?;
+            let bottom = parse_css_px(parts[2])?;
+            let left = parse_css_px(parts[3])?;
+            Some(SpacingRect::new(top, right, bottom, left))
+        }
+        _ => None,
+    }
 }
 
 // ============================================================================
@@ -3323,6 +3752,32 @@ mod tests {
         let stylesheet = Stylesheet::parse(css).unwrap();
         let style = stylesheet.get("test").unwrap();
         assert_eq!(style.render_layer, Some(RenderLayer::Foreground));
+    }
+
+    #[test]
+    fn test_parse_backdrop_filter_glass() {
+        let css = "#test { backdrop-filter: glass; }";
+        let stylesheet = Stylesheet::parse(css).unwrap();
+        let style = stylesheet.get("test").unwrap();
+        assert!(style.material.is_some());
+        assert_eq!(style.render_layer, Some(RenderLayer::Glass));
+    }
+
+    #[test]
+    fn test_parse_backdrop_filter_blur() {
+        let css = "#test { backdrop-filter: blur(10px); }";
+        let stylesheet = Stylesheet::parse(css).unwrap();
+        let style = stylesheet.get("test").unwrap();
+        assert!(style.material.is_some());
+        assert_eq!(style.render_layer, Some(RenderLayer::Glass));
+    }
+
+    #[test]
+    fn test_parse_backdrop_filter_metallic() {
+        let css = "#test { backdrop-filter: chrome; }";
+        let stylesheet = Stylesheet::parse(css).unwrap();
+        let style = stylesheet.get("test").unwrap();
+        assert!(style.material.is_some());
     }
 
     #[test]

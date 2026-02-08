@@ -205,7 +205,10 @@ pub mod prelude {
     // Interactive state management
     pub use crate::interactive::{DirtyTracker, InteractiveContext, NodeState};
     // Unified element styling
-    pub use crate::element_style::{style, ElementStyle};
+    pub use crate::element_style::{
+        style, ElementStyle, SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection,
+        StyleJustify, StyleOverflow,
+    };
     // Diff and reconciliation
     pub use crate::diff::{
         diff, diff_children, diff_elements, reconcile, ChangeCategory, ChildDiff, DiffResult,
