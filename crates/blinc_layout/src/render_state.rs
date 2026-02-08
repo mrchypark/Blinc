@@ -258,6 +258,47 @@ pub struct ActiveMotion {
     pub current: MotionKeyframe,
 }
 
+/// Active CSS keyframe animation state
+///
+/// Tracks a running CSS animation for an element, including the full
+/// `MultiKeyframeAnimation` with all keyframes preserved.
+#[derive(Clone, Debug)]
+pub struct ActiveCssAnimation {
+    /// The running animation with all keyframes
+    pub animation: blinc_animation::MultiKeyframeAnimation,
+    /// Whether the animation is currently playing
+    pub is_playing: bool,
+    /// Current interpolated properties (cached each tick)
+    pub current_properties: blinc_animation::KeyframeProperties,
+}
+
+impl ActiveCssAnimation {
+    /// Create a new active CSS animation
+    pub fn new(mut animation: blinc_animation::MultiKeyframeAnimation) -> Self {
+        animation.start();
+        let current = animation.current_properties();
+        Self {
+            animation,
+            is_playing: true,
+            current_properties: current,
+        }
+    }
+
+    /// Tick the animation and update current properties
+    ///
+    /// Returns true if the animation is still playing
+    pub fn tick(&mut self, dt_ms: f32) -> bool {
+        if self.is_playing {
+            self.animation.tick(dt_ms);
+            self.current_properties = self.animation.current_properties();
+            if !self.animation.is_playing() {
+                self.is_playing = false;
+            }
+        }
+        self.is_playing
+    }
+}
+
 /// Dynamic render state for a single node
 ///
 /// Contains all properties that can change without requiring a tree rebuild.
@@ -311,6 +352,15 @@ pub struct NodeRenderState {
     // =========================================================================
     /// Active motion animation (enter/exit) for this node
     pub motion: Option<ActiveMotion>,
+
+    // =========================================================================
+    // CSS keyframe animation state
+    // =========================================================================
+    /// Active CSS keyframe animation for this node
+    ///
+    /// This is separate from `motion` because CSS animations can have
+    /// multiple keyframes (not just enter/exit) and different lifecycle.
+    pub css_animation: Option<ActiveCssAnimation>,
 }
 
 impl Default for NodeRenderState {
@@ -328,6 +378,7 @@ impl Default for NodeRenderState {
             focused: false,
             pressed: false,
             motion: None,
+            css_animation: None,
         }
     }
 }
@@ -344,6 +395,7 @@ impl NodeRenderState {
             || self.bg_color_springs.is_some()
             || self.transform_springs.is_some()
             || self.has_active_motion()
+            || self.has_active_css_animation()
     }
 
     /// Check if this node has an active motion animation
@@ -353,6 +405,56 @@ impl NodeRenderState {
         } else {
             false
         }
+    }
+
+    // =========================================================================
+    // CSS Animation methods
+    // =========================================================================
+
+    /// Start a CSS keyframe animation for this node
+    ///
+    /// Replaces any existing CSS animation.
+    pub fn start_css_animation(&mut self, animation: blinc_animation::MultiKeyframeAnimation) {
+        self.css_animation = Some(ActiveCssAnimation::new(animation));
+    }
+
+    /// Check if this node has an active CSS animation
+    pub fn has_active_css_animation(&self) -> bool {
+        self.css_animation
+            .as_ref()
+            .map(|a| a.is_playing)
+            .unwrap_or(false)
+    }
+
+    /// Tick the CSS animation and get current properties
+    ///
+    /// Returns Some with current properties if animation is active, None otherwise.
+    pub fn tick_css_animation(
+        &mut self,
+        dt_ms: f32,
+    ) -> Option<&blinc_animation::KeyframeProperties> {
+        if let Some(ref mut active) = self.css_animation {
+            active.tick(dt_ms);
+            if active.is_playing {
+                return Some(&active.current_properties);
+            }
+        }
+        None
+    }
+
+    /// Stop and remove the CSS animation
+    pub fn stop_css_animation(&mut self) {
+        if let Some(ref mut active) = self.css_animation {
+            active.is_playing = false;
+        }
+    }
+
+    /// Get the current CSS animation properties (if any)
+    pub fn css_animation_properties(&self) -> Option<&blinc_animation::KeyframeProperties> {
+        self.css_animation
+            .as_ref()
+            .filter(|a| a.is_playing)
+            .map(|a| &a.current_properties)
     }
 }
 

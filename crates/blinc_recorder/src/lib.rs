@@ -1,3 +1,4 @@
+#![allow(unused, dead_code)]
 //! blinc_recorder - Recording and debugging infrastructure for Blinc applications.
 //!
 //! This crate provides:

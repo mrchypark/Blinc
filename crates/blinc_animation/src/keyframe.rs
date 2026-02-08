@@ -364,6 +364,38 @@ impl MultiKeyframeAnimation {
         self
     }
 
+    // =========================================================================
+    // Mutating setters (for post-construction configuration)
+    // =========================================================================
+
+    /// Set playback direction (mutating)
+    pub fn set_direction(&mut self, direction: PlayDirection) {
+        self.direction = direction;
+    }
+
+    /// Set fill mode (mutating)
+    pub fn set_fill_mode(&mut self, fill_mode: FillMode) {
+        self.fill_mode = fill_mode;
+    }
+
+    /// Set number of iterations (mutating, -1 for infinite)
+    pub fn set_iterations(&mut self, count: i32) {
+        self.iterations = count;
+    }
+
+    /// Set delay before animation starts (mutating)
+    pub fn set_delay(&mut self, delay_ms: u32) {
+        self.delay_ms = delay_ms;
+    }
+
+    /// Set reversed state (mutating)
+    ///
+    /// When true, animation plays in reverse direction for the current iteration.
+    /// Used internally for Alternate direction and for AlternateReverse start.
+    pub fn set_reversed(&mut self, reversed: bool) {
+        self.reversed = reversed;
+    }
+
     /// Start the animation
     pub fn start(&mut self) {
         self.current_time = -(self.delay_ms as f32);
