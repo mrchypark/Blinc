@@ -11,8 +11,7 @@ rust-version.workspace = true
 crate-type = ["lib"]
 
 [features]
-default = ["simple", "fluent"]
-simple = []
+default = ["fluent"]
 fluent = ["dep:fluent-bundle", "dep:unic-langid"]
 
 [dependencies]

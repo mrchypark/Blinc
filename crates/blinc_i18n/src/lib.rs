@@ -4,7 +4,7 @@
 //! - Framework-level `Label` type (`text(label)`, `button(..., label)`, etc.)
 //! - Runtime locale switching with an app-provided redraw callback
 //! - Multiple translation backends behind a stable API:
-//!   - `simple`: Blinc key=value catalog format (default)
+//!   - `simple`: YAML mapping catalogs (default, with legacy key=value fallback)
 //!   - `fluent`: Fluent (.ftl) catalogs (optional feature)
 
 mod error;
