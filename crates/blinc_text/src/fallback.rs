@@ -12,6 +12,16 @@ use crate::registry::{FontRegistry, GenericFont};
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
 
+const BUCKET_HANGUL: u32 = 0x11_0000;
+const BUCKET_KANA: u32 = 0x11_0001;
+const BUCKET_HAN: u32 = 0x11_0002;
+const BUCKET_ARABIC: u32 = 0x11_0003;
+const BUCKET_DEVANAGARI: u32 = 0x11_0004;
+const BUCKET_THAI: u32 = 0x11_0005;
+const BUCKET_HEBREW: u32 = 0x11_0006;
+const BUCKET_CYRILLIC: u32 = 0x11_0007;
+const BUCKET_GREEK: u32 = 0x11_0008;
+
 /// Shared helper for applying per-line fallback width correction.
 ///
 /// Layout positions/width are computed from the primary font. When we render some glyphs using a
@@ -140,6 +150,18 @@ pub fn walk_layout_with_fallback<H: FallbackWalkHandler>(
     }
 
     Ok(width_corrector.corrected_width())
+}
+
+/// Returns `true` for scripts where using cmap glyph id alone is likely incorrect
+/// (GSUB/GPOS shaping required).
+///
+/// This helper exists so the renderer and the measurer stay consistent about when
+/// to invoke HarfBuzz for fallback glyph resolution.
+pub fn needs_single_char_shaping(c: char) -> bool {
+    matches!(
+        fallback_bucket_key(c),
+        BUCKET_ARABIC | BUCKET_DEVANAGARI | BUCKET_THAI | BUCKET_HEBREW
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,16 +304,6 @@ impl FallbackResolver {
 /// actually contains the specific codepoint and re-resolve if it does not.
 pub fn fallback_bucket_key(c: char) -> u32 {
     let cp = c as u32;
-
-    const BUCKET_HANGUL: u32 = 0x11_0000;
-    const BUCKET_KANA: u32 = 0x11_0001;
-    const BUCKET_HAN: u32 = 0x11_0002;
-    const BUCKET_ARABIC: u32 = 0x11_0003;
-    const BUCKET_DEVANAGARI: u32 = 0x11_0004;
-    const BUCKET_THAI: u32 = 0x11_0005;
-    const BUCKET_HEBREW: u32 = 0x11_0006;
-    const BUCKET_CYRILLIC: u32 = 0x11_0007;
-    const BUCKET_GREEK: u32 = 0x11_0008;
 
     match cp {
         // Hangul (Korean)

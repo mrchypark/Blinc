@@ -5,12 +5,18 @@
 
 use blinc_layout::text_measure::{TextLayoutOptions, TextMeasurer, TextMetrics};
 use blinc_layout::GenericFont as LayoutGenericFont;
-use blinc_text::{FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine};
+use blinc_text::{
+    FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine, TextShaper,
+};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 struct MeasureFallbackWalker {
     font_size: f32,
     letter_spacing: f32,
+    shaper: TextShaper,
+    fallback_shape_calls: usize,
+    fallback_shaped_gid_cache: HashMap<(usize, u32), u16>,
 }
 
 impl blinc_text::fallback::FallbackWalkHandler for MeasureFallbackWalker {
@@ -32,16 +38,47 @@ impl blinc_text::fallback::FallbackWalkHandler for MeasureFallbackWalker {
         glyph: blinc_text::PositionedGlyph,
         candidate: &blinc_text::FallbackCandidate,
     ) -> std::result::Result<Option<f32>, Self::Error> {
-        let Some(gid) = candidate.face.glyph_id(glyph.codepoint) else {
+        let Some(nominal_gid) = candidate.face.glyph_id(glyph.codepoint) else {
             return Ok(None);
         };
-        if gid == 0 {
+        if nominal_gid == 0 {
             return Ok(None);
         }
 
-        let adv_units = candidate.face.glyph_advance(gid).unwrap_or(0) as f32;
+        // Mirror the renderer's per-glyph fallback behavior:
+        // for scripts likely needing GSUB/GPOS, run HarfBuzz on this single codepoint to
+        // resolve the correct glyph id. We still use the resolved glyph's *nominal* advance
+        // (like the renderer's rasterizer does) to keep measurement aligned with rendering.
+        const MAX_FALLBACK_SHAPES_PER_CALL: usize = 1024;
+        let mut fallback_gid = nominal_gid;
+        if !candidate.use_color
+            && blinc_text::fallback::needs_single_char_shaping(glyph.codepoint)
+            && self.fallback_shape_calls < MAX_FALLBACK_SHAPES_PER_CALL
+        {
+            let face_key = Arc::as_ptr(&candidate.face) as usize;
+            let cp = glyph.codepoint as u32;
+            if let Some(&cached) = self.fallback_shaped_gid_cache.get(&(face_key, cp)) {
+                if cached != 0 {
+                    fallback_gid = cached;
+                }
+            } else {
+                self.fallback_shape_calls += 1;
+                let mut char_buf = [0u8; 4];
+                let char_str = glyph.codepoint.encode_utf8(&mut char_buf);
+                let shaped = self.shaper.shape(char_str, &candidate.face, self.font_size);
+                let shaped_gid = shaped.glyphs.first().map(|g| g.glyph_id).unwrap_or(0);
+                self.fallback_shaped_gid_cache
+                    .insert((face_key, cp), shaped_gid);
+                if shaped_gid != 0 {
+                    fallback_gid = shaped_gid;
+                }
+            }
+        }
+
+        let adv_units = candidate.face.glyph_advance(fallback_gid).unwrap_or(0) as f32;
         let scale = self.font_size / candidate.face.metrics().units_per_em as f32;
-        Ok(Some(adv_units * scale + self.letter_spacing))
+        let adv_px = (adv_units * scale).round();
+        Ok(Some(adv_px + self.letter_spacing))
     }
 }
 
@@ -223,6 +260,9 @@ impl TextMeasurer for FontTextMeasurer {
         let mut walker = MeasureFallbackWalker {
             font_size,
             letter_spacing: layout_opts.letter_spacing,
+            shaper: TextShaper::new(),
+            fallback_shape_calls: 0,
+            fallback_shaped_gid_cache: HashMap::new(),
         };
         let corrected_width = blinc_text::fallback::walk_layout_with_fallback(
             &layout,

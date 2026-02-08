@@ -85,10 +85,7 @@ struct RenderFallbackWalker<'a> {
 
 impl RenderFallbackWalker<'_> {
     fn needs_single_char_shaping(&self, c: char) -> bool {
-        matches!(
-            crate::fallback::fallback_bucket_key(c),
-            0x11_0003 | 0x11_0004 | 0x11_0005 | 0x11_0006
-        )
+        crate::fallback::needs_single_char_shaping(c)
     }
 }
 
