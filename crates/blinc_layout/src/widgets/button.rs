@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex};
 
 use blinc_core::reactive::SignalId;
 use blinc_core::Color;
+use blinc_i18n::Label;
 use blinc_theme::{ColorToken, ThemeState};
 
 use crate::div::{div, Div, ElementBuilder};
@@ -42,7 +43,7 @@ pub use crate::stateful::ButtonState as ButtonVisualState;
 /// Button-specific configuration (colors)
 #[derive(Clone)]
 pub struct ButtonConfig {
-    pub label: Option<String>,
+    pub label: Option<Label>,
     pub text_color: Color,
     pub text_size: f32,
     pub bg_color: Color,
@@ -96,7 +97,7 @@ impl Button {
     /// Button::new(btn_state, "Click me")
     ///     .on_click(|_| println!("Clicked!"))
     /// ```
-    pub fn new(state: SharedState<ButtonState>, label: impl Into<String>) -> Self {
+    pub fn new(state: SharedState<ButtonState>, label: impl Into<Label>) -> Self {
         let config = Arc::new(Mutex::new(ButtonConfig {
             label: Some(label.into()),
             ..Default::default()
@@ -455,7 +456,7 @@ impl Button {
 ///     .on_click(|_| save_data())
 ///     .bg_color(Color::GREEN)
 /// ```
-pub fn button(state: SharedState<ButtonState>, label: impl Into<String>) -> Button {
+pub fn button(state: SharedState<ButtonState>, label: impl Into<Label>) -> Button {
     Button::new(state, label)
         .px(12.0)
         .py(6.0)
@@ -545,9 +546,12 @@ impl ElementBuilder for Button {
                     if let Some(ref callback) = custom_callback {
                         callback(*state, &mut update);
                     } else if let Some(ref label) = cfg.label {
-                        tracing::debug!("Button adding label child: {}", label);
-                        update =
-                            update.child(text(label).size(cfg.text_size).color(cfg.text_color));
+                        tracing::debug!("Button adding label child: {:?}", label);
+                        update = update.child(
+                            text(label.clone())
+                                .size(cfg.text_size)
+                                .color(cfg.text_color),
+                        );
                     }
 
                     let update_children = update.children.len();

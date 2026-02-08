@@ -32,6 +32,7 @@
 use std::ops::{Deref, DerefMut};
 
 use blinc_core::Color;
+use blinc_i18n::Label;
 use blinc_layout::div::{Div, ElementBuilder, ElementTypeId};
 use blinc_layout::prelude::*;
 use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
@@ -212,7 +213,7 @@ impl AlertBox {
     }
 
     /// Set the alert title
-    pub fn title(mut self, title: impl Into<String>) -> Self {
+    pub fn title(mut self, title: impl Into<Label>) -> Self {
         let theme = ThemeState::get();
         let color = self.variant.text_color(&theme);
 
@@ -223,7 +224,7 @@ impl AlertBox {
     }
 
     /// Set the alert description
-    pub fn description(mut self, desc: impl Into<String>) -> Self {
+    pub fn description(mut self, desc: impl Into<Label>) -> Self {
         let theme = ThemeState::get();
         let color = theme.color(ColorToken::TextSecondary);
 

@@ -26,6 +26,7 @@
 
 use std::ops::{Deref, DerefMut};
 
+use blinc_i18n::Label;
 use blinc_layout::div::{Div, ElementBuilder, ElementTypeId};
 use blinc_layout::prelude::*;
 use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
@@ -210,7 +211,7 @@ impl CardHeader {
     }
 
     /// Add a title
-    pub fn title(mut self, title: impl Into<String>) -> Self {
+    pub fn title(mut self, title: impl Into<Label>) -> Self {
         let theme = ThemeState::get();
         self.inner = self.inner.child(
             text(title)
@@ -222,7 +223,7 @@ impl CardHeader {
     }
 
     /// Add a description
-    pub fn description(mut self, desc: impl Into<String>) -> Self {
+    pub fn description(mut self, desc: impl Into<Label>) -> Self {
         let theme = ThemeState::get();
         self.inner = self.inner.child(
             text(desc)

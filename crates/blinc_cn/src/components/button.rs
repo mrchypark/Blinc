@@ -26,6 +26,7 @@
 //! ```
 
 use blinc_core::Color;
+use blinc_i18n::Label;
 use blinc_layout::div::ElementBuilder;
 use blinc_layout::element::CursorStyle;
 use blinc_layout::prelude::*;
@@ -244,7 +245,7 @@ pub(crate) fn reset_button_state(key: &str) {
 /// }
 /// ```
 #[track_caller]
-pub fn button(label: impl Into<String>) -> ButtonBuilder {
+pub fn button(label: impl Into<Label>) -> ButtonBuilder {
     ButtonBuilder {
         key: InstanceKey::new("button"),
         config: ButtonConfig {
@@ -263,7 +264,7 @@ pub fn button(label: impl Into<String>) -> ButtonBuilder {
 /// Internal configuration for ButtonBuilder
 #[derive(Clone)]
 struct ButtonConfig {
-    label: String,
+    label: Label,
     variant: ButtonVariant,
     btn_size: ButtonSize,
     disabled: bool,
@@ -294,6 +295,7 @@ impl Button {
         let radius = config.btn_size.border_radius(&theme);
         let variant = config.variant;
         let label = config.label.clone();
+        let label_is_empty = matches!(&label, Label::Raw(s) if s.is_empty());
         let icon = config.icon.clone();
         let icon_position = config.icon_position;
         let border = variant.border(&theme);
@@ -323,7 +325,7 @@ impl Button {
 
                 // Build content with icon + label or just label
                 let mut content = blinc_layout::div::div().flex_row().items_center().gap(6.0);
-                let label_text = text(&label)
+                let label_text = text(label.clone())
                     .size(font_size)
                     .color(fg)
                     .no_wrap()
@@ -336,7 +338,7 @@ impl Button {
                     let svg_str = blinc_icons::to_svg(icon_str, icon_size);
                     let icon_svg = svg(&svg_str).size(icon_size, icon_size).color(fg);
 
-                    if label.is_empty() {
+                    if label_is_empty {
                         // Icon-only button
                         content = content.child(icon_svg);
                     } else {
@@ -457,7 +459,7 @@ impl ButtonBuilder {
     ///
     /// For most use cases, prefer `button()` which auto-generates a unique key.
     /// Use this when you need a deterministic key for programmatic access.
-    pub fn with_key(key: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn with_key(key: impl Into<String>, label: impl Into<Label>) -> Self {
         Self {
             key: InstanceKey::explicit(key),
             config: ButtonConfig {

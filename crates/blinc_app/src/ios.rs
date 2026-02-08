@@ -83,6 +83,30 @@ impl IOSApp {
         });
     }
 
+    fn init_i18n() {
+        use blinc_i18n::I18nState;
+
+        if I18nState::try_get().is_none() {
+            let mut locale: Option<String> = None;
+
+            // If the native bridge has been wired by Swift, use it to get the device locale.
+            if blinc_core::native_bridge::NativeBridgeState::is_initialized() {
+                if let Ok(l) =
+                    blinc_core::native_bridge::native_call::<String, _>("device", "get_locale", ())
+                {
+                    locale = Some(l);
+                }
+            }
+
+            I18nState::init(locale.unwrap_or_else(|| "en-US".to_string()));
+        }
+
+        blinc_i18n::set_redraw_callback(|| {
+            tracing::debug!("Locale changed - requesting full rebuild");
+            blinc_layout::widgets::request_full_rebuild();
+        });
+    }
+
     /// Create a new Blinc context for iOS rendering
     ///
     /// This sets up all the shared state needed for Blinc rendering.
@@ -128,6 +152,9 @@ impl IOSApp {
 
         // Initialize the theme system
         Self::init_theme();
+
+        // Initialize i18n (locale + redraw hook)
+        Self::init_i18n();
 
         // Shared state
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));

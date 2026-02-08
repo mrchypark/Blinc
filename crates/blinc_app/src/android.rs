@@ -79,6 +79,39 @@ impl AndroidApp {
         });
     }
 
+    fn init_i18n(app: &NdkAndroidApp) {
+        use blinc_i18n::I18nState;
+
+        // Only initialize if not already initialized
+        if I18nState::try_get().is_none() {
+            let mut locale: Option<String> = None;
+
+            // Best-effort: wire up the JNI native bridge if the Kotlin class exists.
+            // If the app didn't include the bridge, we fall back to English.
+            #[cfg(target_os = "android")]
+            {
+                if blinc_platform_android::init_android_native_bridge(app).is_ok() {
+                    if blinc_core::native_bridge::NativeBridgeState::is_initialized() {
+                        if let Ok(l) = blinc_core::native_bridge::native_call::<String, _>(
+                            "device",
+                            "get_locale",
+                            (),
+                        ) {
+                            locale = Some(l);
+                        }
+                    }
+                }
+            }
+
+            I18nState::init(locale.unwrap_or_else(|| "en-US".to_string()));
+        }
+
+        blinc_i18n::set_redraw_callback(|| {
+            tracing::debug!("Locale changed - requesting full rebuild");
+            blinc_layout::widgets::request_full_rebuild();
+        });
+    }
+
     /// Initialize Android logging
     fn init_logging() {
         // Initialize android_logger for log crate
@@ -133,6 +166,9 @@ impl AndroidApp {
 
         // Initialize the theme system
         Self::init_theme();
+
+        // Initialize i18n (locale + redraw hook)
+        Self::init_i18n(&app);
 
         // Shared state
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
