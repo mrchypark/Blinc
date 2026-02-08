@@ -6,9 +6,8 @@
 use blinc_layout::text_measure::{TextLayoutOptions, TextMeasurer, TextMetrics};
 use blinc_layout::GenericFont as LayoutGenericFont;
 use blinc_text::{
-    fallback_bucket_key, FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine,
+    FallbackResolver, FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine,
 };
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// Convert from layout's GenericFont to text's GenericFont
@@ -189,12 +188,7 @@ impl TextMeasurer for FontTextMeasurer {
         let mut corrected_width: f32 = 0.0;
         let mut x_offset: f32;
 
-        // Local per-call cache: codepoint -> fallback face (or None)
-        let mut sys_fallback_cache: HashMap<u32, Option<Arc<FontFace>>> = HashMap::new();
-
-        // Lazy-loaded symbol/emoji fonts (avoid loading Apple Color Emoji unless needed)
-        let mut symbol_font: Option<Arc<FontFace>> = None;
-        let mut emoji_font: Option<Arc<FontFace>> = None;
+        let mut resolver = FallbackResolver::new(options.font_weight, options.italic);
 
         for line in &layout.lines {
             x_offset = 0.0;
@@ -209,6 +203,17 @@ impl TextMeasurer for FontTextMeasurer {
                     continue;
                 }
 
+                // Suppress duplicate emoji glyphs produced by cluster mapping.
+                if i > 0
+                    && glyph.codepoint == line.glyphs[i - 1].codepoint
+                    && blinc_text::is_emoji(glyph.codepoint)
+                    && (glyph.x - line.glyphs[i - 1].x).abs() < 0.01
+                    && (glyph.y - line.glyphs[i - 1].y).abs() < 0.01
+                    && glyph.glyph_id == line.glyphs[i - 1].glyph_id
+                {
+                    continue;
+                }
+
                 let is_emoji_char = blinc_text::is_emoji(glyph.codepoint);
                 let primary_has_glyph = glyph.glyph_id != 0 && font.has_glyph(glyph.codepoint);
                 let needs_fallback = !primary_has_glyph || is_emoji_char;
@@ -217,54 +222,19 @@ impl TextMeasurer for FontTextMeasurer {
                     continue;
                 }
 
-                // Choose a fallback font
-                let mut fallback_font: Option<Arc<FontFace>> = None;
-
-                // Emoji: prefer emoji font for correct advances, fall back to symbol/system
-                if is_emoji_char {
-                    if emoji_font.is_none() {
-                        let mut registry = self.font_registry.lock().unwrap();
-                        emoji_font = registry.load_generic(GenericFont::Emoji).ok();
+                let candidates = resolver.candidates_for_char(
+                    self.font_registry.as_ref(),
+                    glyph.codepoint,
+                    is_emoji_char,
+                );
+                let fallback_font = candidates.into_iter().find_map(|c| {
+                    let gid = c.face.glyph_id(glyph.codepoint).unwrap_or(0);
+                    if gid == 0 {
+                        None
+                    } else {
+                        Some(c.face)
                     }
-                    fallback_font = emoji_font.clone();
-                }
-
-                // Non-emoji: try system fallback (covers CJK/Arabic/etc), then symbol.
-                if fallback_font.is_none() && !is_emoji_char {
-                    let bucket = fallback_bucket_key(glyph.codepoint);
-                    let entry = sys_fallback_cache.entry(bucket).or_insert_with(|| {
-                        let mut registry = self.font_registry.lock().unwrap();
-                        registry.load_fallback_for_char(
-                            glyph.codepoint,
-                            options.font_weight,
-                            options.italic,
-                        )
-                    });
-
-                    // Rare: a cached face for this bucket may not cover every codepoint in the bucket.
-                    // If it doesn't, refresh the entry.
-                    if let Some(face) = entry.as_ref() {
-                        if !face.has_glyph(glyph.codepoint) {
-                            let mut registry = self.font_registry.lock().unwrap();
-                            *entry = registry.load_fallback_for_char(
-                                glyph.codepoint,
-                                options.font_weight,
-                                options.italic,
-                            );
-                        }
-                    }
-
-                    fallback_font = entry.clone();
-                }
-
-                if fallback_font.is_none() {
-                    if symbol_font.is_none() {
-                        let mut registry = self.font_registry.lock().unwrap();
-                        symbol_font = registry.load_generic(GenericFont::Symbol).ok();
-                    }
-                    fallback_font = symbol_font.clone();
-                }
-
+                });
                 let Some(fallback_font) = fallback_font else {
                     continue;
                 };

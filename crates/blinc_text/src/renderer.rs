@@ -130,19 +130,12 @@ impl TextRenderer {
         weight: u16,
         italic: bool,
     ) -> Result<(Vec<Option<ResolvedGlyphData>>, f32)> {
-        // Lazy-loaded fallback fonts: only load emoji/symbol fonts when actually needed.
-        // This saves ~180MB of memory when text doesn't contain emoji.
-        let mut emoji_font: Option<Arc<FontFace>> = None;
-        let mut symbol_font: Option<Arc<FontFace>> = None;
-        let mut emoji_font_id: u32 = 0;
-        let mut symbol_font_id: u32 = 0;
-        let mut emoji_font_loaded = false;
-        let mut symbol_font_loaded = false;
+        let registry = Arc::clone(&self.font_registry);
+        let mut resolver = crate::fallback::FallbackResolver::new(weight, italic);
+        let shaper = TextShaper::new();
 
-        // Local per-call fallback cache: script bucket -> (face, face_font_id)
-        // This avoids repeated registry lock contention when a string contains many glyphs
-        // from the same missing script (e.g., long Korean text).
-        let mut sys_fallback_cache: rustc_hash::FxHashMap<u32, Option<(Arc<FontFace>, u32)>> =
+        // Cache computed system fallback face IDs to reduce hashing overhead.
+        let mut fallback_font_id_cache: rustc_hash::FxHashMap<usize, u32> =
             rustc_hash::FxHashMap::default();
 
         let mut glyph_infos: Vec<Option<ResolvedGlyphData>> =
@@ -181,126 +174,82 @@ impl TextRenderer {
                     positioned.glyph_id != 0 && font.has_glyph(positioned.codepoint);
                 let needs_fallback = !primary_has_glyph || is_emoji_char;
 
-                let sys_fallback: Option<(Arc<FontFace>, u32)> = if needs_fallback && !is_emoji_char
-                {
-                    let bucket = crate::fallback::fallback_bucket_key(positioned.codepoint);
-                    let resolve = || {
-                        let mut registry = self.font_registry.lock().unwrap();
-                        let face =
-                            registry.load_fallback_for_char(positioned.codepoint, weight, italic);
-                        drop(registry);
-                        face.map(|f| {
-                            let fid = self.font_id_for_fallback_face(&f);
-                            (f, fid)
-                        })
-                    };
-
-                    let entry = sys_fallback_cache.entry(bucket).or_insert_with(resolve);
-                    if let Some((face, _)) = entry.as_ref() {
-                        if !face.has_glyph(positioned.codepoint) {
-                            *entry = resolve();
-                        }
-                    }
-                    entry.clone()
-                } else {
-                    None
-                };
-
                 if needs_fallback {
-                    if !symbol_font_loaded {
-                        let mut registry = self.font_registry.lock().unwrap();
-                        symbol_font = registry.load_generic(GenericFont::Symbol).ok();
-                        drop(registry);
-                        symbol_font_id = self.font_id(None, GenericFont::Symbol);
-                        symbol_font_loaded = true;
-                    }
-
-                    if is_emoji_char && !emoji_font_loaded {
-                        let mut registry = self.font_registry.lock().unwrap();
-                        emoji_font = registry.load_generic(GenericFont::Emoji).ok();
-                        drop(registry);
-                        emoji_font_id = self.font_id(None, GenericFont::Emoji);
-                        emoji_font_loaded = true;
-                    }
-
-                    // Build fallback font chain:
-                    // - Emoji: emoji(color) -> symbol(gray) -> system fallback(gray)
-                    // - Non-emoji missing glyph: system fallback(gray) -> symbol(gray)
-                    let fallback_fonts: Vec<(&Arc<FontFace>, u32, bool)> = if is_emoji_char {
-                        [
-                            emoji_font.as_ref().map(|f| (f, emoji_font_id, true)),
-                            symbol_font.as_ref().map(|f| (f, symbol_font_id, false)),
-                            sys_fallback.as_ref().map(|(f, id)| (f, *id, false)),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect()
-                    } else {
-                        [
-                            sys_fallback.as_ref().map(|(f, id)| (f, *id, false)),
-                            symbol_font.as_ref().map(|f| (f, symbol_font_id, false)),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect()
-                    };
-
                     let mut found_fallback = false;
-                    for (fallback_font, fallback_font_id, use_color) in &fallback_fonts {
-                        if let Some(fallback_glyph_id) =
-                            fallback_font.glyph_id(positioned.codepoint)
-                        {
-                            if fallback_glyph_id != 0 {
-                                let shaper = TextShaper::new();
-                                let mut char_buf = [0u8; 4];
-                                let char_str = positioned.codepoint.encode_utf8(&mut char_buf);
-                                let shaped = shaper.shape(char_str, fallback_font, font_size);
+                    let candidates = resolver.candidates_for_char(
+                        registry.as_ref(),
+                        positioned.codepoint,
+                        is_emoji_char,
+                    );
 
-                                if let Some(shaped_glyph) = shaped.glyphs.first() {
-                                    let fallback_positioned = PositionedGlyph {
-                                        glyph_id: shaped_glyph.glyph_id,
-                                        codepoint: positioned.codepoint,
-                                        x: positioned.x + x_offset,
-                                        y: positioned.y,
-                                    };
+                    for candidate in &candidates {
+                        // Shape just this character with the fallback font to get correct metrics.
+                        let mut char_buf = [0u8; 4];
+                        let char_str = positioned.codepoint.encode_utf8(&mut char_buf);
+                        let shaped = shaper.shape(char_str, &candidate.face, font_size);
 
-                                    let (glyph_info, is_color) = if *use_color && is_emoji_char {
-                                        let info = self.rasterize_color_glyph_for_font(
-                                            fallback_font,
-                                            *fallback_font_id,
-                                            shaped_glyph.glyph_id,
-                                            font_size,
-                                        )?;
-                                        (info, true)
-                                    } else {
-                                        let info = self.rasterize_glyph_for_font(
-                                            fallback_font,
-                                            *fallback_font_id,
-                                            shaped_glyph.glyph_id,
-                                            font_size,
-                                        )?;
-                                        (info, false)
-                                    };
-
-                                    let fallback_advance =
-                                        glyph_info.advance as f32 + options.letter_spacing;
-                                    let primary_advance = if i + 1 < line.glyphs.len() {
-                                        (line.glyphs[i + 1].x - positioned.x).max(0.0)
-                                    } else {
-                                        fallback_advance
-                                    };
-                                    x_offset += fallback_advance - primary_advance;
-
-                                    glyph_infos.push(Some(ResolvedGlyphData {
-                                        info: glyph_info,
-                                        positioned: fallback_positioned,
-                                        is_color,
-                                    }));
-                                    found_fallback = true;
-                                    break;
-                                }
-                            }
+                        let Some(shaped_glyph) = shaped.glyphs.first() else {
+                            continue;
+                        };
+                        if shaped_glyph.glyph_id == 0 {
+                            continue;
                         }
+
+                        let fallback_font_id = match candidate.kind {
+                            crate::fallback::FallbackKind::Emoji => {
+                                self.font_id(None, GenericFont::Emoji)
+                            }
+                            crate::fallback::FallbackKind::Symbol => {
+                                self.font_id(None, GenericFont::Symbol)
+                            }
+                            crate::fallback::FallbackKind::System => {
+                                let key = Arc::as_ptr(&candidate.face) as usize;
+                                *fallback_font_id_cache.entry(key).or_insert_with(|| {
+                                    self.font_id_for_fallback_face(&candidate.face)
+                                })
+                            }
+                        };
+
+                        let fallback_positioned = PositionedGlyph {
+                            glyph_id: shaped_glyph.glyph_id,
+                            codepoint: positioned.codepoint,
+                            x: positioned.x + x_offset,
+                            y: positioned.y,
+                        };
+
+                        let (glyph_info, is_color) = if candidate.use_color && is_emoji_char {
+                            let info = self.rasterize_color_glyph_for_font(
+                                &candidate.face,
+                                fallback_font_id,
+                                shaped_glyph.glyph_id,
+                                font_size,
+                            )?;
+                            (info, true)
+                        } else {
+                            let info = self.rasterize_glyph_for_font(
+                                &candidate.face,
+                                fallback_font_id,
+                                shaped_glyph.glyph_id,
+                                font_size,
+                            )?;
+                            (info, false)
+                        };
+
+                        let fallback_advance = glyph_info.advance as f32 + options.letter_spacing;
+                        let primary_advance = if i + 1 < line.glyphs.len() {
+                            (line.glyphs[i + 1].x - positioned.x).max(0.0)
+                        } else {
+                            fallback_advance
+                        };
+                        x_offset += fallback_advance - primary_advance;
+
+                        glyph_infos.push(Some(ResolvedGlyphData {
+                            info: glyph_info,
+                            positioned: fallback_positioned,
+                            is_color,
+                        }));
+                        found_fallback = true;
+                        break;
                     }
 
                     if found_fallback {
