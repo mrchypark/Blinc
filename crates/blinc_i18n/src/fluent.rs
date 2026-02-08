@@ -1,29 +1,22 @@
-#[cfg(feature = "fluent")]
 use std::collections::HashMap;
 
-#[cfg(feature = "fluent")]
 use fluent_bundle::concurrent::FluentBundle;
 use fluent_bundle::{FluentArgs, FluentResource, FluentValue};
 
-#[cfg(feature = "fluent")]
 use unic_langid::LanguageIdentifier;
 
-#[cfg(feature = "fluent")]
 use crate::label::{ArgValue, Message};
 
-#[cfg(feature = "fluent")]
 use crate::locale::normalize_locale;
 
 /// A Fluent bundle wrapper keyed by locale.
 ///
 /// Note: we intentionally keep this thin; the stable API lives on `I18nState`.
-#[cfg(feature = "fluent")]
 #[derive(Default)]
 pub struct FluentStore {
     bundles: HashMap<String, FluentBundle<FluentResource>>,
 }
 
-#[cfg(feature = "fluent")]
 impl FluentStore {
     pub fn new() -> Self {
         Self {

@@ -193,6 +193,17 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
         return tmpl.to_string();
     }
 
+    // `args` is usually tiny; avoid allocating a HashMap for small argument sets.
+    let args_map = if args.len() > 8 {
+        Some(
+            args.iter()
+                .copied()
+                .collect::<std::collections::HashMap<&str, &ArgValue>>(),
+        )
+    } else {
+        None
+    };
+
     // Very small placeholder engine: replaces `{name}` tokens.
     let mut out = String::with_capacity(tmpl.len() + 8);
     let mut chars = tmpl.chars().peekable();
@@ -219,13 +230,24 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
             continue;
         }
 
-        if let Some((_, v)) = args.iter().find(|(k, _)| *k == key) {
-            out.push_str(&arg_to_string(v));
+        if let Some(map) = args_map.as_ref() {
+            if let Some(v) = map.get(key) {
+                out.push_str(&arg_to_string(v));
+            } else {
+                // Keep unknown placeholders visible.
+                out.push('{');
+                out.push_str(key);
+                out.push('}');
+            }
         } else {
-            // Keep unknown placeholders visible.
-            out.push('{');
-            out.push_str(key);
-            out.push('}');
+            if let Some((_, v)) = args.iter().find(|(k, _)| *k == key) {
+                out.push_str(&arg_to_string(v));
+            } else {
+                // Keep unknown placeholders visible.
+                out.push('{');
+                out.push_str(key);
+                out.push('}');
+            }
         }
     }
 

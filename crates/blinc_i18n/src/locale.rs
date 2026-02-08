@@ -29,8 +29,9 @@ pub fn locale_fallback_chain(locale: &str) -> Vec<String> {
 
     // Dedup, preserve order.
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for x in chain {
-        if !out.contains(&x) {
+        if seen.insert(x.clone()) {
             out.push(x);
         }
     }
