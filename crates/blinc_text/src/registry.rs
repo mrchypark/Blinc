@@ -24,6 +24,8 @@ use std::sync::Arc;
 /// This prevents pathological "bucket cache thrash" (e.g., alternating characters that require
 /// different fallback fonts within the same script bucket) from repeatedly re-scanning fontdb.
 const FALLBACK_CODEPOINT_CACHE_CAPACITY: usize = 2048;
+const FALLBACK_BUCKET_CACHE_CAPACITY: usize = 1024;
+const FACE_LOOKUP_CACHE_CAPACITY: usize = 512;
 
 /// Generic font category for fallback
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -127,13 +129,13 @@ pub struct FontRegistry {
     /// fontdb database containing system fonts
     db: Database,
     /// Cached FontFace instances (Some = found, None = not found)
-    faces: FxHashMap<String, Option<Arc<FontFace>>>,
+    faces: LruCache<String, Option<Arc<FontFace>>>,
     /// Cache loaded faces by fontdb ID (avoids re-parsing the same face repeatedly)
     faces_by_id: FxHashMap<fontdb::ID, Arc<FontFace>>,
     /// Script-bucket -> best fallback face id cache (None = no supporting face found)
     ///
     /// Key includes requested weight/italic so style-sensitive lookups can be cached.
-    fallback_char_cache: FxHashMap<(u32, u16, bool), Option<fontdb::ID>>,
+    fallback_char_cache: LruCache<(u32, u16, bool), Option<fontdb::ID>>,
     /// Codepoint -> best fallback face id cache (None = no supporting face found).
     ///
     /// This is an LRU to keep memory bounded while preventing bucket-cache thrash.
@@ -175,9 +177,11 @@ impl FontRegistry {
 
         Self {
             db,
-            faces: FxHashMap::default(),
+            faces: LruCache::new(NonZeroUsize::new(FACE_LOOKUP_CACHE_CAPACITY).unwrap()),
             faces_by_id: FxHashMap::default(),
-            fallback_char_cache: FxHashMap::default(),
+            fallback_char_cache: LruCache::new(
+                NonZeroUsize::new(FALLBACK_BUCKET_CACHE_CAPACITY).unwrap(),
+            ),
             fallback_codepoint_cache: LruCache::new(
                 NonZeroUsize::new(FALLBACK_CODEPOINT_CACHE_CAPACITY).unwrap(),
             ),
@@ -204,6 +208,7 @@ impl FontRegistry {
             // New faces can change fallback resolution; clear caches so we can discover them.
             self.fallback_char_cache.clear();
             self.fallback_codepoint_cache.clear();
+            self.faces.clear();
         }
         loaded
     }
@@ -295,7 +300,7 @@ impl FontRegistry {
                     }
 
                     // Cached face doesn't actually cover this codepoint; invalidate and re-resolve.
-                    self.fallback_char_cache.remove(&key);
+                    self.fallback_char_cache.pop(&key);
                 }
             }
         }
@@ -379,13 +384,13 @@ impl FontRegistry {
             Some(id) => {
                 let loaded = self.load_face_by_id_arc(id).ok();
                 self.fallback_char_cache
-                    .insert(key, loaded.as_ref().map(|_| id));
+                    .put(key, loaded.as_ref().map(|_| id));
                 self.fallback_codepoint_cache
                     .put(cp_key, loaded.as_ref().map(|_| id));
                 loaded
             }
             None => {
-                self.fallback_char_cache.insert(key, None);
+                self.fallback_char_cache.put(key, None);
                 self.fallback_codepoint_cache.put(cp_key, None);
                 None
             }
@@ -488,7 +493,7 @@ impl FontRegistry {
                 match self.find_font_id(name, weight, italic) {
                     Some(id) => id,
                     None => {
-                        self.faces.insert(cache_key.clone(), None);
+                        self.faces.put(cache_key.clone(), None);
                         return Err(TextError::FontLoadError(format!(
                             "Font '{}' (weight={}, italic={}) not found",
                             name, weight, italic
@@ -497,7 +502,7 @@ impl FontRegistry {
                 }
             }
             None => {
-                self.faces.insert(cache_key.clone(), None);
+                self.faces.put(cache_key.clone(), None);
                 return Err(TextError::FontLoadError(format!(
                     "Font '{}' (weight={}, italic={}) not found",
                     name, weight, italic
@@ -510,7 +515,7 @@ impl FontRegistry {
         let face = Arc::new(face);
 
         // Cache it
-        self.faces.insert(cache_key, Some(Arc::clone(&face)));
+        self.faces.put(cache_key, Some(Arc::clone(&face)));
 
         Ok(face)
     }
@@ -679,15 +684,14 @@ impl FontRegistry {
         for font_name in emoji_fonts {
             if let Ok(face) = self.load_font(font_name) {
                 // Cache it under the generic emoji key
-                self.faces
-                    .insert(cache_key.clone(), Some(Arc::clone(&face)));
+                self.faces.put(cache_key.clone(), Some(Arc::clone(&face)));
                 tracing::debug!("Loaded emoji font: {}", font_name);
                 return Ok(face);
             }
         }
 
         // No emoji font found
-        self.faces.insert(cache_key, None);
+        self.faces.put(cache_key, None);
         Err(TextError::FontLoadError(
             "No emoji font found on system".to_string(),
         ))
@@ -736,15 +740,14 @@ impl FontRegistry {
         for font_name in symbol_fonts {
             if let Ok(face) = self.load_font(font_name) {
                 // Cache it under the generic symbol key
-                self.faces
-                    .insert(cache_key.clone(), Some(Arc::clone(&face)));
+                self.faces.put(cache_key.clone(), Some(Arc::clone(&face)));
                 tracing::debug!("Loaded symbol font: {}", font_name);
                 return Ok(face);
             }
         }
 
         // No symbol font found
-        self.faces.insert(cache_key, None);
+        self.faces.put(cache_key, None);
         Err(TextError::FontLoadError(
             "No symbol font found on system".to_string(),
         ))
@@ -863,7 +866,7 @@ impl FontRegistry {
                 match self.find_generic_font_id(family, weight, italic) {
                     Some(id) => id,
                     None => {
-                        self.faces.insert(cache_key.clone(), None);
+                        self.faces.put(cache_key.clone(), None);
                         return Err(TextError::FontLoadError(format!(
                             "Generic font {:?} (weight={}, italic={}) not found",
                             generic, weight, italic
@@ -872,7 +875,7 @@ impl FontRegistry {
                 }
             }
             None => {
-                self.faces.insert(cache_key.clone(), None);
+                self.faces.put(cache_key.clone(), None);
                 return Err(TextError::FontLoadError(format!(
                     "Generic font {:?} (weight={}, italic={}) not found",
                     generic, weight, italic
@@ -884,7 +887,7 @@ impl FontRegistry {
         let face = Arc::new(face);
 
         // Cache it
-        self.faces.insert(cache_key, Some(Arc::clone(&face)));
+        self.faces.put(cache_key, Some(Arc::clone(&face)));
 
         Ok(face)
     }
@@ -910,7 +913,7 @@ impl FontRegistry {
         if let Some(name) = name {
             // Check if we've already tried this font (avoid repeated warnings)
             let cache_key = format!("{}:w{}:{}", name, weight, if italic { "i" } else { "n" });
-            let already_tried = self.faces.contains_key(&cache_key);
+            let already_tried = self.faces.contains(&cache_key);
 
             tracing::trace!(
                 "load_with_fallback_styled: name={}, weight={}, italic={}, already_tried={}, cache_size={}",
@@ -945,7 +948,7 @@ impl FontRegistry {
     pub fn get_cached(&self, name: &str) -> Option<Arc<FontFace>> {
         // Legacy: check for normal weight/style first
         let cache_key = format!("{}:w400:n", name);
-        self.faces.get(&cache_key).and_then(|opt| opt.clone())
+        self.faces.peek(&cache_key).and_then(|opt| opt.clone())
     }
 
     /// Get cached font by name with specific weight and style
@@ -956,14 +959,14 @@ impl FontRegistry {
         italic: bool,
     ) -> Option<Arc<FontFace>> {
         let cache_key = format!("{}:w{}:{}", name, weight, if italic { "i" } else { "n" });
-        self.faces.get(&cache_key).and_then(|opt| opt.clone())
+        self.faces.peek(&cache_key).and_then(|opt| opt.clone())
     }
 
     /// Get cached generic font (doesn't load - for use during render)
     pub fn get_cached_generic(&self, generic: GenericFont) -> Option<Arc<FontFace>> {
         // Legacy: check for normal weight/style first
         let cache_key = format!("__generic_{:?}:w400:n", generic);
-        self.faces.get(&cache_key).and_then(|opt| opt.clone())
+        self.faces.peek(&cache_key).and_then(|opt| opt.clone())
     }
 
     /// Get cached generic font with specific weight and style
@@ -979,7 +982,7 @@ impl FontRegistry {
             weight,
             if italic { "i" } else { "n" }
         );
-        self.faces.get(&cache_key).and_then(|opt| opt.clone())
+        self.faces.peek(&cache_key).and_then(|opt| opt.clone())
     }
 
     /// Fast font lookup for rendering - only uses cache, never loads
@@ -1094,18 +1097,18 @@ impl FontRegistry {
             let cache_key = format!("{}:w{}:{}", name, weight, if italic { "i" } else { "n" });
 
             // Skip if already cached
-            if self.faces.contains_key(&cache_key) {
+            if self.faces.contains(&cache_key) {
                 continue;
             }
 
             // Load the face
             match self.load_face_by_id(id) {
                 Ok(face) => {
-                    self.faces.insert(cache_key, Some(Arc::new(face)));
+                    self.faces.put(cache_key, Some(Arc::new(face)));
                 }
                 Err(e) => {
                     tracing::warn!("Failed to load font variant {}: {:?}", cache_key, e);
-                    self.faces.insert(cache_key, None);
+                    self.faces.put(cache_key, None);
                 }
             }
         }
