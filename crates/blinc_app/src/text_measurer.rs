@@ -195,7 +195,7 @@ impl TextMeasurer for FontTextMeasurer {
 
         // Fast path: use cached fonts only (never load during measurement)
         // Use weight and italic from options to get the correct font variant
-        let registry = self.font_registry.lock().unwrap();
+        let mut registry = self.font_registry.lock().unwrap();
         let font = match registry.get_for_render_with_style(
             options.font_name.as_deref(),
             generic_font,

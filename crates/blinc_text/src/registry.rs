@@ -936,33 +936,33 @@ impl FontRegistry {
     }
 
     /// Get cached font by name (doesn't load - for use during render)
-    pub fn get_cached(&self, name: &str) -> Option<Arc<FontFace>> {
+    pub fn get_cached(&mut self, name: &str) -> Option<Arc<FontFace>> {
         // Legacy: check for normal weight/style first
         let cache_key = format!("{}:w400:n", name);
-        self.faces.peek(&cache_key).and_then(|opt| opt.clone())
+        self.faces.get(&cache_key).and_then(|opt| opt.clone())
     }
 
     /// Get cached font by name with specific weight and style
     pub fn get_cached_with_style(
-        &self,
+        &mut self,
         name: &str,
         weight: u16,
         italic: bool,
     ) -> Option<Arc<FontFace>> {
         let cache_key = format!("{}:w{}:{}", name, weight, if italic { "i" } else { "n" });
-        self.faces.peek(&cache_key).and_then(|opt| opt.clone())
+        self.faces.get(&cache_key).and_then(|opt| opt.clone())
     }
 
     /// Get cached generic font (doesn't load - for use during render)
-    pub fn get_cached_generic(&self, generic: GenericFont) -> Option<Arc<FontFace>> {
+    pub fn get_cached_generic(&mut self, generic: GenericFont) -> Option<Arc<FontFace>> {
         // Legacy: check for normal weight/style first
         let cache_key = format!("__generic_{:?}:w400:n", generic);
-        self.faces.peek(&cache_key).and_then(|opt| opt.clone())
+        self.faces.get(&cache_key).and_then(|opt| opt.clone())
     }
 
     /// Get cached generic font with specific weight and style
     pub fn get_cached_generic_with_style(
-        &self,
+        &mut self,
         generic: GenericFont,
         weight: u16,
         italic: bool,
@@ -973,13 +973,13 @@ impl FontRegistry {
             weight,
             if italic { "i" } else { "n" }
         );
-        self.faces.peek(&cache_key).and_then(|opt| opt.clone())
+        self.faces.get(&cache_key).and_then(|opt| opt.clone())
     }
 
     /// Fast font lookup for rendering - only uses cache, never loads
     /// Returns the requested font if cached, or None if loading is needed
     pub fn get_for_render(
-        &self,
+        &mut self,
         name: Option<&str>,
         generic: GenericFont,
     ) -> Option<Arc<FontFace>> {
@@ -988,7 +988,7 @@ impl FontRegistry {
 
     /// Fast font lookup for rendering with specific weight and style
     pub fn get_for_render_with_style(
-        &self,
+        &mut self,
         name: Option<&str>,
         generic: GenericFont,
         weight: u16,
@@ -1010,7 +1010,7 @@ impl FontRegistry {
     ///
     /// Returns the cached emoji font if it was successfully loaded during
     /// initialization, or None if no emoji font is available.
-    pub fn get_emoji_font(&self) -> Option<Arc<FontFace>> {
+    pub fn get_emoji_font(&mut self) -> Option<Arc<FontFace>> {
         self.get_cached_generic(GenericFont::Emoji)
     }
 
