@@ -198,10 +198,13 @@ pub fn is_variation_selector(c: char) -> bool {
 /// codepoint. Only suppress when the glyphs also share the same pen position and glyph id, so
 /// repeated emoji like "😀😀" still render twice.
 pub fn should_skip_duplicate_emoji(prev: &PositionedGlyph, cur: &PositionedGlyph) -> bool {
-    if prev.codepoint != cur.codepoint {
+    // Cluster is the byte index of the originating text. For complex emoji sequences, multiple
+    // positioned glyphs can map to the same cluster; cluster equality is a more robust signal of
+    // "same source sequence" than comparing a single `char` codepoint.
+    if prev.cluster != cur.cluster {
         return false;
     }
-    if !is_emoji(cur.codepoint) {
+    if !(is_emoji(prev.codepoint) || is_emoji(cur.codepoint)) {
         return false;
     }
 
