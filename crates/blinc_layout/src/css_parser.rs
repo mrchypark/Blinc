@@ -4004,10 +4004,18 @@ fn parse_position_value(input: &str) -> Option<f32> {
 /// Parse a CSS length value (px or %) into a ClipLength
 fn parse_clip_length(s: &str) -> Option<ClipLength> {
     let s = s.trim();
-    if s.ends_with('%') {
-        s[..s.len() - 1].trim().parse::<f32>().ok().map(ClipLength::Percent)
-    } else if s.ends_with("px") {
-        s[..s.len() - 2].trim().parse::<f32>().ok().map(ClipLength::Px)
+    if let Some(stripped) = s.strip_suffix('%') {
+        stripped
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(ClipLength::Percent)
+    } else if let Some(stripped) = s.strip_suffix("px") {
+        stripped
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(ClipLength::Px)
     } else {
         // Bare number → pixels
         s.parse::<f32>().ok().map(ClipLength::Px)
@@ -4022,7 +4030,9 @@ fn parse_at_position(s: &str) -> ((ClipLength, ClipLength), &str) {
         let rest = rest.trim();
         let tokens: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
         if tokens.len() == 2 {
-            if let (Some(cx), Some(cy)) = (parse_clip_length(tokens[0]), parse_clip_length(tokens[1])) {
+            if let (Some(cx), Some(cy)) =
+                (parse_clip_length(tokens[0]), parse_clip_length(tokens[1]))
+            {
                 return ((cx, cy), "");
             }
         }
@@ -4121,7 +4131,10 @@ pub fn parse_clip_path(value: &str) -> Option<ClipPath> {
             let radii_str = parts[0].trim();
             let radii_tokens: Vec<&str> = radii_str.split_whitespace().collect();
             let (rx, ry) = if radii_tokens.len() >= 2 {
-                (parse_clip_length(radii_tokens[0]), parse_clip_length(radii_tokens[1]))
+                (
+                    parse_clip_length(radii_tokens[0]),
+                    parse_clip_length(radii_tokens[1]),
+                )
             } else if radii_tokens.len() == 1 {
                 let r = parse_clip_length(radii_tokens[0]);
                 (r, r)
@@ -4144,9 +4157,8 @@ pub fn parse_clip_path(value: &str) -> Option<ClipPath> {
             } else {
                 (inner, None)
             };
-            let round = round_part.and_then(|r| {
-                r.strip_prefix("round").and_then(|v| parse_css_px(v.trim()))
-            });
+            let round = round_part
+                .and_then(|r| r.strip_prefix("round").and_then(|v| parse_css_px(v.trim())));
             let tokens: Vec<&str> = inner_no_round.split_whitespace().collect();
             let (top, right, bottom, left) = match tokens.len() {
                 1 => {
@@ -4174,9 +4186,21 @@ pub fn parse_clip_path(value: &str) -> Option<ClipPath> {
                 _ => return None,
             };
             if func_name == "inset" {
-                Some(ClipPath::Inset { top, right, bottom, left, round })
+                Some(ClipPath::Inset {
+                    top,
+                    right,
+                    bottom,
+                    left,
+                    round,
+                })
             } else {
-                Some(ClipPath::Rect { top, right, bottom, left, round })
+                Some(ClipPath::Rect {
+                    top,
+                    right,
+                    bottom,
+                    left,
+                    round,
+                })
             }
         }
         "xywh" => {
@@ -4186,9 +4210,8 @@ pub fn parse_clip_path(value: &str) -> Option<ClipPath> {
             } else {
                 (inner, None)
             };
-            let round = round_part.and_then(|r| {
-                r.strip_prefix("round").and_then(|v| parse_css_px(v.trim()))
-            });
+            let round = round_part
+                .and_then(|r| r.strip_prefix("round").and_then(|v| parse_css_px(v.trim())));
             let tokens: Vec<&str> = inner_no_round.split_whitespace().collect();
             if tokens.len() < 4 {
                 return None;
@@ -4204,7 +4227,7 @@ pub fn parse_clip_path(value: &str) -> Option<ClipPath> {
             let point_strs: Vec<&str> = inner.split(',').collect();
             let mut points = Vec::new();
             for ps in point_strs {
-                let coords: Vec<&str> = ps.trim().split_whitespace().collect();
+                let coords: Vec<&str> = ps.split_whitespace().collect();
                 if coords.len() >= 2 {
                     let x = parse_clip_length(coords[0])?;
                     let y = parse_clip_length(coords[1])?;
@@ -4220,9 +4243,9 @@ pub fn parse_clip_path(value: &str) -> Option<ClipPath> {
             // path("M 0 0 L 100 0 ...")
             // Extract the quoted string
             let inner = inner.trim();
-            let path_str = if inner.starts_with('"') && inner.ends_with('"') {
-                &inner[1..inner.len() - 1]
-            } else if inner.starts_with('\'') && inner.ends_with('\'') {
+            let path_str = if (inner.starts_with('"') && inner.ends_with('"'))
+                || (inner.starts_with('\'') && inner.ends_with('\''))
+            {
                 &inner[1..inner.len() - 1]
             } else {
                 inner
@@ -4275,7 +4298,11 @@ fn flatten_svg_path(d: &str) -> Option<Vec<(f32, f32)>> {
             current_cmd = ch;
         } else if ch == ',' || ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
             flush_num(&mut num_buf, &mut nums);
-        } else if ch == '-' && !num_buf.is_empty() && !num_buf.ends_with('e') && !num_buf.ends_with('E') {
+        } else if ch == '-'
+            && !num_buf.is_empty()
+            && !num_buf.ends_with('e')
+            && !num_buf.ends_with('E')
+        {
             // Negative sign starts a new number (unless after exponent)
             flush_num(&mut num_buf, &mut nums);
             num_buf.push(ch);
@@ -4430,7 +4457,18 @@ fn flatten_svg_path(d: &str) -> Option<Vec<(f32, f32)>> {
                     let x = base_x + nums[i + 5];
                     let y = base_y + nums[i + 6];
                     // Simple approximation: subdivide arc into segments
-                    approximate_arc(&mut vertices, cx, cy, nums[i], nums[i + 1], nums[i + 2], nums[i + 3] != 0.0, nums[i + 4] != 0.0, x, y);
+                    approximate_arc(
+                        &mut vertices,
+                        cx,
+                        cy,
+                        nums[i],
+                        nums[i + 1],
+                        nums[i + 2],
+                        nums[i + 3] != 0.0,
+                        nums[i + 4] != 0.0,
+                        x,
+                        y,
+                    );
                     cx = x;
                     cy = y;
                     i += 7;
@@ -4456,12 +4494,17 @@ fn flatten_svg_path(d: &str) -> Option<Vec<(f32, f32)>> {
 }
 
 /// Recursively subdivide a cubic bezier curve into line segments
+#[allow(clippy::too_many_arguments)]
 fn subdivide_cubic(
     out: &mut Vec<(f32, f32)>,
-    x0: f32, y0: f32,
-    x1: f32, y1: f32,
-    x2: f32, y2: f32,
-    x3: f32, y3: f32,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    x3: f32,
+    y3: f32,
     depth: u32,
 ) {
     const MAX_DEPTH: u32 = 6;
@@ -4490,23 +4533,33 @@ fn subdivide_cubic(
     }
 
     // De Casteljau subdivision at t=0.5
-    let m01x = (x0 + x1) * 0.5; let m01y = (y0 + y1) * 0.5;
-    let m12x = (x1 + x2) * 0.5; let m12y = (y1 + y2) * 0.5;
-    let m23x = (x2 + x3) * 0.5; let m23y = (y2 + y3) * 0.5;
-    let m012x = (m01x + m12x) * 0.5; let m012y = (m01y + m12y) * 0.5;
-    let m123x = (m12x + m23x) * 0.5; let m123y = (m12y + m23y) * 0.5;
-    let mx = (m012x + m123x) * 0.5; let my = (m012y + m123y) * 0.5;
+    let m01x = (x0 + x1) * 0.5;
+    let m01y = (y0 + y1) * 0.5;
+    let m12x = (x1 + x2) * 0.5;
+    let m12y = (y1 + y2) * 0.5;
+    let m23x = (x2 + x3) * 0.5;
+    let m23y = (y2 + y3) * 0.5;
+    let m012x = (m01x + m12x) * 0.5;
+    let m012y = (m01y + m12y) * 0.5;
+    let m123x = (m12x + m23x) * 0.5;
+    let m123y = (m12y + m23y) * 0.5;
+    let mx = (m012x + m123x) * 0.5;
+    let my = (m012y + m123y) * 0.5;
 
     subdivide_cubic(out, x0, y0, m01x, m01y, m012x, m012y, mx, my, depth + 1);
     subdivide_cubic(out, mx, my, m123x, m123y, m23x, m23y, x3, y3, depth + 1);
 }
 
 /// Recursively subdivide a quadratic bezier curve into line segments
+#[allow(clippy::too_many_arguments)]
 fn subdivide_quadratic(
     out: &mut Vec<(f32, f32)>,
-    x0: f32, y0: f32,
-    qx: f32, qy: f32,
-    x2: f32, y2: f32,
+    x0: f32,
+    y0: f32,
+    qx: f32,
+    qy: f32,
+    x2: f32,
+    y2: f32,
     depth: u32,
 ) {
     const MAX_DEPTH: u32 = 6;
@@ -4528,29 +4581,36 @@ fn subdivide_quadratic(
     }
 
     // De Casteljau at t=0.5
-    let m01x = (x0 + qx) * 0.5; let m01y = (y0 + qy) * 0.5;
-    let m12x = (qx + x2) * 0.5; let m12y = (qy + y2) * 0.5;
-    let mx = (m01x + m12x) * 0.5; let my = (m01y + m12y) * 0.5;
+    let m01x = (x0 + qx) * 0.5;
+    let m01y = (y0 + qy) * 0.5;
+    let m12x = (qx + x2) * 0.5;
+    let m12y = (qy + y2) * 0.5;
+    let mx = (m01x + m12x) * 0.5;
+    let my = (m01y + m12y) * 0.5;
 
     subdivide_quadratic(out, x0, y0, m01x, m01y, mx, my, depth + 1);
     subdivide_quadratic(out, mx, my, m12x, m12y, x2, y2, depth + 1);
 }
 
 /// Approximate an SVG arc with line segments
+#[allow(clippy::too_many_arguments)]
 fn approximate_arc(
     out: &mut Vec<(f32, f32)>,
-    cx: f32, cy: f32,
-    rx: f32, ry: f32,
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
     x_rotation: f32,
     large_arc: bool,
     sweep: bool,
-    x: f32, y: f32,
+    x: f32,
+    y: f32,
 ) {
     // Simple approximation: use enough segments for smooth arc
     let dx = x - cx;
     let dy = y - cy;
     let dist = (dx * dx + dy * dy).sqrt();
-    let segments = ((dist / 4.0).max(8.0).min(32.0)) as u32;
+    let segments = (dist / 4.0).clamp(8.0, 32.0) as u32;
 
     if rx.abs() < 0.001 || ry.abs() < 0.001 {
         out.push((x, y));
