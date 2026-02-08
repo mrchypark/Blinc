@@ -106,11 +106,10 @@ impl I18nState {
     /// Load a Fluent (.ftl) catalog for a locale.
     #[cfg(feature = "fluent")]
     pub fn load_fluent_ftl(&self, locale: &str, ftl: &str) -> Result<(), I18nError> {
-        self.fluent
-            .write()
-            .unwrap()
-            .load_from_str(locale, ftl)
-            .map_err(I18nError::Fluent)
+        // Parse outside the lock; FTL parsing can be expensive.
+        let (loc, bundle) = crate::fluent::parse_ftl(locale, ftl).map_err(I18nError::Fluent)?;
+        self.fluent.write().unwrap().add_bundle(loc, bundle);
+        Ok(())
     }
 
     /// Translate a message using the locale fallback chain.

@@ -9,6 +9,26 @@ use crate::label::{ArgValue, Message};
 
 use crate::locale::normalize_locale;
 
+pub(crate) fn parse_ftl(
+    locale: &str,
+    ftl: &str,
+) -> Result<(String, FluentBundle<FluentResource>), String> {
+    let loc = normalize_locale(locale);
+    let langid: LanguageIdentifier = loc
+        .parse()
+        .map_err(|e| format!("invalid locale `{}`: {}", loc, e))?;
+
+    let res = FluentResource::try_new(ftl.to_string())
+        .map_err(|(_res, errs)| format!("ftl parse error: {:?}", errs))?;
+
+    let mut bundle = FluentBundle::new_concurrent(vec![langid]);
+    bundle
+        .add_resource(res)
+        .map_err(|errs| format!("ftl add_resource error: {:?}", errs))?;
+
+    Ok((loc, bundle))
+}
+
 /// A Fluent bundle wrapper keyed by locale.
 ///
 /// Note: we intentionally keep this thin; the stable API lives on `I18nState`.
@@ -25,21 +45,13 @@ impl FluentStore {
     }
 
     pub fn load_from_str(&mut self, locale: &str, ftl: &str) -> Result<(), String> {
-        let loc = normalize_locale(locale);
-        let langid: LanguageIdentifier = loc
-            .parse()
-            .map_err(|e| format!("invalid locale `{}`: {}", loc, e))?;
-
-        let res = FluentResource::try_new(ftl.to_string())
-            .map_err(|(_res, errs)| format!("ftl parse error: {:?}", errs))?;
-
-        let mut bundle = FluentBundle::new_concurrent(vec![langid]);
-        bundle
-            .add_resource(res)
-            .map_err(|errs| format!("ftl add_resource error: {:?}", errs))?;
-
-        self.bundles.insert(loc, bundle);
+        let (loc, bundle) = parse_ftl(locale, ftl)?;
+        self.add_bundle(loc, bundle);
         Ok(())
+    }
+
+    pub(crate) fn add_bundle(&mut self, loc: String, bundle: FluentBundle<FluentResource>) {
+        self.bundles.insert(loc, bundle);
     }
 
     pub fn format_message(&self, locale: &str, msg: &Message) -> Option<String> {
