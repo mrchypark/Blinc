@@ -295,7 +295,6 @@ impl Button {
         let radius = config.btn_size.border_radius(&theme);
         let variant = config.variant;
         let label = config.label.clone();
-        let label_is_empty = matches!(&label, Label::Raw(s) if s.is_empty());
         let icon = config.icon.clone();
         let icon_position = config.icon_position;
         let border = variant.border(&theme);
@@ -325,7 +324,9 @@ impl Button {
 
                 // Build content with icon + label or just label
                 let mut content = blinc_layout::div::div().flex_row().items_center().gap(6.0);
-                let label_text = text(label.clone())
+                let resolved_label = blinc_i18n::resolve_label(label.clone());
+                let label_is_empty = resolved_label.is_empty();
+                let label_text = text(resolved_label)
                     .size(font_size)
                     .color(fg)
                     .no_wrap()

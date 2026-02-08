@@ -87,13 +87,13 @@ pub struct Alert {
 
 impl Alert {
     /// Create a new alert with a message
-    pub fn new(message: impl Into<String>) -> Self {
+    pub fn new(message: impl Into<Label>) -> Self {
         Self::with_variant(message, AlertVariant::default())
     }
 
-    fn with_variant(message: impl Into<String>, variant: AlertVariant) -> Self {
+    fn with_variant(message: impl Into<Label>, variant: AlertVariant) -> Self {
         let theme = ThemeState::get();
-        let message = message.into();
+        let message: Label = message.into();
 
         let bg = variant.background(&theme);
         let border_color = variant.border(&theme);
@@ -106,7 +106,7 @@ impl Alert {
             .border(1.0, border_color)
             .rounded(radius)
             .p_px(padding)
-            .child(text(&message).size(14.0).color(text_color));
+            .child(text(message).size(14.0).color(text_color));
 
         Self { inner }
     }
@@ -164,7 +164,7 @@ impl ElementBuilder for Alert {
 }
 
 /// Create a simple alert with a message
-pub fn alert(message: impl Into<String>) -> Alert {
+pub fn alert(message: impl Into<Label>) -> Alert {
     Alert::new(message)
 }
 

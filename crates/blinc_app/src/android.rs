@@ -91,15 +91,13 @@ impl AndroidApp {
             #[cfg(target_os = "android")]
             {
                 if blinc_platform_android::init_android_native_bridge(app).is_ok() {
-                    if blinc_core::native_bridge::NativeBridgeState::is_initialized() {
-                        if let Ok(l) = blinc_core::native_bridge::native_call::<String, _>(
-                            "device",
-                            "get_locale",
-                            (),
-                        ) {
-                            locale = Some(l);
-                        }
-                    }
+                    // `native_call` will fail if the bridge isn't initialized.
+                    locale = blinc_core::native_bridge::native_call::<String, _>(
+                        "device",
+                        "get_locale",
+                        (),
+                    )
+                    .ok();
                 }
             }
 
