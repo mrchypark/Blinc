@@ -27,6 +27,7 @@ blinc_platform = { path = "../blinc_platform", version = "0.1.12" }
 blinc_animation = { path = "../blinc_animation", version = "0.1.12" }
 blinc_macros = { path = "../blinc_macros", version = "0.1.12" }
 blinc_theme = { path = "../blinc_theme", version = "0.1.12" }
+blinc_i18n = { path = "../blinc_i18n", version = "0.1.12" }
 
 # GPU
 wgpu.workspace = true

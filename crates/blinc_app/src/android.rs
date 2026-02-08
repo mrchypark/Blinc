@@ -79,6 +79,37 @@ impl AndroidApp {
         });
     }
 
+    fn init_i18n(app: &NdkAndroidApp) {
+        use blinc_i18n::I18nState;
+
+        // Only initialize if not already initialized
+        if I18nState::try_get().is_none() {
+            let mut locale: Option<String> = None;
+
+            // Best-effort: wire up the JNI native bridge if the Kotlin class exists.
+            // If the app didn't include the bridge, we fall back to English.
+            #[cfg(target_os = "android")]
+            {
+                if blinc_platform_android::init_android_native_bridge(app).is_ok() {
+                    // `native_call` will fail if the bridge isn't initialized.
+                    locale = blinc_core::native_bridge::native_call::<String, _>(
+                        "device",
+                        "get_locale",
+                        (),
+                    )
+                    .ok();
+                }
+            }
+
+            I18nState::init(locale.unwrap_or_else(|| "en-US".to_string()));
+        }
+
+        blinc_i18n::set_redraw_callback(|| {
+            tracing::debug!("Locale changed - requesting full rebuild");
+            blinc_layout::widgets::request_full_rebuild();
+        });
+    }
+
     /// Initialize Android logging
     fn init_logging() {
         // Initialize android_logger for log crate
@@ -133,6 +164,9 @@ impl AndroidApp {
 
         // Initialize the theme system
         Self::init_theme();
+
+        // Initialize i18n (locale + redraw hook)
+        Self::init_i18n(&app);
 
         // Shared state
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
@@ -803,6 +837,19 @@ impl AndroidApp {
             // Check dirty flag from State::set() calls
             if ref_dirty_flag.swap(false, Ordering::SeqCst) {
                 tracing::debug!("Rebuild triggered by: ref_dirty_flag (State::set)");
+                needs_rebuild = true;
+            }
+
+            // Check if a full rebuild was requested by widgets (e.g., theme/locale changes).
+            if blinc_layout::widgets::take_needs_rebuild() {
+                tracing::debug!("Rebuild triggered by: widgets::request_full_rebuild()");
+                needs_rebuild = true;
+            }
+
+            // A relayout request implies a full rebuild on mobile paths (they don't have a
+            // separate layout-only refresh path).
+            if blinc_layout::widgets::take_needs_relayout() {
+                tracing::debug!("Rebuild triggered by: widgets::request_relayout()");
                 needs_rebuild = true;
             }
 

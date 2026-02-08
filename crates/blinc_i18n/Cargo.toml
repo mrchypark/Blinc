@@ -1,0 +1,29 @@
+[package]
+name = "blinc_i18n"
+description = "Internationalization (i18n) for Blinc - labels, locale switching, and translation backends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = ["fluent"]
+fluent = ["dep:fluent-bundle", "dep:unic-langid"]
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+
+# Fluent (optional)
+fluent-bundle = { version = "0.15", optional = true }
+unic-langid = { version = "0.9", optional = true }
+
+# YAML catalogs
+serde_yaml = "0.9"
+
+[dev-dependencies]
+pretty_assertions = "1.4"
