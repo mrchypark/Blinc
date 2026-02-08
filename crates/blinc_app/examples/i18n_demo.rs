@@ -95,17 +95,12 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             let i18n = I18nState::get();
                             let available_locales = ["en-US", "ko-KR"];
                             let current = i18n.locale();
-                            let next = if available_locales.is_empty() {
-                                // Demo fallback.
-                                "en-US"
-                            } else {
-                                let current_pos = available_locales
-                                    .iter()
-                                    .position(|&l| l == current.as_str());
-                                let next_index =
-                                    current_pos.map_or(0, |i| (i + 1) % available_locales.len());
-                                available_locales[next_index]
-                            };
+                            let current_pos = available_locales
+                                .iter()
+                                .position(|&l| l == current.as_str());
+                            let next_index =
+                                current_pos.map_or(0, |i| (i + 1) % available_locales.len());
+                            let next = available_locales[next_index];
                             i18n.set_locale(next);
                         })
                         .bg_color(Color::rgba(0.25, 0.55, 0.95, 1.0))
