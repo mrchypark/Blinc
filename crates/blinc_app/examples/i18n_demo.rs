@@ -93,11 +93,14 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     button(toggle_btn, t!("demo-toggle"))
                         .on_click(|_| {
                             let i18n = I18nState::get();
-                            let next = if i18n.locale().starts_with("ko") {
-                                "en-US"
-                            } else {
-                                "ko-KR"
-                            };
+                            let available_locales = ["en-US", "ko-KR"];
+                            let current = i18n.locale();
+                            let current_index = available_locales
+                                .iter()
+                                .position(|&l| l == current)
+                                .unwrap_or(0);
+                            let next =
+                                available_locales[(current_index + 1) % available_locales.len()];
                             i18n.set_locale(next);
                         })
                         .bg_color(Color::rgba(0.25, 0.55, 0.95, 1.0))

@@ -22,20 +22,27 @@ pub use locale::{locale_fallback_chain, normalize_locale};
 pub use simple::{SimpleCatalog, SimpleParseError};
 pub use state::{set_redraw_callback, I18nState};
 
+/// Translate a label to a displayable string using the global [`I18nState`] (borrowed).
+///
+/// Prefer this overload in hot paths to avoid cloning `Label` values.
+pub fn resolve_label_ref(label: &Label) -> String {
+    if let Some(st) = I18nState::try_get() {
+        st.resolve_label(label)
+    } else {
+        match label {
+            Label::Raw(s) => s.clone(),
+            Label::Msg(m) => m.id.to_string(),
+        }
+    }
+}
+
 /// Translate a label to a displayable string using the global [`I18nState`].
 ///
 /// If the state isn't initialized, this degrades gracefully:
 /// - `Label::Raw` returns its raw text
 /// - `Label::Msg` returns the key id
 pub fn resolve_label(label: Label) -> String {
-    if let Some(st) = I18nState::try_get() {
-        st.resolve_label(label)
-    } else {
-        match label {
-            Label::Raw(s) => s,
-            Label::Msg(m) => m.id.to_string(),
-        }
-    }
+    resolve_label_ref(&label)
 }
 
 /// Convenience macro for building a translation key + args as a [`Label`].

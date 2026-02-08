@@ -20,7 +20,7 @@
 //! ```
 
 use blinc_core::{Color, Shadow, Transform};
-use blinc_i18n::{resolve_label, Label};
+use blinc_i18n::{resolve_label_ref, Label};
 use html_escape::decode_html_entities;
 use taffy::prelude::*;
 
@@ -85,7 +85,8 @@ impl Text {
     /// - Decimal entities: `&#65;`, `&#8364;`, etc.
     /// - Hexadecimal entities: `&#x41;`, `&#x20AC;`, etc.
     pub fn new(content: impl Into<Label>) -> Self {
-        let resolved = resolve_label(content.into());
+        let label = content.into();
+        let resolved = resolve_label_ref(&label);
         // Decode HTML entities (e.g., &amp; -> &, &copy; -> ©)
         let raw_content = resolved;
         let decoded_content = decode_html_entities(&raw_content).into_owned();

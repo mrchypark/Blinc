@@ -144,10 +144,10 @@ impl I18nState {
         msg.id.to_string()
     }
 
-    pub fn resolve_label(&self, label: Label) -> String {
+    pub fn resolve_label(&self, label: &Label) -> String {
         match label {
-            Label::Raw(s) => s,
-            Label::Msg(m) => self.tr(&m),
+            Label::Raw(s) => s.clone(),
+            Label::Msg(m) => self.tr(m),
         }
     }
 }
