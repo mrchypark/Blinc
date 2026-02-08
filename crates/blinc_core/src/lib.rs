@@ -1,3 +1,4 @@
+#![allow(unused, dead_code)]
 //! Blinc Core Runtime
 //!
 //! This crate provides the foundational primitives for the Blinc UI framework:

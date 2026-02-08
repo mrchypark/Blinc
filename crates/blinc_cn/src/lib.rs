@@ -1,3 +1,4 @@
+#![allow(unused, dead_code, deprecated)]
 //! # Blinc Component Library (blinc_cn)
 //!
 //! A shadcn-inspired component library built on `blinc_layout` primitives.

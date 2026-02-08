@@ -1,3 +1,4 @@
+#![allow(unused, dead_code, deprecated)]
 //! Blinc GPU Renderer
 //!
 //! SDF-based GPU rendering using wgpu.

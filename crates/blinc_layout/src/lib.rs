@@ -1,3 +1,4 @@
+#![allow(unused, dead_code, deprecated, mismatched_lifetime_syntaxes)]
 //! Blinc Layout Engine
 //!
 //! Flexbox layout powered by Taffy with GPUI-style builder API.

@@ -45,12 +45,14 @@ fn main() -> Result<()> {
     WindowedApp::run(WindowConfig::default(), |ctx| {
         div()
             .w(ctx.width).h(ctx.height)
-            .bg([0.1, 0.1, 0.15, 1.0])
-            .flex_center()
+            .bg(Color::rgb(0.1, 0.1, 0.15))
+            .flex_col()
+            .justify_center()
+            .items_center()
             .child(
                 text("Hello Blinc!")
                     .size(48.0)
-                    .color([1.0, 1.0, 1.0, 1.0])
+                    .color(Color::WHITE)
             )
     })
 }
@@ -61,16 +63,18 @@ fn main() -> Result<()> {
 ```rust
 div()
     .w(ctx.width).h(ctx.height)
-    .bg([0.2, 0.3, 0.5, 1.0])
-    .flex_center()
+    .bg(Color::rgb(0.2, 0.3, 0.5))
+    .flex_col()
+    .justify_center()
+    .items_center()
     .child(
         // Glass card with backdrop blur
         div()
             .glass()
             .rounded(16.0)
             .p(24.0)
-            .child(text("Frosted Glass").size(24.0))
-            .child(text("With backdrop blur").size(14.0).color([0.8, 0.8, 0.8, 1.0]))
+            .child(text("Frosted Glass").size(24.0).color(Color::WHITE))
+            .child(text("With backdrop blur").size(14.0).color(Color::rgb(0.8, 0.8, 0.8)))
     )
 ```
 
@@ -79,7 +83,9 @@ div()
 ```rust
 div()
     .w(400.0).h(300.0)
-    .flex_center()
+    .flex_col()
+    .justify_center()
+    .items_center()
     .child(
         image("assets/photo.png")
             .w(200.0)
@@ -96,21 +102,23 @@ div()
     .flex_col()
     .gap(16.0)
     .p(24.0)
-    .children([
+    .child(
         // Header
-        div().h(60.0).bg([0.2, 0.2, 0.25, 1.0]).rounded(8.0),
+        div().h(60.0).bg(Color::rgb(0.2, 0.2, 0.25)).rounded(8.0),
+    )
+    .child(
         // Content area
         div()
             .flex_1()
             .flex_row()
             .gap(16.0)
-            .children([
-                div().w(200.0).bg([0.15, 0.15, 0.2, 1.0]).rounded(8.0), // Sidebar
-                div().flex_1().bg([0.18, 0.18, 0.22, 1.0]).rounded(8.0), // Main
-            ]),
+            .child(div().w(200.0).bg(Color::rgb(0.15, 0.15, 0.2)).rounded(8.0))  // Sidebar
+            .child(div().flex_1().bg(Color::rgb(0.18, 0.18, 0.22)).rounded(8.0)), // Main
+    )
+    .child(
         // Footer
-        div().h(40.0).bg([0.2, 0.2, 0.25, 1.0]).rounded(8.0),
-    ])
+        div().h(40.0).bg(Color::rgb(0.2, 0.2, 0.25)).rounded(8.0),
+    )
 ```
 
 ## Architecture
@@ -205,8 +213,7 @@ div()
 .min_w()   .max_w()   .min_h()   .max_h()
 
 // Flexbox
-.flex_row()    .flex_col()
-.flex_center() .flex_1()
+.flex_row()    .flex_col()    .flex_1()
 .justify_start() .justify_center() .justify_end() .justify_between()
 .items_start()   .items_center()   .items_end()   .items_stretch()
 .gap(16.0)     .gap_x(8.0)      .gap_y(8.0)
@@ -221,13 +228,13 @@ div()
 
 ```rust
 // Background
-.bg([r, g, b, a])
-.bg_gradient(Gradient::linear(...))
-.glass()  .glass_light()  .glass_dark()
+.bg(Color::rgb(r, g, b))
+.bg(Color::from_hex(0xRRGGBB))
+.glass()
 
 // Border & Corners
 .rounded(8.0)
-.border(1.0, [r, g, b, a])
+.border(1.0, Color::GRAY)
 
 // Shadow
 .shadow_sm()  .shadow_md()  .shadow_lg()  .shadow_xl()
@@ -243,8 +250,7 @@ div()
 div()                      // Container element
 text("Hello")              // Text element
     .size(16.0)
-    .color([1.0, 1.0, 1.0, 1.0])
-    .anchor(TextAnchor::Center)
+    .color(Color::WHITE)
 
 svg(svg_string)            // SVG element
     .w(24.0).h(24.0)
@@ -397,7 +403,7 @@ motion()
     .child(
         div()
             .w(100.0).h(100.0)
-            .bg([0.4, 0.7, 1.0, 1.0])
+            .bg(Color::rgb(0.4, 0.7, 1.0))
             .rounded(8.0)
     )
 
