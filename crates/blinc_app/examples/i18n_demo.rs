@@ -18,28 +18,36 @@ fn main() -> Result<()> {
         I18nState::init("en-US");
     }
     let i18n = I18nState::get();
-    i18n.load_simple_catalog_str(
-        "en-US",
-        include_str!("../../../resource/i18n/demo.en-US.yaml"),
-    )
-    .map_err(|e| BlincError::Other(e.to_string()))?;
-    i18n.load_simple_catalog_str(
-        "ko-KR",
-        include_str!("../../../resource/i18n/demo.ko-KR.yaml"),
-    )
-    .map_err(|e| BlincError::Other(e.to_string()))?;
+    let simple_catalogs = [
+        (
+            "en-US",
+            include_str!("../../../resource/i18n/demo.en-US.yaml"),
+        ),
+        (
+            "ko-KR",
+            include_str!("../../../resource/i18n/demo.ko-KR.yaml"),
+        ),
+    ];
+    for (locale, content) in simple_catalogs {
+        i18n.load_simple_catalog_str(locale, content)
+            .map_err(|e| BlincError::Other(e.to_string()))?;
+    }
 
     // Fluent catalogs are loaded via the same API surface. (Enabled by default in blinc_i18n.)
-    i18n.load_fluent_ftl(
-        "en-US",
-        include_str!("../../../resource/i18n/demo.en-US.ftl"),
-    )
-    .map_err(|e| BlincError::Other(e.to_string()))?;
-    i18n.load_fluent_ftl(
-        "ko-KR",
-        include_str!("../../../resource/i18n/demo.ko-KR.ftl"),
-    )
-    .map_err(|e| BlincError::Other(e.to_string()))?;
+    let fluent_catalogs = [
+        (
+            "en-US",
+            include_str!("../../../resource/i18n/demo.en-US.ftl"),
+        ),
+        (
+            "ko-KR",
+            include_str!("../../../resource/i18n/demo.ko-KR.ftl"),
+        ),
+    ];
+    for (locale, content) in fluent_catalogs {
+        i18n.load_fluent_ftl(locale, content)
+            .map_err(|e| BlincError::Other(e.to_string()))?;
+    }
 
     let config = WindowConfig {
         title: "Blinc i18n Demo".to_string(),

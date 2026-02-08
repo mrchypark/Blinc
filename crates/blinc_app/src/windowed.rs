@@ -1438,16 +1438,9 @@ impl WindowedApp {
 
         fn parse_env_locale(raw: &str) -> Option<String> {
             // Examples: "en_US.UTF-8", "ko_KR", "en-US", "C"
-            let mut s = raw.trim();
-            if s.is_empty() {
-                return None;
-            }
-            if let Some(pos) = s.find('.') {
-                s = &s[..pos];
-            }
-            if let Some(pos) = s.find('@') {
-                s = &s[..pos];
-            }
+            let s = raw.trim();
+            let s = s.split_once('.').map_or(s, |(part, _)| part);
+            let s = s.split_once('@').map_or(s, |(part, _)| part);
             let s = s.trim();
             if s.is_empty() || s == "C" || s == "POSIX" {
                 return None;
