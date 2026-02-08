@@ -137,10 +137,8 @@ impl I18nState {
 
             // 2) Simple catalog
             let simple = simple_guard.get_or_insert_with(|| self.simple.read().unwrap());
-            if let Some(cat) = simple.get(l) {
-                if let Some(s) = cat.format_message(msg) {
-                    return s;
-                }
+            if let Some(s) = simple.get(l).and_then(|cat| cat.format_message(msg)) {
+                return s;
             }
         }
 
