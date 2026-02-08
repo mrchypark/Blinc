@@ -47,29 +47,26 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         .flex_col()
         .child(header())
         .child(
-            scroll()
-                .w_full()
-                .h(ctx.height - 80.0)
-                .child(
-                    div()
-                        .w_full()
-                        .p(theme.spacing().space_6)
-                        .flex_col()
-                        .gap(theme.spacing().space_8)
-                        // Styling API sections
-                        .child(css_macro_section())
-                        .child(style_macro_section())
-                        .child(builder_pattern_section())
-                        .child(css_parser_section())
-                        .child(style_merging_section())
-                        .child(backgrounds_section())
-                        .child(corner_radius_section())
-                        .child(shadows_section())
-                        .child(transforms_section())
-                        .child(opacity_section())
-                        .child(materials_section())
-                        .child(api_comparison_section()),
-                ),
+            scroll().w_full().h(ctx.height - 80.0).child(
+                div()
+                    .w_full()
+                    .p(theme.spacing().space_6)
+                    .flex_col()
+                    .gap(theme.spacing().space_8)
+                    // Styling API sections
+                    .child(css_macro_section())
+                    .child(style_macro_section())
+                    .child(builder_pattern_section())
+                    .child(css_parser_section())
+                    .child(style_merging_section())
+                    .child(backgrounds_section())
+                    .child(corner_radius_section())
+                    .child(shadows_section())
+                    .child(transforms_section())
+                    .child(opacity_section())
+                    .child(materials_section())
+                    .child(api_comparison_section()),
+            ),
         )
 }
 
@@ -305,10 +302,7 @@ fn builder_pattern_section() -> impl ElementBuilder {
                         .gap(8.0)
                         .child(code_label("ElementStyle::new().bg().rounded()"))
                         .child(styled_box_with_element_style(
-                            ElementStyle::new()
-                                .bg(Color::CYAN)
-                                .rounded(8.0)
-                                .shadow_sm(),
+                            ElementStyle::new().bg(Color::CYAN).rounded(8.0).shadow_sm(),
                         )),
                 )
                 // Advanced builder
@@ -521,7 +515,10 @@ fn backgrounds_section() -> impl ElementBuilder {
                 .flex_wrap()
                 .gap(16.0)
                 // Solid color
-                .child(labeled_box("Solid RED", style! { bg: Color::RED, rounded: 8.0 }))
+                .child(labeled_box(
+                    "Solid RED",
+                    style! { bg: Color::RED, rounded: 8.0 },
+                ))
                 // With alpha
                 .child(labeled_box(
                     "With Alpha",
@@ -737,31 +734,55 @@ fn opacity_section() -> impl ElementBuilder {
                 .flex_wrap()
                 .gap(16.0)
                 // Show on checkerboard to demonstrate opacity
-                .child(opacity_demo_box("opacity: 1.0", style! { bg: Color::RED, rounded: 8.0, opacity: 1.0 }, checkerboard))
-                .child(opacity_demo_box("opacity: 0.75", style! { bg: Color::RED, rounded: 8.0, opacity: 0.75 }, checkerboard))
-                .child(opacity_demo_box("opacity: 0.5", style! { bg: Color::RED, rounded: 8.0, opacity: 0.5 }, checkerboard))
-                .child(opacity_demo_box("opacity: 0.25", style! { bg: Color::RED, rounded: 8.0, opacity: 0.25 }, checkerboard))
-                .child(opacity_demo_box("opaque", style! { bg: Color::BLUE, rounded: 8.0, opaque }, checkerboard))
-                .child(opacity_demo_box("translucent", style! { bg: Color::BLUE, rounded: 8.0, translucent }, checkerboard))
-                .child(opacity_demo_box("transparent", style! { bg: Color::BLUE, rounded: 8.0, transparent }, checkerboard)),
+                .child(opacity_demo_box(
+                    "opacity: 1.0",
+                    style! { bg: Color::RED, rounded: 8.0, opacity: 1.0 },
+                    checkerboard,
+                ))
+                .child(opacity_demo_box(
+                    "opacity: 0.75",
+                    style! { bg: Color::RED, rounded: 8.0, opacity: 0.75 },
+                    checkerboard,
+                ))
+                .child(opacity_demo_box(
+                    "opacity: 0.5",
+                    style! { bg: Color::RED, rounded: 8.0, opacity: 0.5 },
+                    checkerboard,
+                ))
+                .child(opacity_demo_box(
+                    "opacity: 0.25",
+                    style! { bg: Color::RED, rounded: 8.0, opacity: 0.25 },
+                    checkerboard,
+                ))
+                .child(opacity_demo_box(
+                    "opaque",
+                    style! { bg: Color::BLUE, rounded: 8.0, opaque },
+                    checkerboard,
+                ))
+                .child(opacity_demo_box(
+                    "translucent",
+                    style! { bg: Color::BLUE, rounded: 8.0, translucent },
+                    checkerboard,
+                ))
+                .child(opacity_demo_box(
+                    "transparent",
+                    style! { bg: Color::BLUE, rounded: 8.0, transparent },
+                    checkerboard,
+                )),
         )
 }
 
 fn opacity_demo_box(label: &str, style: ElementStyle, bg: Color) -> impl ElementBuilder {
-    div()
-        .flex_col()
-        .gap(8.0)
-        .child(code_label(label))
-        .child(
-            div()
-                .w(80.0)
-                .h(80.0)
-                .bg(bg)
-                .rounded(8.0)
-                .items_center()
-                .justify_center()
-                .child(styled_box_with_element_style(style)),
-        )
+    div().flex_col().gap(8.0).child(code_label(label)).child(
+        div()
+            .w(80.0)
+            .h(80.0)
+            .bg(bg)
+            .rounded(8.0)
+            .items_center()
+            .justify_center()
+            .child(styled_box_with_element_style(style)),
+    )
 }
 
 // ============================================================================

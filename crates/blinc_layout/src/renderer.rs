@@ -425,6 +425,13 @@ pub struct RenderTree {
     /// Pre-computed animated render bounds for this frame
     /// Calculated after layout, used during rendering
     animated_render_bounds: HashMap<LayoutNodeId, AnimatedRenderBounds>,
+
+    // ========================================================================
+    // CSS Keyframe Animation System
+    // ========================================================================
+    /// Active CSS keyframe animations (from stylesheet `animation:` property)
+    /// Maps node_id to the running animation with all keyframes preserved
+    css_animations: HashMap<LayoutNodeId, crate::render_state::ActiveCssAnimation>,
 }
 
 /// Result of an incremental update attempt
@@ -483,6 +490,8 @@ impl RenderTree {
             visual_animations: HashMap::new(),
             previous_visual_bounds: HashMap::new(),
             animated_render_bounds: HashMap::new(),
+            // CSS keyframe animation system
+            css_animations: HashMap::new(),
         }
     }
 
@@ -4311,6 +4320,179 @@ impl RenderTree {
             || stylesheet.contains_with_state(&element_id, ElementState::Active)
             || stylesheet.contains_with_state(&element_id, ElementState::Focus)
             || stylesheet.contains_with_state(&element_id, ElementState::Disabled)
+    }
+
+    // =========================================================================
+    // CSS Keyframe Animation Methods
+    // =========================================================================
+
+    /// Start a CSS keyframe animation for a node
+    ///
+    /// Looks up the element's animation from the stylesheet and starts it.
+    /// Returns true if an animation was started.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // CSS: #button { animation: pulse 1000ms infinite; }
+    /// tree.start_css_animation_for_element(node_id);
+    /// ```
+    pub fn start_css_animation_for_element(&mut self, node_id: LayoutNodeId) -> bool {
+        let stylesheet = match &self.stylesheet {
+            Some(s) => s.clone(),
+            None => return false,
+        };
+
+        let element_id = match self.element_registry.get_id(node_id) {
+            Some(id) => id,
+            None => return false,
+        };
+
+        // Resolve the full keyframe animation
+        if let Some(animation) = stylesheet.resolve_keyframe_animation(&element_id) {
+            self.css_animations.insert(
+                node_id,
+                crate::render_state::ActiveCssAnimation::new(animation),
+            );
+            return true;
+        }
+
+        false
+    }
+
+    /// Start a CSS keyframe animation for a node with a specific state
+    ///
+    /// Used when element state changes (hover, active, etc.) and the state
+    /// has an animation defined.
+    pub fn start_css_animation_for_state(
+        &mut self,
+        node_id: LayoutNodeId,
+        state: ElementState,
+    ) -> bool {
+        let stylesheet = match &self.stylesheet {
+            Some(s) => s.clone(),
+            None => return false,
+        };
+
+        let element_id = match self.element_registry.get_id(node_id) {
+            Some(id) => id,
+            None => return false,
+        };
+
+        // Resolve animation for the specific state
+        if let Some(animation) =
+            stylesheet.resolve_keyframe_animation_with_state(&element_id, state)
+        {
+            self.css_animations.insert(
+                node_id,
+                crate::render_state::ActiveCssAnimation::new(animation),
+            );
+            return true;
+        }
+
+        false
+    }
+
+    /// Tick all active CSS animations
+    ///
+    /// Call this once per frame with the delta time in milliseconds.
+    /// Returns true if any animations are still playing.
+    pub fn tick_css_animations(&mut self, dt_ms: f32) -> bool {
+        let mut any_playing = false;
+        let mut completed = Vec::new();
+
+        for (node_id, active_anim) in &mut self.css_animations {
+            if active_anim.tick(dt_ms) {
+                any_playing = true;
+            } else {
+                completed.push(*node_id);
+            }
+        }
+
+        // Remove completed animations (respecting fill_mode is handled by ActiveCssAnimation)
+        for node_id in completed {
+            // Keep the animation if fill_mode is Forwards or Both (to hold final values)
+            // For now, we keep all completed animations for their final values
+            // A future optimization could check fill_mode and remove None/Backwards
+        }
+
+        any_playing
+    }
+
+    /// Apply current CSS animation values to a node's render props
+    ///
+    /// Call this during rendering to apply animated values.
+    pub fn apply_css_animation_to_props(&self, node_id: LayoutNodeId, props: &mut RenderProps) {
+        if let Some(active_anim) = self.css_animations.get(&node_id) {
+            let anim_props = &active_anim.current_properties;
+
+            // Apply animated opacity
+            if let Some(opacity) = anim_props.opacity {
+                props.opacity = opacity;
+            }
+
+            // Apply animated transform components
+            let has_transform = anim_props.translate_x.is_some()
+                || anim_props.translate_y.is_some()
+                || anim_props.scale_x.is_some()
+                || anim_props.scale_y.is_some()
+                || anim_props.rotate.is_some();
+
+            if has_transform {
+                use blinc_core::{Affine2D, Transform};
+
+                // Build transform by composing: scale -> rotate -> translate
+                let mut affine = Affine2D::IDENTITY;
+
+                // Apply scale
+                if let (Some(sx), Some(sy)) = (anim_props.scale_x, anim_props.scale_y) {
+                    affine = affine.then(&Affine2D::scale(sx, sy));
+                } else if let Some(sx) = anim_props.scale_x {
+                    affine = affine.then(&Affine2D::scale(sx, 1.0));
+                } else if let Some(sy) = anim_props.scale_y {
+                    affine = affine.then(&Affine2D::scale(1.0, sy));
+                }
+
+                // Apply rotation (in degrees)
+                if let Some(rotate) = anim_props.rotate {
+                    affine = affine.then(&Affine2D::rotation(rotate.to_radians()));
+                }
+
+                // Apply translation
+                if let (Some(tx), Some(ty)) = (anim_props.translate_x, anim_props.translate_y) {
+                    affine = affine.then(&Affine2D::translation(tx, ty));
+                } else if let Some(tx) = anim_props.translate_x {
+                    affine = affine.then(&Affine2D::translation(tx, 0.0));
+                } else if let Some(ty) = anim_props.translate_y {
+                    affine = affine.then(&Affine2D::translation(0.0, ty));
+                }
+
+                props.transform = Some(Transform::Affine2D(affine));
+            }
+        }
+    }
+
+    /// Get current CSS animation properties for a node (if any)
+    pub fn get_css_animation_properties(
+        &self,
+        node_id: LayoutNodeId,
+    ) -> Option<&blinc_animation::KeyframeProperties> {
+        self.css_animations
+            .get(&node_id)
+            .map(|a| &a.current_properties)
+    }
+
+    /// Check if a node has an active CSS animation
+    pub fn has_css_animation(&self, node_id: LayoutNodeId) -> bool {
+        self.css_animations
+            .get(&node_id)
+            .map(|a| a.is_playing)
+            .unwrap_or(false)
+    }
+
+    /// Stop CSS animation for a node
+    pub fn stop_css_animation(&mut self, node_id: LayoutNodeId) {
+        self.css_animations.remove(&node_id);
     }
 
     /// Apply stylesheet state styles based on EventRouter state

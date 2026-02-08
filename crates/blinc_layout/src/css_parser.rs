@@ -812,6 +812,18 @@ impl AnimationTiming {
             _ => None,
         }
     }
+
+    /// Convert CSS animation timing to blinc_animation Easing
+    pub fn to_easing(&self) -> blinc_animation::Easing {
+        use blinc_animation::Easing;
+        match self {
+            AnimationTiming::Linear => Easing::Linear,
+            AnimationTiming::Ease => Easing::EaseInOut,
+            AnimationTiming::EaseIn => Easing::EaseIn,
+            AnimationTiming::EaseOut => Easing::EaseOut,
+            AnimationTiming::EaseInOut => Easing::EaseInOut,
+        }
+    }
 }
 
 /// Animation direction
@@ -824,6 +836,25 @@ pub enum AnimationDirection {
     AlternateReverse,
 }
 
+impl AnimationDirection {
+    /// Convert CSS animation direction to blinc_animation PlayDirection
+    pub fn to_play_direction(&self) -> blinc_animation::PlayDirection {
+        use blinc_animation::PlayDirection;
+        match self {
+            AnimationDirection::Normal => PlayDirection::Forward,
+            AnimationDirection::Reverse => PlayDirection::Reverse,
+            AnimationDirection::Alternate | AnimationDirection::AlternateReverse => {
+                PlayDirection::Alternate
+            }
+        }
+    }
+
+    /// Returns true if animation should start in reverse (for AlternateReverse)
+    pub fn starts_reversed(&self) -> bool {
+        matches!(self, AnimationDirection::AlternateReverse)
+    }
+}
+
 /// Animation fill mode
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AnimationFillMode {
@@ -832,6 +863,19 @@ pub enum AnimationFillMode {
     Forwards,
     Backwards,
     Both,
+}
+
+impl AnimationFillMode {
+    /// Convert CSS animation fill mode to blinc_animation FillMode
+    pub fn to_fill_mode(&self) -> blinc_animation::FillMode {
+        use blinc_animation::FillMode;
+        match self {
+            AnimationFillMode::None => FillMode::None,
+            AnimationFillMode::Forwards => FillMode::Forwards,
+            AnimationFillMode::Backwards => FillMode::Backwards,
+            AnimationFillMode::Both => FillMode::Both,
+        }
+    }
 }
 
 /// A parsed stylesheet containing styles keyed by element ID
@@ -1231,6 +1275,99 @@ impl Stylesheet {
 
         // Fall back to base animation
         self.resolve_animation(id)
+    }
+
+    /// Resolve CSS animation to full MultiKeyframeAnimation with all keyframes preserved
+    ///
+    /// Unlike `resolve_animation()` which only captures first/last keyframes for simple
+    /// enter/exit animations, this method preserves ALL keyframes for complex multi-step
+    /// animations like pulse, bounce, etc.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let css = r#"
+    ///     @keyframes pulse {
+    ///         0%, 100% { opacity: 1; transform: scale(1); }
+    ///         50% { opacity: 0.8; transform: scale(1.05); }
+    ///     }
+    ///     #button { animation: pulse 1000ms ease-in-out infinite; }
+    /// "#;
+    /// let stylesheet = Stylesheet::parse_with_errors(css).stylesheet;
+    /// if let Some(mut anim) = stylesheet.resolve_keyframe_animation("button") {
+    ///     anim.start();
+    ///     // Animation will interpolate through all 3 keyframes
+    /// }
+    /// ```
+    pub fn resolve_keyframe_animation(
+        &self,
+        id: &str,
+    ) -> Option<blinc_animation::MultiKeyframeAnimation> {
+        let style = self.get(id)?;
+        let anim_config = style.animation.as_ref()?;
+        let keyframes = self.get_keyframes(&anim_config.name)?;
+
+        let mut anim = keyframes
+            .to_multi_keyframe_animation(anim_config.duration_ms, anim_config.timing.to_easing());
+
+        // Apply CssAnimation configuration
+        let iterations = if anim_config.iteration_count == 0 {
+            -1 // infinite
+        } else {
+            anim_config.iteration_count as i32
+        };
+        anim.set_iterations(iterations);
+        anim.set_delay(anim_config.delay_ms);
+        anim.set_direction(anim_config.direction.to_play_direction());
+        anim.set_fill_mode(anim_config.fill_mode.to_fill_mode());
+
+        // Handle AlternateReverse by starting in reverse
+        if anim_config.direction.starts_reversed() {
+            anim.set_reversed(true);
+        }
+
+        Some(anim)
+    }
+
+    /// Resolve keyframe animation for an element considering its current state
+    ///
+    /// This checks both the base style and state-specific styles for animations,
+    /// returning a full MultiKeyframeAnimation with all keyframes preserved.
+    pub fn resolve_keyframe_animation_with_state(
+        &self,
+        id: &str,
+        state: ElementState,
+    ) -> Option<blinc_animation::MultiKeyframeAnimation> {
+        // First try state-specific animation
+        if let Some(style) = self.get_with_state(id, state) {
+            if let Some(anim_config) = &style.animation {
+                if let Some(keyframes) = self.get_keyframes(&anim_config.name) {
+                    let mut anim = keyframes.to_multi_keyframe_animation(
+                        anim_config.duration_ms,
+                        anim_config.timing.to_easing(),
+                    );
+
+                    let iterations = if anim_config.iteration_count == 0 {
+                        -1
+                    } else {
+                        anim_config.iteration_count as i32
+                    };
+                    anim.set_iterations(iterations);
+                    anim.set_delay(anim_config.delay_ms);
+                    anim.set_direction(anim_config.direction.to_play_direction());
+                    anim.set_fill_mode(anim_config.fill_mode.to_fill_mode());
+
+                    if anim_config.direction.starts_reversed() {
+                        anim.set_reversed(true);
+                    }
+
+                    return Some(anim);
+                }
+            }
+        }
+
+        // Fall back to base animation
+        self.resolve_keyframe_animation(id)
     }
 }
 
@@ -4914,5 +5051,168 @@ mod tests {
         } else {
             panic!("Expected Affine2D transform to be parsed");
         }
+    }
+
+    // =========================================================================
+    // Conversion Method Tests
+    // =========================================================================
+
+    #[test]
+    fn test_animation_timing_to_easing() {
+        use blinc_animation::Easing;
+
+        assert!(matches!(
+            AnimationTiming::Linear.to_easing(),
+            Easing::Linear
+        ));
+        assert!(matches!(
+            AnimationTiming::Ease.to_easing(),
+            Easing::EaseInOut
+        ));
+        assert!(matches!(
+            AnimationTiming::EaseIn.to_easing(),
+            Easing::EaseIn
+        ));
+        assert!(matches!(
+            AnimationTiming::EaseOut.to_easing(),
+            Easing::EaseOut
+        ));
+        assert!(matches!(
+            AnimationTiming::EaseInOut.to_easing(),
+            Easing::EaseInOut
+        ));
+    }
+
+    #[test]
+    fn test_animation_direction_to_play_direction() {
+        use blinc_animation::PlayDirection;
+
+        assert!(matches!(
+            AnimationDirection::Normal.to_play_direction(),
+            PlayDirection::Forward
+        ));
+        assert!(matches!(
+            AnimationDirection::Reverse.to_play_direction(),
+            PlayDirection::Reverse
+        ));
+        assert!(matches!(
+            AnimationDirection::Alternate.to_play_direction(),
+            PlayDirection::Alternate
+        ));
+        assert!(matches!(
+            AnimationDirection::AlternateReverse.to_play_direction(),
+            PlayDirection::Alternate
+        ));
+    }
+
+    #[test]
+    fn test_animation_direction_starts_reversed() {
+        assert!(!AnimationDirection::Normal.starts_reversed());
+        assert!(!AnimationDirection::Reverse.starts_reversed());
+        assert!(!AnimationDirection::Alternate.starts_reversed());
+        assert!(AnimationDirection::AlternateReverse.starts_reversed());
+    }
+
+    #[test]
+    fn test_animation_fill_mode_to_fill_mode() {
+        use blinc_animation::FillMode;
+
+        assert!(matches!(
+            AnimationFillMode::None.to_fill_mode(),
+            FillMode::None
+        ));
+        assert!(matches!(
+            AnimationFillMode::Forwards.to_fill_mode(),
+            FillMode::Forwards
+        ));
+        assert!(matches!(
+            AnimationFillMode::Backwards.to_fill_mode(),
+            FillMode::Backwards
+        ));
+        assert!(matches!(
+            AnimationFillMode::Both.to_fill_mode(),
+            FillMode::Both
+        ));
+    }
+
+    #[test]
+    fn test_resolve_keyframe_animation_preserves_all_keyframes() {
+        ThemeState::init_default();
+
+        let css = r#"
+            @keyframes pulse {
+                0% { opacity: 1; }
+                50% { opacity: 0.5; }
+                100% { opacity: 1; }
+            }
+            #button { animation: pulse 1000ms ease-in-out infinite; }
+        "#;
+
+        let result = Stylesheet::parse_with_errors(css);
+        assert!(!result.has_errors());
+
+        // Verify keyframes are stored
+        let keyframes = result.stylesheet.get_keyframes("pulse").unwrap();
+        assert_eq!(keyframes.keyframes.len(), 3); // All 3 keyframes preserved
+
+        // Resolve animation - should preserve all keyframes
+        let animation = result.stylesheet.resolve_keyframe_animation("button");
+        assert!(animation.is_some());
+
+        let anim = animation.unwrap();
+        // The animation should have the correct duration
+        assert_eq!(anim.duration_ms(), 1000);
+    }
+
+    #[test]
+    fn test_resolve_keyframe_animation_with_state() {
+        ThemeState::init_default();
+
+        let css = r#"
+            @keyframes hover-glow {
+                from { opacity: 0.8; }
+                to { opacity: 1.0; }
+            }
+            #button:hover { animation: hover-glow 200ms ease-out; }
+        "#;
+
+        let result = Stylesheet::parse_with_errors(css);
+        assert!(!result.has_errors());
+
+        // Base style should not have animation
+        let base_anim = result.stylesheet.resolve_keyframe_animation("button");
+        assert!(base_anim.is_none());
+
+        // Hover state should have animation
+        let hover_anim = result
+            .stylesheet
+            .resolve_keyframe_animation_with_state("button", ElementState::Hover);
+        assert!(hover_anim.is_some());
+
+        let anim = hover_anim.unwrap();
+        assert_eq!(anim.duration_ms(), 200);
+    }
+
+    #[test]
+    fn test_css_animation_iteration_count() {
+        ThemeState::init_default();
+
+        // Test infinite animation
+        let css_infinite = r#"
+            @keyframes spin { from { opacity: 0; } to { opacity: 1; } }
+            #a { animation: spin 1s infinite; }
+        "#;
+        let result = Stylesheet::parse_with_errors(css_infinite);
+        let style = result.stylesheet.get("a").unwrap();
+        assert_eq!(style.animation.as_ref().unwrap().iteration_count, 0); // 0 = infinite
+
+        // Test finite animation
+        let css_finite = r#"
+            @keyframes spin { from { opacity: 0; } to { opacity: 1; } }
+            #b { animation: spin 1s 3; }
+        "#;
+        let result = Stylesheet::parse_with_errors(css_finite);
+        let style = result.stylesheet.get("b").unwrap();
+        assert_eq!(style.animation.as_ref().unwrap().iteration_count, 3);
     }
 }
