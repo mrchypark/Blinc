@@ -5,28 +5,58 @@ use thiserror::Error;
 use crate::label::ArgValue;
 use crate::label::Message;
 
-fn parse_yaml_map(src: &str) -> Result<HashMap<String, String>, String> {
-    let raw: HashMap<String, serde_yaml::Value> =
-        serde_yaml::from_str(src).map_err(|e| format!("yaml parse error: {e}"))?;
-
-    let mut out = HashMap::with_capacity(raw.len());
-    for (k, v) in raw {
-        let s = match v {
-            serde_yaml::Value::Null => "".to_string(),
-            serde_yaml::Value::Bool(b) => b.to_string(),
-            serde_yaml::Value::Number(n) => n.to_string(),
-            serde_yaml::Value::String(s) => s,
-            serde_yaml::Value::Sequence(_)
-            | serde_yaml::Value::Mapping(_)
-            | serde_yaml::Value::Tagged(_) => {
-                return Err(format!(
-                    "yaml value for key `{k}` must be a scalar (string/number/bool/null)"
-                ));
+fn looks_like_yaml_mapping(src: &str) -> bool {
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('#') || line.starts_with("//") {
+            continue;
+        }
+        // YAML mapping lines typically contain `:` as a key/value separator.
+        // If `=` appears before `:`, it's more likely the legacy `key = value` format.
+        if let Some(colon) = line.find(':') {
+            match line.find('=') {
+                Some(eq) if eq < colon => {}
+                _ => return true,
             }
-        };
-        out.insert(k, s);
+        }
+        // If the first meaningful line looks like legacy, bail out early.
+        if line.contains('=') {
+            return false;
+        }
     }
-    Ok(out)
+    false
+}
+
+fn try_parse_yaml_map(src: &str) -> Result<Option<HashMap<String, String>>, SimpleParseError> {
+    match serde_yaml::from_str::<serde_yaml::Value>(src) {
+        Ok(serde_yaml::Value::Mapping(raw)) => {
+            let mut out = HashMap::with_capacity(raw.len());
+            for (k, v) in raw {
+                let Some(key) = k.as_str() else {
+                    return Err(SimpleParseError::Yaml(
+                        "yaml keys must be strings".to_string(),
+                    ));
+                };
+                let Some(val) = v.as_str() else {
+                    return Err(SimpleParseError::Yaml(format!(
+                        "yaml value for key `{key}` must be a string"
+                    )));
+                };
+                out.insert(key.to_string(), val.to_string());
+            }
+            Ok(Some(out))
+        }
+        Ok(_) => Ok(None),
+        Err(e) => {
+            if looks_like_yaml_mapping(src) {
+                return Err(SimpleParseError::Yaml(format!("yaml parse error: {e}")));
+            }
+            Ok(None)
+        }
+    }
 }
 
 /// A minimal Blinc catalog format:
@@ -56,7 +86,7 @@ impl SimpleCatalog {
 
     /// Parse a YAML mapping (preferred) or fall back to the legacy key=value format.
     pub fn parse(src: &str) -> Result<Self, SimpleParseError> {
-        if let Ok(map) = parse_yaml_map(src) {
+        if let Some(map) = try_parse_yaml_map(src)? {
             let mut cat = Self::new();
             for (k, v) in map {
                 cat.insert(k, v);
@@ -125,6 +155,9 @@ impl SimpleCatalog {
 
 #[derive(Debug, Error)]
 pub enum SimpleParseError {
+    #[error("yaml catalog error: {0}")]
+    Yaml(String),
+
     #[error("simple catalog syntax error at line {line}: {msg}")]
     Syntax { line: usize, msg: String },
 }
@@ -234,12 +267,21 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
 
         // Read until `}`.
         let mut key = String::new();
+        let mut closed = false;
         while let Some(&n) = chars.peek() {
             chars.next();
             if n == '}' {
+                closed = true;
                 break;
             }
             key.push(n);
+        }
+
+        // If there's no closing brace, treat the rest as literal text.
+        if !closed {
+            out.push('{');
+            out.push_str(&key);
+            break;
         }
 
         let key = key.trim();
@@ -316,5 +358,22 @@ demo-hello: "Hello, {name}!"
         assert_eq!(apply_placeholders("{{{name}}}", args), "{Chris}");
         assert_eq!(apply_placeholders("}}", args), "}");
         assert_eq!(apply_placeholders("{{", args), "{");
+    }
+
+    #[test]
+    fn missing_closing_brace_is_literal() {
+        let name = ArgValue::from("Chris");
+        let args = &[("name", &name)];
+        assert_eq!(apply_placeholders("Hello, {name", args), "Hello, {name");
+        assert_eq!(apply_placeholders("{name", args), "{name");
+    }
+
+    #[test]
+    fn yaml_requires_string_values() {
+        let src = r#"
+demo-title: 123
+"#;
+        let err = SimpleCatalog::parse(src).unwrap_err();
+        assert!(matches!(err, SimpleParseError::Yaml(_)));
     }
 }
