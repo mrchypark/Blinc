@@ -77,19 +77,19 @@ impl FallbackResolver {
         c: char,
     ) -> Option<Arc<FontFace>> {
         let bucket = fallback_bucket_key(c);
+        if let Some(Some(face)) = self.sys_cache.get(&bucket) {
+            if face.has_glyph(c) {
+                return Some(Arc::clone(face));
+            }
+        }
 
-        let resolve = || {
+        // Not in cache or cached face doesn't cover this char: resolve and update.
+        let new_face = {
             let mut reg = registry.lock().unwrap();
             reg.load_fallback_for_char(c, self.weight, self.italic)
         };
-
-        let entry = self.sys_cache.entry(bucket).or_insert_with(resolve);
-        if let Some(face) = entry.as_ref() {
-            if !face.has_glyph(c) {
-                *entry = resolve();
-            }
-        }
-        entry.clone()
+        self.sys_cache.insert(bucket, new_face.clone());
+        new_face
     }
 
     pub fn candidates_for_char(

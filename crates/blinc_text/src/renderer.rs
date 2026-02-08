@@ -138,6 +138,20 @@ impl TextRenderer {
         let mut fallback_font_id_cache: rustc_hash::FxHashMap<usize, u32> =
             rustc_hash::FxHashMap::default();
 
+        // Shaping each fallback glyph can be expensive. We only shape for scripts where
+        // a single-codepoint GSUB substitution is likely (Arabic/Indic/etc), and cap the
+        // number of shape calls per prepare to avoid pathological CPU usage.
+        const MAX_FALLBACK_SHAPES_PER_CALL: usize = 1024;
+        let mut fallback_shape_calls: usize = 0;
+        let mut fallback_shaped_gid_cache: rustc_hash::FxHashMap<(usize, u32), u16> =
+            rustc_hash::FxHashMap::default();
+        let needs_single_char_shaping = |c: char| {
+            matches!(
+                crate::fallback::fallback_bucket_key(c),
+                0x11_0003 | 0x11_0004 | 0x11_0005 | 0x11_0006
+            )
+        };
+
         let mut glyph_infos: Vec<Option<ResolvedGlyphData>> =
             Vec::with_capacity(layout.glyph_count());
 
@@ -183,16 +197,39 @@ impl TextRenderer {
                     );
 
                     for candidate in &candidates {
-                        // Shape just this character with the fallback font to get correct metrics.
-                        let mut char_buf = [0u8; 4];
-                        let char_str = positioned.codepoint.encode_utf8(&mut char_buf);
-                        let shaped = shaper.shape(char_str, &candidate.face, font_size);
-
-                        let Some(shaped_glyph) = shaped.glyphs.first() else {
+                        let Some(nominal_gid) = candidate.face.glyph_id(positioned.codepoint)
+                        else {
                             continue;
                         };
-                        if shaped_glyph.glyph_id == 0 {
+                        if nominal_gid == 0 {
                             continue;
+                        }
+
+                        // Prefer shaping only for scripts that need it.
+                        // If the shape budget is exceeded, fall back to cmap glyph id.
+                        let mut fallback_gid = nominal_gid;
+                        if !candidate.use_color
+                            && needs_single_char_shaping(positioned.codepoint)
+                            && fallback_shape_calls < MAX_FALLBACK_SHAPES_PER_CALL
+                        {
+                            let face_key = Arc::as_ptr(&candidate.face) as usize;
+                            let cp = positioned.codepoint as u32;
+                            if let Some(&cached) = fallback_shaped_gid_cache.get(&(face_key, cp)) {
+                                if cached != 0 {
+                                    fallback_gid = cached;
+                                }
+                            } else {
+                                fallback_shape_calls += 1;
+                                let mut char_buf = [0u8; 4];
+                                let char_str = positioned.codepoint.encode_utf8(&mut char_buf);
+                                let shaped = shaper.shape(char_str, &candidate.face, font_size);
+                                let shaped_gid =
+                                    shaped.glyphs.first().map(|g| g.glyph_id).unwrap_or(0);
+                                fallback_shaped_gid_cache.insert((face_key, cp), shaped_gid);
+                                if shaped_gid != 0 {
+                                    fallback_gid = shaped_gid;
+                                }
+                            }
                         }
 
                         let fallback_font_id = match candidate.kind {
@@ -211,7 +248,7 @@ impl TextRenderer {
                         };
 
                         let fallback_positioned = PositionedGlyph {
-                            glyph_id: shaped_glyph.glyph_id,
+                            glyph_id: fallback_gid,
                             cluster: positioned.cluster,
                             codepoint: positioned.codepoint,
                             x: positioned.x + x_offset,
@@ -222,7 +259,7 @@ impl TextRenderer {
                             let info = self.rasterize_color_glyph_for_font(
                                 &candidate.face,
                                 fallback_font_id,
-                                shaped_glyph.glyph_id,
+                                fallback_gid,
                                 font_size,
                             )?;
                             (info, true)
@@ -230,7 +267,7 @@ impl TextRenderer {
                             let info = self.rasterize_glyph_for_font(
                                 &candidate.face,
                                 fallback_font_id,
-                                shaped_glyph.glyph_id,
+                                fallback_gid,
                                 font_size,
                             )?;
                             (info, false)
