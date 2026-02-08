@@ -196,8 +196,9 @@ pub struct TextRenderer {
 
 impl TextRenderer {
     fn font_id_for_fallback_face(&self, font: &FontFace) -> u32 {
+        use rustc_hash::FxHasher;
         use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         "__fallback".hash(&mut hasher);
         font.family_name().hash(&mut hasher);
         font.face_index().hash(&mut hasher);
