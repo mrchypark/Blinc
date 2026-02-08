@@ -212,6 +212,7 @@ impl TextRenderer {
 
                         let fallback_positioned = PositionedGlyph {
                             glyph_id: shaped_glyph.glyph_id,
+                            cluster: positioned.cluster,
                             codepoint: positioned.codepoint,
                             x: positioned.x + x_offset,
                             y: positioned.y,
@@ -636,14 +637,13 @@ impl TextRenderer {
             requested_italic,
         )?;
 
-        // Second pass: build glyph instances with per-glyph colors
-        // We need to map glyph cluster (byte position) to color
-        let byte_positions: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
-
+        // Second pass: build glyph instances with per-glyph colors.
+        //
+        // Important: glyph index is NOT equivalent to character index for complex scripts,
+        // ligatures, or emoji sequences. Use HarfBuzz cluster (byte index) to map back to
+        // the originating text span.
         let positioned_glyphs: Vec<_> = layout.glyphs().cloned().collect();
-        for (i, (_positioned, glyph_info)) in
-            positioned_glyphs.iter().zip(glyph_infos.iter()).enumerate()
-        {
+        for (positioned, glyph_info) in positioned_glyphs.iter().zip(glyph_infos.iter()) {
             let glyph_info = match glyph_info {
                 Some(info) => info,
                 None => continue,
@@ -653,9 +653,8 @@ impl TextRenderer {
                 continue;
             }
 
-            // Get the byte position for this glyph's cluster to determine color
-            let byte_pos = byte_positions.get(i).copied().unwrap_or(0);
-            let color = get_color_for_byte_pos(byte_pos);
+            // Use HarfBuzz cluster byte index to determine color span.
+            let color = get_color_for_byte_pos(positioned.cluster as usize);
 
             // positioned.x is the pen position from the shaper
             // bearing_x is the offset from pen position to the glyph's left edge
