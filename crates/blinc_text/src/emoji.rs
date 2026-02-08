@@ -3,6 +3,7 @@
 //! Provides functions to detect emoji characters in text and render them
 //! as RGBA images for display.
 
+use crate::layout::PositionedGlyph;
 use crate::rasterizer::GlyphRasterizer;
 use crate::registry::{FontRegistry, GenericFont};
 use crate::shaper::TextShaper;
@@ -189,6 +190,27 @@ pub fn is_zwj(c: char) -> bool {
 pub fn is_variation_selector(c: char) -> bool {
     let cp = c as u32;
     matches!(cp, 0xFE00..=0xFE0F)
+}
+
+/// Suppress duplicate emoji glyphs produced by HarfBuzz cluster mapping.
+///
+/// Some emoji sequences can yield multiple positioned glyphs that share the same cluster start
+/// codepoint. Only suppress when the glyphs also share the same pen position and glyph id, so
+/// repeated emoji like "😀😀" still render twice.
+pub fn should_skip_duplicate_emoji(prev: &PositionedGlyph, cur: &PositionedGlyph) -> bool {
+    // Cluster is the byte index of the originating text. For complex emoji sequences, multiple
+    // positioned glyphs can map to the same cluster; cluster equality is a more robust signal of
+    // "same source sequence" than comparing a single `char` codepoint.
+    if prev.cluster != cur.cluster {
+        return false;
+    }
+    if !(is_emoji(prev.codepoint) || is_emoji(cur.codepoint)) {
+        return false;
+    }
+
+    let same_pos = (cur.x - prev.x).abs() < 0.01 && (cur.y - prev.y).abs() < 0.01;
+    let same_gid = cur.glyph_id == prev.glyph_id;
+    same_pos && same_gid
 }
 
 /// Rendered emoji image data

@@ -1519,18 +1519,93 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             TextBaseline::Bottom => TextAnchor::Baseline, // Approximate with baseline
         };
 
+        // Map TextStyle font family to (font_name, generic fallback).
+        //
+        // `TextStyle.family` is a single string and often uses CSS-like lists, e.g.
+        // "Fira Code, monospace". Preserve the generic fallback instead of discarding it.
+        let family_raw = style.family.trim();
+
+        let mut first_named: Option<&str> = None;
+        let mut fallback_generic: Option<blinc_text::GenericFont> = None;
+        let mut first_was_generic: Option<blinc_text::GenericFont> = None;
+
+        for token in family_raw.split(',') {
+            let t = token.trim().trim_matches('"').trim_matches('\'');
+            if t.is_empty() {
+                continue;
+            }
+
+            let token_generic = match t.to_ascii_lowercase().as_str() {
+                "system-ui" => Some(blinc_text::GenericFont::System),
+                "sans-serif" => Some(blinc_text::GenericFont::SansSerif),
+                "serif" => Some(blinc_text::GenericFont::Serif),
+                "monospace" => Some(blinc_text::GenericFont::Monospace),
+                "emoji" => Some(blinc_text::GenericFont::Emoji),
+                "symbol" => Some(blinc_text::GenericFont::Symbol),
+                _ => None,
+            };
+
+            if first_named.is_none() && first_was_generic.is_none() {
+                // First available entry wins. If the list starts with a generic family,
+                // respect that and ignore later named families.
+                if let Some(g) = token_generic {
+                    first_was_generic = Some(g);
+                    break;
+                }
+                first_named = Some(t);
+                continue;
+            }
+
+            if fallback_generic.is_none() {
+                if let Some(g) = token_generic {
+                    fallback_generic = Some(g);
+                }
+            }
+        }
+
+        let (font_name, generic) = if let Some(g) = first_was_generic {
+            (None, g)
+        } else if let Some(name) = first_named {
+            (
+                Some(name),
+                fallback_generic.unwrap_or(blinc_text::GenericFont::System),
+            )
+        } else {
+            (None, blinc_text::GenericFont::System)
+        };
+
+        // Map blinc_core::FontWeight to numeric weight (100..900).
+        let weight: u16 = match style.weight {
+            blinc_core::FontWeight::Thin => 100,
+            blinc_core::FontWeight::Light => 300,
+            blinc_core::FontWeight::Regular => 400,
+            blinc_core::FontWeight::Medium => 500,
+            blinc_core::FontWeight::Bold => 700,
+            blinc_core::FontWeight::Black => 900,
+        };
+
+        // Build full layout options so canvas text honors letter spacing and line height.
+        let mut layout_options = blinc_text::LayoutOptions::default();
+        layout_options.anchor = anchor;
+        layout_options.alignment = alignment;
+        layout_options.line_break = blinc_text::LineBreakMode::None; // no wrap for canvas text
+        layout_options.letter_spacing = style.letter_spacing;
+        layout_options.line_height = style.line_height;
+
         // Now borrow text_ctx and prepare glyphs
         let text_ctx = self.text_ctx.as_mut().unwrap();
-        if let Ok(mut glyphs) = text_ctx.prepare_text_with_options(
+        if let Ok(mut glyphs) = text_ctx.prepare_text_with_layout_options_and_style(
             text,
             transformed_origin.x,
             transformed_origin.y,
             style.size,
             color,
-            anchor,
-            alignment,
-            None,  // No width constraint
-            false, // No wrap for canvas text
+            &layout_options,
+            font_name,
+            generic,
+            weight,
+            false, // italic (not yet exposed on TextStyle)
+            None,  // layout_height
         ) {
             // Apply current clip bounds to all glyphs
             for glyph in &mut glyphs {

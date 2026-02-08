@@ -331,16 +331,47 @@ impl TextRenderingContext {
         let mut options = LayoutOptions::default();
         options.anchor = anchor;
         options.alignment = alignment;
-        if let Some(w) = width {
-            options.max_width = Some(w);
-        }
-        // Disable wrapping unless explicitly requested
+        options.max_width = width;
         if !wrap {
             options.line_break = blinc_text::LineBreakMode::None;
         }
 
+        self.prepare_text_with_layout_options_and_style(
+            text,
+            x,
+            y,
+            font_size,
+            color,
+            &options,
+            font_name,
+            generic,
+            weight,
+            italic,
+            layout_height,
+        )
+    }
+
+    /// Prepare text with full `LayoutOptions` control (letter spacing, line height, wrapping, etc.)
+    ///
+    /// This is useful for canvas text where `TextStyle` carries additional typography settings
+    /// like `letter_spacing` and `line_height`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_text_with_layout_options_and_style(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [f32; 4],
+        options: &LayoutOptions,
+        font_name: Option<&str>,
+        generic: GenericFont,
+        weight: u16,
+        italic: bool,
+        layout_height: Option<f32>,
+    ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
         let prepared = self.renderer.prepare_text_with_style(
-            text, font_size, color, &options, font_name, generic, weight, italic,
+            text, font_size, color, options, font_name, generic, weight, italic,
         )?;
 
         // Determine the number of lines from the prepared text
@@ -354,7 +385,7 @@ impl TextRenderingContext {
             glyph_extent
         };
 
-        let y_offset = match anchor {
+        let y_offset = match options.anchor {
             TextAnchor::Top => {
                 // Center glyphs within the layout-assigned height (if provided).
                 // This ensures items_center() on parent works correctly - text is
@@ -389,7 +420,7 @@ impl TextRenderingContext {
         // When max_width is set, the layout engine already aligns glyphs within that width.
         // We just need to add the container's x position as base offset.
         // When no width is provided, we manually apply alignment offset.
-        let x_offset = if width.is_some() {
+        let x_offset = if options.max_width.is_some() {
             // Layout engine already aligned within max_width, just offset by container x
             x
         } else {

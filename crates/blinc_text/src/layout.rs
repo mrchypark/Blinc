@@ -73,6 +73,11 @@ impl Default for LayoutOptions {
 pub struct PositionedGlyph {
     /// Glyph ID in the font
     pub glyph_id: u16,
+    /// Byte index into the original string (HarfBuzz cluster).
+    ///
+    /// This is required for correctly mapping glyphs back to source text ranges,
+    /// e.g. for styled text color spans.
+    pub cluster: u32,
     /// X position in pixels
     pub x: f32,
     /// Y position in pixels (baseline)
@@ -350,6 +355,7 @@ impl TextLayoutEngine {
 
             glyphs.push(PositionedGlyph {
                 glyph_id: glyph.glyph_id,
+                cluster: glyph.cluster,
                 x: x + x_offset,
                 y: baseline_y,
                 codepoint: glyph.codepoint,
