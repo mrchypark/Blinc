@@ -19,7 +19,7 @@ use std::sync::{
 };
 
 use blinc_core::{
-    BlurQuality, BlurStyle, Brush, Color, CornerRadius, LayerEffect, Shadow, Transform,
+    BlurQuality, BlurStyle, Brush, ClipPath, Color, CornerRadius, LayerEffect, Shadow, Transform,
 };
 use blinc_theme::ThemeState;
 use taffy::prelude::*;
@@ -401,6 +401,8 @@ pub struct Div {
     pub(crate) translate_z: Option<f32>,
     pub(crate) op_3d: Option<f32>,
     pub(crate) blend_3d: Option<f32>,
+    /// CSS clip-path shape function
+    pub(crate) clip_path: Option<ClipPath>,
     /// Layout animation configuration for FLIP-style bounds animation
     pub(crate) layout_animation: Option<crate::layout_animation::LayoutAnimationConfig>,
     /// Visual animation configuration (new FLIP-style system, read-only layout)
@@ -452,6 +454,7 @@ impl Div {
             translate_z: None,
             op_3d: None,
             blend_3d: None,
+            clip_path: None,
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
@@ -494,6 +497,7 @@ impl Div {
             translate_z: None,
             op_3d: None,
             blend_3d: None,
+            clip_path: None,
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
@@ -1056,6 +1060,9 @@ impl Div {
         if let Some(v) = style.blend_3d {
             self.blend_3d = Some(v);
         }
+        if let Some(ref cp) = style.clip_path {
+            self.clip_path = Some(cp.clone());
+        }
     }
 
     /// Merge properties from another Div into this one
@@ -1165,6 +1172,9 @@ impl Div {
         }
         if other.blend_3d.is_some() {
             self.blend_3d = other.blend_3d;
+        }
+        if other.clip_path.is_some() {
+            self.clip_path = other.clip_path;
         }
 
         // Note: event_handlers are NOT merged - they're set on the base element
@@ -3601,6 +3611,7 @@ impl ElementBuilder for Div {
             translate_z: self.translate_z,
             op_3d: self.op_3d,
             blend_3d: self.blend_3d,
+            clip_path: self.clip_path.clone(),
             ..Default::default()
         }
     }

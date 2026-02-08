@@ -183,6 +183,112 @@ fn main() -> Result<()> {
                 background: radial-gradient(circle, #ffaa00, #ff4400);
             }
 
+            /* --- 3D Group Composition --- */
+
+            /* Box with cylinder hole — cylinder cuts a round tunnel through the box */
+            #group-subtract {
+                shape-3d: group;
+                perspective: 800px;
+                rotate-x: 25deg;
+                rotate-y: 35deg;
+            }
+            #group-subtract-base {
+                shape-3d: box;
+                depth: 140px;
+                background: #3b82f6;
+            }
+            #group-subtract-hole {
+                shape-3d: cylinder;
+                depth: 200px;
+                3d-op: subtract;
+                background: #ef4444;
+            }
+
+            /* Smooth blob union — two spheres merging with smooth blend */
+            #group-smooth-union {
+                shape-3d: group;
+                perspective: 800px;
+                rotate-x: 15deg;
+                rotate-y: -25deg;
+            }
+            #group-smooth-union-a {
+                shape-3d: sphere;
+                depth: 130px;
+                background: #22c55e;
+            }
+            #group-smooth-union-b {
+                shape-3d: sphere;
+                depth: 130px;
+                3d-op: smooth-union;
+                3d-blend: 30px;
+                background: #22c55e;
+            }
+
+            /* Rounded intersection — box ∩ sphere gives pillow shape */
+            #group-intersect {
+                shape-3d: group;
+                perspective: 800px;
+                rotate-x: 20deg;
+                rotate-y: 30deg;
+            }
+            #group-intersect-box {
+                shape-3d: box;
+                depth: 160px;
+                background: #a855f7;
+            }
+            #group-intersect-sphere {
+                shape-3d: sphere;
+                depth: 200px;
+                3d-op: intersect;
+                background: #9333ea;
+            }
+
+            /* Smooth scoop — sphere scooped from box with smooth blend */
+            #group-smooth-subtract {
+                shape-3d: group;
+                perspective: 800px;
+                rotate-x: 25deg;
+                rotate-y: -20deg;
+            }
+            #group-smooth-subtract-base {
+                shape-3d: box;
+                depth: 140px;
+                background: #f97316;
+            }
+            #group-smooth-subtract-scoop {
+                shape-3d: sphere;
+                depth: 160px;
+                3d-op: smooth-subtract;
+                3d-blend: 20px;
+                background: #ea580c;
+            }
+
+            /* --- CSS clip-path demos --- */
+            #clip-circle {
+                background: #3b82f6;
+                clip-path: circle(50% at 50% 50%);
+            }
+            #clip-ellipse {
+                background: #22c55e;
+                clip-path: ellipse(50% 35% at 50% 50%);
+            }
+            #clip-inset {
+                background: #a855f7;
+                clip-path: inset(10% 10% 10% 10% round 12px);
+            }
+            #clip-polygon-hex {
+                background: #f97316;
+                clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+            }
+            #clip-polygon-star {
+                background: #ec4899;
+                clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+            }
+            #clip-polygon-arrow {
+                background: #ef4444;
+                clip-path: polygon(40% 0%, 40% 40%, 0% 40%, 50% 100%, 100% 40%, 60% 40%, 60% 0%);
+            }
+
             "#,
             );
             css_loaded = true;
@@ -232,6 +338,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(translate_z_section())
                     .child(uv_mapping_3d_section())
                     .child(animation_3d_section())
+                    .child(group_composition_section())
+                    .child(clip_path_section())
                     .child(api_comparison_section()),
             ),
         )
@@ -260,7 +368,7 @@ fn header() -> impl ElementBuilder {
                 .color(text_primary),
         )
         .child(
-            text("Stylesheets | Hover | Animations | css! | style! | 3D SDF | Boolean Ops")
+            text("Stylesheets | Hover | Animations | css! | style! | 3D SDF | Groups | clip-path")
                 .size(14.0)
                 .color(text_secondary),
         )
@@ -1484,6 +1592,165 @@ fn animation_3d_section() -> impl ElementBuilder {
                         .gap(8.0)
                         .child(code_label("float-z (2s infinite)"))
                         .child(div().w(120.0).h(120.0).id("anim-float-3d")),
+                ),
+        )
+}
+
+// ============================================================================
+// 3D GROUP COMPOSITION SECTION
+// ============================================================================
+
+fn group_composition_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("3D Group Composition"))
+        .child(section_description(
+            "Compound 3D shapes via shape-3d: group. Children contribute to a single SDF with boolean operations.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                // Box with cylinder subtracted (drilled hole)
+                // Children use absolute positioning to overlap at same center
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("subtract (hole)"))
+                        .child(
+                            div()
+                                .relative()
+                                .w(200.0)
+                                .h(200.0)
+                                .id("group-subtract")
+                                .child(div().absolute().inset(0.0).id("group-subtract-base"))
+                                .child(div().absolute().inset(0.0).id("group-subtract-hole")),
+                        ),
+                )
+                // Smooth blob union (two spheres merging, offset to show blob)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("smooth-union (blob)"))
+                        .child(
+                            div()
+                                .relative()
+                                .w(200.0)
+                                .h(200.0)
+                                .id("group-smooth-union")
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(0.0)
+                                        .left(0.0)
+                                        .bottom(70.0)
+                                        .right(70.0)
+                                        .id("group-smooth-union-a"),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(70.0)
+                                        .left(70.0)
+                                        .bottom(0.0)
+                                        .right(0.0)
+                                        .id("group-smooth-union-b"),
+                                ),
+                        ),
+                )
+                // Rounded intersection (box ∩ sphere)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("intersect (rounded)"))
+                        .child(
+                            div()
+                                .relative()
+                                .w(200.0)
+                                .h(200.0)
+                                .id("group-intersect")
+                                .child(div().absolute().inset(0.0).id("group-intersect-box"))
+                                .child(div().absolute().inset(0.0).id("group-intersect-sphere")),
+                        ),
+                )
+                // Smooth scoop (box with sphere scooped out)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("smooth-subtract"))
+                        .child(
+                            div()
+                                .relative()
+                                .w(200.0)
+                                .h(200.0)
+                                .id("group-smooth-subtract")
+                                .child(div().absolute().inset(0.0).id("group-smooth-subtract-base"))
+                                .child(div().absolute().inset(0.0).id("group-smooth-subtract-scoop")),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// CLIP-PATH SECTION
+// ============================================================================
+
+fn clip_path_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("CSS clip-path"))
+        .child(section_description(
+            "Clip elements to shapes: circle, ellipse, inset, polygon. Applied via clip-path CSS property.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("circle(50%)"))
+                        .child(div().w(120.0).h(120.0).id("clip-circle")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("ellipse(50% 35%)"))
+                        .child(div().w(120.0).h(120.0).id("clip-ellipse")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("inset(10% round 12)"))
+                        .child(div().w(120.0).h(120.0).id("clip-inset")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("polygon (hexagon)"))
+                        .child(div().w(120.0).h(120.0).id("clip-polygon-hex")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("polygon (star)"))
+                        .child(div().w(120.0).h(120.0).id("clip-polygon-star")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("polygon (arrow)"))
+                        .child(div().w(120.0).h(120.0).id("clip-polygon-arrow")),
                 ),
         )
 }

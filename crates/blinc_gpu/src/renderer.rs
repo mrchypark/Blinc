@@ -253,6 +253,8 @@ struct Buffers {
     glow_uniforms: wgpu::Buffer,
     /// Cached uniform buffer for color matrix effect
     color_matrix_uniforms: wgpu::Buffer,
+    /// Storage buffer for auxiliary per-primitive data (group shapes, polygon clips)
+    aux_data: wgpu::Buffer,
 }
 
 /// Bind groups for shader resources
@@ -1424,6 +1426,17 @@ impl GpuRenderer {
                     },
                     count: None,
                 },
+                // Auxiliary data storage buffer (group shapes, polygon clips)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -2539,6 +2552,15 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
+        // Auxiliary data buffer for variable-length per-primitive data
+        // Initial size: 1 vec4 (minimum for valid binding, will be recreated if needed)
+        let aux_data = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Aux Data Buffer"),
+            size: 16, // 1 vec4<f32> minimum
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Buffers {
             uniforms,
             primitives,
@@ -2552,6 +2574,7 @@ impl GpuRenderer {
             drop_shadow_uniforms,
             glow_uniforms,
             color_matrix_uniforms,
+            aux_data,
         }
     }
 
@@ -2593,6 +2616,11 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(color_glyph_atlas_view),
+                },
+                // Auxiliary data buffer (binding 5)
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: buffers.aux_data.as_entire_binding(),
                 },
             ],
         });
@@ -2958,6 +2986,9 @@ impl GpuRenderer {
             );
         }
 
+        // Update auxiliary data buffer (group shapes, polygon clips)
+        self.update_aux_data_buffer(batch);
+
         // Update path buffers if we have path geometry
         let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
@@ -3268,6 +3299,9 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
+        // Update auxiliary data buffer
+        self.update_aux_data_buffer(batch);
+
         // Update primitives buffer with filtered primitives
         if !included_primitives.is_empty() {
             self.queue.write_buffer(
@@ -3335,6 +3369,78 @@ impl GpuRenderer {
 
         // Submit commands
         self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Update auxiliary data buffer (for 3D group shapes, polygon clips, etc.)
+    ///
+    /// If the batch has aux_data, writes it to the GPU buffer, recreating the buffer
+    /// and rebinding if it's too small.
+    fn update_aux_data_buffer(&mut self, batch: &PrimitiveBatch) {
+        if batch.aux_data.is_empty() {
+            return;
+        }
+
+        let data_size = (batch.aux_data.len() * std::mem::size_of::<[f32; 4]>()) as u64;
+        let buffer_size = self.buffers.aux_data.size();
+
+        // Recreate buffer if too small
+        if data_size > buffer_size {
+            self.buffers.aux_data = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Aux Data Buffer"),
+                size: data_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            // Must recreate the SDF bind group since the buffer changed
+            self.rebind_sdf_bind_group();
+        }
+
+        self.queue.write_buffer(
+            &self.buffers.aux_data,
+            0,
+            bytemuck::cast_slice(&batch.aux_data),
+        );
+    }
+
+    /// Recreate the SDF bind group (needed when aux_data buffer is resized)
+    fn rebind_sdf_bind_group(&mut self) {
+        self.bind_groups.sdf =
+            self.device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("SDF Bind Group (rebound)"),
+                    layout: &self.bind_group_layouts.sdf,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.buffers.uniforms.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: self.buffers.primitives.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(
+                                &self.placeholder_glyph_atlas_view,
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: wgpu::BindingResource::TextureView(
+                                &self.placeholder_color_glyph_atlas_view,
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: self.buffers.aux_data.as_entire_binding(),
+                        },
+                    ],
+                });
     }
 
     /// Update path vertex and index buffers
@@ -3762,6 +3868,9 @@ impl GpuRenderer {
             _padding: [0.0; 2],
         };
 
+        // Update auxiliary data buffer
+        self.update_aux_data_buffer(batch);
+
         // Update primitives buffer
         if !batch.primitives.is_empty() {
             self.queue.write_buffer(
@@ -4097,6 +4206,9 @@ impl GpuRenderer {
         };
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
+
+        // Update auxiliary data buffer
+        self.update_aux_data_buffer(batch);
 
         // Update primitives buffer
         if !batch.primitives.is_empty() {
@@ -4504,6 +4616,10 @@ impl GpuRenderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(color_atlas_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: self.buffers.aux_data.as_entire_binding(),
                     },
                 ],
             });

@@ -27,7 +27,7 @@
 //!     .pressed(ElementStyle::new().bg(Color::DARK_BLUE).scale(0.98));
 //! ```
 
-use blinc_core::{Brush, Color, CornerRadius, Shadow, Transform};
+use blinc_core::{Brush, ClipPath, Color, CornerRadius, Shadow, Transform};
 use blinc_theme::ThemeState;
 
 use crate::css_parser::CssAnimation;
@@ -178,6 +178,12 @@ pub struct ElementStyle {
     pub op_3d: Option<String>,
     /// Blend radius for smooth boolean operations (in pixels)
     pub blend_3d: Option<f32>,
+
+    // =========================================================================
+    // Clip-Path Property
+    // =========================================================================
+    /// CSS clip-path shape function
+    pub clip_path: Option<ClipPath>,
 
     // =========================================================================
     // Layout Properties
@@ -474,6 +480,16 @@ impl ElementStyle {
     /// Set blend radius for smooth boolean operations
     pub fn blend_3d_px(mut self, px: f32) -> Self {
         self.blend_3d = Some(px);
+        self
+    }
+
+    // =========================================================================
+    // Clip-Path
+    // =========================================================================
+
+    /// Set CSS clip-path shape function
+    pub fn clip_path(mut self, path: ClipPath) -> Self {
+        self.clip_path = Some(path);
         self
     }
 
@@ -876,6 +892,11 @@ impl ElementStyle {
             translate_z: other.translate_z.or(self.translate_z),
             op_3d: other.op_3d.clone().or_else(|| self.op_3d.clone()),
             blend_3d: other.blend_3d.or(self.blend_3d),
+            // Clip-path
+            clip_path: other
+                .clip_path
+                .clone()
+                .or_else(|| self.clip_path.clone()),
             // Layout
             width: other.width.or(self.width),
             height: other.height.or(self.height),
@@ -1280,6 +1301,17 @@ macro_rules! css_impl {
     };
     ($style:ident; 3d-blend: $value:expr) => {
         $style = $style.blend_3d_px($value);
+    };
+
+    // =========================================================================
+    // Clip-Path
+    // =========================================================================
+    ($style:ident; clip-path: $value:expr; $($rest:tt)*) => {
+        $style = $style.clip_path($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; clip-path: $value:expr) => {
+        $style = $style.clip_path($value);
     };
 
     // =========================================================================
@@ -1796,6 +1828,14 @@ macro_rules! style_impl {
     };
     ($style:ident; blend_3d: $value:expr $(, $($rest:tt)*)?) => {
         $style = $style.blend_3d_px($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Clip-Path
+    // =========================================================================
+    ($style:ident; clip_path: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.clip_path($value);
         $crate::style_impl!($style; $($($rest)*)?);
     };
 

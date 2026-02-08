@@ -57,6 +57,8 @@ pub enum ClipType {
     Circle = 2,
     /// Elliptical clip
     Ellipse = 3,
+    /// Polygon clip (winding number test via aux_data vertices)
+    Polygon = 4,
 }
 
 /// A GPU primitive ready for rendering (matches shader `Primitive` struct)
@@ -1240,6 +1242,9 @@ pub struct PrimitiveBatch {
     pub viewports_3d: Vec<Viewport3D>,
     /// GPU particle viewports to render
     pub particle_viewports: Vec<ParticleViewport3D>,
+    /// Auxiliary data buffer (vec4<f32> array) for variable-length per-primitive data.
+    /// Used for 3D group shape descriptors and polygon clip vertices.
+    pub aux_data: Vec<[f32; 4]>,
 }
 
 impl PrimitiveBatch {
@@ -1254,6 +1259,7 @@ impl PrimitiveBatch {
             layer_commands: Vec::new(),
             viewports_3d: Vec::new(),
             particle_viewports: Vec::new(),
+            aux_data: Vec::new(),
         }
     }
 
@@ -1267,6 +1273,7 @@ impl PrimitiveBatch {
         self.layer_commands.clear();
         self.viewports_3d.clear();
         self.particle_viewports.clear();
+        self.aux_data.clear();
     }
 
     /// Push a 3D viewport for SDF raymarching
@@ -1641,6 +1648,10 @@ impl PrimitiveBatch {
 
         // Merge 3D viewports
         self.viewports_3d.extend(other.viewports_3d);
+
+        // Merge aux_data (offsets in primitives already point to correct positions
+        // because aux_data offsets are absolute within a batch — callers must rebind)
+        self.aux_data.extend(other.aux_data);
     }
 }
 

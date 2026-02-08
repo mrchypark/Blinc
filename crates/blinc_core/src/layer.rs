@@ -1363,6 +1363,8 @@ pub enum ClipShape {
     Ellipse { center: Point, radii: Vec2 },
     /// Arbitrary path clip (requires tessellation or stencil buffer)
     Path(crate::draw::Path),
+    /// Polygon clip with pre-resolved vertices (absolute pixel coordinates)
+    Polygon(Vec<Point>),
 }
 
 impl ClipShape {
@@ -1406,8 +1408,102 @@ impl ClipShape {
                 Rect::from_center(*center, Size::new(radii.x * 2.0, radii.y * 2.0))
             }
             ClipShape::Path(path) => path.bounds(),
+            ClipShape::Polygon(pts) => {
+                if pts.is_empty() {
+                    return Rect::new(0.0, 0.0, 0.0, 0.0);
+                }
+                let min_x = pts.iter().map(|p| p.x).fold(f32::MAX, f32::min);
+                let min_y = pts.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+                let max_x = pts.iter().map(|p| p.x).fold(f32::MIN, f32::max);
+                let max_y = pts.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+                Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+            }
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CSS clip-path Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A length value that can be pixels or a percentage
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ClipLength {
+    /// Absolute length in pixels
+    Px(f32),
+    /// Percentage of the reference dimension (0.0 - 100.0)
+    Percent(f32),
+}
+
+impl ClipLength {
+    /// Resolve this length against a reference dimension in pixels
+    pub fn resolve(&self, reference: f32) -> f32 {
+        match self {
+            ClipLength::Px(v) => *v,
+            ClipLength::Percent(pct) => reference * pct / 100.0,
+        }
+    }
+}
+
+impl Default for ClipLength {
+    fn default() -> Self {
+        ClipLength::Px(0.0)
+    }
+}
+
+/// CSS `clip-path` shape function
+///
+/// Supports the full CSS clip-path specification:
+/// - `circle()`, `ellipse()` — basic shape functions
+/// - `inset()` — inset rectangle with optional rounding
+/// - `rect()`, `xywh()` — CSS basic shape box functions
+/// - `polygon()` — arbitrary polygon vertices
+/// - `path()` — SVG path data (pre-flattened to polygon vertices)
+#[derive(Clone, Debug)]
+pub enum ClipPath {
+    /// `circle(radius at cx cy)`
+    Circle {
+        radius: Option<ClipLength>,
+        center: (ClipLength, ClipLength),
+    },
+    /// `ellipse(rx ry at cx cy)`
+    Ellipse {
+        rx: Option<ClipLength>,
+        ry: Option<ClipLength>,
+        center: (ClipLength, ClipLength),
+    },
+    /// `inset(top right bottom left round radius)`
+    Inset {
+        top: ClipLength,
+        right: ClipLength,
+        bottom: ClipLength,
+        left: ClipLength,
+        round: Option<f32>,
+    },
+    /// `rect(top right bottom left round radius)` — same as inset but absolute coords
+    Rect {
+        top: ClipLength,
+        right: ClipLength,
+        bottom: ClipLength,
+        left: ClipLength,
+        round: Option<f32>,
+    },
+    /// `xywh(x y w h round radius)`
+    Xywh {
+        x: ClipLength,
+        y: ClipLength,
+        w: ClipLength,
+        h: ClipLength,
+        round: Option<f32>,
+    },
+    /// `polygon(x1 y1, x2 y2, ...)`
+    Polygon {
+        points: Vec<(ClipLength, ClipLength)>,
+    },
+    /// `path("M 0 0 L ...")` — pre-flattened from SVG path commands to polygon vertices
+    Path {
+        vertices: Vec<(f32, f32)>,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

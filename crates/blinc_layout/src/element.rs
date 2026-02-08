@@ -4,8 +4,8 @@
 //! rendered via the DrawContext API.
 
 use blinc_core::{
-    BlurQuality, Brush, Color, CornerRadius, DynFloat, DynValue, LayerEffect, Rect, Shadow,
-    Transform, ValueContext,
+    BlurQuality, Brush, ClipPath, Color, CornerRadius, DynFloat, DynValue, LayerEffect, Rect,
+    Shadow, Transform, ValueContext,
 };
 use taffy::Layout;
 
@@ -1019,6 +1019,8 @@ pub struct RenderProps {
     pub op_3d: Option<f32>,
     /// Blend radius for smooth boolean operations (in pixels)
     pub blend_3d: Option<f32>,
+    /// CSS clip-path shape function
+    pub clip_path: Option<ClipPath>,
     /// DEPRECATED: Whether the motion should start exiting
     ///
     /// This field is deprecated. Motion exit is now triggered explicitly via
@@ -1071,6 +1073,7 @@ impl Default for RenderProps {
             translate_z: None,
             op_3d: None,
             blend_3d: None,
+            clip_path: None,
             motion_is_exiting: false,
         }
     }

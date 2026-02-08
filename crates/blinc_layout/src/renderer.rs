@@ -11,8 +11,8 @@ use blinc_animation::AnimationScheduler;
 use indexmap::IndexMap;
 
 use blinc_core::{
-    BlendMode, Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle, LayerConfig, Rect,
-    Shadow, Stroke, Transform,
+    BlendMode, Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle, LayerConfig, Point,
+    Rect, Shadow, Stroke, Transform, Vec2,
 };
 use taffy::prelude::*;
 use taffy::Overflow;
@@ -4339,6 +4339,114 @@ impl RenderTree {
         if let Some(v) = style.blend_3d {
             props.blend_3d = Some(v);
         }
+        if let Some(ref cp) = style.clip_path {
+            props.clip_path = Some(cp.clone());
+        }
+    }
+
+    /// Resolve a CSS `ClipPath` into a concrete `ClipShape` given element bounds.
+    ///
+    /// For simple shapes (circle, ellipse, inset, rect, xywh), this produces a
+    /// ClipShape that the existing GPU clip infrastructure handles directly.
+    /// For polygon and path, returns a polygon-based ClipShape (handled in Phase 6).
+    fn resolve_clip_path(
+        clip_path: &blinc_core::ClipPath,
+        bounds: &crate::element::ElementBounds,
+    ) -> Option<ClipShape> {
+        use blinc_core::{ClipLength, ClipPath};
+
+        let w = bounds.width;
+        let h = bounds.height;
+
+        match clip_path {
+            ClipPath::Circle { radius, center } => {
+                let cx = center.0.resolve(w);
+                let cy = center.1.resolve(h);
+                let r = radius
+                    .map(|r| r.resolve(w.min(h)))
+                    .unwrap_or_else(|| w.min(h) * 0.5);
+                Some(ClipShape::circle(Point::new(cx, cy), r))
+            }
+            ClipPath::Ellipse { rx, ry, center } => {
+                let cx = center.0.resolve(w);
+                let cy = center.1.resolve(h);
+                let rx_val = rx.map(|r| r.resolve(w)).unwrap_or(w * 0.5);
+                let ry_val = ry.map(|r| r.resolve(h)).unwrap_or(h * 0.5);
+                Some(ClipShape::ellipse(
+                    Point::new(cx, cy),
+                    Vec2::new(rx_val, ry_val),
+                ))
+            }
+            ClipPath::Inset {
+                top,
+                right,
+                bottom,
+                left,
+                round,
+            } => {
+                let t = top.resolve(h);
+                let r = right.resolve(w);
+                let b = bottom.resolve(h);
+                let l = left.resolve(w);
+                let rect = Rect::new(l, t, w - l - r, h - t - b);
+                if let Some(radius) = round {
+                    Some(ClipShape::rounded_rect(rect, *radius))
+                } else {
+                    Some(ClipShape::rect(rect))
+                }
+            }
+            ClipPath::Rect {
+                top,
+                right,
+                bottom,
+                left,
+                round,
+            } => {
+                // CSS rect() uses absolute edge positions
+                let t = top.resolve(h);
+                let r = right.resolve(w);
+                let b = bottom.resolve(h);
+                let l = left.resolve(w);
+                let rect = Rect::new(l, t, r - l, b - t);
+                if let Some(radius) = round {
+                    Some(ClipShape::rounded_rect(rect, *radius))
+                } else {
+                    Some(ClipShape::rect(rect))
+                }
+            }
+            ClipPath::Xywh { x, y, w: cw, h: ch, round } => {
+                let rx = x.resolve(w);
+                let ry = y.resolve(h);
+                let rw = cw.resolve(w);
+                let rh = ch.resolve(h);
+                let rect = Rect::new(rx, ry, rw, rh);
+                if let Some(radius) = round {
+                    Some(ClipShape::rounded_rect(rect, *radius))
+                } else {
+                    Some(ClipShape::rect(rect))
+                }
+            }
+            ClipPath::Polygon { points } => {
+                let resolved: Vec<Point> = points
+                    .iter()
+                    .map(|(px, py)| Point::new(px.resolve(w), py.resolve(h)))
+                    .collect();
+                if resolved.len() < 3 {
+                    return None;
+                }
+                Some(ClipShape::Polygon(resolved))
+            }
+            ClipPath::Path { vertices } => {
+                if vertices.len() < 3 {
+                    return None;
+                }
+                let points: Vec<Point> = vertices
+                    .iter()
+                    .map(|(x, y)| Point::new(*x, *y))
+                    .collect();
+                Some(ClipShape::Polygon(points))
+            }
+        }
     }
 
     /// Apply layout properties from the stylesheet to taffy nodes
@@ -5830,6 +5938,16 @@ impl RenderTree {
             ctx.push_clip(clip_shape);
         }
 
+        // Push clip-path if set on this element
+        let has_clip_path = render_node.props.clip_path.is_some();
+        if has_clip_path {
+            if let Some(cs) =
+                Self::resolve_clip_path(render_node.props.clip_path.as_ref().unwrap(), &bounds)
+            {
+                ctx.push_clip(cs);
+            }
+        }
+
         // Render if this node matches target layer
         // Debug: see what layers we're checking
         let is_canvas = matches!(&render_node.element_type, ElementType::Canvas(_));
@@ -5848,7 +5966,8 @@ impl RenderTree {
             || render_node.props.rotate_y.is_some()
             || render_node.props.perspective.is_some()
             || render_node.props.depth.unwrap_or(0.0) > 0.0
-            || render_node.props.translate_z.is_some();
+            || render_node.props.translate_z.is_some()
+            || render_node.props.shape_3d.is_some();
 
         if has_3d {
             let rx = render_node.props.rotate_x.unwrap_or(0.0).to_radians();
@@ -5856,7 +5975,8 @@ impl RenderTree {
             let d = render_node.props.perspective.unwrap_or(800.0);
             ctx.set_3d_transform(rx, ry, d);
 
-            if render_node.props.depth.unwrap_or(0.0) > 0.0 {
+            let is_3d_group = render_node.props.shape_3d == Some(6.0);
+            if render_node.props.depth.unwrap_or(0.0) > 0.0 || is_3d_group {
                 ctx.set_3d_shape(
                     render_node.props.shape_3d.unwrap_or(1.0),
                     render_node.props.depth.unwrap_or(0.0),
@@ -5874,6 +5994,64 @@ impl RenderTree {
 
             if let Some(tz) = render_node.props.translate_z {
                 ctx.set_3d_translate_z(tz);
+            }
+        }
+
+        // 3D Group composition: collect child shapes into compound SDF
+        // MUST happen before fill_rect so the primitive gets the group shape descriptors.
+        let is_3d_group = render_node.props.shape_3d == Some(6.0);
+        let mut group_3d_children: Vec<LayoutNodeId> = Vec::new();
+
+        if is_3d_group {
+            let mut raw_descs: Vec<[f32; 16]> = Vec::new();
+            let group_cx = bounds.x + bounds.width * 0.5;
+            let group_cy = bounds.y + bounds.height * 0.5;
+
+            for child_id in self.layout_tree.children(node) {
+                if let Some(child_node) = self.render_nodes.get(&child_id) {
+                    if let Some(child_shape) = child_node.props.shape_3d {
+                        if child_shape > 0.0 && child_shape < 6.0 {
+                            group_3d_children.push(child_id);
+                            let child_bounds = self.get_render_bounds(child_id, (0.0, 0.0));
+                            if let Some(cb) = child_bounds {
+                                let ox = cb.x + cb.width * 0.5 - group_cx;
+                                let oy = cb.y + cb.height * 0.5 - group_cy;
+                                let oz = child_node.props.translate_z.unwrap_or(0.0);
+                                let cr = child_node
+                                    .props
+                                    .border_radius
+                                    .top_left
+                                    .min(child_node.props.depth.unwrap_or(20.0) * 0.5);
+                                let child_depth = child_node.props.depth.unwrap_or(20.0);
+                                let half_w = cb.width * 0.5;
+                                let half_h = cb.height * 0.5;
+                                let half_d = child_depth * 0.5;
+                                let op_type = child_node.props.op_3d.unwrap_or(0.0);
+                                let blend = child_node.props.blend_3d.unwrap_or(0.0);
+
+                                // Get child color for per-shape coloring
+                                let color = if let Some(blinc_core::Brush::Solid(c)) =
+                                    &child_node.props.background
+                                {
+                                    [c.r, c.g, c.b, c.a]
+                                } else {
+                                    [0.8, 0.8, 0.8, 1.0]
+                                };
+
+                                // Pack as [offset(4), params(4), half_ext(4), color(4)]
+                                raw_descs.push([
+                                    ox, oy, oz, cr, child_shape, child_depth, op_type, blend,
+                                    half_w, half_h, half_d, 0.0, color[0], color[1], color[2],
+                                    color[3],
+                                ]);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !raw_descs.is_empty() {
+                ctx.set_3d_group_raw(&raw_descs);
             }
         }
 
@@ -5904,6 +6082,14 @@ impl RenderTree {
                         bg.clone()
                     };
                     ctx.fill_rect(rect, radius, brush);
+                } else if is_3d_group {
+                    // 3D group elements need a primitive even without a background —
+                    // the shader renders the compound SDF from child shape descriptors.
+                    ctx.fill_rect(
+                        rect,
+                        radius,
+                        Brush::Solid(Color::TRANSPARENT),
+                    );
                 }
             }
 
@@ -6099,76 +6285,6 @@ impl RenderTree {
             motion_opacity
         };
 
-        // 3D Group composition: collect child shapes into compound SDF
-        let is_3d_group = render_node.props.shape_3d == Some(6.0);
-        let mut group_3d_children: Vec<LayoutNodeId> = Vec::new();
-
-        if is_3d_group {
-            let mut raw_descs: Vec<[f32; 16]> = Vec::new();
-            let group_cx = bounds.x + bounds.width * 0.5;
-            let group_cy = bounds.y + bounds.height * 0.5;
-
-            for child_id in self.layout_tree.children(node) {
-                if let Some(child_node) = self.render_nodes.get(&child_id) {
-                    if let Some(child_shape) = child_node.props.shape_3d {
-                        if child_shape > 0.0 && child_shape < 6.0 {
-                            group_3d_children.push(child_id);
-                            let child_bounds = self.get_render_bounds(child_id, (0.0, 0.0));
-                            if let Some(cb) = child_bounds {
-                                let ox = cb.x + cb.width * 0.5 - group_cx;
-                                let oy = cb.y + cb.height * 0.5 - group_cy;
-                                let oz = child_node.props.translate_z.unwrap_or(0.0);
-                                let cr = child_node
-                                    .props
-                                    .border_radius
-                                    .top_left
-                                    .min(child_node.props.depth.unwrap_or(20.0) * 0.5);
-                                let child_depth = child_node.props.depth.unwrap_or(20.0);
-                                let half_w = cb.width * 0.5;
-                                let half_h = cb.height * 0.5;
-                                let half_d = child_depth * 0.5;
-                                let op_type = child_node.props.op_3d.unwrap_or(0.0);
-                                let blend = child_node.props.blend_3d.unwrap_or(0.0);
-
-                                // Get child color for per-shape coloring
-                                let color = if let Some(blinc_core::Brush::Solid(c)) =
-                                    &child_node.props.background
-                                {
-                                    [c.r, c.g, c.b, c.a]
-                                } else {
-                                    [0.8, 0.8, 0.8, 1.0]
-                                };
-
-                                // Pack as [offset(4), params(4), half_ext(4), color(4)]
-                                raw_descs.push([
-                                    ox,
-                                    oy,
-                                    oz,
-                                    cr,
-                                    child_shape,
-                                    child_depth,
-                                    op_type,
-                                    blend,
-                                    half_w,
-                                    half_h,
-                                    half_d,
-                                    0.0,
-                                    color[0],
-                                    color[1],
-                                    color[2],
-                                    color[3],
-                                ]);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if !raw_descs.is_empty() {
-                ctx.set_3d_group_raw(&raw_descs);
-            }
-        }
-
         for child_id in self.layout_tree.children(node) {
             // Skip 3D children of a group node — they're composed into the group SDF
             if is_3d_group && group_3d_children.contains(&child_id) {
@@ -6212,6 +6328,11 @@ impl RenderTree {
 
         // Pop clip
         if clips_content {
+            ctx.pop_clip();
+        }
+
+        // Pop clip-path
+        if has_clip_path {
             ctx.pop_clip();
         }
 

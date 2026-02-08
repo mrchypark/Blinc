@@ -124,7 +124,8 @@ pub struct GpuPaintContext<'a> {
     /// Blend mode stack
     blend_mode_stack: Vec<BlendMode>,
     /// Clip stack (for tracking, actual clipping done in shader)
-    clip_stack: Vec<ClipShape>,
+    /// Each entry: (shape, optional polygon aux_data metadata: (aux_offset, vertex_count))
+    clip_stack: Vec<(ClipShape, Option<(u32, u32)>)>,
     /// Viewport size
     viewport: Size,
     /// Whether we're in a 3D context
@@ -584,6 +585,14 @@ impl<'a> GpuPaintContext<'a> {
                 // Path clipping with transforms not supported - keep as-is
                 ClipShape::Path(path)
             }
+            ClipShape::Polygon(pts) => {
+                // Transform each polygon vertex
+                let transformed: Vec<Point> = pts
+                    .iter()
+                    .map(|p| self.transform_point(*p))
+                    .collect();
+                ClipShape::Polygon(transformed)
+            }
         }
     }
 
@@ -730,7 +739,7 @@ impl<'a> GpuPaintContext<'a> {
         // Track whether the topmost clip is a plain Rect (not rounded)
         let mut topmost_is_plain_rect = false;
 
-        for clip in &self.clip_stack {
+        for (clip, _poly_meta) in &self.clip_stack {
             match clip {
                 ClipShape::Rect(rect) => {
                     // Intersect with this rect
@@ -775,16 +784,32 @@ impl<'a> GpuPaintContext<'a> {
                     topmost_is_plain_rect = false;
                 }
                 // For non-rect clips, fall back to topmost-only behavior
-                ClipShape::Circle { .. } | ClipShape::Ellipse { .. } | ClipShape::Path(_) => {
-                    // Can't easily intersect with circles/ellipses/paths
+                ClipShape::Circle { .. }
+                | ClipShape::Ellipse { .. }
+                | ClipShape::Path(_)
+                | ClipShape::Polygon(_) => {
+                    // Can't easily intersect with circles/ellipses/paths/polygons
                     // Fall through to use the topmost clip
                     topmost_is_plain_rect = false;
                 }
             }
         }
 
-        // If we have rect clips, use the intersection
-        if has_rect_clips {
+        // Check if the topmost clip is non-rect (circle, ellipse, polygon).
+        // If so, the topmost non-rect clip takes priority over rect clip intersection,
+        // since the GPU shader can only evaluate one clip type per primitive.
+        let topmost_is_non_rect = matches!(
+            self.clip_stack.last().map(|(c, _)| c),
+            Some(
+                ClipShape::Circle { .. }
+                    | ClipShape::Ellipse { .. }
+                    | ClipShape::Polygon(_)
+                    | ClipShape::Path(_)
+            )
+        );
+
+        // If we have rect clips AND the topmost clip is rect-based, use the intersection
+        if has_rect_clips && !topmost_is_non_rect {
             let width = (intersect_max_x - intersect_min_x).max(0.0);
             let height = (intersect_max_y - intersect_min_y).max(0.0);
 
@@ -846,8 +871,19 @@ impl<'a> GpuPaintContext<'a> {
             );
         }
 
-        // Fall back to topmost clip for non-rect clips
-        let clip = self.clip_stack.last().unwrap();
+        // Fall back to topmost clip for non-rect clips.
+        // For non-rect clips (circle, ellipse, polygon), clip_bounds carries the
+        // parent rect scissor (from accumulated rect clips) and clip_radius carries
+        // the shape-specific data. The shader applies both rect scissor AND shape clip.
+        let scissor_bounds = if has_rect_clips {
+            let width = (intersect_max_x - intersect_min_x).max(0.0);
+            let height = (intersect_max_y - intersect_min_y).max(0.0);
+            [intersect_min_x, intersect_min_y, width, height]
+        } else {
+            [-10000.0, -10000.0, 100000.0, 100000.0]
+        };
+
+        let (clip, poly_meta) = self.clip_stack.last().unwrap();
         match clip {
             ClipShape::Rect(rect) => (
                 [rect.x(), rect.y(), rect.width(), rect.height()],
@@ -868,15 +904,26 @@ impl<'a> GpuPaintContext<'a> {
                 ClipType::Rect,
             ),
             ClipShape::Circle { center, radius } => (
-                [center.x, center.y, *radius, *radius],
-                [*radius, *radius, 0.0, 0.0],
+                // clip_bounds = rect scissor, clip_radius = [cx, cy, radius, 0]
+                scissor_bounds,
+                [center.x, center.y, *radius, 0.0],
                 ClipType::Circle,
             ),
             ClipShape::Ellipse { center, radii } => (
+                // clip_bounds = rect scissor, clip_radius = [cx, cy, rx, ry]
+                scissor_bounds,
                 [center.x, center.y, radii.x, radii.y],
-                [radii.x, radii.y, 0.0, 0.0],
                 ClipType::Ellipse,
             ),
+            ClipShape::Polygon(_) => {
+                // clip_bounds = rect scissor, clip_radius = [0, 0, vertex_count, aux_offset]
+                let (aux_offset, vertex_count) = poly_meta.unwrap_or((0, 0));
+                (
+                    scissor_bounds,
+                    [0.0, 0.0, vertex_count as f32, aux_offset as f32],
+                    ClipType::Polygon,
+                )
+            }
             ClipShape::Path(_) => {
                 // Path clipping not supported in GPU - fall back to no clip
                 (
@@ -1062,7 +1109,28 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         // Note: This only works correctly for translate + uniform scale transforms.
         // Rotation transforms are approximated (the bounding box is used).
         let transformed_shape = self.transform_clip_shape(shape);
-        self.clip_stack.push(transformed_shape);
+        // For polygon clips, pack vertices into aux_data and store metadata
+        let poly_meta = if let ClipShape::Polygon(ref pts) = transformed_shape {
+            let aux_offset = self.batch.aux_data.len() as u32;
+            let vertex_count = pts.len() as u32;
+            // Pack vertices as vec4s: (x0, y0, x1, y1) — 2 vertices per vec4
+            let mut i = 0;
+            while i < pts.len() {
+                let x0 = pts[i].x;
+                let y0 = pts[i].y;
+                let (x1, y1) = if i + 1 < pts.len() {
+                    (pts[i + 1].x, pts[i + 1].y)
+                } else {
+                    (0.0, 0.0) // padding
+                };
+                self.batch.aux_data.push([x0, y0, x1, y1]);
+                i += 2;
+            }
+            Some((aux_offset, vertex_count))
+        } else {
+            None
+        };
+        self.clip_stack.push((transformed_shape, poly_meta));
     }
 
     fn pop_clip(&mut self) {
@@ -1306,8 +1374,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                         );
                     }
                 }
-                ClipType::Circle | ClipType::Ellipse => {
-                    // For circle/ellipse clips, use as rect for now
+                ClipType::Circle | ClipType::Ellipse | ClipType::Polygon => {
+                    // For circle/ellipse/polygon clips, use bounding rect for now
                     // Full support would require shader changes
                     glass = glass.with_clip_rect(
                         clip_bounds[0] - clip_bounds[2],
@@ -1379,7 +1447,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                         );
                     }
                 }
-                ClipType::Circle | ClipType::Ellipse => {
+                ClipType::Circle | ClipType::Ellipse | ClipType::Polygon => {
                     glass = glass.with_clip_rect(
                         clip_bounds[0] - clip_bounds[2],
                         clip_bounds[1] - clip_bounds[3],
@@ -1404,6 +1472,33 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             gradient_params
         };
 
+        // Pack group shape descriptors into aux_data if this is a 3D group
+        let mut border = [0.0_f32; 4];
+        if !self.current_3d_group_shapes.is_empty() {
+            let aux_offset = self.batch.aux_data.len() as f32;
+            let shape_count = self.current_3d_group_shapes.len() as f32;
+
+            // Find max depth across all child shapes for AABB
+            let mut max_depth: f32 = 1.0;
+            for shape in &self.current_3d_group_shapes {
+                max_depth = max_depth.max(shape.params[1]); // params[1] = depth
+            }
+
+            // Push each ShapeDesc as 4 vec4s into aux_data
+            for shape in &self.current_3d_group_shapes {
+                self.batch.aux_data.push(shape.offset);
+                self.batch.aux_data.push(shape.params);
+                self.batch.aux_data.push(shape.half_ext);
+                self.batch.aux_data.push(shape.color);
+            }
+
+            // border[0] = normal border width (unused for 3D groups)
+            // border[1] = group shape count
+            // border[2] = aux_data offset (in vec4 units)
+            // border[3] = max depth for group AABB
+            border = [0.0, shape_count, aux_offset, max_depth];
+        }
+
         let primitive = GpuPrimitive {
             bounds: [
                 transformed.x(),
@@ -1419,7 +1514,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
             color,
             color2,
-            border: [0.0; 4],
+            border,
             border_color: [0.0; 4],
             shadow: [0.0; 4],
             shadow_color: [0.0; 4],
