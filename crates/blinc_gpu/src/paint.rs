@@ -587,10 +587,8 @@ impl<'a> GpuPaintContext<'a> {
             }
             ClipShape::Polygon(pts) => {
                 // Transform each polygon vertex
-                let transformed: Vec<Point> = pts
-                    .iter()
-                    .map(|p| self.transform_point(*p))
-                    .collect();
+                let transformed: Vec<Point> =
+                    pts.iter().map(|p| self.transform_point(*p)).collect();
                 ClipShape::Polygon(transformed)
             }
         }

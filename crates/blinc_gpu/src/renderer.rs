@@ -3405,42 +3405,40 @@ impl GpuRenderer {
 
     /// Recreate the SDF bind group (needed when aux_data buffer is resized)
     fn rebind_sdf_bind_group(&mut self) {
-        self.bind_groups.sdf =
-            self.device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("SDF Bind Group (rebound)"),
-                    layout: &self.bind_group_layouts.sdf,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: self.buffers.uniforms.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: self.buffers.primitives.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(
-                                &self.placeholder_glyph_atlas_view,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::TextureView(
-                                &self.placeholder_color_glyph_atlas_view,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: self.buffers.aux_data.as_entire_binding(),
-                        },
-                    ],
-                });
+        self.bind_groups.sdf = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("SDF Bind Group (rebound)"),
+            layout: &self.bind_group_layouts.sdf,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.buffers.uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buffers.primitives.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self.placeholder_glyph_atlas_view,
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self.placeholder_color_glyph_atlas_view,
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.buffers.aux_data.as_entire_binding(),
+                },
+            ],
+        });
     }
 
     /// Update path vertex and index buffers

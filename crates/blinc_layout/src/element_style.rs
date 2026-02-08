@@ -916,10 +916,7 @@ impl ElementStyle {
             op_3d: other.op_3d.clone().or_else(|| self.op_3d.clone()),
             blend_3d: other.blend_3d.or(self.blend_3d),
             // Clip-path
-            clip_path: other
-                .clip_path
-                .clone()
-                .or_else(|| self.clip_path.clone()),
+            clip_path: other.clip_path.clone().or_else(|| self.clip_path.clone()),
             // Layout
             width: other.width.or(self.width),
             height: other.height.or(self.height),

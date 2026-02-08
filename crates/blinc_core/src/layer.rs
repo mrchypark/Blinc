@@ -1501,9 +1501,7 @@ pub enum ClipPath {
         points: Vec<(ClipLength, ClipLength)>,
     },
     /// `path("M 0 0 L ...")` — pre-flattened from SVG path commands to polygon vertices
-    Path {
-        vertices: Vec<(f32, f32)>,
-    },
+    Path { vertices: Vec<(f32, f32)> },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

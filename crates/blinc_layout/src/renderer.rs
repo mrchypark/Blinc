@@ -4443,7 +4443,13 @@ impl RenderTree {
                     Some(ClipShape::rect(rect))
                 }
             }
-            ClipPath::Xywh { x, y, w: cw, h: ch, round } => {
+            ClipPath::Xywh {
+                x,
+                y,
+                w: cw,
+                h: ch,
+                round,
+            } => {
                 let rx = x.resolve(w);
                 let ry = y.resolve(h);
                 let rw = cw.resolve(w);
@@ -4469,10 +4475,7 @@ impl RenderTree {
                 if vertices.len() < 3 {
                     return None;
                 }
-                let points: Vec<Point> = vertices
-                    .iter()
-                    .map(|(x, y)| Point::new(*x, *y))
-                    .collect();
+                let points: Vec<Point> = vertices.iter().map(|(x, y)| Point::new(*x, *y)).collect();
                 Some(ClipShape::Polygon(points))
             }
         }
@@ -4644,9 +4647,7 @@ impl RenderTree {
                     StylePosition::Static | StylePosition::Relative | StylePosition::Sticky => {
                         taffy::Position::Relative
                     }
-                    StylePosition::Absolute | StylePosition::Fixed => {
-                        taffy::Position::Absolute
-                    }
+                    StylePosition::Absolute | StylePosition::Fixed => taffy::Position::Absolute,
                 };
             }
 
@@ -5624,10 +5625,7 @@ impl RenderTree {
             let has_counter = child_is_fixed
                 && (new_cumulative.0.abs() > 0.001 || new_cumulative.1.abs() > 0.001);
             if has_counter {
-                ctx.push_transform(Transform::translate(
-                    -new_cumulative.0,
-                    -new_cumulative.1,
-                ));
+                ctx.push_transform(Transform::translate(-new_cumulative.0, -new_cumulative.1));
             }
 
             // Sticky: compute corrective offset when element would scroll past threshold
@@ -5737,14 +5735,38 @@ impl RenderTree {
         if let Some(root) = self.root {
             // Pass 1: Background (excludes children of glass elements)
             ctx.set_foreground_layer(false);
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Background, false, false, (0.0, 0.0));
+            self.render_layer(
+                ctx,
+                root,
+                (0.0, 0.0),
+                RenderLayer::Background,
+                false,
+                false,
+                (0.0, 0.0),
+            );
 
             // Pass 2: Glass - these render as Brush::Glass which becomes glass primitives
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Glass, false, false, (0.0, 0.0));
+            self.render_layer(
+                ctx,
+                root,
+                (0.0, 0.0),
+                RenderLayer::Glass,
+                false,
+                false,
+                (0.0, 0.0),
+            );
 
             // Pass 3: Foreground (includes children of glass elements, rendered after glass)
             ctx.set_foreground_layer(true);
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Foreground, false, false, (0.0, 0.0));
+            self.render_layer(
+                ctx,
+                root,
+                (0.0, 0.0),
+                RenderLayer::Foreground,
+                false,
+                false,
+                (0.0, 0.0),
+            );
             ctx.set_foreground_layer(false);
         }
     }
@@ -6163,8 +6185,21 @@ impl RenderTree {
 
                                 // Pack as [offset(4), params(4), half_ext(4), color(4)]
                                 raw_descs.push([
-                                    ox, oy, oz, cr, child_shape, child_depth, op_type, blend,
-                                    half_w, half_h, half_d, 0.0, color[0], color[1], color[2],
+                                    ox,
+                                    oy,
+                                    oz,
+                                    cr,
+                                    child_shape,
+                                    child_depth,
+                                    op_type,
+                                    blend,
+                                    half_w,
+                                    half_h,
+                                    half_d,
+                                    0.0,
+                                    color[0],
+                                    color[1],
+                                    color[2],
                                     color[3],
                                 ]);
                             }
@@ -6208,11 +6243,7 @@ impl RenderTree {
                 } else if is_3d_group {
                     // 3D group elements need a primitive even without a background —
                     // the shader renders the compound SDF from child shape descriptors.
-                    ctx.fill_rect(
-                        rect,
-                        radius,
-                        Brush::Solid(Color::TRANSPARENT),
-                    );
+                    ctx.fill_rect(rect, radius, Brush::Solid(Color::TRANSPARENT));
                 }
             }
 
@@ -6428,17 +6459,12 @@ impl RenderTree {
             }
 
             let child_render = self.render_nodes.get(&child_id);
-            let child_is_fixed = child_render
-                .map(|n| n.props.is_fixed)
-                .unwrap_or(false);
-            let child_is_sticky = child_render
-                .map(|n| n.props.is_sticky)
-                .unwrap_or(false);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
 
             // Fixed: push counter-scroll to cancel ALL accumulated scroll
             let has_fixed_counter = child_is_fixed
-                && (new_cumulative_scroll.0.abs() > 0.001
-                    || new_cumulative_scroll.1.abs() > 0.001);
+                && (new_cumulative_scroll.0.abs() > 0.001 || new_cumulative_scroll.1.abs() > 0.001);
             if has_fixed_counter {
                 ctx.push_transform(Transform::translate(
                     -new_cumulative_scroll.0,
@@ -6655,7 +6681,15 @@ impl RenderTree {
                 ctx.push_transform(Transform::scale(self.scale_factor, self.scale_factor));
             }
 
-            self.render_layer(ctx, root, (0.0, 0.0), target_layer, false, false, (0.0, 0.0));
+            self.render_layer(
+                ctx,
+                root,
+                (0.0, 0.0),
+                target_layer,
+                false,
+                false,
+                (0.0, 0.0),
+            );
 
             // Pop the DPI scale transform
             if has_scale {
@@ -6956,10 +6990,7 @@ impl RenderTree {
             let has_counter = child_is_fixed
                 && (new_cumulative.0.abs() > 0.001 || new_cumulative.1.abs() > 0.001);
             if has_counter {
-                ctx.push_transform(Transform::translate(
-                    -new_cumulative.0,
-                    -new_cumulative.1,
-                ));
+                ctx.push_transform(Transform::translate(-new_cumulative.0, -new_cumulative.1));
             }
 
             // Sticky: compute corrective offset when element would scroll past threshold
@@ -7378,17 +7409,12 @@ impl RenderTree {
         // Traverse children
         for child_id in self.layout_tree.children(node) {
             let child_render = self.render_nodes.get(&child_id);
-            let child_is_fixed = child_render
-                .map(|n| n.props.is_fixed)
-                .unwrap_or(false);
-            let child_is_sticky = child_render
-                .map(|n| n.props.is_sticky)
-                .unwrap_or(false);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
 
             // Fixed: push counter-scroll to cancel ALL accumulated scroll
             let has_fixed_counter = child_is_fixed
-                && (new_cumulative_scroll.0.abs() > 0.001
-                    || new_cumulative_scroll.1.abs() > 0.001);
+                && (new_cumulative_scroll.0.abs() > 0.001 || new_cumulative_scroll.1.abs() > 0.001);
             if has_fixed_counter {
                 ctx.push_transform(Transform::translate(
                     -new_cumulative_scroll.0,

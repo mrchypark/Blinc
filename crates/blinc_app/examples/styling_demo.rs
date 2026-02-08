@@ -1797,8 +1797,7 @@ fn css_position_section() -> impl ElementBuilder {
                                             .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
                                             .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
                                             .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0)),
-                                        )
-                                        
+                                        ),
                                 ),
                         ),
                 ),

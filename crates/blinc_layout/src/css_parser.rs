@@ -4005,17 +4005,9 @@ fn parse_position_value(input: &str) -> Option<f32> {
 fn parse_clip_length(s: &str) -> Option<ClipLength> {
     let s = s.trim();
     if let Some(stripped) = s.strip_suffix('%') {
-        stripped
-            .trim()
-            .parse::<f32>()
-            .ok()
-            .map(ClipLength::Percent)
+        stripped.trim().parse::<f32>().ok().map(ClipLength::Percent)
     } else if let Some(stripped) = s.strip_suffix("px") {
-        stripped
-            .trim()
-            .parse::<f32>()
-            .ok()
-            .map(ClipLength::Px)
+        stripped.trim().parse::<f32>().ok().map(ClipLength::Px)
     } else {
         // Bare number → pixels
         s.parse::<f32>().ok().map(ClipLength::Px)
