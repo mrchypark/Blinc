@@ -1,3 +1,4 @@
+#![allow(unused, dead_code, deprecated)]
 //! Blinc Application Framework
 //!
 //! Clean API for building Blinc applications with layout and rendering.

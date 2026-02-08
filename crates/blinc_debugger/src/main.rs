@@ -1,3 +1,4 @@
+#![allow(unused, dead_code)]
 //! Blinc Debugger - Visual debugger for UI recordings
 //!
 //! A standalone application for viewing and analyzing recorded UI sessions.

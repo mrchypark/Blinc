@@ -1,3 +1,4 @@
+#![allow(unused, dead_code)]
 //! Blinc Android Platform
 //!
 //! Android platform implementation for Blinc UI framework.

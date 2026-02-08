@@ -1,3 +1,4 @@
+#![allow(unused, dead_code)]
 //! High-quality text rendering for Blinc UI framework
 //!
 //! This crate provides:
