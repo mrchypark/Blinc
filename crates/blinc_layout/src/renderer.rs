@@ -2795,10 +2795,12 @@ impl RenderTree {
         let pending_from_registry = self.element_registry.take_pending_on_ready();
         for (string_id, callback) in pending_from_registry {
             // Only add if not already registered (avoid duplicates)
-            self.on_ready_callbacks.entry(string_id).or_insert(OnReadyEntry {
-                callback,
-                triggered: false,
-            });
+            self.on_ready_callbacks
+                .entry(string_id)
+                .or_insert(OnReadyEntry {
+                    callback,
+                    triggered: false,
+                });
         }
 
         // Collect callbacks that need invocation
@@ -6129,7 +6131,9 @@ impl RenderTree {
                                 let blend = child_node.props.blend_3d.unwrap_or(0.0);
 
                                 // Get child color for per-shape coloring
-                                let color = if let Some(blinc_core::Brush::Solid(c)) = &child_node.props.background {
+                                let color = if let Some(blinc_core::Brush::Solid(c)) =
+                                    &child_node.props.background
+                                {
                                     [c.r, c.g, c.b, c.a]
                                 } else {
                                     [0.8, 0.8, 0.8, 1.0]

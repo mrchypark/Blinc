@@ -152,7 +152,10 @@ impl GlyphAtlas {
 
         for (i, shelf) in self.shelves.iter().enumerate() {
             // Check if glyph fits in this shelf
-            if shelf.height >= padded_height && shelf.x + padded_width <= self.width && shelf.y < best_y {
+            if shelf.height >= padded_height
+                && shelf.x + padded_width <= self.width
+                && shelf.y < best_y
+            {
                 best_y = shelf.y;
                 best_shelf = Some(i);
             }
@@ -357,7 +360,10 @@ impl ColorGlyphAtlas {
         let mut best_y = u32::MAX;
 
         for (i, shelf) in self.shelves.iter().enumerate() {
-            if shelf.height >= padded_height && shelf.x + padded_width <= self.width && shelf.y < best_y {
+            if shelf.height >= padded_height
+                && shelf.x + padded_width <= self.width
+                && shelf.y < best_y
+            {
                 best_y = shelf.y;
                 best_shelf = Some(i);
             }

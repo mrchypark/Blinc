@@ -109,9 +109,7 @@ impl ScreenshotExporter {
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
 
-        let mut writer = encoder
-            .write_header()
-            .map_err(std::io::Error::other)?;
+        let mut writer = encoder.write_header().map_err(std::io::Error::other)?;
 
         writer
             .write_image_data(&frame.data)

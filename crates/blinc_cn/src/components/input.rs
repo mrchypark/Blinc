@@ -67,7 +67,6 @@ pub struct InputBorderColors {
     pub error: Option<Color>,
 }
 
-
 /// Background color configuration for different input states
 #[derive(Clone, Debug, Default)]
 pub struct InputBgColors {

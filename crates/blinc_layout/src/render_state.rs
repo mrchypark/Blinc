@@ -786,9 +786,7 @@ impl RenderState {
 
     /// Get or create render state for a node
     pub fn get_or_create(&mut self, node_id: LayoutNodeId) -> &mut NodeRenderState {
-        self.node_states
-            .entry(node_id)
-            .or_default()
+        self.node_states.entry(node_id).or_default()
     }
 
     /// Get render state for a node (if exists)
@@ -819,10 +817,7 @@ impl RenderState {
     pub fn animate_opacity(&mut self, node_id: LayoutNodeId, target: f32, config: SpringConfig) {
         // Get current values first
         let (current, old_spring) = {
-            let state = self
-                .node_states
-                .entry(node_id)
-                .or_default();
+            let state = self.node_states.entry(node_id).or_default();
             (state.opacity, state.opacity_spring.take())
         };
 
@@ -851,10 +846,7 @@ impl RenderState {
     ) {
         // Get current values first
         let (current, old_springs) = {
-            let state = self
-                .node_states
-                .entry(node_id)
-                .or_default();
+            let state = self.node_states.entry(node_id).or_default();
             let current = state.background_color.unwrap_or(Color::TRANSPARENT);
             (current, state.bg_color_springs.take())
         };
@@ -904,10 +896,7 @@ impl RenderState {
     pub fn set_background(&mut self, node_id: LayoutNodeId, color: Color) {
         // Get old springs first
         let old_springs = {
-            let state = self
-                .node_states
-                .entry(node_id)
-                .or_default();
+            let state = self.node_states.entry(node_id).or_default();
             state.bg_color_springs.take()
         };
 
@@ -929,10 +918,7 @@ impl RenderState {
     pub fn set_opacity(&mut self, node_id: LayoutNodeId, opacity: f32) {
         // Get old spring first
         let old_spring = {
-            let state = self
-                .node_states
-                .entry(node_id)
-                .or_default();
+            let state = self.node_states.entry(node_id).or_default();
             state.opacity_spring.take()
         };
 

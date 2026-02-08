@@ -1354,11 +1354,7 @@ impl HistogramBuilder {
                     .absolute()
                     .left(padding)
                     .top(self.height - padding - axis_height + 2.0)
-                    .child(
-                        text(format!("{:.1}", data_min))
-                            .size(9.0)
-                            .color(text_color),
-                    ),
+                    .child(text(format!("{:.1}", data_min)).size(9.0).color(text_color)),
             );
             // Max value
             container = container.child(
@@ -1366,11 +1362,7 @@ impl HistogramBuilder {
                     .absolute()
                     .right(padding)
                     .top(self.height - padding - axis_height + 2.0)
-                    .child(
-                        text(format!("{:.1}", data_max))
-                            .size(9.0)
-                            .color(text_color),
-                    ),
+                    .child(text(format!("{:.1}", data_max)).size(9.0).color(text_color)),
             );
         }
 

@@ -170,7 +170,6 @@ struct AvatarConfig {
     fallback_color: Option<Color>,
 }
 
-
 /// Built avatar component
 struct BuiltAvatar {
     inner: Box<dyn ElementBuilder>,

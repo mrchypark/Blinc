@@ -1598,7 +1598,6 @@ pub enum ParticleEmitterShape {
     Circle { radius: f32 },
 }
 
-
 /// Force affector for GPU particles
 #[derive(Clone, Debug, PartialEq)]
 pub enum ParticleForce {

@@ -4864,10 +4864,22 @@ mod tests {
 
     #[test]
     fn test_element_state_from_str() {
-        assert_eq!(ElementState::parse_state("hover"), Some(ElementState::Hover));
-        assert_eq!(ElementState::parse_state("HOVER"), Some(ElementState::Hover));
-        assert_eq!(ElementState::parse_state("active"), Some(ElementState::Active));
-        assert_eq!(ElementState::parse_state("focus"), Some(ElementState::Focus));
+        assert_eq!(
+            ElementState::parse_state("hover"),
+            Some(ElementState::Hover)
+        );
+        assert_eq!(
+            ElementState::parse_state("HOVER"),
+            Some(ElementState::Hover)
+        );
+        assert_eq!(
+            ElementState::parse_state("active"),
+            Some(ElementState::Active)
+        );
+        assert_eq!(
+            ElementState::parse_state("focus"),
+            Some(ElementState::Focus)
+        );
         assert_eq!(
             ElementState::parse_state("disabled"),
             Some(ElementState::Disabled)

@@ -286,8 +286,7 @@ impl ResizableGroup {
         // Create drag state
         let drag_index = ctx.use_state_keyed(&format!("{}_drag_idx", key), || -1i32);
         let drag_start_pos = ctx.use_state_keyed(&format!("{}_drag_start", key), || 0.0f32);
-        let drag_start_sizes =
-            ctx.use_state_keyed(&format!("{}_drag_sizes", key), Vec::<f32>::new);
+        let drag_start_sizes = ctx.use_state_keyed(&format!("{}_drag_sizes", key), Vec::<f32>::new);
 
         // Build container
         let mut container = div().w_full().h_full();

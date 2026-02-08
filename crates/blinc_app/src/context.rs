@@ -1847,8 +1847,15 @@ impl RenderContext {
 
                     // Build segments between boundaries
                     #[allow(clippy::type_complexity)]
-                    let mut segments: Vec<(usize, usize, [f32; 4], bool, bool, bool, bool)> =
-                        Vec::new();
+                    let mut segments: Vec<(
+                        usize,
+                        usize,
+                        [f32; 4],
+                        bool,
+                        bool,
+                        bool,
+                        bool,
+                    )> = Vec::new();
 
                     for window in boundaries.windows(2) {
                         let seg_start = window[0];

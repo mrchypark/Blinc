@@ -132,7 +132,6 @@ pub enum BreadcrumbSeparator {
     Svg(String),
 }
 
-
 /// Breadcrumb component
 pub struct Breadcrumb {
     inner: Div,

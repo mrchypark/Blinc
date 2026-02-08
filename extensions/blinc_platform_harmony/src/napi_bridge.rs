@@ -53,7 +53,6 @@ pub struct XComponentCallbacks {
     pub dispatch_touch_event: Option<extern "C" fn(component: *mut c_void, window: *mut c_void)>,
 }
 
-
 /// N-API module initialization
 ///
 /// This is called by the HarmonyOS runtime when loading the native module.
