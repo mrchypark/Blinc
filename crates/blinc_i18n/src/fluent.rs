@@ -43,8 +43,7 @@ impl FluentStore {
     }
 
     pub fn format_message(&self, locale: &str, msg: &Message) -> Option<String> {
-        let loc = normalize_locale(locale);
-        let bundle = self.bundles.get(&loc)?;
+        let bundle = self.bundles.get(locale)?;
         let pattern = bundle.get_message(&msg.id)?.value()?;
 
         let mut args = FluentArgs::new();
@@ -72,7 +71,7 @@ impl FluentStore {
             .to_string();
         if !errs.is_empty() {
             tracing::warn!(
-                locale = %loc,
+                locale = %locale,
                 message_id = %msg.id,
                 errors = ?errs,
                 "Fluent formatting errors"

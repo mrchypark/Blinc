@@ -246,24 +246,19 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
             continue;
         }
 
-        if let Some(map) = args_map.as_ref() {
-            if let Some(v) = map.get(key) {
-                out.push_str(&arg_to_string(v));
-            } else {
-                // Keep unknown placeholders visible.
-                out.push('{');
-                out.push_str(key);
-                out.push('}');
-            }
+        let value = if let Some(map) = args_map.as_ref() {
+            map.get(key).copied()
         } else {
-            if let Some((_, v)) = args.iter().find(|(k, _)| *k == key) {
-                out.push_str(&arg_to_string(v));
-            } else {
-                // Keep unknown placeholders visible.
-                out.push('{');
-                out.push_str(key);
-                out.push('}');
-            }
+            args.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+        };
+
+        if let Some(v) = value {
+            out.push_str(&arg_to_string(v));
+        } else {
+            // Keep unknown placeholders visible.
+            out.push('{');
+            out.push_str(key);
+            out.push('}');
         }
     }
 
