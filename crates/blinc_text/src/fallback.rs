@@ -118,7 +118,10 @@ pub fn walk_layout_with_fallback<H: FallbackWalkHandler>(
                         let primary_advance = if i + 1 < line.glyphs.len() {
                             (line.glyphs[i + 1].x - positioned.x).max(0.0)
                         } else {
-                            fallback_advance
+                            // For the last glyph, infer the primary advance from the line width.
+                            // This preserves width correction when the last glyph is rendered via
+                            // fallback and the fallback advance differs from the primary font.
+                            (line.width - positioned.x).max(0.0)
                         };
                         width_corrector.apply_advance(primary_advance, fallback_advance);
                         handled = true;
