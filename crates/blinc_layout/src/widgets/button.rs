@@ -546,7 +546,6 @@ impl ElementBuilder for Button {
                     if let Some(ref callback) = custom_callback {
                         callback(*state, &mut update);
                     } else if let Some(ref label) = cfg.label {
-                        tracing::debug!("Button adding label child: {:?}", label);
                         update = update.child(
                             text(label.clone())
                                 .size(cfg.text_size)

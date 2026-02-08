@@ -5,6 +5,11 @@ use thiserror::Error;
 use crate::label::ArgValue;
 use crate::label::Message;
 
+const MAX_CATALOG_ENTRIES: usize = 10_000;
+const MAX_KEY_BYTES: usize = 128;
+const MAX_VALUE_BYTES: usize = 16 * 1024;
+const MAX_EXPANDED_BYTES: usize = 64 * 1024;
+
 fn is_valid_key(key: &str) -> bool {
     let mut it = key.chars();
     match it.next() {
@@ -42,6 +47,11 @@ fn looks_like_yaml_mapping(src: &str) -> bool {
 fn try_parse_yaml_map(src: &str) -> Result<Option<HashMap<String, String>>, SimpleParseError> {
     match serde_yaml::from_str::<serde_yaml::Value>(src) {
         Ok(serde_yaml::Value::Mapping(raw)) => {
+            if raw.len() > MAX_CATALOG_ENTRIES {
+                return Err(SimpleParseError::Yaml(format!(
+                    "too many entries (max {MAX_CATALOG_ENTRIES})"
+                )));
+            }
             let mut out = HashMap::with_capacity(raw.len());
             for (k, v) in raw {
                 let Some(key) = k.as_str() else {
@@ -54,11 +64,21 @@ fn try_parse_yaml_map(src: &str) -> Result<Option<HashMap<String, String>>, Simp
                         "invalid key `{key}` (allowed: [A-Za-z0-9][A-Za-z0-9_.-]*)"
                     )));
                 }
+                if key.len() > MAX_KEY_BYTES {
+                    return Err(SimpleParseError::Yaml(format!(
+                        "key `{key}` is too long (max {MAX_KEY_BYTES} bytes)"
+                    )));
+                }
                 let Some(val) = v.as_str() else {
                     return Err(SimpleParseError::Yaml(format!(
                         "yaml value for key `{key}` must be a string"
                     )));
                 };
+                if val.len() > MAX_VALUE_BYTES {
+                    return Err(SimpleParseError::Yaml(format!(
+                        "value for key `{key}` is too long (max {MAX_VALUE_BYTES} bytes)"
+                    )));
+                }
                 out.insert(key.to_string(), val.to_string());
             }
             Ok(Some(out))
@@ -140,6 +160,12 @@ impl SimpleCatalog {
                     msg: format!("invalid key `{key}` (allowed: [A-Za-z0-9][A-Za-z0-9_.-]*)"),
                 });
             }
+            if key.len() > MAX_KEY_BYTES {
+                return Err(SimpleParseError::Syntax {
+                    line: line_no,
+                    msg: format!("key `{key}` is too long (max {MAX_KEY_BYTES} bytes)"),
+                });
+            }
 
             // Strip inline comments (only if preceded by whitespace).
             if let Some(pos) = value.find(" #") {
@@ -155,6 +181,19 @@ impl SimpleCatalog {
                 line: line_no,
                 msg: e,
             })?;
+
+            if value.len() > MAX_VALUE_BYTES {
+                return Err(SimpleParseError::Syntax {
+                    line: line_no,
+                    msg: format!("value for key `{key}` is too long (max {MAX_VALUE_BYTES} bytes)"),
+                });
+            }
+            if cat.entries.len() >= MAX_CATALOG_ENTRIES && !cat.entries.contains_key(key) {
+                return Err(SimpleParseError::Syntax {
+                    line: line_no,
+                    msg: format!("too many entries (max {MAX_CATALOG_ENTRIES})"),
+                });
+            }
 
             cat.insert(key, value);
         }
@@ -220,25 +259,15 @@ fn unescape(s: &str) -> Result<String, String> {
     Ok(out)
 }
 
-fn arg_to_string(v: &ArgValue) -> String {
-    match v {
-        ArgValue::Str(s) => s.clone(),
-        ArgValue::Int(i) => i.to_string(),
-        ArgValue::Float(f) => {
-            // Keep it simple; formatting control is a future concern.
-            let mut s = f.to_string();
-            if s.contains('.') {
-                while s.ends_with('0') {
-                    s.pop();
-                }
-                if s.ends_with('.') {
-                    s.pop();
-                }
-            }
-            s
-        }
-        ArgValue::Bool(b) => b.to_string(),
+fn take_prefix_by_bytes(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
     }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
@@ -247,6 +276,23 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
     }
 
     const LINEAR_SEARCH_THRESHOLD: usize = 8;
+
+    fn push_char_limited(out: &mut String, c: char) -> bool {
+        if out.len() + c.len_utf8() > MAX_EXPANDED_BYTES {
+            return true;
+        }
+        out.push(c);
+        out.len() >= MAX_EXPANDED_BYTES
+    }
+
+    fn push_str_limited(out: &mut String, s: &str) -> bool {
+        if out.len() >= MAX_EXPANDED_BYTES {
+            return true;
+        }
+        let remaining = MAX_EXPANDED_BYTES - out.len();
+        out.push_str(take_prefix_by_bytes(s, remaining));
+        out.len() >= MAX_EXPANDED_BYTES
+    }
 
     // `args` is usually tiny; avoid allocating a HashMap for small argument sets.
     let args_map = if args.len() > LINEAR_SEARCH_THRESHOLD {
@@ -260,7 +306,7 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
     };
 
     // Very small placeholder engine: replaces `{name}` tokens.
-    let mut out = String::with_capacity(tmpl.len() + 8);
+    let mut out = String::with_capacity(std::cmp::min(tmpl.len() + 8, MAX_EXPANDED_BYTES));
     let mut chars = tmpl.chars().peekable();
 
     while let Some(c) = chars.next() {
@@ -268,20 +314,28 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
         if c == '}' {
             if chars.peek() == Some(&'}') {
                 chars.next();
-                out.push('}');
+                if push_char_limited(&mut out, '}') {
+                    break;
+                }
                 continue;
             }
-            out.push('}');
+            if push_char_limited(&mut out, '}') {
+                break;
+            }
             continue;
         }
         if c != '{' {
-            out.push(c);
+            if push_char_limited(&mut out, c) {
+                break;
+            }
             continue;
         }
 
         if chars.peek() == Some(&'{') {
             chars.next();
-            out.push('{');
+            if push_char_limited(&mut out, '{') {
+                break;
+            }
             continue;
         }
 
@@ -299,14 +353,18 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
 
         // If there's no closing brace, treat the rest as literal text.
         if !closed {
-            out.push('{');
-            out.push_str(&key);
+            if push_char_limited(&mut out, '{') {
+                break;
+            }
+            push_str_limited(&mut out, &key);
             break;
         }
 
         let key = key.trim();
         if key.is_empty() {
-            out.push_str("{}");
+            if push_str_limited(&mut out, "{}") {
+                break;
+            }
             continue;
         }
 
@@ -317,12 +375,51 @@ fn apply_placeholders(tmpl: &str, args: &[(&str, &ArgValue)]) -> String {
         };
 
         if let Some(v) = value {
-            out.push_str(&arg_to_string(v));
+            match v {
+                ArgValue::Str(s) => {
+                    if push_str_limited(&mut out, s) {
+                        break;
+                    }
+                }
+                ArgValue::Int(i) => {
+                    let s = i.to_string();
+                    if push_str_limited(&mut out, &s) {
+                        break;
+                    }
+                }
+                ArgValue::Float(f) => {
+                    // Keep it simple; formatting control is a future concern.
+                    let mut s = f.to_string();
+                    if s.contains('.') {
+                        while s.ends_with('0') {
+                            s.pop();
+                        }
+                        if s.ends_with('.') {
+                            s.pop();
+                        }
+                    }
+                    if push_str_limited(&mut out, &s) {
+                        break;
+                    }
+                }
+                ArgValue::Bool(b) => {
+                    let s = b.to_string();
+                    if push_str_limited(&mut out, &s) {
+                        break;
+                    }
+                }
+            }
         } else {
             // Keep unknown placeholders visible.
-            out.push('{');
-            out.push_str(key);
-            out.push('}');
+            if push_char_limited(&mut out, '{') {
+                break;
+            }
+            if push_str_limited(&mut out, key) {
+                break;
+            }
+            if push_char_limited(&mut out, '}') {
+                break;
+            }
         }
     }
 
@@ -412,5 +509,13 @@ bad key = nope
 "#;
         let err = SimpleCatalog::parse(src).unwrap_err();
         assert!(matches!(err, SimpleParseError::Syntax { .. }));
+    }
+
+    #[test]
+    fn placeholder_output_is_limited() {
+        let big = ArgValue::from("a".repeat(MAX_EXPANDED_BYTES * 2));
+        let args = &[("name", &big)];
+        let s = apply_placeholders("{name}{name}{name}", args);
+        assert!(s.len() <= MAX_EXPANDED_BYTES);
     }
 }

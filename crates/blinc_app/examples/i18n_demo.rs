@@ -95,18 +95,16 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             let i18n = I18nState::get();
                             let available_locales = ["en-US", "ko-KR"];
                             let current = i18n.locale();
-                            let next = match available_locales
-                                .iter()
-                                .position(|&l| l == current.as_str())
-                            {
-                                Some(current_index) => {
-                                    available_locales[(current_index + 1) % available_locales.len()]
-                                }
-                                None => {
-                                    // Demo only supports these locales; if the system locale isn't in
-                                    // the list, start from the first one instead of panicking.
-                                    available_locales[0]
-                                }
+                            let next = if available_locales.is_empty() {
+                                // Demo fallback.
+                                "en-US"
+                            } else {
+                                let current_pos = available_locales
+                                    .iter()
+                                    .position(|&l| l == current.as_str());
+                                let next_index =
+                                    current_pos.map_or(0, |i| (i + 1) % available_locales.len());
+                                available_locales[next_index]
                             };
                             i18n.set_locale(next);
                         })
