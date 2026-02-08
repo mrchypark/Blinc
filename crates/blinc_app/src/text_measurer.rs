@@ -5,54 +5,11 @@
 
 use blinc_layout::text_measure::{TextLayoutOptions, TextMeasurer, TextMetrics};
 use blinc_layout::GenericFont as LayoutGenericFont;
-use blinc_text::{FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine};
+use blinc_text::{
+    fallback_bucket_key, FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-
-fn fallback_bucket_key(c: char) -> u32 {
-    let cp = c as u32;
-
-    // Hangul (Korean)
-    if (0x1100..=0x11FF).contains(&cp)
-        || (0x3130..=0x318F).contains(&cp)
-        || (0xA960..=0xA97F).contains(&cp)
-        || (0xAC00..=0xD7A3).contains(&cp)
-        || (0xD7B0..=0xD7FF).contains(&cp)
-    {
-        return 0x11_0000;
-    }
-
-    // Hiragana/Katakana (Japanese)
-    if (0x3040..=0x309F).contains(&cp)
-        || (0x30A0..=0x30FF).contains(&cp)
-        || (0x31F0..=0x31FF).contains(&cp)
-        || (0xFF66..=0xFF9D).contains(&cp)
-    {
-        return 0x11_0001;
-    }
-
-    // Han ideographs (CJK)
-    if (0x3400..=0x4DBF).contains(&cp) || (0x4E00..=0x9FFF).contains(&cp) {
-        return 0x11_0002;
-    }
-
-    // Arabic
-    if (0x0600..=0x06FF).contains(&cp)
-        || (0x0750..=0x077F).contains(&cp)
-        || (0x08A0..=0x08FF).contains(&cp)
-        || (0xFB50..=0xFDFF).contains(&cp)
-        || (0xFE70..=0xFEFF).contains(&cp)
-    {
-        return 0x11_0003;
-    }
-
-    // Devanagari
-    if (0x0900..=0x097F).contains(&cp) || (0xA8E0..=0xA8FF).contains(&cp) {
-        return 0x11_0004;
-    }
-
-    cp
-}
 
 /// Convert from layout's GenericFont to text's GenericFont
 fn to_text_generic_font(layout_font: LayoutGenericFont) -> GenericFont {
