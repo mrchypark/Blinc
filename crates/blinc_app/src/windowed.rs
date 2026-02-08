@@ -1449,14 +1449,9 @@ impl WindowedApp {
         }
 
         fn detect_locale_from_env() -> Option<String> {
-            for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-                if let Ok(v) = std::env::var(key) {
-                    if let Some(loc) = parse_env_locale(&v) {
-                        return Some(loc);
-                    }
-                }
-            }
-            None
+            ["LC_ALL", "LC_MESSAGES", "LANG"]
+                .iter()
+                .find_map(|key| std::env::var(key).ok().and_then(|v| parse_env_locale(&v)))
         }
 
         // Only initialize if not already initialized
