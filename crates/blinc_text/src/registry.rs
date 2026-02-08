@@ -13,9 +13,17 @@
 use crate::font::{FontData, FontFace};
 use crate::{Result, TextError};
 use fontdb::{Database, Family, Query, Source, Stretch, Style, Weight};
+use lru::LruCache;
 use rustc_hash::FxHashMap;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
+
+/// Capacity for per-codepoint fallback caching.
+///
+/// This prevents pathological "bucket cache thrash" (e.g., alternating characters that require
+/// different fallback fonts within the same script bucket) from repeatedly re-scanning fontdb.
+const FALLBACK_CODEPOINT_CACHE_CAPACITY: usize = 2048;
 
 /// Generic font category for fallback
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -122,10 +130,14 @@ pub struct FontRegistry {
     faces: FxHashMap<String, Option<Arc<FontFace>>>,
     /// Cache loaded faces by fontdb ID (avoids re-parsing the same face repeatedly)
     faces_by_id: FxHashMap<fontdb::ID, Arc<FontFace>>,
-    /// Codepoint -> best fallback face id cache (None = no supporting face found)
+    /// Script-bucket -> best fallback face id cache (None = no supporting face found)
     ///
     /// Key includes requested weight/italic so style-sensitive lookups can be cached.
     fallback_char_cache: FxHashMap<(u32, u16, bool), Option<fontdb::ID>>,
+    /// Codepoint -> best fallback face id cache (None = no supporting face found).
+    ///
+    /// This is an LRU to keep memory bounded while preventing bucket-cache thrash.
+    fallback_codepoint_cache: LruCache<(u32, u16, bool), Option<fontdb::ID>>,
     /// Whether full system font scan has been performed
     system_fonts_loaded: bool,
 }
@@ -166,6 +178,9 @@ impl FontRegistry {
             faces: FxHashMap::default(),
             faces_by_id: FxHashMap::default(),
             fallback_char_cache: FxHashMap::default(),
+            fallback_codepoint_cache: LruCache::new(
+                NonZeroUsize::new(FALLBACK_CODEPOINT_CACHE_CAPACITY).unwrap(),
+            ),
             system_fonts_loaded: false,
         }
         // Note: We don't preload generic fonts here anymore.
@@ -188,6 +203,7 @@ impl FontRegistry {
             tracing::debug!("Loaded {} font faces from data", loaded);
             // New faces can change fallback resolution; clear caches so we can discover them.
             self.fallback_char_cache.clear();
+            self.fallback_codepoint_cache.clear();
         }
         loaded
     }
@@ -234,6 +250,29 @@ impl FontRegistry {
         // Don't try to fallback for control chars (including '\n'); layout uses these for breaks.
         if c.is_control() {
             return None;
+        }
+
+        // First consult per-codepoint cache to avoid bucket-cache thrash for mixed inputs.
+        let cp_key = (c as u32, weight, italic);
+        if let Some(&cached) = self.fallback_codepoint_cache.get(&cp_key) {
+            match cached {
+                None => return None,
+                Some(id) => {
+                    if let Some(face) = self
+                        .faces_by_id
+                        .get(&id)
+                        .map(Arc::clone)
+                        .or_else(|| self.load_face_by_id_arc(id).ok())
+                    {
+                        if face.has_glyph(c) {
+                            return Some(face);
+                        }
+                    }
+
+                    // Cached face doesn't actually cover this codepoint; invalidate and re-resolve.
+                    self.fallback_codepoint_cache.pop(&cp_key);
+                }
+            }
         }
 
         // Use a script-ish "bucket" key to avoid O(unique-codepoints) font scans for scripts
@@ -341,10 +380,13 @@ impl FontRegistry {
                 let loaded = self.load_face_by_id_arc(id).ok();
                 self.fallback_char_cache
                     .insert(key, loaded.as_ref().map(|_| id));
+                self.fallback_codepoint_cache
+                    .put(cp_key, loaded.as_ref().map(|_| id));
                 loaded
             }
             None => {
                 self.fallback_char_cache.insert(key, None);
+                self.fallback_codepoint_cache.put(cp_key, None);
                 None
             }
         };
