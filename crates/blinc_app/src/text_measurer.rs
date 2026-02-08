@@ -203,13 +203,9 @@ impl TextMeasurer for FontTextMeasurer {
                     continue;
                 }
 
-                // Suppress duplicate emoji glyphs produced by cluster mapping.
+                // Suppress duplicate emoji glyphs produced by HarfBuzz cluster mapping.
                 if i > 0
-                    && glyph.codepoint == line.glyphs[i - 1].codepoint
-                    && blinc_text::is_emoji(glyph.codepoint)
-                    && (glyph.x - line.glyphs[i - 1].x).abs() < 0.01
-                    && (glyph.y - line.glyphs[i - 1].y).abs() < 0.01
-                    && glyph.glyph_id == line.glyphs[i - 1].glyph_id
+                    && blinc_text::emoji::should_skip_duplicate_emoji(&line.glyphs[i - 1], glyph)
                 {
                     continue;
                 }
@@ -227,26 +223,19 @@ impl TextMeasurer for FontTextMeasurer {
                     glyph.codepoint,
                     is_emoji_char,
                 );
-                let fallback_font = candidates.into_iter().find_map(|c| {
-                    let gid = c.face.glyph_id(glyph.codepoint).unwrap_or(0);
+                let fallback = candidates.into_iter().find_map(|c| {
+                    let gid = c.face.glyph_id(glyph.codepoint)?;
                     if gid == 0 {
                         None
                     } else {
-                        Some(c.face)
+                        Some((c.face, gid))
                     }
                 });
-                let Some(fallback_font) = fallback_font else {
+                let Some((fallback_font, fallback_gid)) = fallback else {
                     continue;
                 };
 
                 // Compute fallback advance in pixels (include letter spacing to match layout)
-                let Some(fallback_gid) = fallback_font.glyph_id(glyph.codepoint) else {
-                    continue;
-                };
-                if fallback_gid == 0 {
-                    continue;
-                }
-
                 let adv_units = fallback_font.glyph_advance(fallback_gid).unwrap_or(0) as f32;
                 let scale = font_size / fallback_font.metrics().units_per_em as f32;
                 let fallback_advance = adv_units * scale + layout_opts.letter_spacing;

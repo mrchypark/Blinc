@@ -263,12 +263,7 @@ impl FontRegistry {
             match cached {
                 None => return None,
                 Some(id) => {
-                    if let Some(face) = self
-                        .faces_by_id
-                        .get(&id)
-                        .map(Arc::clone)
-                        .or_else(|| self.load_face_by_id_arc(id).ok())
-                    {
+                    if let Ok(face) = self.load_face_by_id_arc(id) {
                         if face.has_glyph(c) {
                             return Some(face);
                         }
@@ -288,12 +283,7 @@ impl FontRegistry {
             match cached {
                 None => return None,
                 Some(id) => {
-                    if let Some(face) = self
-                        .faces_by_id
-                        .get(&id)
-                        .map(Arc::clone)
-                        .or_else(|| self.load_face_by_id_arc(id).ok())
-                    {
+                    if let Ok(face) = self.load_face_by_id_arc(id) {
                         if face.has_glyph(c) {
                             return Some(face);
                         }

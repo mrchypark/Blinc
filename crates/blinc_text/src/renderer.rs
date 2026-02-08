@@ -7,7 +7,7 @@
 //! have a glyph for an emoji character, the system emoji font is used.
 
 use crate::atlas::{ColorGlyphAtlas, GlyphAtlas, GlyphInfo};
-use crate::emoji::{is_emoji, is_variation_selector, is_zwj};
+use crate::emoji::{is_emoji, is_variation_selector, is_zwj, should_skip_duplicate_emoji};
 use crate::font::{FontFace, FontStyle};
 use crate::layout::{LayoutOptions, PositionedGlyph, TextLayout, TextLayoutEngine};
 use crate::rasterizer::GlyphRasterizer;
@@ -103,23 +103,6 @@ impl TextRenderer {
         hasher.finish() as u32
     }
 
-    fn should_skip_duplicate_emoji(prev: &PositionedGlyph, cur: &PositionedGlyph) -> bool {
-        if prev.codepoint != cur.codepoint {
-            return false;
-        }
-        if !is_emoji(cur.codepoint) {
-            return false;
-        }
-
-        // HarfBuzz cluster mapping can cause multiple glyphs within one emoji
-        // sequence to be reported with the same "codepoint" (cluster start).
-        // Only suppress when the glyphs also share the same pen position,
-        // so repeated emoji like "😀😀" still render twice.
-        let same_pos = (cur.x - prev.x).abs() < 0.01 && (cur.y - prev.y).abs() < 0.01;
-        let same_gid = cur.glyph_id == prev.glyph_id;
-        same_pos && same_gid
-    }
-
     fn build_glyph_infos_with_fallback(
         &mut self,
         layout: &TextLayout,
@@ -177,7 +160,7 @@ impl TextRenderer {
                 }
 
                 // Suppress duplicate emoji glyphs produced by cluster mapping.
-                if i > 0 && Self::should_skip_duplicate_emoji(&line.glyphs[i - 1], positioned) {
+                if i > 0 && should_skip_duplicate_emoji(&line.glyphs[i - 1], positioned) {
                     glyph_infos.push(None);
                     continue;
                 }
@@ -679,41 +662,39 @@ impl TextRenderer {
         // Important: glyph index is NOT equivalent to character index for complex scripts,
         // ligatures, or emoji sequences. Use HarfBuzz cluster (byte index) to map back to
         // the originating text span.
-        let positioned_glyphs: Vec<_> = layout.glyphs().cloned().collect();
-        for (positioned, glyph_info) in positioned_glyphs.iter().zip(glyph_infos.iter()) {
-            let glyph_info = match glyph_info {
-                Some(info) => info,
+        for glyph_data in &glyph_infos {
+            let data = match glyph_data {
+                Some(d) => d,
                 None => continue,
             };
 
-            if glyph_info.info.region.width == 0 || glyph_info.info.region.height == 0 {
+            if data.info.region.width == 0 || data.info.region.height == 0 {
                 continue;
             }
 
             // Use HarfBuzz cluster byte index to determine color span.
-            let color = get_color_for_byte_pos(positioned.cluster as usize);
+            let color = get_color_for_byte_pos(data.positioned.cluster as usize);
 
             // positioned.x is the pen position from the shaper
             // bearing_x is the offset from pen position to the glyph's left edge
-            let x = glyph_info.positioned.x + glyph_info.info.bearing_x as f32;
-            let y = glyph_info.positioned.y - glyph_info.info.bearing_y as f32;
-            let w = glyph_info.info.region.width as f32;
-            let h = glyph_info.info.region.height as f32;
+            let x = data.positioned.x + data.info.bearing_x as f32;
+            let y = data.positioned.y - data.info.bearing_y as f32;
+            let w = data.info.region.width as f32;
+            let h = data.info.region.height as f32;
 
-            let uv = if glyph_info.is_color {
-                glyph_info
-                    .info
+            let uv = if data.is_color {
+                data.info
                     .region
                     .uv_bounds(color_atlas_dims.0, color_atlas_dims.1)
             } else {
-                glyph_info.info.region.uv_bounds(atlas_dims.0, atlas_dims.1)
+                data.info.region.uv_bounds(atlas_dims.0, atlas_dims.1)
             };
 
             glyphs.push(GlyphInstance {
                 bounds: [x, y, w, h],
                 uv_bounds: uv,
                 color,
-                is_color: glyph_info.is_color,
+                is_color: data.is_color,
             });
         }
 
