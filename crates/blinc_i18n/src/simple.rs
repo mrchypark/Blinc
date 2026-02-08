@@ -5,6 +5,15 @@ use thiserror::Error;
 use crate::label::ArgValue;
 use crate::label::Message;
 
+fn is_valid_key(key: &str) -> bool {
+    let mut it = key.chars();
+    match it.next() {
+        Some(c) if c.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    it.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+}
+
 fn looks_like_yaml_mapping(src: &str) -> bool {
     for raw in src.lines() {
         let line = raw.trim();
@@ -40,6 +49,11 @@ fn try_parse_yaml_map(src: &str) -> Result<Option<HashMap<String, String>>, Simp
                         "yaml keys must be strings".to_string(),
                     ));
                 };
+                if !is_valid_key(key) {
+                    return Err(SimpleParseError::Yaml(format!(
+                        "invalid key `{key}` (allowed: [A-Za-z0-9][A-Za-z0-9_.-]*)"
+                    )));
+                }
                 let Some(val) = v.as_str() else {
                     return Err(SimpleParseError::Yaml(format!(
                         "yaml value for key `{key}` must be a string"
@@ -118,6 +132,12 @@ impl SimpleCatalog {
                 return Err(SimpleParseError::Syntax {
                     line: line_no,
                     msg: "empty key".to_string(),
+                });
+            }
+            if !is_valid_key(key) {
+                return Err(SimpleParseError::Syntax {
+                    line: line_no,
+                    msg: format!("invalid key `{key}` (allowed: [A-Za-z0-9][A-Za-z0-9_.-]*)"),
                 });
             }
 
@@ -375,5 +395,22 @@ demo-title: 123
 "#;
         let err = SimpleCatalog::parse(src).unwrap_err();
         assert!(matches!(err, SimpleParseError::Yaml(_)));
+    }
+
+    #[test]
+    fn key_validation() {
+        // YAML
+        let src = r#"
+bad key: "nope"
+"#;
+        let err = SimpleCatalog::parse(src).unwrap_err();
+        assert!(matches!(err, SimpleParseError::Yaml(_)));
+
+        // Legacy
+        let src = r#"
+bad key = nope
+"#;
+        let err = SimpleCatalog::parse(src).unwrap_err();
+        assert!(matches!(err, SimpleParseError::Syntax { .. }));
     }
 }
