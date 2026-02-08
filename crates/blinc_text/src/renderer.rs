@@ -546,7 +546,7 @@ impl TextRenderer {
 
         Ok(PreparedText {
             glyphs,
-            width: corrected_width.max(layout.width),
+            width: corrected_width,
             height: layout.height,
             ascender,
             descender,
@@ -654,7 +654,7 @@ impl TextRenderer {
 
         Ok(PreparedText {
             glyphs,
-            width: corrected_width.max(layout.width),
+            width: corrected_width,
             height: layout.height,
             ascender,
             descender,

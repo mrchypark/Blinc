@@ -247,7 +247,7 @@ impl TextMeasurer for FontTextMeasurer {
         let descender = metrics.descender_px(font_size);
 
         TextMetrics {
-            width: corrected_width.max(layout.width),
+            width: corrected_width,
             height: layout.height,
             ascender,
             descender,
