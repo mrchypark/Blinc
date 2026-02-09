@@ -289,14 +289,11 @@ fn make_multi_series(series_n: usize, points_n: usize) -> Vec<TimeSeriesF32> {
         let mut x = Vec::with_capacity(points_n);
         let mut y = Vec::with_capacity(points_n);
         let phase = s as f32 * 0.37;
+        let mut cur_x = 0.0f32;
         for i in 0..points_n {
-            let xx = i as f32;
-            // Force small gaps to exercise segmentation.
-            if i % 37 == 0 && i != 0 {
-                x.push(xx + 8.0);
-            } else {
-                x.push(xx);
-            }
+            // Force occasional gaps while keeping x sorted (monotonic).
+            cur_x += if i % 37 == 0 && i != 0 { 9.0 } else { 1.0 };
+            x.push(cur_x);
             let t = i as f32 * 0.06;
             let vv = (t + phase).sin() * 0.7 + (t * 0.17 + phase).sin() * 0.2;
             y.push(vv);
