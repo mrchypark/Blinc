@@ -428,6 +428,73 @@ fn main() -> Result<()> {
                 filter: brightness(1.8) saturate(2.0) contrast(1.3);
             }
 
+            /* --- Advanced Selector demos --- */
+
+            /* Adjacent sibling combinator: .trigger:hover + .target */
+            .sib-trigger {
+                background: #475569;
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+            .sib-trigger:hover + .sib-target {
+                background: #f59e0b;
+                border-radius: 16px;
+            }
+            .sib-target {
+                background: #64748b;
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+
+            /* General sibling combinator: .gs-trigger:hover ~ .gs-item */
+            .gs-trigger {
+                background: #7c3aed;
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+            .gs-trigger:hover ~ .gs-item {
+                background: #a78bfa;
+                border-radius: 16px;
+            }
+            .gs-item {
+                background: #4c1d95;
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+
+            /* :not() pseudo-class */
+            .not-demo {
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+            .not-demo:not(:first-child) {
+                background: #0891b2;
+            }
+            .not-demo:first-child {
+                background: #f43f5e;
+            }
+
+            /* :empty pseudo-class */
+            .empty-demo {
+                border-radius: 8px;
+                border-width: 2px;
+                border-color: #94a3b8;
+            }
+            .empty-demo:empty {
+                background: #22d3ee;
+                border-color: #22d3ee;
+            }
+
+            /* Universal selector: * inside #universal-parent */
+            #universal-parent > * {
+                background: #059669;
+                border-radius: 8px;
+            }
+            #universal-parent > *:hover {
+                background: #10b981;
+                box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+            }
+
             /* --- Layout Property Animation demos --- */
 
             /* Width transition on hover */
@@ -712,6 +779,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(font_size_animation_section())
                     // CSS Selector Hierarchy
                     .child(selector_hierarchy_section())
+                    // Advanced selectors (+, ~, :not(), :empty, *)
+                    .child(advanced_selectors_section())
                     // CSS Stylesheet integration
                     .child(css_stylesheet_section())
                     .child(css_hover_section())
@@ -1442,6 +1511,240 @@ fn selector_hierarchy_section() -> impl ElementBuilder {
                                         .justify_center()
                                         .items_center()
                                         .child(text("Hover me").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// ADVANCED SELECTORS SECTION (+, ~, :not(), :empty, *, :root)
+// ============================================================================
+
+fn advanced_selectors_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Advanced CSS Selectors"))
+        .child(section_description(
+            "Adjacent sibling (+), general sibling (~), :not(), :empty, and universal (*) selectors.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. Adjacent sibling combinator: hover trigger highlights next sibling
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".sib-trigger:hover + .sib-target { background: #f59e0b }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("sib-trigger")
+                                        .w(100.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Hover me").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("sib-target")
+                                        .w(100.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("I change!").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("sib-target")
+                                        .w(100.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Not me").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 2. General sibling combinator: hover trigger highlights all later siblings
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".gs-trigger:hover ~ .gs-item { background: #a78bfa }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("gs-trigger")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Hover").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("gs-item")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("A").size(14.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("gs-item")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("B").size(14.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("gs-item")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("C").size(14.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 3. :not() pseudo-class
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".not-demo:not(:first-child) { bg: #0891b2 }  :first-child { bg: #f43f5e }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("not-demo")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("1st").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("not-demo")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("2nd").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("not-demo")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("3rd").size(13.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 4. :empty pseudo-class
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".empty-demo:empty { background: #22d3ee }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("empty-demo")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Has child").size(11.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("empty-demo")
+                                        .w(80.0)
+                                        .h(60.0),
+                                )
+                                .child(
+                                    div()
+                                        .class("empty-demo")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Has child").size(11.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 5. Universal selector: * matches any element
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#universal-parent > * { background: #059669 }"))
+                        .child(
+                            div()
+                                .id("universal-parent")
+                                .bg(Color::rgba(0.1, 0.1, 0.15, 1.0))
+                                .rounded(12.0)
+                                .p(12.0)
+                                .flex_row()
+                                .gap(8.0)
+                                .child(
+                                    div()
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("A").size(14.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("B").size(14.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("C").size(14.0).color(Color::WHITE)),
                                 ),
                         ),
                 ),

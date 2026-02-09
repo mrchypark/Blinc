@@ -533,8 +533,14 @@ pub enum StructuralPseudo {
     LastChild,
     /// :nth-child(n) — 1-based index
     NthChild(usize),
+    /// :nth-last-child(n) — 1-based from end
+    NthLastChild(usize),
     /// :only-child
     OnlyChild,
+    /// :empty — no children
+    Empty,
+    /// :root — root element
+    Root,
 }
 
 /// A single part of a compound selector
@@ -544,10 +550,14 @@ pub enum SelectorPart {
     Id(String),
     /// .class selector
     Class(String),
+    /// * universal selector (matches any element)
+    Universal,
     /// :hover, :active, :focus, :disabled
     State(ElementState),
-    /// :first-child, :last-child, :nth-child(n), :only-child
+    /// :first-child, :last-child, :nth-child(n), :only-child, :empty, :root
     PseudoClass(StructuralPseudo),
+    /// :not(selector) — negation pseudo-class
+    Not(Box<CompoundSelector>),
 }
 
 /// Combinator between compound selectors
@@ -557,6 +567,10 @@ pub enum Combinator {
     Descendant,
     /// Child combinator (>): `#parent > .child`
     Child,
+    /// Adjacent sibling combinator (+): `#prev + .next`
+    AdjacentSibling,
+    /// General sibling combinator (~): `#prev ~ .later`
+    GeneralSibling,
 }
 
 /// A compound selector is a sequence of simple selectors with no combinator.
@@ -887,6 +901,17 @@ impl CssKeyframes {
         }
         if let Some(bc) = &style.border_color {
             props.border_color = Some([bc.r, bc.g, bc.b, bc.a]);
+        }
+
+        // Outline
+        if let Some(ow) = style.outline_width {
+            props.outline_width = Some(ow);
+        }
+        if let Some(oc) = &style.outline_color {
+            props.outline_color = Some([oc.r, oc.g, oc.b, oc.a]);
+        }
+        if let Some(offset) = style.outline_offset {
+            props.outline_offset = Some(offset);
         }
 
         // Shadow
@@ -1842,15 +1867,26 @@ fn parse_complex_selector(input: &str) -> ParseResult<ComplexSelector> {
             break;
         }
 
-        // Check for child combinator `>`
+        // Check for combinators: > (child), + (adjacent sibling), ~ (general sibling)
         if let Some(after_gt) = trimmed.strip_prefix('>') {
             remaining = after_gt.trim_start();
             segments.push((compound, Some(Combinator::Child)));
+        } else if let Some(after_plus) = trimmed.strip_prefix('+') {
+            remaining = after_plus.trim_start();
+            segments.push((compound, Some(Combinator::AdjacentSibling)));
+        } else if let Some(after_tilde) = trimmed.strip_prefix('~') {
+            remaining = after_tilde.trim_start();
+            segments.push((compound, Some(Combinator::GeneralSibling)));
         } else {
             // Must be a descendant combinator (whitespace between compound selectors)
-            // Check that next char is a valid selector start (#, ., :, or alpha)
+            // Check that next char is a valid selector start (#, ., :, *, or alpha)
             let next_ch = trimmed.chars().next().unwrap_or('{');
-            if next_ch == '#' || next_ch == '.' || next_ch == ':' || next_ch.is_alphabetic() {
+            if next_ch == '#'
+                || next_ch == '.'
+                || next_ch == ':'
+                || next_ch == '*'
+                || next_ch.is_alphabetic()
+            {
                 remaining = trimmed;
                 segments.push((compound, Some(Combinator::Descendant)));
             } else {
@@ -1890,6 +1926,10 @@ fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
             let (rest, class) = identifier::<VerboseError<&str>>(rest)?;
             parts.push(SelectorPart::Class(class.to_string()));
             remaining = rest;
+        } else if remaining.starts_with('*') {
+            // Universal selector
+            remaining = &remaining[1..];
+            parts.push(SelectorPart::Universal);
         } else if remaining.starts_with(':') {
             // Pseudo-class (state or structural)
             let (rest, _) = char(':')(remaining)?;
@@ -1909,12 +1949,19 @@ fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
                     parts.push(SelectorPart::PseudoClass(StructuralPseudo::OnlyChild));
                     remaining = rest;
                 }
+                "empty" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::Empty));
+                    remaining = rest;
+                }
+                "root" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::Root));
+                    remaining = rest;
+                }
                 "nth-child" => {
                     // Parse nth-child(N)
                     if rest.starts_with('(') {
                         let (rest2, _) = char('(')(rest)?;
                         let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
-                        // Parse the number
                         let (rest2, n_str) =
                             take_while1::<_, _, VerboseError<&str>>(|c: char| c.is_ascii_digit())(
                                 rest2,
@@ -1925,6 +1972,48 @@ fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
                             parts.push(SelectorPart::PseudoClass(StructuralPseudo::NthChild(n)));
                         }
                         remaining = rest2;
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                "nth-last-child" => {
+                    // Parse nth-last-child(N)
+                    if rest.starts_with('(') {
+                        let (rest2, _) = char('(')(rest)?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, n_str) =
+                            take_while1::<_, _, VerboseError<&str>>(|c: char| c.is_ascii_digit())(
+                                rest2,
+                            )?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, _) = char(')')(rest2)?;
+                        if let Ok(n) = n_str.parse::<usize>() {
+                            parts.push(SelectorPart::PseudoClass(
+                                StructuralPseudo::NthLastChild(n),
+                            ));
+                        }
+                        remaining = rest2;
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                "not" => {
+                    // Parse :not(selector)
+                    if rest.starts_with('(') {
+                        let (rest2, _) = char('(')(rest)?;
+                        let rest2 = rest2.trim_start();
+                        // Parse the inner compound selector
+                        if let Ok((rest3, inner)) = parse_compound_selector(rest2) {
+                            let rest3 = rest3.trim_start();
+                            if let Ok((rest4, _)) = char::<&str, VerboseError<&str>>(')')(rest3) {
+                                parts.push(SelectorPart::Not(Box::new(inner)));
+                                remaining = rest4;
+                            } else {
+                                remaining = rest;
+                            }
+                        } else {
+                            remaining = rest;
+                        }
                     } else {
                         remaining = rest;
                     }
@@ -2377,8 +2466,11 @@ fn try_as_simple_selector(compound: &CompoundSelector) -> Option<String> {
                 }
                 state = Some(s);
             }
-            // If there are classes or structural pseudos, it's not simple
-            SelectorPart::Class(_) | SelectorPart::PseudoClass(_) => return None,
+            // If there are classes, structural pseudos, universal, or :not(), it's not simple
+            SelectorPart::Class(_)
+            | SelectorPart::PseudoClass(_)
+            | SelectorPart::Universal
+            | SelectorPart::Not(_) => return None,
         }
     }
 
@@ -2904,6 +2996,38 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
         "border-color" => {
             if let Some(color) = parse_color(value) {
                 style.border_color = Some(color);
+            }
+        }
+        "outline-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.outline_width = Some(px);
+            }
+        }
+        "outline-color" => {
+            if let Some(color) = parse_color(value) {
+                style.outline_color = Some(color);
+            }
+        }
+        "outline-offset" => {
+            if let Some(px) = parse_css_px(value) {
+                style.outline_offset = Some(px);
+            }
+        }
+        "outline" => {
+            // Shorthand: outline: <width> solid <color>
+            // We ignore the style (always solid) and parse width + color
+            let parts: Vec<&str> = value.split_whitespace().collect();
+            for part in &parts {
+                if let Some(px) = parse_css_px(part) {
+                    style.outline_width = Some(px);
+                } else if *part != "solid" && *part != "none" && *part != "dotted" && *part != "dashed" {
+                    if let Some(color) = parse_color(part) {
+                        style.outline_color = Some(color);
+                    }
+                }
+            }
+            if value.trim() == "none" {
+                style.outline_width = Some(0.0);
             }
         }
         "position" => match value.trim() {
@@ -3471,6 +3595,42 @@ fn apply_property_with_errors(
                 style.border_color = Some(color);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "outline-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.outline_width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "outline-color" => {
+            if let Some(color) = parse_color(value) {
+                style.outline_color = Some(color);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "outline-offset" => {
+            if let Some(px) = parse_css_px(value) {
+                style.outline_offset = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "outline" => {
+            let parts: Vec<&str> = value.split_whitespace().collect();
+            for part in &parts {
+                if let Some(px) = parse_css_px(part) {
+                    style.outline_width = Some(px);
+                } else if *part != "solid" && *part != "none" && *part != "dotted" && *part != "dashed" {
+                    if let Some(color) = parse_color(part) {
+                        style.outline_color = Some(color);
+                    }
+                }
+            }
+            if value.trim() == "none" {
+                style.outline_width = Some(0.0);
             }
         }
         "position" => match value.trim() {

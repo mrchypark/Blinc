@@ -152,6 +152,12 @@ pub struct KeyframeProperties {
     pub corner_radius: Option<[f32; 4]>,
     /// Border width in pixels
     pub border_width: Option<f32>,
+    /// Outline width in pixels
+    pub outline_width: Option<f32>,
+    /// Outline color RGBA
+    pub outline_color: Option<[f32; 4]>,
+    /// Outline offset in pixels
+    pub outline_offset: Option<f32>,
     /// Clip-path circle radius (percent)
     pub clip_circle_radius: Option<f32>,
     /// Clip-path ellipse radii [rx, ry] (percent)
@@ -369,6 +375,9 @@ impl KeyframeProperties {
             // Geometric
             corner_radius: lerp_opt_array4(self.corner_radius, other.corner_radius, t),
             border_width: lerp_opt(self.border_width, other.border_width, t),
+            outline_width: lerp_opt(self.outline_width, other.outline_width, t),
+            outline_color: lerp_opt_array4(self.outline_color, other.outline_color, t),
+            outline_offset: lerp_opt(self.outline_offset, other.outline_offset, t),
             clip_circle_radius: lerp_opt(self.clip_circle_radius, other.clip_circle_radius, t),
             clip_ellipse_radii: lerp_opt_array2(
                 self.clip_ellipse_radii,

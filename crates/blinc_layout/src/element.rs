@@ -953,6 +953,12 @@ pub struct RenderProps {
     pub border_width: f32,
     /// Per-side borders (takes precedence over uniform border if set)
     pub border_sides: BorderSides,
+    /// Outline color (None = no outline)
+    pub outline_color: Option<Color>,
+    /// Outline width in pixels
+    pub outline_width: f32,
+    /// Outline offset in pixels (gap between border and outline)
+    pub outline_offset: f32,
     /// Which layer this element renders in
     pub layer: RenderLayer,
     /// Material applied to this element (glass, metallic, etc.)
@@ -1065,6 +1071,9 @@ impl Default for RenderProps {
             border_color: None,
             border_width: 0.0,
             border_sides: BorderSides::default(),
+            outline_color: None,
+            outline_width: 0.0,
+            outline_offset: 0.0,
             layer: RenderLayer::default(),
             material: None,
             node_id: None,

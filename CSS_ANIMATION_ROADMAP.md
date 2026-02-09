@@ -101,9 +101,9 @@ Highest-impact missing property. Requires threading color through the text rende
 
 Not currently parsed — need parser + animation support.
 
-- [ ] `outline-color` — `Option<[f32; 4]>`
-- [ ] `outline-width` — `Option<f32>`
-- [ ] `outline-offset` — `Option<f32>`
+- [x] `outline-color` — `Option<[f32; 4]>`
+- [x] `outline-width` — `Option<f32>`
+- [x] `outline-offset` — `Option<f32>`
 
 ### Implementation
 1. Add `outline` fields to `ElementStyle` and `RenderProps`
@@ -193,14 +193,15 @@ Currently parsed as discrete materials (Glass, Chrome, etc.). Animating requires
 
 Not animation properties per se, but needed for standard CSS patterns:
 
-- [ ] `+` adjacent sibling combinator
-- [ ] `~` general sibling combinator
-- [ ] `:not()` pseudo-class
+- [x] `+` adjacent sibling combinator
+- [x] `~` general sibling combinator
+- [x] `:not()` pseudo-class
 - [ ] `:is()` / `:where()` pseudo-classes
-- [ ] `:nth-last-child()`, `:nth-of-type()`, `:first-of-type()`, `:last-of-type()`
-- [ ] `:empty`, `:root`
-- [ ] `*` universal selector
-- [ ] Multiple classes `.class1.class2` (currently single class only?)
+- [x] `:nth-last-child()`
+- [ ] `:nth-of-type()`, `:first-of-type()`, `:last-of-type()`
+- [x] `:empty`, `:root`
+- [x] `*` universal selector
+- [x] Multiple classes `.class1.class2` (compound selectors already supported)
 
 **Files**: `css_parser.rs`, `renderer.rs`, `selector/registry.rs`
 

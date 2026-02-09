@@ -37,6 +37,8 @@ pub struct ElementRegistry {
     child_indices: RwLock<HashMap<LayoutNodeId, usize>>,
     /// Total sibling count for :last-child/:only-child
     sibling_counts: RwLock<HashMap<LayoutNodeId, usize>>,
+    /// Ordered children for each parent (for sibling combinators + / ~ and :empty)
+    children: RwLock<HashMap<LayoutNodeId, Vec<LayoutNodeId>>>,
 }
 
 impl std::fmt::Debug for ElementRegistry {
@@ -75,6 +77,7 @@ impl ElementRegistry {
             classes: RwLock::new(HashMap::new()),
             child_indices: RwLock::new(HashMap::new()),
             sibling_counts: RwLock::new(HashMap::new()),
+            children: RwLock::new(HashMap::new()),
         }
     }
 
@@ -111,6 +114,9 @@ impl ElementRegistry {
     pub fn register_parent(&self, child: LayoutNodeId, parent: LayoutNodeId) {
         if let Ok(mut parents) = self.parents.write() {
             parents.insert(child, parent);
+        }
+        if let Ok(mut children) = self.children.write() {
+            children.entry(parent).or_default().push(child);
         }
     }
 
@@ -150,6 +156,57 @@ impl ElementRegistry {
     /// Get total sibling count for a node
     pub fn get_sibling_count(&self, node_id: LayoutNodeId) -> Option<usize> {
         self.sibling_counts.read().ok()?.get(&node_id).copied()
+    }
+
+    /// Check if a node has any children (for :empty pseudo-class)
+    pub fn has_children(&self, node_id: LayoutNodeId) -> bool {
+        self.children
+            .read()
+            .ok()
+            .and_then(|map| map.get(&node_id).map(|c| !c.is_empty()))
+            .unwrap_or(false)
+    }
+
+    /// Check if a node is the root (has no parent) (for :root pseudo-class)
+    pub fn is_root(&self, node_id: LayoutNodeId) -> bool {
+        self.parents
+            .read()
+            .ok()
+            .map(|p| !p.contains_key(&node_id))
+            .unwrap_or(true)
+    }
+
+    /// Get the previous sibling of a node (for + adjacent sibling combinator)
+    pub fn get_previous_sibling(&self, node_id: LayoutNodeId) -> Option<LayoutNodeId> {
+        let parent = self.get_parent(node_id)?;
+        let index = self.get_child_index(node_id)?;
+        if index == 0 {
+            return None;
+        }
+        let children = self.children.read().ok()?;
+        let siblings = children.get(&parent)?;
+        siblings.get(index - 1).copied()
+    }
+
+    /// Get all preceding siblings of a node (for ~ general sibling combinator)
+    /// Returns siblings in order from first to immediately before this node.
+    pub fn get_preceding_siblings(&self, node_id: LayoutNodeId) -> Vec<LayoutNodeId> {
+        let parent = match self.get_parent(node_id) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let index = match self.get_child_index(node_id) {
+            Some(i) => i,
+            None => return Vec::new(),
+        };
+        let children = match self.children.read().ok() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        match children.get(&parent) {
+            Some(siblings) => siblings[..index].to_vec(),
+            None => Vec::new(),
+        }
     }
 
     /// Look up a node ID by string ID
@@ -214,6 +271,9 @@ impl ElementRegistry {
         }
         if let Ok(mut counts) = self.sibling_counts.write() {
             counts.clear();
+        }
+        if let Ok(mut children) = self.children.write() {
+            children.clear();
         }
         // Note: bounds_cache is NOT cleared here - it's cleared separately
         // via clear_bounds() when layout is recomputed

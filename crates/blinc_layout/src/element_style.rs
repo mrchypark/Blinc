@@ -312,6 +312,13 @@ pub struct ElementStyle {
     /// Border color
     pub border_color: Option<Color>,
 
+    /// Outline width in pixels
+    pub outline_width: Option<f32>,
+    /// Outline color
+    pub outline_color: Option<Color>,
+    /// Outline offset in pixels (gap between border and outline)
+    pub outline_offset: Option<f32>,
+
     /// CSS position (static, relative, absolute)
     pub position: Option<StylePosition>,
     /// Top inset in pixels (for positioned elements)
@@ -952,6 +959,29 @@ impl ElementStyle {
     }
 
     // =========================================================================
+    // Layout: Outline
+    // =========================================================================
+
+    /// Set outline width and color
+    pub fn outline(mut self, width: f32, color: Color) -> Self {
+        self.outline_width = Some(width);
+        self.outline_color = Some(color);
+        self
+    }
+
+    /// Set outline width only
+    pub fn outline_w(mut self, width: f32) -> Self {
+        self.outline_width = Some(width);
+        self
+    }
+
+    /// Set outline offset (gap between border and outline)
+    pub fn outline_offset(mut self, offset: f32) -> Self {
+        self.outline_offset = Some(offset);
+        self
+    }
+
+    // =========================================================================
     // Merging
     // =========================================================================
 
@@ -1015,6 +1045,9 @@ impl ElementStyle {
             overflow_y: other.overflow_y.or(self.overflow_y),
             border_width: other.border_width.or(self.border_width),
             border_color: other.border_color.or(self.border_color),
+            outline_width: other.outline_width.or(self.outline_width),
+            outline_color: other.outline_color.or(self.outline_color),
+            outline_offset: other.outline_offset.or(self.outline_offset),
             position: other.position.or(self.position),
             top: other.top.or(self.top),
             right: other.right.or(self.right),

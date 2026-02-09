@@ -4493,6 +4493,16 @@ impl RenderTree {
         if let Some(to) = style.transform_origin {
             props.transform_origin = Some(to);
         }
+        // Outline
+        if let Some(ow) = style.outline_width {
+            props.outline_width = ow;
+        }
+        if let Some(ref oc) = style.outline_color {
+            props.outline_color = Some(*oc);
+        }
+        if let Some(offset) = style.outline_offset {
+            props.outline_offset = offset;
+        }
         // Skew (composed into existing transform as Affine2D)
         if style.skew_x.is_some() || style.skew_y.is_some() {
             use blinc_core::Affine2D;
@@ -5211,6 +5221,15 @@ impl RenderTree {
                         return false;
                     }
                 }
+                SelectorPart::Universal => {
+                    // Universal selector matches everything — continue
+                }
+                SelectorPart::Not(inner_compound) => {
+                    // :not(selector) — matches if the inner compound does NOT match
+                    if self.compound_matches(inner_compound, node_id, hovered, pressed, focused) {
+                        return false;
+                    }
+                }
                 SelectorPart::PseudoClass(pseudo) => {
                     let matches = match pseudo {
                         StructuralPseudo::FirstChild => {
@@ -5229,8 +5248,23 @@ impl RenderTree {
                             self.element_registry.get_child_index(node_id)
                                 == Some(n.saturating_sub(1))
                         }
+                        StructuralPseudo::NthLastChild(n) => {
+                            // nth-last-child is 1-based from the end
+                            let index = self.element_registry.get_child_index(node_id);
+                            let count = self.element_registry.get_sibling_count(node_id);
+                            match (index, count) {
+                                (Some(i), Some(c)) if c > 0 => i == c - n,
+                                _ => false,
+                            }
+                        }
                         StructuralPseudo::OnlyChild => {
                             self.element_registry.get_sibling_count(node_id) == Some(1)
+                        }
+                        StructuralPseudo::Empty => {
+                            !self.element_registry.has_children(node_id)
+                        }
+                        StructuralPseudo::Root => {
+                            self.element_registry.is_root(node_id)
                         }
                     };
                     if !matches {
@@ -5328,6 +5362,53 @@ impl RenderTree {
                             anc_focused,
                         ) {
                             current_node = *ancestor;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return false;
+                    }
+                }
+                Combinator::AdjacentSibling => {
+                    // Must match the immediately preceding sibling
+                    let prev_sibling =
+                        match self.element_registry.get_previous_sibling(current_node) {
+                            Some(s) => s,
+                            None => return false,
+                        };
+                    let sib_hovered = hovered_nodes.contains(&prev_sibling);
+                    let sib_pressed = pressed_nodes.contains(&prev_sibling);
+                    let sib_focused = focused_node == Some(prev_sibling);
+
+                    if !self.compound_matches(
+                        compound,
+                        prev_sibling,
+                        sib_hovered,
+                        sib_pressed,
+                        sib_focused,
+                    ) {
+                        return false;
+                    }
+                    current_node = prev_sibling;
+                }
+                Combinator::GeneralSibling => {
+                    // Walk preceding siblings until a match is found
+                    let preceding = self.element_registry.get_preceding_siblings(current_node);
+                    let mut found = false;
+                    for sibling in preceding.iter().rev() {
+                        let sib_hovered = hovered_nodes.contains(sibling);
+                        let sib_pressed = pressed_nodes.contains(sibling);
+                        let sib_focused = focused_node == Some(*sibling);
+
+                        if self.compound_matches(
+                            compound,
+                            *sibling,
+                            sib_hovered,
+                            sib_pressed,
+                            sib_focused,
+                        ) {
+                            current_node = *sibling;
                             found = true;
                             break;
                         }
@@ -6012,6 +6093,9 @@ impl RenderTree {
         check_transition!(font_size, "font-size");
         check_transition!(border_color, "border-color");
         check_transition!(border_width, "border-width");
+        check_transition!(outline_color, "outline-color");
+        check_transition!(outline_width, "outline-width");
+        check_transition!(outline_offset, "outline-offset");
         check_transition!(corner_radius, "border-radius");
         check_transition!(shadow_params, "box-shadow");
         check_transition!(shadow_color, "box-shadow");
@@ -6242,6 +6326,17 @@ impl RenderTree {
             props.border_color = Some(blinc_core::Color::rgba(r, g, b, a));
         }
 
+        // Outline
+        if let Some(ow) = anim_props.outline_width {
+            props.outline_width = ow;
+        }
+        if let Some([r, g, b, a]) = anim_props.outline_color {
+            props.outline_color = Some(blinc_core::Color::rgba(r, g, b, a));
+        }
+        if let Some(offset) = anim_props.outline_offset {
+            props.outline_offset = offset;
+        }
+
         // Shadow
         if let Some([ox, oy, blur, spread]) = anim_props.shadow_params {
             let color = if let Some([r, g, b, a]) = anim_props.shadow_color {
@@ -6422,6 +6517,13 @@ impl RenderTree {
         if let Some(bc) = &props.border_color {
             kp.border_color = Some([bc.r, bc.g, bc.b, bc.a]);
         }
+
+        // Outline
+        kp.outline_width = Some(props.outline_width);
+        if let Some(oc) = &props.outline_color {
+            kp.outline_color = Some([oc.r, oc.g, oc.b, oc.a]);
+        }
+        kp.outline_offset = Some(props.outline_offset);
 
         // Shadow
         if let Some(shadow) = &props.shadow {
@@ -7086,6 +7188,35 @@ impl RenderTree {
             if let Some(ref border_color) = render_node.props.border_color {
                 let stroke = Stroke::new(render_node.props.border_width);
                 ctx.stroke_rect(rect, radius, &stroke, Brush::Solid(*border_color));
+            }
+        }
+
+        // Draw outline outside the border (CSS outlines don't affect layout)
+        if render_node.props.outline_width > 0.0 {
+            if let Some(ref outline_color) = render_node.props.outline_color {
+                let ow = render_node.props.outline_width;
+                let offset = render_node.props.outline_offset;
+                let expand = offset + ow / 2.0;
+                let outline_rect = Rect::new(
+                    -expand,
+                    -expand,
+                    bounds.width + expand * 2.0,
+                    bounds.height + expand * 2.0,
+                );
+                // Expand corner radius to follow the outline curve
+                let outline_radius = CornerRadius {
+                    top_left: (radius.top_left + expand).max(0.0),
+                    top_right: (radius.top_right + expand).max(0.0),
+                    bottom_right: (radius.bottom_right + expand).max(0.0),
+                    bottom_left: (radius.bottom_left + expand).max(0.0),
+                };
+                let stroke = Stroke::new(ow);
+                ctx.stroke_rect(
+                    outline_rect,
+                    outline_radius,
+                    &stroke,
+                    Brush::Solid(*outline_color),
+                );
             }
         }
 
@@ -7918,6 +8049,36 @@ impl RenderTree {
                 }
             }
 
+            // Draw outline outside the border
+            if render_node.props.outline_width > 0.0 {
+                if let Some(ref outline_color) = render_node.props.outline_color {
+                    let ow = render_node.props.outline_width;
+                    let offset = render_node.props.outline_offset;
+                    let expand = offset + ow / 2.0;
+                    let outline_rect = Rect::new(
+                        -expand,
+                        -expand,
+                        bounds.width + expand * 2.0,
+                        bounds.height + expand * 2.0,
+                    );
+                    let outline_radius = CornerRadius {
+                        top_left: (radius.top_left + expand).max(0.0),
+                        top_right: (radius.top_right + expand).max(0.0),
+                        bottom_right: (radius.bottom_right + expand).max(0.0),
+                        bottom_left: (radius.bottom_left + expand).max(0.0),
+                    };
+                    let stroke = Stroke::new(ow);
+                    let brush = if !has_opacity_layer && motion_opacity < 1.0 {
+                        let mut color = *outline_color;
+                        color.a *= motion_opacity;
+                        Brush::Solid(color)
+                    } else {
+                        Brush::Solid(*outline_color)
+                    };
+                    ctx.stroke_rect(outline_rect, outline_radius, &stroke, brush);
+                }
+            }
+
             // Handle canvas elements
             // Push clip to ensure canvas content respects parent bounds (e.g., scroll containers)
             if let ElementType::Canvas(canvas_data) = &render_node.element_type {
@@ -8516,6 +8677,34 @@ impl RenderTree {
                 }
             }
 
+            // Draw outline outside the border
+            if render_node.props.outline_width > 0.0 {
+                if let Some(ref outline_color) = render_node.props.outline_color {
+                    let ow = render_node.props.outline_width;
+                    let offset = render_node.props.outline_offset;
+                    let expand = offset + ow / 2.0;
+                    let outline_rect = Rect::new(
+                        -expand,
+                        -expand,
+                        bounds.width + expand * 2.0,
+                        bounds.height + expand * 2.0,
+                    );
+                    let outline_radius = CornerRadius {
+                        top_left: (radius.top_left + expand).max(0.0),
+                        top_right: (radius.top_right + expand).max(0.0),
+                        bottom_right: (radius.bottom_right + expand).max(0.0),
+                        bottom_left: (radius.bottom_left + expand).max(0.0),
+                    };
+                    let stroke = Stroke::new(ow);
+                    ctx.stroke_rect(
+                        outline_rect,
+                        outline_radius,
+                        &stroke,
+                        Brush::Solid(*outline_color),
+                    );
+                }
+            }
+
             // Handle canvas element rendering
             // Push clip to ensure canvas content respects parent bounds (e.g., scroll containers)
             if let ElementType::Canvas(canvas_data) = &render_node.element_type {
@@ -8932,6 +9121,34 @@ impl RenderTree {
                         if let Some(ref border_color) = render_node.props.border_color {
                             let stroke = Stroke::new(render_node.props.border_width);
                             ctx.stroke_rect(rect, radius, &stroke, Brush::Solid(*border_color));
+                        }
+                    }
+
+                    // Draw outline
+                    if render_node.props.outline_width > 0.0 {
+                        if let Some(ref outline_color) = render_node.props.outline_color {
+                            let ow = render_node.props.outline_width;
+                            let offset = render_node.props.outline_offset;
+                            let expand = offset + ow / 2.0;
+                            let outline_rect = Rect::new(
+                                -expand,
+                                -expand,
+                                bounds.width + expand * 2.0,
+                                bounds.height + expand * 2.0,
+                            );
+                            let outline_radius = CornerRadius {
+                                top_left: (radius.top_left + expand).max(0.0),
+                                top_right: (radius.top_right + expand).max(0.0),
+                                bottom_right: (radius.bottom_right + expand).max(0.0),
+                                bottom_left: (radius.bottom_left + expand).max(0.0),
+                            };
+                            let stroke = Stroke::new(ow);
+                            ctx.stroke_rect(
+                                outline_rect,
+                                outline_radius,
+                                &stroke,
+                                Brush::Solid(*outline_color),
+                            );
                         }
                     }
                 }
