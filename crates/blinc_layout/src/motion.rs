@@ -67,7 +67,7 @@ thread_local! {
     /// When a Motion container's build() is called, it pushes its stable key.
     /// When build() returns, it pops the key. This allows descendants to know
     /// they're inside a motion container and check its animation state.
-    static MOTION_CONTEXT_STACK: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static MOTION_CONTEXT_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Push a motion container's stable key onto the context stack
@@ -220,11 +220,7 @@ impl StaggerConfig {
             StaggerDirection::Reverse => total.saturating_sub(1).saturating_sub(index),
             StaggerDirection::FromCenter => {
                 let center = total / 2;
-                if index <= center {
-                    center - index
-                } else {
-                    index - center
-                }
+                index.abs_diff(center)
             }
         };
 

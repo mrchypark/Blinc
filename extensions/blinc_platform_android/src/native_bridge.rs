@@ -264,6 +264,13 @@ pub fn init_android_native_bridge(
 pub struct AndroidNativeBridgeAdapter;
 
 #[cfg(not(target_os = "android"))]
+impl Default for AndroidNativeBridgeAdapter {
+    fn default() -> Self {
+        Self
+    }
+}
+
+#[cfg(not(target_os = "android"))]
 impl AndroidNativeBridgeAdapter {
     pub fn new() -> Self {
         Self

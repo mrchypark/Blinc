@@ -115,6 +115,19 @@ pub struct GpuPaintContext<'a> {
     image_sizes: HashMap<ImageId, (u32, u32)>,
     /// Monotonic order for image ops/draws to preserve call sequence.
     image_order: u64,
+    // 3D transform transient fields (set per-element, reset after)
+    current_3d_sin_ry: f32,
+    current_3d_cos_ry: f32,
+    current_3d_sin_rx: f32,
+    current_3d_cos_rx: f32,
+    current_3d_perspective_d: f32,
+    current_3d_shape_type: f32,
+    current_3d_depth: f32,
+    current_3d_ambient: f32,
+    current_3d_specular: f32,
+    current_3d_translate_z: f32,
+    current_3d_light: [f32; 4],
+    current_3d_group_shapes: Vec<crate::primitives::ShapeDesc>,
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -136,6 +149,18 @@ impl<'a> GpuPaintContext<'a> {
             layer_stack: Vec::new(),
             image_sizes: HashMap::new(),
             image_order: 0,
+            current_3d_sin_ry: 0.0,
+            current_3d_cos_ry: 1.0,
+            current_3d_sin_rx: 0.0,
+            current_3d_cos_rx: 1.0,
+            current_3d_perspective_d: 0.0,
+            current_3d_shape_type: 0.0,
+            current_3d_depth: 0.0,
+            current_3d_ambient: 0.3,
+            current_3d_specular: 32.0,
+            current_3d_translate_z: 0.0,
+            current_3d_light: [0.0, -1.0, 0.5, 0.8],
+            current_3d_group_shapes: Vec::new(),
         }
     }
 
@@ -169,6 +194,18 @@ impl<'a> GpuPaintContext<'a> {
             layer_stack: Vec::new(),
             image_sizes: HashMap::new(),
             image_order: 0,
+            current_3d_sin_ry: 0.0,
+            current_3d_cos_ry: 1.0,
+            current_3d_sin_rx: 0.0,
+            current_3d_cos_rx: 1.0,
+            current_3d_perspective_d: 0.0,
+            current_3d_shape_type: 0.0,
+            current_3d_depth: 0.0,
+            current_3d_ambient: 0.3,
+            current_3d_specular: 32.0,
+            current_3d_translate_z: 0.0,
+            current_3d_light: [0.0, -1.0, 0.5, 0.8],
+            current_3d_group_shapes: Vec::new(),
         }
     }
 
@@ -203,13 +240,13 @@ impl<'a> GpuPaintContext<'a> {
         )
     }
 
-    /// Transform a rect by the current transform (axis-aligned bounding box)
+    /// Transform a rect by the current transform (rotation-safe)
+    ///
+    /// Transforms the center of the rect through the full affine, then computes
+    /// the axis-aligned bounds from the scaled dimensions. This produces correct
+    /// results for scale+translate AND for transforms that include rotation.
     fn transform_rect(&self, rect: Rect) -> Rect {
         let affine = self.current_affine();
-
-        // For axis-aligned rectangles with simple transforms (scale + translate),
-        // we can just transform the origin and scale the size
-        let origin = self.transform_point(rect.origin);
         let a = affine.elements[0];
         let b = affine.elements[1];
         let c = affine.elements[2];
@@ -217,12 +254,129 @@ impl<'a> GpuPaintContext<'a> {
         let scale_x = (a * a + b * b).sqrt();
         let scale_y = (c * c + d * d).sqrt();
 
-        Rect::new(
-            origin.x,
-            origin.y,
-            rect.size.width * scale_x,
-            rect.size.height * scale_y,
-        )
+        // Transform the CENTER (not origin) — correct for rotated transforms
+        let center = Point::new(
+            rect.origin.x + rect.size.width * 0.5,
+            rect.origin.y + rect.size.height * 0.5,
+        );
+        let tc = self.transform_point(center);
+        let sw = rect.size.width * scale_x;
+        let sh = rect.size.height * scale_y;
+
+        Rect::new(tc.x - sw * 0.5, tc.y - sh * 0.5, sw, sh)
+    }
+
+    /// Extract rotation sin/cos from the current affine transform
+    ///
+    /// Returns `[sin_rz, cos_rz, sin_ry, cos_ry]` ready for GpuPrimitive.rotation.
+    /// Derives sin/cos directly from affine components without atan2.
+    /// The Y rotation slots are filled from the 3D transient state.
+    fn current_rotation_sincos(&self) -> [f32; 4] {
+        let affine = self.current_affine();
+        let a = affine.elements[0];
+        let b = affine.elements[1];
+        let scale = (a * a + b * b).sqrt();
+        if scale < 1e-6 {
+            return [0.0, 1.0, self.current_3d_sin_ry, self.current_3d_cos_ry];
+        }
+        [
+            b / scale,
+            a / scale,
+            self.current_3d_sin_ry,
+            self.current_3d_cos_ry,
+        ]
+    }
+
+    /// Get the DPI scale factor from the current affine transform.
+    /// On Retina 2x displays this returns ~2.0, on 1x displays ~1.0.
+    /// Used to scale 3D parameters (depth, perspective_d, translate_z) from
+    /// logical/CSS pixels to physical pixels to match prim.bounds.
+    fn current_dpi_scale(&self) -> f32 {
+        let affine = self.current_affine();
+        let a = affine.elements[0];
+        let b = affine.elements[1];
+        let c = affine.elements[2];
+        let d = affine.elements[3];
+        let scale_x = (a * a + b * b).sqrt();
+        let scale_y = (c * c + d * d).sqrt();
+        (scale_x + scale_y) * 0.5
+    }
+
+    /// Get the current 3D perspective params for GpuPrimitive.perspective.
+    /// perspective_d is scaled to physical pixels to match prim.bounds.
+    fn current_perspective_params(&self) -> [f32; 4] {
+        let scale = self.current_dpi_scale();
+        [
+            self.current_3d_sin_rx,
+            self.current_3d_cos_rx,
+            self.current_3d_perspective_d * scale,
+            self.current_3d_shape_type,
+        ]
+    }
+
+    /// Get the current 3D SDF params for GpuPrimitive.sdf_3d.
+    /// depth and translate_z are scaled to physical pixels to match prim.bounds.
+    fn current_sdf_3d_params(&self) -> [f32; 4] {
+        let scale = self.current_dpi_scale();
+        [
+            self.current_3d_depth * scale,
+            self.current_3d_ambient,
+            self.current_3d_specular,
+            self.current_3d_translate_z * scale,
+        ]
+    }
+
+    /// Get the current 3D light params for GpuPrimitive.light
+    fn current_light_params(&self) -> [f32; 4] {
+        self.current_3d_light
+    }
+
+    /// Set 3D rotation and perspective for the current element
+    pub fn set_3d_transform(&mut self, rx_rad: f32, ry_rad: f32, perspective_d: f32) {
+        self.current_3d_sin_rx = rx_rad.sin();
+        self.current_3d_cos_rx = rx_rad.cos();
+        self.current_3d_sin_ry = ry_rad.sin();
+        self.current_3d_cos_ry = ry_rad.cos();
+        self.current_3d_perspective_d = perspective_d;
+    }
+
+    /// Set 3D shape parameters for the current element
+    pub fn set_3d_shape(&mut self, shape_type: f32, depth: f32, ambient: f32, specular: f32) {
+        self.current_3d_shape_type = shape_type;
+        self.current_3d_depth = depth;
+        self.current_3d_ambient = ambient;
+        self.current_3d_specular = specular;
+    }
+
+    /// Set 3D light parameters for the current element
+    pub fn set_3d_light(&mut self, direction: [f32; 3], intensity: f32) {
+        self.current_3d_light = [direction[0], direction[1], direction[2], intensity];
+    }
+
+    /// Set translate-z offset for the current 3D element
+    pub fn set_3d_translate_z(&mut self, z: f32) {
+        self.current_3d_translate_z = z;
+    }
+
+    /// Set group shape descriptors for compound 3D rendering
+    pub fn set_3d_group(&mut self, shapes: &[crate::primitives::ShapeDesc]) {
+        self.current_3d_group_shapes = shapes.to_vec();
+    }
+
+    /// Reset 3D transient state to defaults (call after rendering each element)
+    pub fn clear_3d(&mut self) {
+        self.current_3d_sin_ry = 0.0;
+        self.current_3d_cos_ry = 1.0;
+        self.current_3d_sin_rx = 0.0;
+        self.current_3d_cos_rx = 1.0;
+        self.current_3d_perspective_d = 0.0;
+        self.current_3d_shape_type = 0.0;
+        self.current_3d_depth = 0.0;
+        self.current_3d_ambient = 0.3;
+        self.current_3d_specular = 32.0;
+        self.current_3d_translate_z = 0.0;
+        self.current_3d_light = [0.0, -1.0, 0.5, 0.8];
+        self.current_3d_group_shapes.clear();
     }
 
     /// Scale corner radius by the current transform's average scale factor
@@ -937,6 +1091,57 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         self.z_layer
     }
 
+    fn set_3d_transform(&mut self, rx_rad: f32, ry_rad: f32, perspective_d: f32) {
+        self.current_3d_sin_rx = rx_rad.sin();
+        self.current_3d_cos_rx = rx_rad.cos();
+        self.current_3d_sin_ry = ry_rad.sin();
+        self.current_3d_cos_ry = ry_rad.cos();
+        self.current_3d_perspective_d = perspective_d;
+    }
+
+    fn set_3d_shape(&mut self, shape_type: f32, depth: f32, ambient: f32, specular: f32) {
+        self.current_3d_shape_type = shape_type;
+        self.current_3d_depth = depth;
+        self.current_3d_ambient = ambient;
+        self.current_3d_specular = specular;
+    }
+
+    fn set_3d_light(&mut self, direction: [f32; 3], intensity: f32) {
+        self.current_3d_light = [direction[0], direction[1], direction[2], intensity];
+    }
+
+    fn set_3d_translate_z(&mut self, z: f32) {
+        self.current_3d_translate_z = z;
+    }
+
+    fn set_3d_group_raw(&mut self, shapes: &[[f32; 16]]) {
+        use crate::primitives::ShapeDesc;
+        self.current_3d_group_shapes = shapes
+            .iter()
+            .map(|arr| ShapeDesc {
+                offset: [arr[0], arr[1], arr[2], arr[3]],
+                params: [arr[4], arr[5], arr[6], arr[7]],
+                half_ext: [arr[8], arr[9], arr[10], arr[11]],
+                color: [arr[12], arr[13], arr[14], arr[15]],
+            })
+            .collect();
+    }
+
+    fn clear_3d(&mut self) {
+        self.current_3d_sin_ry = 0.0;
+        self.current_3d_cos_ry = 1.0;
+        self.current_3d_sin_rx = 0.0;
+        self.current_3d_cos_rx = 1.0;
+        self.current_3d_perspective_d = 0.0;
+        self.current_3d_shape_type = 0.0;
+        self.current_3d_depth = 0.0;
+        self.current_3d_ambient = 0.3;
+        self.current_3d_specular = 32.0;
+        self.current_3d_translate_z = 0.0;
+        self.current_3d_light = [0.0, -1.0, 0.5, 0.8];
+        self.current_3d_group_shapes.clear();
+    }
+
     fn fill_path(&mut self, path: &Path, brush: Brush) {
         // Apply current opacity to the brush
         let opacity = self.combined_opacity();
@@ -1211,6 +1416,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_bounds,
             clip_radius,
             gradient_params: transformed_gradient_params,
+            rotation: self.current_rotation_sincos(),
+            perspective: self.current_perspective_params(),
+            sdf_3d: self.current_sdf_3d_params(),
+            light: self.current_light_params(),
             type_info: [
                 PrimitiveType::Rect as u32,
                 fill_type as u32,
@@ -1291,6 +1500,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_bounds,
             clip_radius,
             gradient_params: transformed_gradient_params,
+            rotation: self.current_rotation_sincos(),
+            perspective: self.current_perspective_params(),
+            sdf_3d: self.current_sdf_3d_params(),
+            light: self.current_light_params(),
             type_info: [
                 PrimitiveType::Rect as u32,
                 fill_type as u32,
@@ -1340,6 +1553,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_bounds,
             clip_radius,
             gradient_params,
+            rotation: self.current_rotation_sincos(),
+            perspective: self.current_perspective_params(),
+            sdf_3d: self.current_sdf_3d_params(),
+            light: self.current_light_params(),
             type_info: [
                 PrimitiveType::Rect as u32,
                 fill_type as u32,
@@ -1410,6 +1627,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_bounds,
             clip_radius,
             gradient_params: transformed_gradient_params,
+            rotation: [0.0, 1.0, 0.0, 1.0],
+            perspective: self.current_perspective_params(),
+            sdf_3d: self.current_sdf_3d_params(),
+            light: self.current_light_params(),
             type_info: [
                 PrimitiveType::Circle as u32,
                 fill_type as u32,
@@ -1463,6 +1684,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_bounds,
             clip_radius,
             gradient_params: transformed_gradient_params,
+            rotation: [0.0, 1.0, 0.0, 1.0],
+            perspective: self.current_perspective_params(),
+            sdf_3d: self.current_sdf_3d_params(),
+            light: self.current_light_params(),
             type_info: [
                 PrimitiveType::Circle as u32,
                 fill_type as u32,
@@ -1733,6 +1958,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_bounds,
             clip_radius,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
+            rotation: self.current_rotation_sincos(),
+            perspective: self.current_perspective_params(),
+            sdf_3d: self.current_sdf_3d_params(),
+            light: self.current_light_params(),
             type_info: [
                 PrimitiveType::Shadow as u32,
                 FillType::Solid as u32,
@@ -1781,6 +2010,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_bounds,
             clip_radius,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
+            rotation: self.current_rotation_sincos(),
+            perspective: self.current_perspective_params(),
+            sdf_3d: self.current_sdf_3d_params(),
+            light: self.current_light_params(),
             type_info: [
                 PrimitiveType::InnerShadow as u32,
                 FillType::Solid as u32,
@@ -1825,6 +2058,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_bounds,
             clip_radius,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
+            rotation: [0.0, 1.0, 0.0, 1.0],
+            perspective: self.current_perspective_params(),
+            sdf_3d: self.current_sdf_3d_params(),
+            light: self.current_light_params(),
             type_info: [
                 PrimitiveType::CircleShadow as u32,
                 FillType::Solid as u32,
@@ -1868,6 +2105,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_bounds,
             clip_radius,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
+            rotation: [0.0, 1.0, 0.0, 1.0],
+            perspective: self.current_perspective_params(),
+            sdf_3d: self.current_sdf_3d_params(),
+            light: self.current_light_params(),
             type_info: [
                 PrimitiveType::CircleInnerShadow as u32,
                 FillType::Solid as u32,

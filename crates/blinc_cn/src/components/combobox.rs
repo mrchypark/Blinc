@@ -217,7 +217,7 @@ impl Combobox {
         // and used by the options list Stateful to trigger re-renders when search text changes
         let search_query_key = format!("{}_search_query", instance_key);
         let search_query_state: State<String> =
-            BlincContextState::get().use_state_keyed(&search_query_key, || String::new());
+            BlincContextState::get().use_state_keyed(&search_query_key, String::new);
 
         // Store dropdown width for overlay
         let dropdown_width = config.width.unwrap_or(200.0);
@@ -307,7 +307,7 @@ impl Combobox {
                         .color(text_clr),
                 );
 
-                let trigger = div()
+                div()
                     .flex_row()
                     .w_full()
                     .items_center()
@@ -326,9 +326,7 @@ impl Combobox {
                             .ml(1.0)
                             .flex_shrink_0(),
                     )
-                    .cursor_pointer();
-
-                trigger
+                    .cursor_pointer()
             })
             .on_click(move |ctx| {
                 let is_currently_open = open_state_for_click.get();
@@ -487,6 +485,7 @@ impl ElementBuilder for Combobox {
 
 /// Internal configuration for building a Combobox
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 struct ComboboxConfig {
     value_state: State<String>,
     options: Vec<ComboboxOption>,
@@ -671,6 +670,7 @@ pub fn combobox(value_state: &State<String>) -> ComboboxBuilder {
 ///
 /// This includes a search input and filtered options list.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn build_dropdown_content(
     options: &[ComboboxOption],
     current_selected: &str,
@@ -819,7 +819,7 @@ fn build_dropdown_content(
                                 .bg(item_bg)
                                 .child(
                                     div().child(
-                                        text(&format!("Use \"{}\"", custom_value))
+                                        text(format!("Use \"{}\"", custom_value))
                                             .size(font_size)
                                             .no_cursor()
                                             .color(text_color),

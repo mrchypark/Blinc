@@ -64,20 +64,12 @@ impl<T: Send + 'static> NodeState for T {
 }
 
 /// Data stored for each interactive node
+#[derive(Default)]
 struct NodeData {
     /// Optional FSM for interaction states
     fsm: Option<StateMachine>,
     /// Custom state (type-erased)
     state: Option<Box<dyn NodeState>>,
-}
-
-impl Default for NodeData {
-    fn default() -> Self {
-        Self {
-            fsm: None,
-            state: None,
-        }
-    }
 }
 
 /// Dirty tracking for incremental re-renders

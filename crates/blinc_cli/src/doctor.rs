@@ -4,7 +4,7 @@
 //! for each target platform.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // ANSI color codes
@@ -128,13 +128,13 @@ impl CheckCategory {
 
 /// Run all doctor checks
 pub fn run_doctor() -> Vec<CheckCategory> {
-    let mut categories = Vec::new();
-
-    categories.push(check_blinc_ecosystem());
-    categories.push(check_rust_toolchain());
-    categories.push(check_desktop_platform());
-    categories.push(check_android_platform());
-    categories.push(check_ios_platform());
+    let categories = vec![
+        check_blinc_ecosystem(),
+        check_rust_toolchain(),
+        check_desktop_platform(),
+        check_android_platform(),
+        check_ios_platform(),
+    ];
 
     categories
 }
@@ -350,7 +350,7 @@ fn check_desktop_platform() -> CheckCategory {
                     cat.add(CheckResult::warning(
                         lib,
                         "not found (optional)",
-                        &format!("May be needed for some features. Install via package manager."),
+                        "May be needed for some features. Install via package manager.",
                     ));
                 }
             }
@@ -664,7 +664,7 @@ fn find_android_sdk() -> Option<PathBuf> {
     common_paths.into_iter().find(|p| p.exists())
 }
 
-fn find_android_ndk(sdk_path: &PathBuf) -> Option<PathBuf> {
+fn find_android_ndk(sdk_path: &Path) -> Option<PathBuf> {
     // Check ANDROID_NDK_HOME
     if let Ok(path) = env::var("ANDROID_NDK_HOME") {
         let p = PathBuf::from(&path);
@@ -683,7 +683,7 @@ fn find_android_ndk(sdk_path: &PathBuf) -> Option<PathBuf> {
                 .filter(|e| e.path().is_dir())
                 .collect();
 
-            versions.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+            versions.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
 
             if let Some(latest) = versions.first() {
                 return Some(latest.path());
@@ -694,7 +694,7 @@ fn find_android_ndk(sdk_path: &PathBuf) -> Option<PathBuf> {
     None
 }
 
-fn get_ndk_toolchain_bin(ndk_path: &PathBuf) -> Option<PathBuf> {
+fn get_ndk_toolchain_bin(ndk_path: &Path) -> Option<PathBuf> {
     let os = match env::consts::OS {
         "macos" => "darwin",
         "linux" => "linux",

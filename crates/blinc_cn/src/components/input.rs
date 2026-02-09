@@ -55,7 +55,7 @@ use std::ops::{Deref, DerefMut};
 use super::label::{label, LabelSize};
 
 /// Border color configuration for different input states
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct InputBorderColors {
     /// Border color when idle (not hovered or focused)
     pub idle: Option<Color>,
@@ -65,17 +65,6 @@ pub struct InputBorderColors {
     pub focused: Option<Color>,
     /// Border color when in error state
     pub error: Option<Color>,
-}
-
-impl Default for InputBorderColors {
-    fn default() -> Self {
-        Self {
-            idle: None,
-            hover: None,
-            focused: None,
-            error: None,
-        }
-    }
 }
 
 /// Background color configuration for different input states
@@ -150,7 +139,7 @@ impl Input {
         }
 
         // Build the text input element
-        let text_input = Self::build_text_input(&config, &theme, &typography);
+        let text_input = Self::build_text_input(&config, theme, &typography);
 
         // If no label, description, or error, just wrap the input in a div
         if config.label.is_none() && config.description.is_none() && config.error.is_none() {

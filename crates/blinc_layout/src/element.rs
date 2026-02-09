@@ -994,6 +994,31 @@ pub struct RenderProps {
     /// Layer effects applied to this element (blur, drop shadow, glow, color matrix)
     /// Effects are applied during layer composition when the element is rendered
     pub layer_effects: Vec<LayerEffect>,
+    // 3D transform properties
+    /// X-axis rotation in degrees
+    pub rotate_x: Option<f32>,
+    /// Y-axis rotation in degrees
+    pub rotate_y: Option<f32>,
+    /// Perspective distance in pixels
+    pub perspective: Option<f32>,
+    /// 3D shape type (0=none, 1=box, 2=sphere, 3=cylinder, 4=torus, 5=capsule)
+    pub shape_3d: Option<f32>,
+    /// 3D extrusion depth in pixels
+    pub depth: Option<f32>,
+    /// Light direction [x, y, z]
+    pub light_direction: Option<[f32; 3]>,
+    /// Light intensity (0.0 - 1.0+)
+    pub light_intensity: Option<f32>,
+    /// Ambient light level (0.0 - 1.0)
+    pub ambient: Option<f32>,
+    /// Specular power (higher = tighter highlights)
+    pub specular: Option<f32>,
+    /// Z-axis translation in pixels (positive = toward viewer)
+    pub translate_z: Option<f32>,
+    /// 3D boolean operation type (0=union, 1=subtract, 2=intersect, 3=smooth-union, 4=smooth-subtract, 5=smooth-intersect)
+    pub op_3d: Option<f32>,
+    /// Blend radius for smooth boolean operations (in pixels)
+    pub blend_3d: Option<f32>,
     /// DEPRECATED: Whether the motion should start exiting
     ///
     /// This field is deprecated. Motion exit is now triggered explicitly via
@@ -1034,6 +1059,18 @@ impl Default for RenderProps {
             cursor: None,
             pointer_events_none: false,
             layer_effects: Vec::new(),
+            rotate_x: None,
+            rotate_y: None,
+            perspective: None,
+            shape_3d: None,
+            depth: None,
+            light_direction: None,
+            light_intensity: None,
+            ambient: None,
+            specular: None,
+            translate_z: None,
+            op_3d: None,
+            blend_3d: None,
             motion_is_exiting: false,
         }
     }
@@ -1163,7 +1200,7 @@ impl RenderProps {
         // node_id is not merged - keep the original
         // Override shadow if set
         if other.shadow.is_some() {
-            self.shadow = other.shadow.clone();
+            self.shadow = other.shadow;
         }
         // Override transform if set
         if other.transform.is_some() {

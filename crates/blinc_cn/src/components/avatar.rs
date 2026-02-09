@@ -150,6 +150,7 @@ impl AvatarStatus {
 }
 
 /// Configuration for avatar component
+#[derive(Default)]
 struct AvatarConfig {
     /// Image source URL
     src: Option<String>,
@@ -169,21 +170,6 @@ struct AvatarConfig {
     fallback_color: Option<Color>,
 }
 
-impl Default for AvatarConfig {
-    fn default() -> Self {
-        Self {
-            src: None,
-            alt: None,
-            fallback: None,
-            size: AvatarSize::default(),
-            shape: AvatarShape::default(),
-            status: None,
-            fallback_bg: None,
-            fallback_color: None,
-        }
-    }
-}
-
 /// Built avatar component
 struct BuiltAvatar {
     inner: Box<dyn ElementBuilder>,
@@ -193,7 +179,7 @@ impl BuiltAvatar {
     fn from_config(config: AvatarConfig) -> Self {
         let theme = ThemeState::get();
         let size_px = config.size.pixels();
-        let radius = config.shape.border_radius(size_px, &theme);
+        let radius = config.shape.border_radius(size_px, theme);
 
         // Determine background and content
         let (background, content) = if let Some(ref src) = config.src {
@@ -264,7 +250,7 @@ impl BuiltAvatar {
         let container = if let Some(status) = config.status {
             let status_size = config.size.status_size();
             let status_offset = config.size.status_offset();
-            let status_color = status.color(&theme);
+            let status_color = status.color(theme);
             let _border_color = theme.color(ColorToken::Background);
 
             // Status indicator positioned at bottom-right of the circular avatar

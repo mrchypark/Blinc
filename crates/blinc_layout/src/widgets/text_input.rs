@@ -57,6 +57,7 @@ static FOCUSED_TEXT_AREA: Mutex<Option<Weak<Mutex<crate::widgets::text_area::Tex
 
 /// Callback for setting continuous redraw on the animation scheduler
 /// This is set by the windowed app to bridge text widgets with the animation system
+#[allow(clippy::type_complexity)]
 static CONTINUOUS_REDRAW_CALLBACK: Mutex<Option<Box<dyn Fn(bool) + Send + Sync>>> =
     Mutex::new(None);
 
@@ -1428,10 +1429,8 @@ impl TextInput {
 
             // Add cursor to clip_container (sibling to text_wrapper, doesn't scroll)
             clip_container = clip_container.child(cursor_canvas);
-        } else {
-            if let Ok(mut cs) = cursor_state_for_canvas.lock() {
-                cs.visible = false;
-            }
+        } else if let Ok(mut cs) = cursor_state_for_canvas.lock() {
+            cs.visible = false;
         }
 
         // Add clip container to main content

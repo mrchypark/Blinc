@@ -684,10 +684,10 @@ pub fn parse_native_result_json(json: &str) -> NativeResult<NativeValue> {
                 return Ok(NativeValue::Bool(true));
             } else if value_str.starts_with("false") {
                 return Ok(NativeValue::Bool(false));
-            } else if value_str.starts_with('"') {
+            } else if let Some(stripped) = value_str.strip_prefix('"') {
                 // String value - find closing quote
-                if let Some(end) = value_str[1..].find('"') {
-                    let s = &value_str[1..end + 1];
+                if let Some(end) = stripped.find('"') {
+                    let s = &stripped[..end];
                     return Ok(NativeValue::String(s.to_string()));
                 }
             } else if let Ok(n) = value_str

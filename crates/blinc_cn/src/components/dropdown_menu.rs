@@ -493,8 +493,7 @@ fn show_dropdown_menu(
     let motion_key_str = format!("dropdown_{}", key);
     let motion_key_with_child = format!("{}:child:0", motion_key_str);
 
-    let handle = mgr
-        .dropdown()
+    mgr.dropdown()
         .at(x, y)
         .dismiss_on_escape(true)
         .motion_key(&motion_key_with_child)
@@ -520,9 +519,7 @@ fn show_dropdown_menu(
                 padding,
             )
         })
-        .show();
-
-    handle
+        .show()
 }
 
 /// Show a submenu overlay positioned to the right of the parent item
@@ -557,8 +554,7 @@ fn show_submenu(
     let motion_key_str = format!("submenu_{}", key);
     let motion_key_with_child = format!("{}:child:0", motion_key_str);
 
-    let handle = mgr
-        .dropdown()
+    mgr.dropdown()
         .at(x, y)
         .dismiss_on_escape(true)
         .motion_key(&motion_key_with_child)
@@ -583,9 +579,7 @@ fn show_submenu(
                 padding,
             )
         })
-        .show();
-
-    handle
+        .show()
 }
 
 /// Build submenu content (recursive for nested submenus)

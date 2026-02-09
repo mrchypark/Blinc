@@ -176,7 +176,7 @@ pub fn suite() -> TestSuite {
 
         for i in 0..60 {
             let angle = i as f32 * 0.15;
-            let scale = 0.97_f32.powi(i as i32);
+            let scale = 0.97_f32.powi(i);
             let offset = i as f32 * 2.0;
 
             c.push_transform(Transform::rotate(angle));

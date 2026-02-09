@@ -27,8 +27,8 @@ pub fn paint_to_brush(paint: &usvg::Paint, opacity: f32) -> Option<Brush> {
                 .collect();
 
             let gradient = Gradient::linear_with_stops(
-                blinc_core::Point::new(lg.x1() as f32, lg.y1() as f32),
-                blinc_core::Point::new(lg.x2() as f32, lg.y2() as f32),
+                blinc_core::Point::new(lg.x1(), lg.y1()),
+                blinc_core::Point::new(lg.x2(), lg.y2()),
                 stops,
             );
             Some(Brush::Gradient(gradient))
@@ -49,8 +49,8 @@ pub fn paint_to_brush(paint: &usvg::Paint, opacity: f32) -> Option<Brush> {
                 .collect();
 
             let gradient = Gradient::radial_with_stops(
-                blinc_core::Point::new(rg.cx() as f32, rg.cy() as f32),
-                rg.r().get() as f32,
+                blinc_core::Point::new(rg.cx(), rg.cy()),
+                rg.r().get(),
                 stops,
             );
             Some(Brush::Gradient(gradient))
@@ -83,14 +83,14 @@ pub fn stroke_to_blinc(stroke: &usvg::Stroke) -> Option<(Stroke, Brush)> {
         usvg::LineJoin::Bevel => LineJoin::Bevel,
     };
 
-    let mut blinc_stroke = Stroke::new(stroke.width().get() as f32)
+    let mut blinc_stroke = Stroke::new(stroke.width().get())
         .with_cap(cap)
         .with_join(join);
 
     // Handle dash pattern
     if let Some(dasharray) = stroke.dasharray() {
-        let dashes: Vec<f32> = dasharray.iter().map(|&d| d as f32).collect();
-        blinc_stroke = blinc_stroke.with_dash(dashes, stroke.dashoffset() as f32);
+        let dashes: Vec<f32> = dasharray.to_vec();
+        blinc_stroke = blinc_stroke.with_dash(dashes, stroke.dashoffset());
     }
 
     Some((blinc_stroke, brush))

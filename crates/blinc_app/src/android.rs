@@ -262,6 +262,7 @@ impl AndroidApp {
         let mut native_window: Option<NativeWindow> = None;
         let mut needs_rebuild = true;
         let mut needs_redraw_next_frame = false;
+        let mut last_frame_time_ms: u64 = 0;
         let mut running = true;
         let mut focused = false;
 
@@ -905,14 +906,26 @@ impl AndroidApp {
                         // First time: create tree
                         let mut tree = RenderTree::from_element(&element);
                         tree.set_scale_factor(windowed_ctx.scale_factor as f32);
+                        if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                            tree.set_stylesheet_arc(stylesheet.clone());
+                        }
+                        tree.apply_stylesheet_base_styles();
+                        tree.apply_stylesheet_layout_overrides();
                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                        tree.start_all_css_animations();
                         tree.clear_dirty(); // Start clean
                         render_tree = Some(tree);
                     } else if let Some(ref mut tree) = render_tree {
                         // Full rebuild
                         *tree = RenderTree::from_element(&element);
                         tree.set_scale_factor(windowed_ctx.scale_factor as f32);
+                        if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                            tree.set_stylesheet_arc(stylesheet.clone());
+                        }
+                        tree.apply_stylesheet_base_styles();
+                        tree.apply_stylesheet_layout_overrides();
                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                        tree.start_all_css_animations();
                         // Clear dirty on the NEW tree to prevent immediate re-rebuild
                         tree.clear_dirty();
                     }
@@ -920,6 +933,32 @@ impl AndroidApp {
                 }
                 // Reset rebuild flag after successful rebuild
                 needs_rebuild = false;
+            }
+
+            // Tick CSS animations and apply state styles (visual-only)
+            {
+                let current_time = blinc_layout::prelude::elapsed_ms();
+                if let Some(ref mut tree) = render_tree {
+                    // Tick CSS animations
+                    let dt_ms = if last_frame_time_ms > 0 {
+                        (current_time - last_frame_time_ms) as f32
+                    } else {
+                        16.0
+                    };
+                    let css_animating = tree.tick_css_animations(dt_ms);
+                    if css_animating {
+                        tree.apply_all_css_animation_props();
+                        needs_redraw = true;
+                        needs_redraw_next_frame = true;
+                    }
+                    // Apply CSS state styles (:hover, :active, :focus)
+                    if let Some(ref windowed_ctx) = ctx {
+                        if tree.stylesheet().is_some() {
+                            tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
+                        }
+                    }
+                }
+                last_frame_time_ms = current_time;
             }
 
             // =========================================================

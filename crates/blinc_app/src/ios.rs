@@ -283,6 +283,7 @@ impl IOSApp {
             last_touch_pos: None,
             is_scrolling: false,
             gesture_detector: GestureDetector::new(),
+            last_frame_time_ms: 0,
         })
     }
 
@@ -320,6 +321,8 @@ pub struct IOSRenderContext {
     is_scrolling: bool,
     /// Gesture detector for touch gestures
     gesture_detector: GestureDetector,
+    /// Last frame time for CSS animation delta calculation
+    last_frame_time_ms: u64,
 }
 
 impl IOSRenderContext {
@@ -343,7 +346,19 @@ impl IOSRenderContext {
         let has_stateful_updates = blinc_layout::peek_needs_redraw();
         let has_pending_rebuilds = blinc_layout::has_pending_subtree_rebuilds();
 
-        dirty || wake_requested || animations_active || has_stateful_updates || has_pending_rebuilds
+        // Check if CSS animations are active
+        let css_animating = self
+            .render_tree
+            .as_ref()
+            .map(|tree| !tree.css_animations_empty())
+            .unwrap_or(false);
+
+        dirty
+            || wake_requested
+            || animations_active
+            || has_stateful_updates
+            || has_pending_rebuilds
+            || css_animating
     }
     /// Update the window size
     ///
@@ -430,14 +445,44 @@ impl IOSRenderContext {
             );
             let mut tree = RenderTree::from_element(&element);
             tree.set_scale_factor(self.windowed_ctx.scale_factor as f32);
+            if let Some(ref stylesheet) = self.windowed_ctx.stylesheet {
+                tree.set_stylesheet_arc(stylesheet.clone());
+            }
+            tree.apply_stylesheet_base_styles();
+            tree.apply_stylesheet_layout_overrides();
             tree.compute_layout(self.windowed_ctx.width, self.windowed_ctx.height);
+            tree.start_all_css_animations();
             self.render_tree = Some(tree);
         } else if let Some(ref mut tree) = self.render_tree {
             // Full rebuild
             tree.clear_dirty();
             *tree = RenderTree::from_element(&element);
             tree.set_scale_factor(self.windowed_ctx.scale_factor as f32);
+            if let Some(ref stylesheet) = self.windowed_ctx.stylesheet {
+                tree.set_stylesheet_arc(stylesheet.clone());
+            }
+            tree.apply_stylesheet_base_styles();
+            tree.apply_stylesheet_layout_overrides();
             tree.compute_layout(self.windowed_ctx.width, self.windowed_ctx.height);
+            tree.start_all_css_animations();
+        }
+
+        // Tick CSS animations and apply state styles
+        if let Some(ref mut tree) = self.render_tree {
+            let current_time = blinc_layout::prelude::elapsed_ms();
+            let dt_ms = if self.last_frame_time_ms > 0 {
+                (current_time - self.last_frame_time_ms) as f32
+            } else {
+                16.0
+            };
+            let css_animating = tree.tick_css_animations(dt_ms);
+            if css_animating {
+                tree.apply_all_css_animation_props();
+            }
+            if tree.stylesheet().is_some() {
+                tree.apply_stylesheet_state_styles(&self.windowed_ctx.event_router);
+            }
+            self.last_frame_time_ms = current_time;
         }
 
         // Increment rebuild count
@@ -750,7 +795,13 @@ where
         let element = builder(ctx);
         let mut tree = RenderTree::from_element(&element);
         tree.set_scale_factor(ctx.scale_factor as f32);
+        if let Some(ref stylesheet) = ctx.stylesheet {
+            tree.set_stylesheet_arc(stylesheet.clone());
+        }
+        tree.apply_stylesheet_base_styles();
+        tree.apply_stylesheet_layout_overrides();
         tree.compute_layout(ctx.width, ctx.height);
+        tree.start_all_css_animations();
         tree
     });
     let _ = RUST_UI_BUILDER.set(boxed_builder);
@@ -853,6 +904,7 @@ pub extern "C" fn blinc_build_frame(ctx: *mut IOSRenderContext) {
 
             if needs_layout {
                 if let Some(ref mut tree) = ctx.render_tree {
+                    tree.apply_stylesheet_layout_overrides();
                     tree.compute_layout(ctx.windowed_ctx.width, ctx.windowed_ctx.height);
                 }
             }
@@ -1040,11 +1092,34 @@ pub extern "C" fn blinc_tick_animations(ctx: *mut IOSRenderContext) -> bool {
     }
     unsafe {
         let ctx = &mut *ctx;
-        if let Ok(mut sched) = ctx.animations.lock() {
+        let motion_active = if let Ok(mut sched) = ctx.animations.lock() {
             sched.tick()
         } else {
             false
-        }
+        };
+
+        // Tick CSS animations and apply state styles
+        let css_active = if let Some(ref mut tree) = ctx.render_tree {
+            let current_time = blinc_layout::prelude::elapsed_ms();
+            let dt_ms = if ctx.last_frame_time_ms > 0 {
+                (current_time - ctx.last_frame_time_ms) as f32
+            } else {
+                16.0
+            };
+            let animating = tree.tick_css_animations(dt_ms);
+            if animating {
+                tree.apply_all_css_animation_props();
+            }
+            if tree.stylesheet().is_some() {
+                tree.apply_stylesheet_state_styles(&ctx.windowed_ctx.event_router);
+            }
+            ctx.last_frame_time_ms = current_time;
+            animating
+        } else {
+            false
+        };
+
+        motion_active || css_active
     }
 }
 

@@ -115,7 +115,7 @@ impl ElementSnapshot {
 }
 
 /// Optional visual properties for detailed element inspection.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct VisualProps {
     /// Background color (RGBA).
     pub background_color: Option<[f32; 4]>,
@@ -131,20 +131,6 @@ pub struct VisualProps {
     pub transform: Option<[f32; 6]>,
     /// Additional CSS-like properties.
     pub styles: HashMap<String, String>,
-}
-
-impl Default for VisualProps {
-    fn default() -> Self {
-        Self {
-            background_color: None,
-            border_color: None,
-            border_width: None,
-            border_radius: None,
-            opacity: None,
-            transform: None,
-            styles: HashMap::new(),
-        }
-    }
 }
 
 /// Difference between two tree snapshots.

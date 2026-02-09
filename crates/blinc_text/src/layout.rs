@@ -254,6 +254,7 @@ impl TextLayoutEngine {
     }
 
     /// Layout text that contains explicit newlines but no word wrapping
+    #[allow(clippy::too_many_arguments)]
     fn layout_with_newlines_only(
         &self,
         text: &str,

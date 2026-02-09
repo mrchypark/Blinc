@@ -16,6 +16,7 @@ use std::ffi::CString;
 /// Android asset loader using NDK AssetManager
 ///
 /// Loads assets from the APK's assets/ folder.
+#[cfg_attr(not(target_os = "android"), derive(Default))]
 pub struct AndroidAssetLoader {
     #[cfg(target_os = "android")]
     app: AndroidApp,
@@ -103,7 +104,7 @@ impl AssetLoader for AndroidAssetLoader {
 impl AndroidAssetLoader {
     /// Create a placeholder loader (fails on non-Android)
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 }
 

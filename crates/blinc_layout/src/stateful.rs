@@ -261,14 +261,17 @@ impl KeyframeHandle {
 }
 
 /// Global storage for persisted animated values keyed by stateful context
+#[allow(clippy::incompatible_msrv)]
 static PERSISTED_ANIMATED_VALUES: LazyLock<RwLock<HashMap<String, SharedAnimatedValue>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Global storage for persisted animated timelines keyed by stateful context
+#[allow(clippy::incompatible_msrv)]
 static PERSISTED_ANIMATED_TIMELINES: LazyLock<RwLock<HashMap<String, SharedAnimatedTimeline>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Global storage for persisted keyframe tracks keyed by stateful context
+#[allow(clippy::incompatible_msrv)]
 static PERSISTED_KEYFRAME_TRACKS: LazyLock<RwLock<HashMap<String, SharedKeyframeTrack>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
@@ -308,6 +311,7 @@ pub fn peek_needs_redraw() -> bool {
 /// When a stateful element's state changes, it computes new RenderProps
 /// and queues the update here. The windowed app applies these updates
 /// directly to the RenderTree, avoiding a full tree rebuild.
+#[allow(clippy::incompatible_msrv)]
 static PENDING_PROP_UPDATES: LazyLock<Mutex<Vec<(LayoutNodeId, RenderProps)>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -315,6 +319,7 @@ static PENDING_PROP_UPDATES: LazyLock<Mutex<Vec<(LayoutNodeId, RenderProps)>>> =
 ///
 /// Each entry contains the parent node ID and the children to rebuild.
 /// Children are stored as boxed Div elements (the result of the callback).
+#[allow(clippy::incompatible_msrv)]
 static PENDING_SUBTREE_REBUILDS: LazyLock<Mutex<Vec<PendingSubtreeRebuild>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -385,6 +390,7 @@ pub fn has_pending_subtree_rebuilds() -> bool {
 /// Using a HashMap with unique keys ensures that re-registration replaces the old
 /// entry instead of accumulating duplicates on each rebuild.
 /// Uses Arc instead of Box to allow cloning callbacks before releasing the lock.
+#[allow(clippy::type_complexity, clippy::incompatible_msrv)]
 static STATEFUL_DEPS: LazyLock<
     Mutex<std::collections::HashMap<u64, (Vec<SignalId>, Arc<dyn Fn() + Send + Sync>)>>,
 > = LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
@@ -455,6 +461,7 @@ pub fn check_stateful_deps(changed_signals: &[SignalId]) -> bool {
 /// Maps stateful_key -> (animation_keys, refresh_fn) where animation_keys are
 /// the persisted animated value keys and refresh_fn triggers a callback re-run.
 /// The windowed app checks these on animation frames to update animating statefuls.
+#[allow(clippy::type_complexity, clippy::incompatible_msrv)]
 static STATEFUL_ANIMATIONS: LazyLock<
     Mutex<std::collections::HashMap<u64, (Vec<String>, Arc<dyn Fn() + Send + Sync>)>>,
 > = LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
@@ -486,6 +493,7 @@ pub(crate) fn unregister_stateful_animation(stateful_key: u64) {
 ///
 /// Called by windowed app on animation frames (when scheduler.take_needs_redraw() is true).
 /// Returns true if any statefuls were refreshed.
+#[allow(clippy::type_complexity)]
 pub fn check_stateful_animations() -> bool {
     // Collect callbacks to call and animation keys to check
     let entries: Vec<(u64, Vec<String>, Arc<dyn Fn() + Send + Sync>)> = {
@@ -1250,6 +1258,7 @@ impl ChildKeyCounter {
 ///     })
 /// ```
 #[derive(Clone)]
+#[allow(clippy::arc_with_non_send_sync)]
 pub struct StateContext<S: StateTransitions> {
     /// Current state value
     state: S,
@@ -1290,6 +1299,7 @@ pub struct StateContext<S: StateTransitions> {
 
 impl<S: StateTransitions> StateContext<S> {
     /// Create a new StateContext
+    #[allow(clippy::arc_with_non_send_sync)]
     pub(crate) fn new(
         state: S,
         key: String,
@@ -2224,7 +2234,7 @@ impl<S: StateTransitions> Stateful<S> {
 
             tracing::trace!("Invoking state callback for Stateful");
             // Apply callback to populate children and props
-            callback(&state_copy, &mut *self.inner.borrow_mut());
+            callback(&state_copy, &mut self.inner.borrow_mut());
 
             // Mark as updated
             self.shared_state.lock().unwrap().needs_visual_update = false;
@@ -2620,7 +2630,7 @@ impl<S: StateTransitions> Stateful<S> {
 
             if !anim_keys.is_empty() {
                 if let Some(refresh_cb) = refresh_cb {
-                    let stateful_key = Arc::as_ptr(&shared) as u64;
+                    let stateful_key = Arc::as_ptr(shared) as u64;
                     register_stateful_animation(stateful_key, anim_keys, refresh_cb);
                 }
             }
@@ -2746,7 +2756,7 @@ impl<S: StateTransitions> Stateful<S> {
             let state_copy = shared.state;
             shared.needs_visual_update = false;
             drop(shared); // Release lock before calling callback
-            callback(&state_copy, &mut *self.inner.borrow_mut());
+            callback(&state_copy, &mut self.inner.borrow_mut());
         }
     }
 

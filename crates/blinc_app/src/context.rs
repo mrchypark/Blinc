@@ -1547,7 +1547,7 @@ impl RenderContext {
         (texts, svgs, images)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
     fn collect_elements_recursive(
         &self,
         tree: &RenderTree,
@@ -2013,8 +2013,16 @@ impl RenderContext {
                     boundaries.dedup();
 
                     // Build segments between boundaries
-                    let mut segments: Vec<(usize, usize, [f32; 4], bool, bool, bool, bool)> =
-                        Vec::new();
+                    #[allow(clippy::type_complexity)]
+                    let mut segments: Vec<(
+                        usize,
+                        usize,
+                        [f32; 4],
+                        bool,
+                        bool,
+                        bool,
+                        bool,
+                    )> = Vec::new();
 
                     for window in boundaries.windows(2) {
                         let seg_start = window[0];
@@ -3016,7 +3024,7 @@ fn generate_text_decoration_primitives_by_layer(
         }
 
         // Line thickness scales with font size (roughly 1/14th of font size, minimum 1px)
-        let line_thickness = (text.font_size / 14.0).max(1.0).min(3.0);
+        let line_thickness = (text.font_size / 14.0).clamp(1.0, 3.0);
 
         let layer_primitives = primitives_by_layer.entry(text.z_index).or_default();
 

@@ -45,7 +45,7 @@ impl TextSelection {
 
     /// Check if there's any text selected
     pub fn has_selection(&self) -> bool {
-        self.text.as_ref().map_or(false, |t| !t.is_empty())
+        self.text.as_ref().is_some_and(|t| !t.is_empty())
     }
 
     /// Get the selected text

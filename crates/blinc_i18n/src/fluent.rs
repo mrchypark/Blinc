@@ -44,6 +44,9 @@ impl FluentStore {
         }
     }
 
+    // This is currently unused, but kept as a convenient entrypoint for tests/examples
+    // and future in-memory locale loading.
+    #[allow(dead_code)]
     pub fn load_from_str(&mut self, locale: &str, ftl: &str) -> Result<(), String> {
         let (loc, bundle) = parse_ftl(locale, ftl)?;
         self.add_bundle(loc, bundle);

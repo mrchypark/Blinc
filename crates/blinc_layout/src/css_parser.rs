@@ -67,8 +67,11 @@ use nom::{
 };
 use tracing::debug;
 
-use crate::element::RenderLayer;
-use crate::element_style::ElementStyle;
+use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, WoodMaterial};
+use crate::element_style::{
+    ElementStyle, SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify,
+    StyleOverflow,
+};
 use crate::units::Length;
 
 /// Custom parser result type using VerboseError for better diagnostics
@@ -459,7 +462,7 @@ pub enum ElementState {
 
 impl ElementState {
     /// Parse a state from a pseudo-class string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_state(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "hover" => Some(ElementState::Hover),
             "active" => Some(ElementState::Active),
@@ -679,32 +682,50 @@ impl CssKeyframes {
         }
 
         // Try to extract transform components from Affine2D
-        if let Some(ref transform) = style.transform {
-            if let Transform::Affine2D(affine) = transform {
-                let [a, b, c, d, tx, ty] = affine.elements;
+        if let Some(Transform::Affine2D(affine)) = &style.transform {
+            let [a, b, c, d, tx, ty] = affine.elements;
 
-                // Extract translation
-                if tx != 0.0 || ty != 0.0 {
-                    props.translate_x = Some(tx);
-                    props.translate_y = Some(ty);
+            // Extract translation
+            if tx != 0.0 || ty != 0.0 {
+                props.translate_x = Some(tx);
+                props.translate_y = Some(ty);
+            }
+
+            // Try to extract scale (valid when no rotation/skew: b=0, c=0)
+            if b.abs() < 0.0001 && c.abs() < 0.0001 {
+                if (a - 1.0).abs() > 0.0001 {
+                    props.scale_x = Some(a);
                 }
-
-                // Try to extract scale (valid when no rotation/skew: b=0, c=0)
-                if b.abs() < 0.0001 && c.abs() < 0.0001 {
-                    if (a - 1.0).abs() > 0.0001 {
-                        props.scale_x = Some(a);
-                    }
-                    if (d - 1.0).abs() > 0.0001 {
-                        props.scale_y = Some(d);
-                    }
-                } else {
-                    // Has rotation - extract rotation angle
-                    let rotation = b.atan2(a);
-                    if rotation.abs() > 0.0001 {
-                        props.rotate = Some(rotation.to_degrees());
-                    }
+                if (d - 1.0).abs() > 0.0001 {
+                    props.scale_y = Some(d);
+                }
+            } else {
+                // Has rotation - extract rotation angle
+                let rotation = b.atan2(a);
+                if rotation.abs() > 0.0001 {
+                    props.rotate = Some(rotation.to_degrees());
                 }
             }
+        }
+
+        // 3D properties
+        if let Some(rx) = style.rotate_x {
+            props.rotate_x = Some(rx);
+        }
+        if let Some(ry) = style.rotate_y {
+            props.rotate_y = Some(ry);
+        }
+        if let Some(p) = style.perspective {
+            props.perspective = Some(p);
+        }
+        if let Some(d) = style.depth {
+            props.depth = Some(d);
+        }
+        if let Some(tz) = style.translate_z {
+            props.translate_z = Some(tz);
+        }
+        if let Some(b) = style.blend_3d {
+            props.blend_3d = Some(b);
         }
 
         props
@@ -726,32 +747,30 @@ impl CssKeyframes {
 
         // Try to extract transform components from Affine2D
         // Note: Complex combined transforms may not decompose cleanly
-        if let Some(ref transform) = style.transform {
-            if let Transform::Affine2D(affine) = transform {
-                let [a, b, c, d, tx, ty] = affine.elements;
+        if let Some(Transform::Affine2D(affine)) = &style.transform {
+            let [a, b, c, d, tx, ty] = affine.elements;
 
-                // Always extract translation for keyframe animations
-                // (including zero values which are meaningful end states)
-                kf.translate_x = Some(tx);
-                kf.translate_y = Some(ty);
+            // Always extract translation for keyframe animations
+            // (including zero values which are meaningful end states)
+            kf.translate_x = Some(tx);
+            kf.translate_y = Some(ty);
 
-                // Try to extract scale (valid when no rotation/skew: b=0, c=0)
-                if b.abs() < 0.0001 && c.abs() < 0.0001 {
-                    // Always include scale values for keyframe animations
-                    // (including 1.0 which is a meaningful end state)
-                    kf.scale_x = Some(a);
-                    kf.scale_y = Some(d);
-                } else {
-                    // Has rotation - try to extract rotation angle
-                    // For pure rotation: a=cos(θ), b=sin(θ), c=-sin(θ), d=cos(θ)
-                    let rotation = b.atan2(a);
-                    if rotation.abs() > 0.0001 {
-                        kf.rotate = Some(rotation.to_degrees());
-                    }
+            // Try to extract scale (valid when no rotation/skew: b=0, c=0)
+            if b.abs() < 0.0001 && c.abs() < 0.0001 {
+                // Always include scale values for keyframe animations
+                // (including 1.0 which is a meaningful end state)
+                kf.scale_x = Some(a);
+                kf.scale_y = Some(d);
+            } else {
+                // Has rotation - try to extract rotation angle
+                // For pure rotation: a=cos(θ), b=sin(θ), c=-sin(θ), d=cos(θ)
+                let rotation = b.atan2(a);
+                if rotation.abs() > 0.0001 {
+                    kf.rotate = Some(rotation.to_degrees());
                 }
             }
-            // Mat4 transforms are more complex, skip for now
         }
+        // Mat4 transforms are more complex, skip for now
 
         kf
     }
@@ -974,6 +993,7 @@ impl Stylesheet {
     /// let css = "#card { opacity: 0.5; }";
     /// let stylesheet = Stylesheet::parse(css)?;
     /// ```
+    #[allow(clippy::result_large_err)]
     pub fn parse(css: &str) -> Result<Self, ParseError> {
         let result = Self::parse_with_errors(css);
 
@@ -998,6 +1018,27 @@ impl Stylesheet {
     /// fall back to an empty stylesheet rather than handle errors explicitly.
     pub fn parse_or_empty(css: &str) -> Self {
         Self::parse(css).unwrap_or_default()
+    }
+
+    /// Insert a style for an element ID (without the # prefix)
+    ///
+    /// This is the programmatic equivalent of parsing `#id { ... }` in CSS.
+    /// If a style already exists for this ID, it is replaced.
+    pub fn insert(&mut self, id: impl Into<String>, style: ElementStyle) {
+        self.styles.insert(id.into(), style);
+    }
+
+    /// Insert a state-specific style for an element ID
+    ///
+    /// This is the programmatic equivalent of parsing `#id:hover { ... }` in CSS.
+    pub fn insert_with_state(
+        &mut self,
+        id: impl Into<String>,
+        state: ElementState,
+        style: ElementStyle,
+    ) {
+        let key = format!("{}:{}", id.into(), state);
+        self.styles.insert(key, style);
     }
 
     /// Get a style by element ID (without the # prefix)
@@ -1085,6 +1126,37 @@ impl Stylesheet {
     /// Check if the stylesheet is empty
     pub fn is_empty(&self) -> bool {
         self.styles.is_empty()
+    }
+
+    /// Merge another stylesheet into this one (cascade — later rules override earlier)
+    ///
+    /// This follows CSS cascade rules: styles from `other` override matching
+    /// styles in `self`. Variables and keyframes are also merged.
+    pub fn merge(&mut self, other: Stylesheet) {
+        for (key, style) in other.styles {
+            self.styles.insert(key, style);
+        }
+        for (key, value) in other.variables {
+            self.variables.insert(key, value);
+        }
+        for (key, kf) in other.keyframes {
+            self.keyframes.insert(key, kf);
+        }
+    }
+
+    /// Load and parse a `.css` file from disk
+    #[allow(clippy::result_large_err)]
+    pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, ParseError> {
+        let path = path.as_ref();
+        let css = std::fs::read_to_string(path).map_err(|e| {
+            ParseError::new(
+                Severity::Error,
+                format!("Failed to read CSS file '{}': {}", path.display(), e),
+                0,
+                0,
+            )
+        })?;
+        Self::parse(&css)
     }
 
     // =========================================================================
@@ -1422,7 +1494,7 @@ fn id_selector(input: &str) -> ParseResult<'_, CssSelector> {
             Ok((i, state_name))
         })(input)?;
 
-        let element_state = state.and_then(ElementState::from_str);
+        let element_state = state.and_then(ElementState::parse_state);
 
         Ok((
             input,
@@ -1631,7 +1703,7 @@ fn keyframe_position(input: &str) -> ParseResult<'_, f32> {
 
 /// Parsed content from a stylesheet - can be either a rule or variables
 enum CssBlock {
-    Rule(String, ElementStyle),
+    Rule(String, Box<ElementStyle>),
     Variables(Vec<(String, String)>),
 }
 
@@ -1890,9 +1962,7 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
             }
         }
         "transform" => {
-            if let Some(transform) = parse_transform(value) {
-                style.transform = Some(transform);
-            }
+            parse_transform_with_3d(value, style);
         }
         "opacity" => {
             if let Ok((_, opacity)) = parse_opacity::<nom::error::Error<&str>>(value) {
@@ -1902,6 +1972,67 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
         "render-layer" | "z-index" => {
             if let Ok((_, layer)) = parse_render_layer::<nom::error::Error<&str>>(value) {
                 style.render_layer = Some(layer);
+            }
+        }
+        // 3D transform properties
+        "rotate-x" => {
+            if let Some(deg) = parse_angle_value(value) {
+                style.rotate_x = Some(deg);
+            }
+        }
+        "rotate-y" => {
+            if let Some(deg) = parse_angle_value(value) {
+                style.rotate_y = Some(deg);
+            }
+        }
+        "perspective" => {
+            if let Some(px) = parse_css_px(value) {
+                style.perspective = Some(px);
+            }
+        }
+        "shape-3d" => {
+            if is_valid_shape_3d(value) {
+                style.shape_3d = Some(value.trim().to_lowercase());
+            }
+        }
+        "depth" => {
+            if let Some(px) = parse_css_px(value) {
+                style.depth = Some(px);
+            }
+        }
+        "light-direction" => {
+            if let Some(dir) = parse_vec3_value(value) {
+                style.light_direction = Some(dir);
+            }
+        }
+        "light-intensity" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.light_intensity = Some(v);
+            }
+        }
+        "ambient" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.ambient = Some(v);
+            }
+        }
+        "specular" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.specular = Some(v);
+            }
+        }
+        "translate-z" => {
+            if let Some(px) = parse_css_px(value) {
+                style.translate_z = Some(px);
+            }
+        }
+        "3d-op" => {
+            if is_valid_op_3d(value) {
+                style.op_3d = Some(value.trim().to_lowercase());
+            }
+        }
+        "3d-blend" => {
+            if let Some(px) = parse_css_px(value) {
+                style.blend_3d = Some(px);
             }
         }
         "animation" => {
@@ -1956,6 +2087,162 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 let mut anim = style.animation.take().unwrap_or_default();
                 anim.fill_mode = fill_mode;
                 style.animation = Some(anim);
+            }
+        }
+        "backdrop-filter" => {
+            let trimmed = value.trim().to_lowercase();
+            match trimmed.as_str() {
+                "glass" => {
+                    style.material = Some(Material::Glass(GlassMaterial::new()));
+                    style.render_layer = Some(RenderLayer::Glass);
+                }
+                "metallic" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::new()));
+                }
+                "chrome" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::chrome()));
+                }
+                "gold" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::gold()));
+                }
+                "wood" => {
+                    style.material = Some(Material::Wood(WoodMaterial::new()));
+                }
+                _ if trimmed.starts_with("blur(") => {
+                    // backdrop-filter: blur(10px) → glass material
+                    style.material = Some(Material::Glass(GlassMaterial::new()));
+                    style.render_layer = Some(RenderLayer::Glass);
+                }
+                _ => {}
+            }
+        }
+        // =====================================================================
+        // Layout Properties
+        // =====================================================================
+        "width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.width = Some(px);
+            }
+        }
+        "height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.height = Some(px);
+            }
+        }
+        "min-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.min_width = Some(px);
+            }
+        }
+        "min-height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.min_height = Some(px);
+            }
+        }
+        "max-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.max_width = Some(px);
+            }
+        }
+        "max-height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.max_height = Some(px);
+            }
+        }
+        "display" => match value.trim() {
+            "flex" => style.display = Some(StyleDisplay::Flex),
+            "block" => style.display = Some(StyleDisplay::Block),
+            "none" => style.display = Some(StyleDisplay::None),
+            _ => {}
+        },
+        "flex-direction" => match value.trim() {
+            "row" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::Row);
+            }
+            "column" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::Column);
+            }
+            "row-reverse" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::RowReverse);
+            }
+            "column-reverse" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::ColumnReverse);
+            }
+            _ => {}
+        },
+        "flex-wrap" => match value.trim() {
+            "wrap" => style.flex_wrap = Some(true),
+            "nowrap" => style.flex_wrap = Some(false),
+            _ => {}
+        },
+        "flex-grow" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.flex_grow = Some(v);
+            }
+        }
+        "flex-shrink" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.flex_shrink = Some(v);
+            }
+        }
+        "align-items" => match value.trim() {
+            "center" => style.align_items = Some(StyleAlign::Center),
+            "start" | "flex-start" => style.align_items = Some(StyleAlign::Start),
+            "end" | "flex-end" => style.align_items = Some(StyleAlign::End),
+            "stretch" => style.align_items = Some(StyleAlign::Stretch),
+            "baseline" => style.align_items = Some(StyleAlign::Baseline),
+            _ => {}
+        },
+        "justify-content" => match value.trim() {
+            "center" => style.justify_content = Some(StyleJustify::Center),
+            "start" | "flex-start" => style.justify_content = Some(StyleJustify::Start),
+            "end" | "flex-end" => style.justify_content = Some(StyleJustify::End),
+            "space-between" => style.justify_content = Some(StyleJustify::SpaceBetween),
+            "space-around" => style.justify_content = Some(StyleJustify::SpaceAround),
+            "space-evenly" => style.justify_content = Some(StyleJustify::SpaceEvenly),
+            _ => {}
+        },
+        "align-self" => match value.trim() {
+            "center" => style.align_self = Some(StyleAlign::Center),
+            "start" | "flex-start" => style.align_self = Some(StyleAlign::Start),
+            "end" | "flex-end" => style.align_self = Some(StyleAlign::End),
+            "stretch" => style.align_self = Some(StyleAlign::Stretch),
+            "baseline" => style.align_self = Some(StyleAlign::Baseline),
+            _ => {}
+        },
+        "padding" => {
+            if let Some(rect) = parse_css_spacing(value) {
+                style.padding = Some(rect);
+            }
+        }
+        "margin" => {
+            if let Some(rect) = parse_css_spacing(value) {
+                style.margin = Some(rect);
+            }
+        }
+        "gap" => {
+            if let Some(px) = parse_css_px(value) {
+                style.gap = Some(px);
+            }
+        }
+        "overflow" => match value.trim() {
+            "hidden" | "clip" => style.overflow = Some(StyleOverflow::Clip),
+            "visible" => style.overflow = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow = Some(StyleOverflow::Scroll),
+            _ => {}
+        },
+        "border-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.border_width = Some(px);
+            }
+        }
+        "border-color" => {
+            if let Some(color) = parse_color(value) {
+                style.border_color = Some(color);
             }
         }
         _ => {
@@ -2003,9 +2290,7 @@ fn apply_property_with_errors(
             }
         }
         "transform" => {
-            if let Some(transform) = parse_transform(value) {
-                style.transform = Some(transform);
-            } else {
+            if !parse_transform_with_3d(value, style) {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
@@ -2019,6 +2304,91 @@ fn apply_property_with_errors(
         "render-layer" | "z-index" => {
             if let Ok((_, layer)) = parse_render_layer::<nom::error::Error<&str>>(value) {
                 style.render_layer = Some(layer);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        // 3D transform properties
+        "rotate-x" => {
+            if let Some(deg) = parse_angle_value(value) {
+                style.rotate_x = Some(deg);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "rotate-y" => {
+            if let Some(deg) = parse_angle_value(value) {
+                style.rotate_y = Some(deg);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "perspective" => {
+            if let Some(px) = parse_css_px(value) {
+                style.perspective = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "shape-3d" => {
+            if is_valid_shape_3d(value) {
+                style.shape_3d = Some(value.trim().to_lowercase());
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "depth" => {
+            if let Some(px) = parse_css_px(value) {
+                style.depth = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "light-direction" => {
+            if let Some(dir) = parse_vec3_value(value) {
+                style.light_direction = Some(dir);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "light-intensity" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.light_intensity = Some(v);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "ambient" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.ambient = Some(v);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "specular" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.specular = Some(v);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "translate-z" => {
+            if let Some(px) = parse_css_px(value) {
+                style.translate_z = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "3d-op" => {
+            if is_valid_op_3d(value) {
+                style.op_3d = Some(value.trim().to_lowercase());
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "3d-blend" => {
+            if let Some(px) = parse_css_px(value) {
+                style.blend_3d = Some(px);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
@@ -2088,6 +2458,189 @@ fn apply_property_with_errors(
                 let mut anim = style.animation.take().unwrap_or_default();
                 anim.fill_mode = fill_mode;
                 style.animation = Some(anim);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "backdrop-filter" => {
+            let trimmed = value.trim().to_lowercase();
+            match trimmed.as_str() {
+                "glass" => {
+                    style.material = Some(Material::Glass(GlassMaterial::new()));
+                    style.render_layer = Some(RenderLayer::Glass);
+                }
+                "metallic" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::new()));
+                }
+                "chrome" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::chrome()));
+                }
+                "gold" => {
+                    style.material = Some(Material::Metallic(MetallicMaterial::gold()));
+                }
+                "wood" => {
+                    style.material = Some(Material::Wood(WoodMaterial::new()));
+                }
+                _ if trimmed.starts_with("blur(") => {
+                    style.material = Some(Material::Glass(GlassMaterial::new()));
+                    style.render_layer = Some(RenderLayer::Glass);
+                }
+                _ => {
+                    errors.push(ParseError::invalid_value(name, value, line, column));
+                }
+            }
+        }
+        // =====================================================================
+        // Layout Properties
+        // =====================================================================
+        "width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.height = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "min-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.min_width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "min-height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.min_height = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "max-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.max_width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "max-height" => {
+            if let Some(px) = parse_css_px(value) {
+                style.max_height = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "display" => match value.trim() {
+            "flex" => style.display = Some(StyleDisplay::Flex),
+            "block" => style.display = Some(StyleDisplay::Block),
+            "none" => style.display = Some(StyleDisplay::None),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "flex-direction" => match value.trim() {
+            "row" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::Row);
+            }
+            "column" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::Column);
+            }
+            "row-reverse" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::RowReverse);
+            }
+            "column-reverse" => {
+                style.display = Some(StyleDisplay::Flex);
+                style.flex_direction = Some(StyleFlexDirection::ColumnReverse);
+            }
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "flex-wrap" => match value.trim() {
+            "wrap" => style.flex_wrap = Some(true),
+            "nowrap" => style.flex_wrap = Some(false),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "flex-grow" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.flex_grow = Some(v);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "flex-shrink" => {
+            if let Ok(v) = value.trim().parse::<f32>() {
+                style.flex_shrink = Some(v);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "align-items" => match value.trim() {
+            "center" => style.align_items = Some(StyleAlign::Center),
+            "start" | "flex-start" => style.align_items = Some(StyleAlign::Start),
+            "end" | "flex-end" => style.align_items = Some(StyleAlign::End),
+            "stretch" => style.align_items = Some(StyleAlign::Stretch),
+            "baseline" => style.align_items = Some(StyleAlign::Baseline),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "justify-content" => match value.trim() {
+            "center" => style.justify_content = Some(StyleJustify::Center),
+            "start" | "flex-start" => style.justify_content = Some(StyleJustify::Start),
+            "end" | "flex-end" => style.justify_content = Some(StyleJustify::End),
+            "space-between" => style.justify_content = Some(StyleJustify::SpaceBetween),
+            "space-around" => style.justify_content = Some(StyleJustify::SpaceAround),
+            "space-evenly" => style.justify_content = Some(StyleJustify::SpaceEvenly),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "align-self" => match value.trim() {
+            "center" => style.align_self = Some(StyleAlign::Center),
+            "start" | "flex-start" => style.align_self = Some(StyleAlign::Start),
+            "end" | "flex-end" => style.align_self = Some(StyleAlign::End),
+            "stretch" => style.align_self = Some(StyleAlign::Stretch),
+            "baseline" => style.align_self = Some(StyleAlign::Baseline),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "padding" => {
+            if let Some(rect) = parse_css_spacing(value) {
+                style.padding = Some(rect);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "margin" => {
+            if let Some(rect) = parse_css_spacing(value) {
+                style.margin = Some(rect);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "gap" => {
+            if let Some(px) = parse_css_px(value) {
+                style.gap = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "overflow" => match value.trim() {
+            "hidden" | "clip" => style.overflow = Some(StyleOverflow::Clip),
+            "visible" => style.overflow = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow = Some(StyleOverflow::Scroll),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "border-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.border_width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "border-color" => {
+            if let Some(color) = parse_color(value) {
+                style.border_color = Some(color);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
@@ -2309,6 +2862,128 @@ fn parse_transform(value: &str) -> Option<Transform> {
 
     debug!(value = value, "Failed to parse transform");
     None
+}
+
+/// Parse a transform value that may contain 3D functions (rotateX, rotateY, perspective).
+/// 2D functions are stored in style.transform, 3D functions in dedicated fields.
+/// Returns true if at least one function was parsed.
+fn parse_transform_with_3d(value: &str, style: &mut ElementStyle) -> bool {
+    let trimmed = value.trim();
+
+    // Try rotateX(deg)
+    if let Some(deg) = parse_function_angle(trimmed, "rotateX") {
+        style.rotate_x = Some(deg);
+        return true;
+    }
+
+    // Try rotateY(deg)
+    if let Some(deg) = parse_function_angle(trimmed, "rotateY") {
+        style.rotate_y = Some(deg);
+        return true;
+    }
+
+    // Try perspective(px)
+    if let Some(px) = parse_function_px(trimmed, "perspective") {
+        style.perspective = Some(px);
+        return true;
+    }
+
+    // Fall back to 2D transform parsing
+    if let Some(transform) = parse_transform(trimmed) {
+        style.transform = Some(transform);
+        return true;
+    }
+
+    false
+}
+
+/// Parse a CSS function like `funcName(30deg)` and return degrees
+fn parse_function_angle(input: &str, func_name: &str) -> Option<f32> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+    let func_lower = func_name.to_lowercase();
+    if !lower.starts_with(&func_lower) {
+        return None;
+    }
+    let rest = &trimmed[func_name.len()..].trim();
+    let rest = rest.strip_prefix('(')?.trim_start();
+    let rest = rest.strip_suffix(')')?.trim_end();
+    parse_angle_value(rest)
+}
+
+/// Parse a CSS function like `funcName(800px)` and return pixels
+fn parse_function_px(input: &str, func_name: &str) -> Option<f32> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+    let func_lower = func_name.to_lowercase();
+    if !lower.starts_with(&func_lower) {
+        return None;
+    }
+    let rest = &trimmed[func_name.len()..].trim();
+    let rest = rest.strip_prefix('(')?.trim_start();
+    let rest = rest.strip_suffix(')')?.trim_end();
+    parse_css_px(rest)
+}
+
+/// Check if a shape-3d value is valid
+fn is_valid_shape_3d(value: &str) -> bool {
+    matches!(
+        value.trim().to_lowercase().as_str(),
+        "none" | "box" | "sphere" | "cylinder" | "torus" | "capsule" | "group"
+    )
+}
+
+/// Convert a shape-3d string to float encoding for the GPU
+/// (0=none, 1=box, 2=sphere, 3=cylinder, 4=torus, 5=capsule, 6=group)
+pub fn shape_3d_to_float(value: &str) -> f32 {
+    match value.trim().to_lowercase().as_str() {
+        "box" => 1.0,
+        "sphere" => 2.0,
+        "cylinder" => 3.0,
+        "torus" => 4.0,
+        "capsule" => 5.0,
+        "group" => 6.0,
+        _ => 0.0,
+    }
+}
+
+fn is_valid_op_3d(value: &str) -> bool {
+    matches!(
+        value.trim().to_lowercase().as_str(),
+        "union"
+            | "subtract"
+            | "intersect"
+            | "smooth-union"
+            | "smooth-subtract"
+            | "smooth-intersect"
+    )
+}
+
+/// Convert a 3d-op string to float encoding for the GPU
+/// (0=union, 1=subtract, 2=intersect, 3=smooth-union, 4=smooth-subtract, 5=smooth-intersect)
+pub fn op_3d_to_float(value: &str) -> f32 {
+    match value.trim().to_lowercase().as_str() {
+        "union" => 0.0,
+        "subtract" => 1.0,
+        "intersect" => 2.0,
+        "smooth-union" => 3.0,
+        "smooth-subtract" => 4.0,
+        "smooth-intersect" => 5.0,
+        _ => 0.0,
+    }
+}
+
+/// Parse a vec3 value like "-0.5 -1.0 0.5" (3 space-separated floats)
+fn parse_vec3_value(value: &str) -> Option<[f32; 3]> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    if parts.len() == 3 {
+        let x = parts[0].parse::<f32>().ok()?;
+        let y = parts[1].parse::<f32>().ok()?;
+        let z = parts[2].parse::<f32>().ok()?;
+        Some([x, y, z])
+    } else {
+        None
+    }
 }
 
 /// Parse scale(x) or scale(x, y)
@@ -2578,6 +3253,42 @@ fn parse_time_value(input: &str) -> Option<u32> {
 
     // Try plain number (assume milliseconds)
     input.parse::<f32>().ok().map(|ms| ms as u32)
+}
+
+/// Parse a CSS length value in pixels (e.g. "100px", "50", "10.5px")
+fn parse_css_px(input: &str) -> Option<f32> {
+    let trimmed = input.trim();
+    if let Some(px_str) = trimmed.strip_suffix("px") {
+        return px_str.trim().parse::<f32>().ok();
+    }
+    // Unitless number = px
+    trimmed.parse::<f32>().ok()
+}
+
+/// Parse a CSS spacing value (uniform or per-side)
+/// Supports: "10px", "10px 20px" (vert horiz), "10px 20px 30px 40px" (top right bottom left)
+fn parse_css_spacing(input: &str) -> Option<SpacingRect> {
+    let trimmed = input.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    match parts.len() {
+        1 => {
+            let v = parse_css_px(parts[0])?;
+            Some(SpacingRect::uniform(v))
+        }
+        2 => {
+            let vert = parse_css_px(parts[0])?;
+            let horiz = parse_css_px(parts[1])?;
+            Some(SpacingRect::xy(horiz, vert))
+        }
+        4 => {
+            let top = parse_css_px(parts[0])?;
+            let right = parse_css_px(parts[1])?;
+            let bottom = parse_css_px(parts[2])?;
+            let left = parse_css_px(parts[3])?;
+            Some(SpacingRect::new(top, right, bottom, left))
+        }
+        _ => None,
+    }
 }
 
 // ============================================================================
@@ -2870,9 +3581,8 @@ fn parse_conic_gradient(input: &str) -> Option<Gradient> {
 
     // Check for "from Xdeg" and/or "at position"
     let first = parts[0].trim().to_lowercase();
-    if first.starts_with("from ") {
+    if let Some(rest) = first.strip_prefix("from ") {
         // Parse "from 45deg" or "from 45deg at center"
-        let rest = &first[5..];
         if let Some(at_pos) = rest.find(" at ") {
             // Has both angle and position
             let angle_str = rest[..at_pos].trim();
@@ -2890,9 +3600,9 @@ fn parse_conic_gradient(input: &str) -> Option<Gradient> {
             }
         }
         color_start_idx = 1;
-    } else if first.starts_with("at ") {
+    } else if let Some(rest) = first.strip_prefix("at ") {
         // Just position
-        if let Some(pos) = parse_position(&first[3..]) {
+        if let Some(pos) = parse_position(rest) {
             center = pos;
         }
         color_start_idx = 1;
@@ -2957,8 +3667,7 @@ fn parse_gradient_direction(first_part: &str) -> (f32, usize) {
     }
 
     // Try parsing as direction keyword
-    if part.starts_with("to ") {
-        let direction = &part[3..];
+    if let Some(direction) = part.strip_prefix("to ") {
         let angle = match direction.trim() {
             "top" => 0.0,
             "right" => 90.0,
@@ -3323,6 +4032,32 @@ mod tests {
         let stylesheet = Stylesheet::parse(css).unwrap();
         let style = stylesheet.get("test").unwrap();
         assert_eq!(style.render_layer, Some(RenderLayer::Foreground));
+    }
+
+    #[test]
+    fn test_parse_backdrop_filter_glass() {
+        let css = "#test { backdrop-filter: glass; }";
+        let stylesheet = Stylesheet::parse(css).unwrap();
+        let style = stylesheet.get("test").unwrap();
+        assert!(style.material.is_some());
+        assert_eq!(style.render_layer, Some(RenderLayer::Glass));
+    }
+
+    #[test]
+    fn test_parse_backdrop_filter_blur() {
+        let css = "#test { backdrop-filter: blur(10px); }";
+        let stylesheet = Stylesheet::parse(css).unwrap();
+        let style = stylesheet.get("test").unwrap();
+        assert!(style.material.is_some());
+        assert_eq!(style.render_layer, Some(RenderLayer::Glass));
+    }
+
+    #[test]
+    fn test_parse_backdrop_filter_metallic() {
+        let css = "#test { backdrop-filter: chrome; }";
+        let stylesheet = Stylesheet::parse(css).unwrap();
+        let style = stylesheet.get("test").unwrap();
+        assert!(style.material.is_some());
     }
 
     #[test]
@@ -4129,15 +4864,27 @@ mod tests {
 
     #[test]
     fn test_element_state_from_str() {
-        assert_eq!(ElementState::from_str("hover"), Some(ElementState::Hover));
-        assert_eq!(ElementState::from_str("HOVER"), Some(ElementState::Hover));
-        assert_eq!(ElementState::from_str("active"), Some(ElementState::Active));
-        assert_eq!(ElementState::from_str("focus"), Some(ElementState::Focus));
         assert_eq!(
-            ElementState::from_str("disabled"),
+            ElementState::parse_state("hover"),
+            Some(ElementState::Hover)
+        );
+        assert_eq!(
+            ElementState::parse_state("HOVER"),
+            Some(ElementState::Hover)
+        );
+        assert_eq!(
+            ElementState::parse_state("active"),
+            Some(ElementState::Active)
+        );
+        assert_eq!(
+            ElementState::parse_state("focus"),
+            Some(ElementState::Focus)
+        );
+        assert_eq!(
+            ElementState::parse_state("disabled"),
             Some(ElementState::Disabled)
         );
-        assert_eq!(ElementState::from_str("unknown"), None);
+        assert_eq!(ElementState::parse_state("unknown"), None);
     }
 
     #[test]

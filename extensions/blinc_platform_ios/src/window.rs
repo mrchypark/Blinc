@@ -112,6 +112,7 @@ unsafe impl Send for IOSWindow {}
 
 /// Placeholder for non-iOS builds
 #[cfg(not(target_os = "ios"))]
+#[derive(Default)]
 pub struct IOSWindow {
     _private: (),
 }

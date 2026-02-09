@@ -1818,6 +1818,7 @@ impl GpuRenderer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_pipelines(
         device: &wgpu::Device,
         layouts: &BindGroupLayouts,
@@ -2164,7 +2165,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: path_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[path_vertex_layout.clone()],
+                buffers: std::slice::from_ref(&path_vertex_layout),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -2527,6 +2528,7 @@ impl GpuRenderer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_bind_groups(
         device: &wgpu::Device,
         layouts: &BindGroupLayouts,
@@ -5439,6 +5441,7 @@ impl GpuRenderer {
     ///
     /// Uses the LAYER_COMPOSITE_SHADER to blend the layer onto the target
     /// with the specified blend mode and opacity.
+    #[allow(clippy::too_many_arguments)]
     pub fn composite_layer(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -5508,6 +5511,7 @@ impl GpuRenderer {
     ///
     /// Allows sampling a sub-region of the layer texture and placing it
     /// at a specific destination in the target.
+    #[allow(clippy::too_many_arguments)]
     pub fn composite_layer_region(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -5844,6 +5848,7 @@ impl GpuRenderer {
     /// Takes a pre-blurred texture (for shadow shape) and the original texture (for compositing).
     /// The blurred texture's alpha is used to create the shadow, which is then colored and
     /// composited behind the original content.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_drop_shadow(
         &mut self,
         blurred_input: &wgpu::TextureView,
@@ -5928,6 +5933,7 @@ impl GpuRenderer {
     ///
     /// Creates a radial glow around the shape by finding distance to nearest opaque pixels
     /// and applying a smooth falloff based on blur and range parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_glow(
         &mut self,
         input: &wgpu::TextureView,
@@ -6465,8 +6471,8 @@ impl GpuRenderer {
             .max(1.0) as u32;
 
         // Round up to reasonable sizes for cache efficiency (64px increments)
-        let texture_width = ((texture_width + 63) / 64 * 64).min(self.viewport_size.0);
-        let texture_height = ((texture_height + 63) / 64 * 64).min(self.viewport_size.1);
+        let texture_width = (texture_width.div_ceil(64) * 64).min(self.viewport_size.0);
+        let texture_height = (texture_height.div_ceil(64) * 64).min(self.viewport_size.1);
 
         // This is the actual content size (64px rounded), which may differ from
         // the texture returned by acquire() due to bucket rounding
@@ -6573,6 +6579,7 @@ impl GpuRenderer {
     }
 
     /// Blit a tight texture to the target at the correct position
+    #[allow(clippy::too_many_arguments)]
     fn blit_tight_texture_to_target(
         &mut self,
         source: &wgpu::TextureView,
@@ -6797,6 +6804,136 @@ impl GpuRenderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+
+            render_pass.set_pipeline(&self.pipelines.layer_composite);
+            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Blit a specific region from source texture to target at given position
+    ///
+    /// This is used for layer effects where we need to composite only the
+    /// element's region back to the target at the correct position.
+    fn blit_region_to_target(
+        &mut self,
+        source: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+        position: (f32, f32),
+        size: (f32, f32),
+        opacity: f32,
+        blend_mode: blinc_core::BlendMode,
+    ) {
+        self.blit_region_to_target_with_clip(
+            source, target, position, size, opacity, blend_mode, None,
+        )
+    }
+
+    /// Blit a specific region with optional clip
+    #[allow(clippy::too_many_arguments)]
+    fn blit_region_to_target_with_clip(
+        &mut self,
+        source: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+        position: (f32, f32),
+        size: (f32, f32),
+        opacity: f32,
+        blend_mode: blinc_core::BlendMode,
+        clip: Option<([f32; 4], [f32; 4])>, // (bounds, radii)
+    ) {
+        use crate::primitives::LayerCompositeUniforms;
+
+        let vp_w = self.viewport_size.0 as f32;
+        let vp_h = self.viewport_size.1 as f32;
+
+        // Source rect in normalized coordinates (0-1)
+        // The source texture is viewport-sized, so we extract the element's region
+        let source_rect = [
+            position.0 / vp_w,
+            position.1 / vp_h,
+            size.0 / vp_w,
+            size.1 / vp_h,
+        ];
+
+        // Dest rect in viewport pixel coordinates
+        let dest_rect = [position.0, position.1, size.0, size.1];
+
+        let mut uniforms = LayerCompositeUniforms {
+            source_rect,
+            dest_rect,
+            viewport_size: [vp_w, vp_h],
+            opacity,
+            blend_mode: blend_mode as u32,
+            clip_bounds: [0.0, 0.0, vp_w, vp_h],
+            clip_radius: [0.0, 0.0, 0.0, 0.0],
+            clip_type: 0,
+            _pad: [0.0; 7],
+        };
+
+        if let Some((bounds, radii)) = clip {
+            uniforms.clip_bounds = bounds;
+            uniforms.clip_radius = radii;
+            uniforms.clip_type = 1;
+        }
+
+        let uniform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Region Blit Uniforms Buffer"),
+                contents: bytemuck::cast_slice(&[uniforms]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Region Blit Bind Group"),
+            layout: &self.bind_group_layouts.layer_composite,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
+                },
+            ],
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Region Blit Encoder"),
+            });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Region Blit Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // Set scissor rect to only affect the element's region
+            render_pass.set_scissor_rect(
+                position.0.max(0.0) as u32,
+                position.1.max(0.0) as u32,
+                size.0.min(vp_w - position.0).max(1.0) as u32,
+                size.1.min(vp_h - position.1).max(1.0) as u32,
+            );
 
             render_pass.set_pipeline(&self.pipelines.layer_composite);
             render_pass.set_bind_group(0, &bind_group, &[]);

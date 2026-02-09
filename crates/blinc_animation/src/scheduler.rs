@@ -880,14 +880,9 @@ impl SchedulerHandle {
     where
         F: FnOnce(&mut Timeline) -> R,
     {
-        self.inner.upgrade().and_then(|inner| {
-            inner
-                .lock()
-                .unwrap()
-                .timelines
-                .get_mut(id)
-                .map(|timeline| f(timeline))
-        })
+        self.inner
+            .upgrade()
+            .and_then(|inner| inner.lock().unwrap().timelines.get_mut(id).map(f))
     }
 
     /// Check if the scheduler is still alive

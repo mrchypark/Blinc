@@ -55,6 +55,7 @@ impl SvgDocument {
     }
 
     /// Load an SVG document from a string
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(svg_str: &str) -> Result<Self, SvgError> {
         Self::from_data(svg_str.as_bytes())
     }
@@ -169,12 +170,12 @@ fn apply_transform(path: &Path, transform: &usvg::Transform) -> Path {
     }
 
     let (sx, ky, kx, sy, tx, ty) = (
-        transform.sx as f32,
-        transform.ky as f32,
-        transform.kx as f32,
-        transform.sy as f32,
-        transform.tx as f32,
-        transform.ty as f32,
+        transform.sx,
+        transform.ky,
+        transform.kx,
+        transform.sy,
+        transform.tx,
+        transform.ty,
     );
 
     let transform_point =

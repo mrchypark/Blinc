@@ -296,9 +296,10 @@ impl ReplayPlayer {
         };
 
         // Collect events in this range
-        let mut update = FrameUpdate::default();
-        update.events = self.collect_events_in_range(current, next);
-        update.snapshot = self.get_snapshot_at(next);
+        let update = FrameUpdate {
+            events: self.collect_events_in_range(current, next),
+            snapshot: self.get_snapshot_at(next),
+        };
 
         // Move clock forward
         self.clock.seek(next);
@@ -381,8 +382,7 @@ impl ReplayPlayer {
         self.export
             .snapshots
             .iter()
-            .filter(|s| s.timestamp <= position)
-            .last()
+            .rfind(|s| s.timestamp <= position)
             .cloned()
     }
 

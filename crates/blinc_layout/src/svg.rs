@@ -247,28 +247,10 @@ impl ElementBuilder for Svg {
     #[allow(deprecated)]
     fn render_props(&self) -> RenderProps {
         RenderProps {
-            background: None,
-            border_radius: Default::default(),
-            border_color: None,
-            border_width: 0.0,
-            border_sides: Default::default(),
             layer: self.render_layer,
-            material: None,
-            node_id: None,
             shadow: self.shadow,
             transform: self.transform.clone(),
-            opacity: 1.0,
-            clips_content: false,
-            motion: None,
-            motion_stable_id: None,
-            motion_should_replay: false,
-            motion_is_suspended: false,
-            motion_on_ready_callback: None,
-            is_stack_layer: false,
-            pointer_events_none: false,
-            cursor: None,
-            layer_effects: Vec::new(),
-            motion_is_exiting: false,
+            ..Default::default()
         }
     }
 

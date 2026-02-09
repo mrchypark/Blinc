@@ -318,6 +318,7 @@ impl TreeViewBuilder {
                     let mut tree_container = div().flex_col().flex_shrink_0();
 
                     // Build tree recursively
+                    #[allow(clippy::too_many_arguments)]
                     fn build_node(
                         node: &TreeNodeConfig,
                         depth: usize,

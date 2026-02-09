@@ -74,6 +74,15 @@ struct Primitive {
     clip_radius: vec4<f32>,
     // Gradient parameters: linear (x1, y1, x2, y2), radial (cx, cy, r, 0) in user space
     gradient_params: vec4<f32>,
+    // Rotation (sin_rz, cos_rz, sin_ry, cos_ry) - for rotated SDF evaluation
+    rotation: vec4<f32>,
+    // Perspective (sin_rx, cos_rx, perspective_d, shape_3d_type)
+    // shape_3d_type: 0=none, 1=box, 2=sphere, 3=cylinder, 4=torus, 5=capsule, 6=group
+    perspective: vec4<f32>,
+    // SDF 3D params (depth, ambient, specular_power, translate_z)
+    sdf_3d: vec4<f32>,
+    // Light params (dir_x, dir_y, dir_z, intensity)
+    light: vec4<f32>,
     // Type info (primitive_type, fill_type, clip_type, 0)
     type_info: vec4<u32>,
 }
@@ -100,12 +109,76 @@ fn vs_main(
 
     // Expand bounds for shadow blur
     let blur_expand = prim.shadow.z * 3.0 + abs(prim.shadow.x) + abs(prim.shadow.y);
-    let bounds = vec4<f32>(
-        prim.bounds.x - blur_expand,
-        prim.bounds.y - blur_expand,
-        prim.bounds.z + blur_expand * 2.0,
-        prim.bounds.w + blur_expand * 2.0
-    );
+
+    // Check for rotation and 3D transforms
+    let sin_rz = prim.rotation.x;
+    let cos_rz = prim.rotation.y;
+    let sin_ry = prim.rotation.z;
+    let cos_ry = prim.rotation.w;
+    let sin_rx = prim.perspective.x;
+    let cos_rx = prim.perspective.y;
+    let persp_d = prim.perspective.z;
+    let has_rotation = abs(sin_rz) > 0.0001;
+    let has_3d = abs(sin_ry) > 0.0001 || abs(sin_rx) > 0.0001 || persp_d > 0.001;
+
+    var bounds: vec4<f32>;
+    if has_3d {
+        // 3D perspective: project all 8 corners of the 3D bounding box to find AABB
+        let ctr = prim.bounds.xy + prim.bounds.zw * 0.5;
+        let half = prim.bounds.zw * 0.5;
+        let half_d = prim.sdf_3d.x * 0.5; // half-depth
+        let corners3d = array<vec3<f32>, 8>(
+            vec3<f32>(-half.x, -half.y, -half_d),
+            vec3<f32>( half.x, -half.y, -half_d),
+            vec3<f32>( half.x,  half.y, -half_d),
+            vec3<f32>(-half.x,  half.y, -half_d),
+            vec3<f32>(-half.x, -half.y,  half_d),
+            vec3<f32>( half.x, -half.y,  half_d),
+            vec3<f32>( half.x,  half.y,  half_d),
+            vec3<f32>(-half.x,  half.y,  half_d),
+        );
+        var min_p = vec2<f32>(1e10);
+        var max_p = vec2<f32>(-1e10);
+        let pd = select(800.0, persp_d, persp_d > 0.001);
+        for (var i = 0u; i < 8u; i++) {
+            let c = corners3d[i];
+            // Apply rotateZ
+            let rz_x = c.x * cos_rz - c.y * sin_rz;
+            let rz_y = c.x * sin_rz + c.y * cos_rz;
+            let rz_z = c.z;
+            // Apply rotateX (tilt Y/Z)
+            let rx_y = rz_y * cos_rx - rz_z * sin_rx;
+            let rx_z = rz_y * sin_rx + rz_z * cos_rx;
+            // Apply rotateY (tilt X/Z)
+            let ry_x = rz_x * cos_ry + rx_z * sin_ry;
+            let ry_z = -rz_x * sin_ry + rx_z * cos_ry;
+            // Perspective divide
+            let w = 1.0 - ry_z / pd;
+            let proj = vec2<f32>(ry_x, rx_y) / max(w, 0.001);
+            min_p = min(min_p, proj);
+            max_p = max(max_p, proj);
+        }
+        min_p -= vec2<f32>(blur_expand + 2.0);
+        max_p += vec2<f32>(blur_expand + 2.0);
+        bounds = vec4<f32>(ctr + min_p, max_p - min_p);
+    } else if has_rotation {
+        // For rotated rects, compute the AABB that covers the rotated shape
+        let center = prim.bounds.xy + prim.bounds.zw * 0.5;
+        let half = prim.bounds.zw * 0.5;
+        let abs_cos = abs(cos_rz);
+        let abs_sin = abs(sin_rz);
+        let aabb_hw = half.x * abs_cos + half.y * abs_sin + blur_expand;
+        let aabb_hh = half.x * abs_sin + half.y * abs_cos + blur_expand;
+        bounds = vec4<f32>(center.x - aabb_hw, center.y - aabb_hh, aabb_hw * 2.0, aabb_hh * 2.0);
+    } else {
+        // Original non-rotated path
+        bounds = vec4<f32>(
+            prim.bounds.x - blur_expand,
+            prim.bounds.y - blur_expand,
+            prim.bounds.z + blur_expand * 2.0,
+            prim.bounds.w + blur_expand * 2.0
+        );
+    }
 
     // Generate quad vertices (two triangles split along / diagonal)
     // 0--1
@@ -306,6 +379,169 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<
 }
 
 // ============================================================================
+// 3D SDF Functions
+// ============================================================================
+
+const SHAPE_NONE: u32 = 0u;
+const SHAPE_BOX: u32 = 1u;
+const SHAPE_SPHERE: u32 = 2u;
+const SHAPE_CYLINDER: u32 = 3u;
+const SHAPE_TORUS: u32 = 4u;
+const SHAPE_CAPSULE: u32 = 5u;
+const SHAPE_GROUP: u32 = 6u;
+
+fn sd_box_3d(p: vec3<f32>, half_ext: vec3<f32>, r: f32) -> f32 {
+    let q = abs(p) - half_ext + vec3<f32>(r);
+    return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
+}
+
+fn sd_sphere_3d(p: vec3<f32>, r: f32) -> f32 {
+    return length(p) - r;
+}
+
+fn sd_cylinder_3d(p: vec3<f32>, h: f32, r: f32) -> f32 {
+    let d = vec2<f32>(length(p.xz) - r, abs(p.y) - h);
+    return min(max(d.x, d.y), 0.0) + length(max(d, vec2<f32>(0.0)));
+}
+
+fn sd_torus_3d(p: vec3<f32>, major_r: f32, minor_r: f32) -> f32 {
+    let q = vec2<f32>(length(p.xz) - major_r, p.y);
+    return length(q) - minor_r;
+}
+
+fn sd_capsule_3d(p: vec3<f32>, h: f32, r: f32) -> f32 {
+    let py = p.y - clamp(p.y, -h, h);
+    return length(vec3<f32>(p.x, py, p.z)) - r;
+}
+
+fn sdf_3d_eval(p: vec3<f32>, shape_type: u32, half_ext: vec3<f32>, corner_r: f32) -> f32 {
+    // Use X-Y dimensions for shape sizing (not Z/depth which may be smaller)
+    let min_xy = min(half_ext.x, half_ext.y);
+    switch shape_type {
+        case 1u: { return sd_box_3d(p, half_ext, corner_r); }
+        case 2u: { return sd_sphere_3d(p, min_xy); }
+        case 3u: { return sd_cylinder_3d(p, half_ext.y, half_ext.x); }
+        case 4u: {
+            // Torus: minor + major = min_xy so outer edge fills element
+            let minor = min(min_xy / 3.0, half_ext.y);
+            let major = min_xy - minor;
+            return sd_torus_3d(p, major, minor);
+        }
+        case 5u: {
+            // Capsule: inscribe in X-Y bounding box
+            let r = min(half_ext.x, half_ext.y * 0.5);
+            let h = max(half_ext.y - r, 0.0);
+            return sd_capsule_3d(p, h, r);
+        }
+        default: { return 1e10; }
+    }
+}
+
+// ============================================================================
+// 3D Boolean Operations
+// ============================================================================
+
+fn op_union(d1: f32, d2: f32) -> f32 { return min(d1, d2); }
+fn op_subtract(d1: f32, d2: f32) -> f32 { return max(d1, -d2); }
+fn op_intersect(d1: f32, d2: f32) -> f32 { return max(d1, d2); }
+fn op_smooth_union(d1: f32, d2: f32, k: f32) -> f32 {
+    let h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
+    return mix(d2, d1, h) - k * h * (1.0 - h);
+}
+fn op_smooth_subtract(d1: f32, d2: f32, k: f32) -> f32 {
+    let h = clamp(0.5 - 0.5 * (d2 + d1) / k, 0.0, 1.0);
+    return mix(d1, -d2, h) + k * h * (1.0 - h);
+}
+fn op_smooth_intersect(d1: f32, d2: f32, k: f32) -> f32 {
+    let h = clamp(0.5 - 0.5 * (d2 - d1) / k, 0.0, 1.0);
+    return mix(d2, d1, h) + k * h * (1.0 - h);
+}
+
+fn apply_boolean_op(d_accum: f32, d_new: f32, op_type: u32, blend: f32) -> f32 {
+    switch op_type {
+        case 0u: { return op_union(d_accum, d_new); }
+        case 1u: { return op_subtract(d_accum, d_new); }
+        case 2u: { return op_intersect(d_accum, d_new); }
+        case 3u: { return op_smooth_union(d_accum, d_new, max(blend, 0.001)); }
+        case 4u: { return op_smooth_subtract(d_accum, d_new, max(blend, 0.001)); }
+        case 5u: { return op_smooth_intersect(d_accum, d_new, max(blend, 0.001)); }
+        default: { return op_union(d_accum, d_new); }
+    }
+}
+
+// ============================================================================
+// UV Mapping for 3D Shapes
+// ============================================================================
+
+fn compute_uv_box(hp: vec3<f32>, half: vec3<f32>) -> vec2<f32> {
+    let abs_hp = abs(hp);
+    let safe_half = max(abs(half), vec3<f32>(0.001));
+    // Project onto dominant face
+    if abs_hp.z >= safe_half.z - 0.01 {
+        // Front/back face
+        return vec2<f32>((hp.x / safe_half.x + 1.0) * 0.5, (hp.y / safe_half.y + 1.0) * 0.5);
+    } else if abs_hp.y >= safe_half.y - 0.01 {
+        // Top/bottom face
+        return vec2<f32>((hp.x / safe_half.x + 1.0) * 0.5, (hp.z / safe_half.z + 1.0) * 0.5);
+    } else {
+        // Left/right face
+        return vec2<f32>((hp.z / safe_half.z + 1.0) * 0.5, (hp.y / safe_half.y + 1.0) * 0.5);
+    }
+}
+
+fn compute_uv_sphere(hp: vec3<f32>) -> vec2<f32> {
+    let n = normalize(hp + vec3<f32>(0.0001));
+    let u = atan2(n.z, n.x) / (2.0 * 3.14159) + 0.5;
+    let v = asin(clamp(n.y, -1.0, 1.0)) / 3.14159 + 0.5;
+    return vec2<f32>(u, v);
+}
+
+fn compute_uv_cylinder(hp: vec3<f32>, half_h: f32) -> vec2<f32> {
+    let u = atan2(hp.z, hp.x) / (2.0 * 3.14159) + 0.5;
+    let v = (hp.y / max(half_h, 0.001) + 1.0) * 0.5;
+    return vec2<f32>(u, v);
+}
+
+fn compute_uv_3d(hp: vec3<f32>, shape_type: u32, half: vec3<f32>) -> vec2<f32> {
+    switch shape_type {
+        case 1u: { return compute_uv_box(hp, half); }
+        case 2u: { return compute_uv_sphere(hp); }
+        case 3u: { return compute_uv_cylinder(hp, half.y); }
+        case 4u: { return compute_uv_cylinder(hp, half.y); } // torus uses cylindrical
+        case 5u: { return compute_uv_cylinder(hp, half.y); } // capsule uses cylindrical
+        default: { return vec2<f32>(0.5, 0.5); }
+    }
+}
+
+// Analytical ray-AABB intersection (slab method)
+// Returns vec2(t_enter, t_exit). If t_enter > t_exit, the ray misses.
+fn ray_aabb_intersect(ro: vec3<f32>, rd: vec3<f32>, half: vec3<f32>) -> vec2<f32> {
+    let inv_rd = vec3<f32>(
+        select(1.0 / rd.x, 1e10, abs(rd.x) < 1e-8),
+        select(1.0 / rd.y, 1e10, abs(rd.y) < 1e-8),
+        select(1.0 / rd.z, 1e10, abs(rd.z) < 1e-8),
+    );
+    let t1 = (-half - ro) * inv_rd;
+    let t2 = (half - ro) * inv_rd;
+    let tmin = min(t1, t2);
+    let tmax = max(t1, t2);
+    let t_enter = max(max(tmin.x, tmin.y), tmin.z);
+    let t_exit = min(min(tmax.x, tmax.y), tmax.z);
+    return vec2<f32>(t_enter, t_exit);
+}
+
+// Inverse rotation helpers (transpose of forward rotation)
+fn rotate_y_inv(p: vec3<f32>, s: f32, c: f32) -> vec3<f32> {
+    return vec3<f32>(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
+}
+fn rotate_x_inv(p: vec3<f32>, s: f32, c: f32) -> vec3<f32> {
+    return vec3<f32>(p.x, c * p.y + s * p.z, -s * p.y + c * p.z);
+}
+fn rotate_z_inv(p: vec3<f32>, s: f32, c: f32) -> vec3<f32> {
+    return vec3<f32>(c * p.x + s * p.y, -s * p.x + c * p.y, p.z);
+}
+
+// ============================================================================
 // Fragment Shader
 // ============================================================================
 
@@ -318,7 +554,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let fill_type = prim.type_info.y;
     let clip_type = prim.type_info.z;
 
-    // Early clip test - discard if completely outside clip region
+    // Early clip test - discard if completely outside clip region (screen space)
     let clip_alpha = calculate_clip_alpha(p, prim.clip_bounds, prim.clip_radius, clip_type);
     if clip_alpha < 0.001 {
         discard;
@@ -327,6 +563,160 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let origin = prim.bounds.xy;
     let size = prim.bounds.zw;
     let center = origin + size * 0.5;
+
+    // Extract rotation and perspective parameters
+    let sin_rz = prim.rotation.x;
+    let cos_rz = prim.rotation.y;
+    let sin_ry = prim.rotation.z;
+    let cos_ry = prim.rotation.w;
+    let sin_rx = prim.perspective.x;
+    let cos_rx = prim.perspective.y;
+    let persp_d = prim.perspective.z;
+    let shape_type = u32(prim.perspective.w);
+    let depth = prim.sdf_3d.x;
+
+    let has_3d = abs(sin_ry) > 0.0001 || abs(sin_rx) > 0.0001 || persp_d > 0.001;
+
+    // ── 3D SDF Raymarching Path ──
+    if shape_type > 0u && shape_type != SHAPE_GROUP && depth > 0.001 {
+        let translate_z = prim.sdf_3d.w;
+        let pd = select(800.0, persp_d, persp_d > 0.001);
+        let rel = p - center;
+
+        // Ray setup: camera at (0, 0, pd - translate_z), fragment at (rel.x, rel.y, 0)
+        // Positive translate_z moves object toward viewer (closer = larger)
+        let cam_vs = vec3<f32>(0.0, 0.0, pd - translate_z);
+        let frag_vs = vec3<f32>(rel.x, rel.y, 0.0);
+        let ray_dir_vs = normalize(frag_vs - cam_vs);
+
+        // Transform ray to shape space (inverse of rotateZ → rotateX → rotateY)
+        var ro = cam_vs;
+        var rd = ray_dir_vs;
+        ro = rotate_y_inv(ro, sin_ry, cos_ry);
+        rd = rotate_y_inv(rd, sin_ry, cos_ry);
+        ro = rotate_x_inv(ro, sin_rx, cos_rx);
+        rd = rotate_x_inv(rd, sin_rx, cos_rx);
+        ro = rotate_z_inv(ro, sin_rz, cos_rz);
+        rd = rotate_z_inv(rd, sin_rz, cos_rz);
+
+        // Shape bounds in shape space
+        let half_3d = vec3<f32>(size.x * 0.5, size.y * 0.5, depth * 0.5);
+        let corner_r = min(min(prim.corner_radius.x, prim.corner_radius.y), depth * 0.5);
+
+        // Analytical ray-AABB intersection for tight starting bound
+        let aabb_t = ray_aabb_intersect(ro, rd, half_3d);
+        if aabb_t.x > aabb_t.y || aabb_t.y < 0.0 {
+            discard;  // Ray misses bounding box entirely
+        }
+
+        // Raymarch (32 steps) starting from AABB entry point
+        // Use AABB diagonal as max distance to allow rays to reach rounded corners
+        // (at AABB corners, the SDF distance to rounded surface can be large)
+        var t_rm = max(aabb_t.x - 0.01, 0.0);
+        let t_max = aabb_t.x + length(half_3d) * 2.0 + 1.0;
+        var hit = false;
+        var min_d = 1e10;
+        for (var i = 0u; i < 32u; i++) {
+            let pos = ro + rd * t_rm;
+            let d3 = sdf_3d_eval(pos, shape_type, half_3d, corner_r);
+            min_d = min(min_d, d3);
+            if d3 < 0.001 {
+                hit = true;
+                break;
+            }
+            t_rm += d3;
+            if t_rm > t_max {
+                break;
+            }
+        }
+
+        // Edge anti-aliasing: smooth alpha based on closest approach distance
+        let pixel_size = max(t_rm / pd, 0.5);
+        var edge_aa = 1.0;
+        if !hit {
+            if min_d > pixel_size * 2.0 {
+                discard;
+            }
+            edge_aa = 1.0 - smoothstep(0.0, pixel_size * 1.5, min_d);
+        }
+
+        // Compute normal via central differences
+        let hp = ro + rd * t_rm;
+        let eps = 0.001;
+        let normal = normalize(vec3<f32>(
+            sdf_3d_eval(hp + vec3<f32>(eps, 0.0, 0.0), shape_type, half_3d, corner_r) -
+            sdf_3d_eval(hp - vec3<f32>(eps, 0.0, 0.0), shape_type, half_3d, corner_r),
+            sdf_3d_eval(hp + vec3<f32>(0.0, eps, 0.0), shape_type, half_3d, corner_r) -
+            sdf_3d_eval(hp - vec3<f32>(0.0, eps, 0.0), shape_type, half_3d, corner_r),
+            sdf_3d_eval(hp + vec3<f32>(0.0, 0.0, eps), shape_type, half_3d, corner_r) -
+            sdf_3d_eval(hp - vec3<f32>(0.0, 0.0, eps), shape_type, half_3d, corner_r)
+        ));
+
+        // Lighting
+        let light_dir = normalize(prim.light.xyz);
+        let n_dot_l = max(dot(normal, light_dir), 0.0);
+        let ambient_3d = prim.sdf_3d.y;
+        let diffuse_3d = n_dot_l * prim.light.w;
+
+        // Specular (Blinn-Phong)
+        let view_dir = normalize(-rd);
+        let half_vec = normalize(light_dir + view_dir);
+        let spec_3d = pow(max(dot(normal, half_vec), 0.0), prim.sdf_3d.z) * 0.5;
+
+        let lighting = ambient_3d + diffuse_3d + spec_3d;
+
+        // UV mapping: use screen-space position for gradient evaluation.
+        // This gives smooth gradients across all visible faces of 3D shapes
+        // (avoids face-based UV discontinuities on boxes).
+        // Screen-space UV: fragment position relative to element bounds.
+        var base_color_3d: vec4<f32>;
+        if fill_type == 1u {
+            // Linear gradient: gradient_params are already in screen-space pixels
+            let gp = prim.gradient_params;
+            let gdir = gp.zw - gp.xy;
+            let glen_sq = dot(gdir, gdir);
+            if glen_sq > 0.000001 {
+                let t_g = dot(p - gp.xy, gdir) / glen_sq;
+                base_color_3d = mix(prim.color, prim.color2, clamp(t_g, 0.0, 1.0));
+            } else {
+                base_color_3d = prim.color;
+            }
+        } else if fill_type == 2u {
+            // Radial gradient: (cx, cy, radius, 0) in screen-space pixels
+            let t_g = length(p - prim.gradient_params.xy) / max(prim.gradient_params.z, 0.001);
+            base_color_3d = mix(prim.color, prim.color2, clamp(t_g, 0.0, 1.0));
+        } else {
+            base_color_3d = prim.color;
+        }
+
+        var result_3d = base_color_3d * vec4<f32>(vec3<f32>(lighting), 1.0);
+        result_3d.a *= clip_alpha * edge_aa;
+        return result_3d;
+    }
+
+    // ── Perspective Unprojection (flat elements with 3D perspective) ──
+    var sp = p;
+    if has_3d {
+        let pd = select(800.0, persp_d, persp_d > 0.001);
+        let rel = p - center;
+
+        // Inverse homography: map screen point back to element local coords
+        let safe_cos_ry = max(abs(cos_ry), 0.0001) * sign(cos_ry + 0.0001);
+        let safe_cos_rx = max(abs(cos_rx), 0.0001) * sign(cos_rx + 0.0001);
+        let tan_ry = sin_ry / safe_cos_ry;
+        let tan_rx = sin_rx / safe_cos_rx;
+
+        let u = rel.x * cos_rz / safe_cos_ry + rel.y * (-cos_rz * tan_rx * tan_ry + sin_rz / safe_cos_rx);
+        let v = rel.x * (-sin_rz) / safe_cos_ry + rel.y * (sin_rz * tan_rx * tan_ry + cos_rz / safe_cos_rx);
+        let w = 1.0 - rel.x * tan_ry / pd + rel.y * tan_rx / (pd * safe_cos_ry);
+
+        let safe_w = max(abs(w), 0.001) * sign(w + 0.001);
+        sp = vec2<f32>(u / safe_w, v / safe_w) + center;
+    } else if abs(sin_rz) > 0.0001 {
+        // 2D rotation only (existing fast path)
+        let rel = p - center;
+        sp = vec2<f32>(rel.x * cos_rz + rel.y * sin_rz, -rel.x * sin_rz + rel.y * cos_rz) + center;
+    }
 
     var result = vec4<f32>(0.0);
 
@@ -343,7 +733,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Adjust corner radii for spread (expand corners proportionally)
         let shadow_radii = prim.corner_radius + vec4<f32>(spread);
 
-        let shadow_alpha = shadow_rounded_rect(p, shadow_origin, shadow_size, shadow_radii, blur);
+        let shadow_alpha = shadow_rounded_rect(sp, shadow_origin, shadow_size, shadow_radii, blur);
         let shadow_color = prim.shadow_color * shadow_alpha;
 
         // Premultiply and blend
@@ -354,20 +744,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var d: f32;
     switch prim_type {
         case PRIM_RECT: {
-            d = sd_rounded_rect(p, origin, size, prim.corner_radius);
+            d = sd_rounded_rect(sp, origin, size, prim.corner_radius);
         }
         case PRIM_CIRCLE: {
             let radius = min(size.x, size.y) * 0.5;
-            d = sd_circle(p, center, radius);
+            d = sd_circle(sp, center, radius);
         }
         case PRIM_ELLIPSE: {
-            d = sd_ellipse(p, center, size * 0.5);
+            d = sd_ellipse(sp, center, size * 0.5);
         }
         case PRIM_SHADOW: {
             // Shadow-only primitive - mask out the shape interior
             // Shadow should be visible starting from the shape boundary (d >= 0)
             // Use constant AA width to avoid discontinuities at triangle seams on Vulkan
-            let shape_d = sd_rounded_rect(p, origin, size, prim.corner_radius);
+            let shape_d = sd_rounded_rect(sp, origin, size, prim.corner_radius);
             let aa_width = 0.75;
             let shape_mask = smoothstep(-aa_width, aa_width, shape_d); // 0 inside, 1 outside, AA at edge
             result.a *= shape_mask;
@@ -376,7 +766,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         case PRIM_INNER_SHADOW: {
             // Inner shadow - renders INSIDE the shape only
-            let shape_d = sd_rounded_rect(p, origin, size, prim.corner_radius);
+            let shape_d = sd_rounded_rect(sp, origin, size, prim.corner_radius);
 
             // Hard clip at shape boundary - only render where d < 0 (inside)
             if shape_d > 0.0 {
@@ -399,7 +789,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
             // Apply offset by shifting the shadow calculation
             // Offset shifts which "edge" the shadow appears from
-            let offset_effect = dot(normalize(offset + vec2<f32>(0.001)), p - center);
+            let offset_effect = dot(normalize(offset + vec2<f32>(0.001)), sp - center);
             let offset_bias = clamp(offset_effect / (length(size) * 0.5), -1.0, 1.0) * length(offset);
             let biased_alpha = shadow_alpha * (1.0 + offset_bias * 0.5);
 
@@ -417,11 +807,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let shadow_center = center + shadow_offset;
             let shadow_radius = radius + spread;
 
-            let shadow_alpha = shadow_circle(p, shadow_center, shadow_radius, blur);
+            let shadow_alpha = shadow_circle(sp, shadow_center, shadow_radius, blur);
 
             // Mask out the circle area so shadow doesn't render under it
             // Use constant AA width to avoid discontinuities at triangle seams on Vulkan
-            let circle_d = sd_circle(p, center, radius);
+            let circle_d = sd_circle(sp, center, radius);
             let aa_width = 0.75;
             let shape_mask = smoothstep(-aa_width, aa_width, circle_d); // 0 inside, 1 outside, AA at edge
 
@@ -432,7 +822,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         case PRIM_CIRCLE_INNER_SHADOW: {
             // Circle inner shadow - renders INSIDE the circle only
             let radius = min(size.x, size.y) * 0.5;
-            let circle_d = sd_circle(p, center, radius);
+            let circle_d = sd_circle(sp, center, radius);
 
             // Hard clip at circle boundary
             if circle_d > 0.0 {
@@ -451,7 +841,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let shadow_alpha = 1.0 - smoothstep(0.0, shadow_range, edge_dist - spread);
 
             // Apply offset
-            let offset_effect = dot(normalize(offset + vec2<f32>(0.001)), p - center);
+            let offset_effect = dot(normalize(offset + vec2<f32>(0.001)), sp - center);
             let offset_bias = clamp(offset_effect / radius, -1.0, 1.0) * length(offset);
             let biased_alpha = shadow_alpha * (1.0 + offset_bias * 0.5);
 
@@ -499,7 +889,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             return text_result;
         }
         default: {
-            d = sd_rounded_rect(p, origin, size, prim.corner_radius);
+            d = sd_rounded_rect(sp, origin, size, prim.corner_radius);
         }
     }
 
@@ -528,7 +918,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             var t: f32;
             if (g_len_sq > 0.0001) {
                 // Project current position onto gradient line
-                let proj = p - g_start;
+                let proj = sp - g_start;
                 t = clamp(dot(proj, g_dir) / g_len_sq, 0.0, 1.0);
             } else {
                 t = 0.0;
@@ -540,7 +930,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let g_center = prim.gradient_params.xy;
             let g_radius = prim.gradient_params.z;
 
-            let dist = length(p - g_center);
+            let dist = length(sp - g_center);
             let t = clamp(dist / max(g_radius, 0.001), 0.0, 1.0);
             fill_color = mix(prim.color, prim.color2, t);
         }
@@ -568,7 +958,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let bl = select(border_top, border_left, border_right > 0.0 || border_bottom > 0.0 || border_left > 0.0);
 
         let half_size = size * 0.5;
-        let rel = p - center;  // Position relative to center (signed)
+        let rel = sp - center;  // Position relative to center (signed, in unrotated space)
         let antialias_threshold = 0.5;
 
         // Select corner radius based on quadrant

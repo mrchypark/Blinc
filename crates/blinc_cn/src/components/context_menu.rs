@@ -484,8 +484,7 @@ fn show_context_submenu(
     let motion_key_str = format!("ctx_submenu_{}", key);
     let motion_key_with_child = format!("{}:child:0", motion_key_str);
 
-    let handle = mgr
-        .dropdown()
+    mgr.dropdown()
         .at(x, y)
         .dismiss_on_escape(true)
         .motion_key(&motion_key_with_child)
@@ -510,9 +509,7 @@ fn show_context_submenu(
                 padding,
             )
         })
-        .show();
-
-    handle
+        .show()
 }
 
 /// Build submenu content (recursive for nested submenus)
