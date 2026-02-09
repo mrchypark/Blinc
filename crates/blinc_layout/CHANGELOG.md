@@ -111,6 +111,9 @@ All notable changes to `blinc_layout` will be documented in this file.
 
 ### Fixed
 
+- CSS timing functions now map to spec-correct cubic-bezier values (`ease` was incorrectly using `ease-in-out` polynomial, causing 6.5x slower initial progress than CSS spec)
+- Transform-origin mid-flight reversal jitter: `snapshot_before_keyframe_properties` now overlays `transform_origin` from active transition, preventing snap-back on hover-leave
+- Cubic-bezier solver rewritten with f64 internal precision and binary-search fallback for jitter-free interpolation at 120fps
 - Hover-leave reverse transitions now properly detected and animated (previously snapped to base state instantly)
 - Transition repeat regression: pre-reset snapshots prevent spurious re-transitions when hover state persists after transition completion
 
