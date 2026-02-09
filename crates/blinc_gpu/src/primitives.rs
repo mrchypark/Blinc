@@ -121,8 +121,12 @@ pub struct ImageDraw {
 /// - clip_bounds: `vec4<f32>`     (16 bytes) - clip region (x, y, width, height)
 /// - clip_radius: `vec4<f32>`     (16 bytes) - clip corner radii or circle/ellipse radii
 /// - gradient_params: `vec4<f32>` (16 bytes) - gradient direction (x1, y1, x2, y2) or (cx, cy, r, 0)
-/// - type_info: `vec4<u32>`       (16 bytes) - (primitive_type, fill_type, clip_type, 0)
-/// Total: 192 bytes
+/// - rotation: `vec4<f32>`        (16 bytes) - (sin_rz, cos_rz, sin_ry, cos_ry)
+/// - perspective: `vec4<f32>`     (16 bytes) - (sin_rx, cos_rx, perspective_d, shape_3d_type)
+/// - sdf_3d: `vec4<f32>`          (16 bytes) - (depth, ambient, specular_power, translate_z)
+/// - light: `vec4<f32>`           (16 bytes) - (dir_x, dir_y, dir_z, intensity)
+/// - type_info: `vec4<u32>`       (16 bytes) - (primitive_type, fill_type, clip_type, z_layer)
+///   Total: 256 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuPrimitive {
@@ -148,6 +152,15 @@ pub struct GpuPrimitive {
     pub clip_radius: [f32; 4],
     /// Gradient parameters: linear (x1, y1, x2, y2), radial (cx, cy, r, 0)
     pub gradient_params: [f32; 4],
+    /// Rotation (sin_rz, cos_rz, sin_ry, cos_ry) - pre-computed for GPU efficiency
+    pub rotation: [f32; 4],
+    /// Perspective (sin_rx, cos_rx, perspective_d, shape_3d_type)
+    /// shape_3d_type: 0=none, 1=box, 2=sphere, 3=cylinder, 4=torus, 5=capsule, 6=group
+    pub perspective: [f32; 4],
+    /// SDF 3D params (depth, ambient, specular_power, translate_z)
+    pub sdf_3d: [f32; 4],
+    /// Light params (dir_x, dir_y, dir_z, intensity)
+    pub light: [f32; 4],
     /// Type info (primitive_type, fill_type, clip_type, z_layer)
     pub type_info: [u32; 4],
 }
@@ -168,6 +181,14 @@ impl Default for GpuPrimitive {
             clip_radius: [0.0; 4],
             // Default gradient: horizontal (0,0) to (1,0)
             gradient_params: [0.0, 0.0, 1.0, 0.0],
+            // No rotation: sin_rz=0, cos_rz=1, sin_ry=0, cos_ry=1
+            rotation: [0.0, 1.0, 0.0, 1.0],
+            // No perspective: sin_rx=0, cos_rx=1, persp_d=0, shape=none
+            perspective: [0.0, 1.0, 0.0, 0.0],
+            // No 3D: depth=0, ambient=0.3, specular=32, unused=0
+            sdf_3d: [0.0, 0.3, 32.0, 0.0],
+            // Default light: top direction, intensity 0.8
+            light: [0.0, -1.0, 0.5, 0.8],
             type_info: [0; 4], // clip_type defaults to None (0)
         }
     }
@@ -190,6 +211,50 @@ impl GpuPrimitive {
             type_info: [PrimitiveType::Circle as u32, FillType::Solid as u32, 0, 0],
             ..Default::default()
         }
+    }
+
+    /// Set 2D rotation angle (Z-axis) in radians
+    pub fn with_rotation(mut self, angle_rad: f32) -> Self {
+        self.rotation[0] = angle_rad.sin();
+        self.rotation[1] = angle_rad.cos();
+        self
+    }
+
+    /// Set 3D rotation (X and Y axes) in radians + perspective distance
+    pub fn with_3d_rotation(mut self, rx_rad: f32, ry_rad: f32, perspective_d: f32) -> Self {
+        self.rotation[2] = ry_rad.sin();
+        self.rotation[3] = ry_rad.cos();
+        self.perspective[0] = rx_rad.sin();
+        self.perspective[1] = rx_rad.cos();
+        self.perspective[2] = perspective_d;
+        self
+    }
+
+    /// Set 3D shape type and depth for SDF raymarching
+    /// shape_type: 0=none, 1=box, 2=sphere, 3=cylinder, 4=torus, 5=capsule
+    pub fn with_3d_shape(mut self, shape_type: f32, depth: f32) -> Self {
+        self.perspective[3] = shape_type;
+        self.sdf_3d[0] = depth;
+        self
+    }
+
+    /// Set 3D lighting parameters
+    pub fn with_light(mut self, dir: [f32; 3], intensity: f32) -> Self {
+        self.light = [dir[0], dir[1], dir[2], intensity];
+        self
+    }
+
+    /// Set ambient and specular for 3D rendering
+    pub fn with_3d_material(mut self, ambient: f32, specular_power: f32) -> Self {
+        self.sdf_3d[1] = ambient;
+        self.sdf_3d[2] = specular_power;
+        self
+    }
+
+    /// Set translate-z offset for 3D elements (positive = toward viewer)
+    pub fn with_3d_translate_z(mut self, z: f32) -> Self {
+        self.sdf_3d[3] = z;
+        self
     }
 
     /// Set the fill color
@@ -218,6 +283,7 @@ impl GpuPrimitive {
     }
 
     /// Set shadow
+    #[allow(clippy::too_many_arguments)]
     pub fn with_shadow(
         mut self,
         offset_x: f32,
@@ -235,6 +301,7 @@ impl GpuPrimitive {
     }
 
     /// Set linear gradient fill
+    #[allow(clippy::too_many_arguments)]
     pub fn with_linear_gradient(
         mut self,
         r1: f32,
@@ -253,6 +320,7 @@ impl GpuPrimitive {
     }
 
     /// Set radial gradient fill
+    #[allow(clippy::too_many_arguments)]
     pub fn with_radial_gradient(
         mut self,
         r1: f32,
@@ -279,6 +347,7 @@ impl GpuPrimitive {
     }
 
     /// Set rounded rectangular clip region
+    #[allow(clippy::too_many_arguments)]
     pub fn with_clip_rounded_rect(
         mut self,
         x: f32,
@@ -361,8 +430,11 @@ impl GpuPrimitive {
             shadow_color: [0.0; 4],
             clip_bounds: glyph.clip_bounds,
             clip_radius: [0.0; 4],
-            // Store UV bounds (u_min, v_min, u_max, v_max) in gradient_params
             gradient_params: glyph.uv_bounds,
+            rotation: [0.0, 1.0, 0.0, 1.0],
+            perspective: [0.0, 1.0, 0.0, 0.0],
+            sdf_3d: [0.0, 0.3, 32.0, 0.0],
+            light: [0.0, -1.0, 0.5, 0.8],
             type_info: [
                 PrimitiveType::Text as u32,
                 is_color_flag,
@@ -373,6 +445,7 @@ impl GpuPrimitive {
     }
 
     /// Create a text glyph primitive with explicit parameters
+    #[allow(clippy::too_many_arguments)]
     pub fn text_glyph(
         x: f32,
         y: f32,
@@ -395,11 +468,36 @@ impl GpuPrimitive {
             shadow_color: [0.0; 4],
             clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
             clip_radius: [0.0; 4],
-            // Store UV bounds in gradient_params
             gradient_params: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
+            rotation: [0.0, 1.0, 0.0, 1.0],
+            perspective: [0.0, 1.0, 0.0, 0.0],
+            sdf_3d: [0.0, 0.3, 32.0, 0.0],
+            light: [0.0, -1.0, 0.5, 0.8],
             type_info: [PrimitiveType::Text as u32, 0, ClipType::None as u32, 0],
         }
     }
+}
+
+/// Max shapes per 3D group (practical limit for uniform/storage buffer)
+pub const MAX_GROUP_SHAPES: usize = 16;
+
+/// Per-shape descriptor for 3D group composition (64 bytes, 4 vec4s)
+///
+/// Used when `shape-3d: group` combines multiple child shapes into a single
+/// compound SDF via boolean operations.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ShapeDesc {
+    /// (offset_x, offset_y, offset_z, corner_radius) — relative to group center
+    pub offset: [f32; 4],
+    /// (shape_type, depth, op_type, blend_radius)
+    /// shape_type: 1=box, 2=sphere, 3=cylinder, 4=torus, 5=capsule
+    /// op_type: 0=union, 1=subtract, 2=intersect, 3=smooth-union, 4=smooth-subtract, 5=smooth-intersect
+    pub params: [f32; 4],
+    /// (half_w, half_h, half_d, 0)
+    pub half_ext: [f32; 4],
+    /// (r, g, b, a) — per-shape color
+    pub color: [f32; 4],
 }
 
 /// A GPU glass primitive for vibrancy/blur effects (matches shader `GlassPrimitive` struct)
@@ -413,7 +511,7 @@ impl GpuPrimitive {
 /// - type_info: `vec4<u32>`     (16 bytes)
 /// - clip_bounds: `vec4<f32>`   (16 bytes)
 /// - clip_radius: `vec4<f32>`   (16 bytes)
-/// Total: 128 bytes
+///   Total: 128 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuGlassPrimitive {
@@ -647,6 +745,7 @@ impl GpuGlassPrimitive {
     }
 
     /// Set rounded rectangular clip region with per-corner radii
+    #[allow(clippy::too_many_arguments)]
     pub fn with_clip_rounded_rect_per_corner(
         mut self,
         x: f32,
@@ -716,7 +815,7 @@ impl From<&blinc_layout::GlassPanel> for GpuGlassPrimitive {
 /// - uv_bounds: `vec4<f32>`    (16 bytes) - UV coordinates in atlas
 /// - color: `vec4<f32>`        (16 bytes) - text color
 /// - clip_bounds: `vec4<f32>`  (16 bytes) - clip region (x, y, width, height)
-/// Total: 80 bytes
+///   Total: 80 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuGlyph {
@@ -798,7 +897,7 @@ pub struct CompositeUniforms {
 /// - clip_radius: `vec4<f32>` (16 bytes) - Corner radii (tl, tr, br, bl)
 /// - clip_type: u32 (4 bytes) - 0=none, 1=rect
 /// - _pad: 28 bytes (12 bytes alignment + 16 bytes for vec3 stored as vec4)
-/// Total: 112 bytes
+///   Total: 112 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LayerCompositeUniforms {
@@ -892,7 +991,7 @@ impl LayerCompositeUniforms {
 /// - image_uv_bounds: `vec4<f32>` (16 bytes) - (u_min, v_min, u_max, v_max) for image UV mapping
 /// - glass_params: `vec4<f32>` (16 bytes) - (blur_radius, saturation, tint_strength, opacity)
 /// - glass_tint: `vec4<f32>` (16 bytes) - glass tint color RGBA
-/// Total: 160 bytes
+///   Total: 160 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PathUniforms {
@@ -1074,7 +1173,7 @@ impl Default for DropShadowUniforms {
 /// - _pad0: `f32` (4 bytes) - padding
 /// - texel_size: `vec2<f32>` (8 bytes) - inverse texture size
 /// - _pad1: `vec2<f32>` (8 bytes) - padding for alignment
-/// Total: 48 bytes
+///   Total: 48 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GlowUniforms {

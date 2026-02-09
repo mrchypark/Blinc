@@ -1069,7 +1069,7 @@ impl ThresholdLineChartBuilder {
                 );
 
                 // Current value marker (last point)
-                if self.show_current_marker && points.len() > 0 {
+                if self.show_current_marker && !points.is_empty() {
                     let (last_x, last_y) = points[points.len() - 1];
                     let last_val = self.data[self.data.len() - 1];
 
@@ -1354,11 +1354,7 @@ impl HistogramBuilder {
                     .absolute()
                     .left(padding)
                     .top(self.height - padding - axis_height + 2.0)
-                    .child(
-                        text(&format!("{:.1}", data_min))
-                            .size(9.0)
-                            .color(text_color),
-                    ),
+                    .child(text(format!("{:.1}", data_min)).size(9.0).color(text_color)),
             );
             // Max value
             container = container.child(
@@ -1366,11 +1362,7 @@ impl HistogramBuilder {
                     .absolute()
                     .right(padding)
                     .top(self.height - padding - axis_height + 2.0)
-                    .child(
-                        text(&format!("{:.1}", data_max))
-                            .size(9.0)
-                            .color(text_color),
-                    ),
+                    .child(text(format!("{:.1}", data_max)).size(9.0).color(text_color)),
             );
         }
 
@@ -1595,7 +1587,7 @@ impl ComparisonBarChartBuilder {
                         .absolute()
                         .left(padding + label_width + current_w + 4.0)
                         .top(y_base + bar_height + 4.0)
-                        .child(text(&indicator).size(10.0).color(indicator_color)),
+                        .child(text(indicator).size(10.0).color(indicator_color)),
                 );
             }
         }

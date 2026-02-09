@@ -214,6 +214,7 @@ impl TextRenderingContext {
     /// * `alignment` - Horizontal alignment (Left, Center, Right)
     /// * `width` - Optional width for alignment/wrapping (if None, text is positioned at x)
     /// * `wrap` - Whether to wrap text at width boundary
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_text_with_options(
         &mut self,
         text: &str,
@@ -232,6 +233,7 @@ impl TextRenderingContext {
     /// Prepare text with full control over wrapping behavior
     ///
     /// * `wrap` - If true, text wraps at width boundary. If false, text stays on single line.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_text_full(
         &mut self,
         text: &str,
@@ -273,6 +275,7 @@ impl TextRenderingContext {
     /// * `wrap` - Whether to wrap text at width boundary
     /// * `font_name` - Optional font name (e.g., "Fira Code", "Inter")
     /// * `generic` - Generic font category for fallback
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_text_with_font(
         &mut self,
         text: &str,
@@ -328,10 +331,13 @@ impl TextRenderingContext {
         italic: bool,
         layout_height: Option<f32>,
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
-        let mut options = LayoutOptions::default();
-        options.anchor = anchor;
-        options.alignment = alignment;
-        options.max_width = width;
+        let mut options = LayoutOptions {
+            anchor,
+            alignment,
+            max_width: width,
+            ..Default::default()
+        };
+        // Disable wrapping unless explicitly requested
         if !wrap {
             options.line_break = blinc_text::LineBreakMode::None;
         }
@@ -465,6 +471,7 @@ impl TextRenderingContext {
     ///
     /// This renders text as a single unit but applies different colors to different ranges.
     /// Each ColorSpan specifies a byte range and color.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_styled_text(
         &mut self,
         text: &str,
@@ -478,9 +485,11 @@ impl TextRenderingContext {
         generic: GenericFont,
         layout_height: Option<f32>,
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
-        let mut options = LayoutOptions::default();
-        options.anchor = anchor;
-        options.line_break = blinc_text::LineBreakMode::None;
+        let options = LayoutOptions {
+            anchor,
+            line_break: blinc_text::LineBreakMode::None,
+            ..Default::default()
+        };
 
         let prepared = self.renderer.prepare_styled_text(
             text,

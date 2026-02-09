@@ -76,9 +76,10 @@ pub mod overlay_events {
 // =============================================================================
 
 /// Categorizes overlay behavior and default configuration
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum OverlayKind {
     /// Modal dialog - blocks interaction, centered, has backdrop
+    #[default]
     Modal,
     /// Dialog - like modal but semantic (confirm/alert)
     Dialog,
@@ -90,12 +91,6 @@ pub enum OverlayKind {
     Tooltip,
     /// Dropdown - positioned relative to anchor element
     Dropdown,
-}
-
-impl Default for OverlayKind {
-    fn default() -> Self {
-        Self::Modal
-    }
 }
 
 // =============================================================================
@@ -214,9 +209,10 @@ impl StateTransitions for OverlayState {
 // =============================================================================
 
 /// How to position an overlay
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum OverlayPosition {
     /// Center in viewport (modals, dialogs)
+    #[default]
     Centered,
     /// Position at specific coordinates (context menus)
     AtPoint { x: f32, y: f32 },
@@ -244,12 +240,6 @@ pub enum EdgeSide {
     Top,
     /// Bottom edge of viewport
     Bottom,
-}
-
-impl Default for OverlayPosition {
-    fn default() -> Self {
-        Self::Centered
-    }
 }
 
 /// Corner positions for toast notifications
@@ -1656,7 +1646,7 @@ impl OverlayManagerInner {
 }
 
 /// The element ID used for the overlay layer container
-pub const OVERLAY_LAYER_ID: &'static str = "__blinc_overlay_layer__";
+pub const OVERLAY_LAYER_ID: &str = "__blinc_overlay_layer__";
 
 impl OverlayManagerInner {
     /// Build the overlay layer container for the main UI tree
@@ -2489,7 +2479,7 @@ impl ModalBuilder {
 
     /// Show the modal
     pub fn show(self) -> OverlayHandle {
-        let content = self.content.unwrap_or_else(|| Box::new(|| div()));
+        let content = self.content.unwrap_or_else(|| Box::new(div));
         self.manager.lock().unwrap().add(self.config, content)
     }
 }
@@ -2527,7 +2517,7 @@ impl DialogBuilder {
 
     /// Show the dialog
     pub fn show(self) -> OverlayHandle {
-        let content = self.content.unwrap_or_else(|| Box::new(|| div()));
+        let content = self.content.unwrap_or_else(|| Box::new(div));
         self.manager.lock().unwrap().add(self.config, content)
     }
 }
@@ -2565,7 +2555,7 @@ impl ContextMenuBuilder {
 
     /// Show the context menu
     pub fn show(self) -> OverlayHandle {
-        let content = self.content.unwrap_or_else(|| Box::new(|| div()));
+        let content = self.content.unwrap_or_else(|| Box::new(div));
         self.manager.lock().unwrap().add(self.config, content)
     }
 }
@@ -2619,7 +2609,7 @@ impl ToastBuilder {
 
     /// Show the toast
     pub fn show(self) -> OverlayHandle {
-        let content = self.content.unwrap_or_else(|| Box::new(|| div()));
+        let content = self.content.unwrap_or_else(|| Box::new(div));
         self.manager.lock().unwrap().add(self.config, content)
     }
 }
@@ -2835,7 +2825,7 @@ impl DropdownBuilder {
 
     /// Show the dropdown
     pub fn show(self) -> OverlayHandle {
-        let content = self.content.unwrap_or_else(|| Box::new(|| div()));
+        let content = self.content.unwrap_or_else(|| Box::new(div));
         self.manager
             .lock()
             .unwrap()

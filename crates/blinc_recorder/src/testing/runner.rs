@@ -242,12 +242,14 @@ impl ElementAssertion {
     }
 
     /// Assert that the element is visible.
+    #[allow(clippy::wrong_self_convention)]
     pub fn is_visible(self) -> Self {
         // TODO: Check visibility
         self
     }
 
     /// Assert that the element is focused.
+    #[allow(clippy::wrong_self_convention)]
     pub fn is_focused(self) -> Self {
         // TODO: Check focus state
         self

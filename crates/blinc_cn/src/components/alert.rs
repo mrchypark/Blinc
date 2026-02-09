@@ -95,9 +95,9 @@ impl Alert {
         let theme = ThemeState::get();
         let message: Label = message.into();
 
-        let bg = variant.background(&theme);
-        let border_color = variant.border(&theme);
-        let text_color = variant.text_color(&theme);
+        let bg = variant.background(theme);
+        let border_color = variant.border(theme);
+        let text_color = variant.text_color(theme);
         let radius = theme.radius(RadiusToken::Md);
         let padding = theme.spacing_value(SpacingToken::Space4); // 16px
 
@@ -114,8 +114,8 @@ impl Alert {
     /// Set the alert variant
     pub fn variant(self, variant: AlertVariant) -> Self {
         let theme = ThemeState::get();
-        let bg = variant.background(&theme);
-        let border_color = variant.border(&theme);
+        let bg = variant.background(theme);
+        let border_color = variant.border(theme);
 
         let inner = self.inner.bg(bg).border(1.0, border_color);
 
@@ -190,8 +190,8 @@ impl AlertBox {
     fn build_container(variant: AlertVariant) -> Div {
         let theme = ThemeState::get();
 
-        let bg = variant.background(&theme);
-        let border_color = variant.border(&theme);
+        let bg = variant.background(theme);
+        let border_color = variant.border(theme);
         let radius = theme.radius(RadiusToken::Md);
         let padding = theme.spacing_value(SpacingToken::Space4);
         let gap = theme.spacing_value(SpacingToken::Space1); // 4px
@@ -215,7 +215,7 @@ impl AlertBox {
     /// Set the alert title
     pub fn title(mut self, title: impl Into<Label>) -> Self {
         let theme = ThemeState::get();
-        let color = self.variant.text_color(&theme);
+        let color = self.variant.text_color(theme);
 
         self.inner = self
             .inner

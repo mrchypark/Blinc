@@ -227,10 +227,7 @@ impl RecordingSession {
 
     /// Get the snapshot closest to a given timestamp.
     pub fn snapshot_at(&self, timestamp: Timestamp) -> Option<&TreeSnapshot> {
-        self.snapshots
-            .iter()
-            .filter(|s| s.timestamp <= timestamp)
-            .last()
+        self.snapshots.iter().rfind(|s| s.timestamp <= timestamp)
     }
 
     /// Get the recording duration.

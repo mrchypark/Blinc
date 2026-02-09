@@ -255,7 +255,7 @@ impl ToastBuilder {
         let title = self.title;
         let description = self.description;
         let variant = self.variant;
-        let accent_color = variant.accent_color(&theme);
+        let accent_color = variant.accent_color(theme);
         let icon_svg = variant.icon_svg().map(|s| s.to_string());
         let action_label = self.action_label;
         let action_callback = self.action_callback;

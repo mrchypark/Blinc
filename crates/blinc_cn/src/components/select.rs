@@ -257,7 +257,7 @@ impl Select {
                     .flex_1()
                     .child(display_content);
 
-                let trigger = div()
+                div()
                     .flex_row()
                     .w(dropdown_width)
                     .items_center()
@@ -280,9 +280,7 @@ impl Select {
                             .flex_shrink_0(),
                     )
                     .when(!disabled, |t| t.cursor_pointer())
-                    .when(disabled, |t| t.cursor_not_allowed());
-
-                trigger
+                    .when(disabled, |t| t.cursor_not_allowed())
             })
             .on_click(move |ctx| {
                 if disabled {
@@ -424,6 +422,7 @@ impl ElementBuilder for Select {
 
 /// Internal configuration for building a Select
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 struct SelectConfig {
     value_state: State<String>,
     options: Vec<SelectOption>,
@@ -599,6 +598,7 @@ pub fn select(value_state: &State<String>) -> SelectBuilder {
 ///
 /// This is extracted as a separate function to be called from the overlay content closure.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn build_dropdown_content(
     options: &[SelectOption],
     current_selected: &str,

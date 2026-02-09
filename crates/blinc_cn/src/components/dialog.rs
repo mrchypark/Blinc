@@ -476,7 +476,7 @@ fn build_dialog_content(
         let on_confirm = on_confirm.clone();
         let confirm_text = confirm_text.to_string();
         footer_div = footer_div.child(
-            button(&confirm_text)
+            button(confirm_text)
                 .variant(if confirm_destructive {
                     ButtonVariant::Destructive
                 } else {

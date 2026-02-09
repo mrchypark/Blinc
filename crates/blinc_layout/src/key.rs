@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 /// Global call counters per source location, reset at the start of each frame.
+#[allow(clippy::type_complexity, clippy::incompatible_msrv)]
 static CALL_COUNTERS: LazyLock<Mutex<HashMap<(&'static str, u32, u32), usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 

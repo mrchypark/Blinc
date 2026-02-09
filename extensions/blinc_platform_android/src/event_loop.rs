@@ -250,6 +250,7 @@ impl EventLoop for AndroidEventLoop {
 
 /// Placeholder for non-Android builds
 #[cfg(not(target_os = "android"))]
+#[derive(Default)]
 pub struct AndroidEventLoop {
     _private: (),
 }
@@ -258,7 +259,7 @@ pub struct AndroidEventLoop {
 impl AndroidEventLoop {
     /// Create a placeholder event loop (for cross-compilation checks)
     pub fn new() -> Self {
-        Self { _private: () }
+        Self::default()
     }
 }
 

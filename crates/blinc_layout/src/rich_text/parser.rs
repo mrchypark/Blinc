@@ -445,8 +445,8 @@ fn parse_color(s: &str) -> Option<Color> {
     let s = s.trim();
 
     // Hex color
-    if s.starts_with('#') {
-        return parse_hex_color(&s[1..]);
+    if let Some(rest) = s.strip_prefix('#') {
+        return parse_hex_color(rest);
     }
 
     // RGBA

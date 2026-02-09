@@ -326,8 +326,7 @@ fn show_navigation_dropdown(
     let mgr = get_overlay_manager();
 
     // Use hover_card for transient hover-based overlay (like menubar)
-    let handle = mgr
-        .hover_card()
+    mgr.hover_card()
         .at(x, y)
         .anchor_direction(AnchorDirection::Bottom)
         .animation(OverlayAnimation::none()) // Instant show/hide for snappy feel
@@ -379,9 +378,7 @@ fn show_navigation_dropdown(
                     .child(panel),
             )
         })
-        .show();
-
-    handle
+        .show()
 }
 
 impl Deref for NavigationMenu {

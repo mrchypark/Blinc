@@ -2,6 +2,30 @@
 
 All notable changes to `blinc_app` will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+#### 3D SDF & Styling Demo
+
+- Expanded `styling_demo` example with 3D shape showcases (box, sphere, cylinder, torus, capsule)
+- 3D boolean operations demo (union, subtract, intersect, smooth variants)
+- 3D group composition examples with compound shapes
+- UV-mapped gradient backgrounds on 3D surfaces
+- `translate-z` depth positioning examples
+- Blinn-Phong lighting configuration examples
+
+#### Stylesheet Runtime Integration
+
+- CSS animation support wired through the app runtime
+- `backdrop-filter` property support in windowed runner
+- Stylesheet base styles applied after tree construction
+
+### Fixed
+
+- iOS runner cleanup for platform trait consistency
+- Clippy warnings in windowed.rs and ios.rs
+
 ## [0.1.12] - 2025-01-19
 
 ### Added

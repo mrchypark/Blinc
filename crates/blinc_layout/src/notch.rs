@@ -1468,6 +1468,7 @@ impl Default for Notch {
 /// For center bulges: the curve protrudes outward, extending beyond the bounds
 /// For center cuts: sharp V going inward
 /// For center peaks: sharp V going outward
+#[allow(clippy::too_many_arguments)]
 fn build_shape_path(
     bounds: Rect,
     corners: &CornersConfig,
@@ -1531,7 +1532,7 @@ fn build_shape_path(
 
         // Cubic bezier control point factor for circular arc approximation
         // k = 4 * (sqrt(2) - 1) / 3 ≈ 0.5522847498
-        const K: f32 = 0.5522847498;
+        const K: f32 = 0.552_284_8;
 
         if cr > 0.0 {
             // With corner radius: concave (outward-bowing) entry/exit transitions
@@ -1624,7 +1625,7 @@ fn build_shape_path(
         // Corner radius for smooth entry/exit transitions
         let cr = bulge.corner_radius.min(bulge.width / 4.0).max(0.0);
 
-        const K: f32 = 0.5522847498;
+        const K: f32 = 0.552_284_8;
 
         if cr > 0.0 {
             // With corner radius: smooth convex entry/exit transitions
@@ -1818,7 +1819,7 @@ fn build_shape_path(
         let cr = scoop.corner_radius.min(scoop.width / 4.0).max(0.0);
 
         // Cubic bezier control point factor for circular arc approximation
-        const K: f32 = 0.5522847498;
+        const K: f32 = 0.552_284_8;
 
         if cr > 0.0 {
             // With corner radius: concave (outward-bowing) entry/exit transitions
@@ -1913,7 +1914,7 @@ fn build_shape_path(
         // Corner radius for smooth entry/exit transitions
         let cr = bulge.corner_radius.min(bulge.width / 4.0).max(0.0);
 
-        const K: f32 = 0.5522847498;
+        const K: f32 = 0.552_284_8;
 
         if cr > 0.0 {
             // With corner radius: smooth convex entry/exit transitions
@@ -2187,7 +2188,7 @@ fn draw_path_shadow(ctx: &mut dyn DrawContext, path: &Path, bounds: Rect, shadow
     }
 
     // More layers = smoother shadow (aim for ~2px per layer)
-    let layers = ((blur / 1.5).ceil() as usize).max(8).min(24);
+    let layers = ((blur / 1.5).ceil() as usize).clamp(8, 24);
 
     // Apply shadow offset by translating
     let offset_x = shadow.offset_x;

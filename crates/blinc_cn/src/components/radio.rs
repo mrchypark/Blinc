@@ -143,8 +143,7 @@ impl RadioGroup {
 
         // Add each radio button
         for option in &config.options {
-            options_container =
-                options_container.child(build_radio_button(&config, option, &theme));
+            options_container = options_container.child(build_radio_button(&config, option, theme));
         }
 
         // If there's a label, wrap everything
@@ -294,6 +293,7 @@ fn build_radio_button(
 
 /// Internal configuration for building a RadioGroup
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 struct RadioGroupConfig {
     selected: State<String>,
     options: Vec<RadioOption>,

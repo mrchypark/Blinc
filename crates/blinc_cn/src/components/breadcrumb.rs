@@ -119,9 +119,10 @@ impl BreadcrumbSize {
 }
 
 /// Separator type for breadcrumb items
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum BreadcrumbSeparator {
     /// Chevron right icon (default)
+    #[default]
     Chevron,
     /// Slash character
     Slash,
@@ -129,12 +130,6 @@ pub enum BreadcrumbSeparator {
     Text(String),
     /// Custom SVG separator
     Svg(String),
-}
-
-impl Default for BreadcrumbSeparator {
-    fn default() -> Self {
-        BreadcrumbSeparator::Chevron
-    }
 }
 
 /// Breadcrumb component

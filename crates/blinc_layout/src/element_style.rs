@@ -33,6 +33,97 @@ use blinc_theme::ThemeState;
 use crate::css_parser::CssAnimation;
 use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, WoodMaterial};
 
+// ============================================================================
+// Layout Style Types
+// ============================================================================
+
+/// Spacing values for padding and margin (all in pixels)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SpacingRect {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl SpacingRect {
+    /// All sides equal
+    pub fn uniform(px: f32) -> Self {
+        Self {
+            top: px,
+            right: px,
+            bottom: px,
+            left: px,
+        }
+    }
+
+    /// Horizontal and vertical
+    pub fn xy(x: f32, y: f32) -> Self {
+        Self {
+            top: y,
+            right: x,
+            bottom: y,
+            left: x,
+        }
+    }
+
+    /// Individual sides
+    pub fn new(top: f32, right: f32, bottom: f32, left: f32) -> Self {
+        Self {
+            top,
+            right,
+            bottom,
+            left,
+        }
+    }
+}
+
+/// Flex direction
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StyleFlexDirection {
+    Row,
+    Column,
+    RowReverse,
+    ColumnReverse,
+}
+
+/// Display mode
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StyleDisplay {
+    Flex,
+    Block,
+    None,
+}
+
+/// Alignment for align-items and align-self
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StyleAlign {
+    Start,
+    Center,
+    End,
+    Stretch,
+    Baseline,
+}
+
+/// Justify content values
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StyleJustify {
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+/// Overflow behavior
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StyleOverflow {
+    Visible,
+    Clip,
+    Scroll,
+}
+
 /// Visual style properties for an element
 ///
 /// All properties are optional - when merging styles, only set properties
@@ -40,6 +131,9 @@ use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, Woo
 /// override the properties that change for that state.
 #[derive(Clone, Default, Debug)]
 pub struct ElementStyle {
+    // =========================================================================
+    // Visual Properties
+    // =========================================================================
     /// Background brush (solid color, gradient, or glass)
     pub background: Option<Brush>,
     /// Corner radius
@@ -56,6 +150,83 @@ pub struct ElementStyle {
     pub opacity: Option<f32>,
     /// CSS animation configuration (animation: name duration timing delay iteration-count direction fill-mode)
     pub animation: Option<CssAnimation>,
+
+    // =========================================================================
+    // 3D Transform Properties
+    // =========================================================================
+    /// X-axis rotation in degrees (3D tilt)
+    pub rotate_x: Option<f32>,
+    /// Y-axis rotation in degrees (3D turn)
+    pub rotate_y: Option<f32>,
+    /// Perspective distance in pixels
+    pub perspective: Option<f32>,
+    /// 3D shape type: "box", "sphere", "cylinder", "torus", "capsule"
+    pub shape_3d: Option<String>,
+    /// 3D extrusion depth in pixels
+    pub depth: Option<f32>,
+    /// Light direction (x, y, z)
+    pub light_direction: Option<[f32; 3]>,
+    /// Light intensity (0.0 - 1.0+)
+    pub light_intensity: Option<f32>,
+    /// Ambient light level (0.0 - 1.0)
+    pub ambient: Option<f32>,
+    /// Specular power (higher = sharper highlights)
+    pub specular: Option<f32>,
+    /// Z-axis translation in pixels (positive = toward viewer)
+    pub translate_z: Option<f32>,
+    /// 3D boolean operation type: "union", "subtract", "intersect", "smooth-union", "smooth-subtract", "smooth-intersect"
+    pub op_3d: Option<String>,
+    /// Blend radius for smooth boolean operations (in pixels)
+    pub blend_3d: Option<f32>,
+
+    // =========================================================================
+    // Layout Properties
+    // =========================================================================
+    /// Width in pixels
+    pub width: Option<f32>,
+    /// Height in pixels
+    pub height: Option<f32>,
+    /// Minimum width in pixels
+    pub min_width: Option<f32>,
+    /// Minimum height in pixels
+    pub min_height: Option<f32>,
+    /// Maximum width in pixels
+    pub max_width: Option<f32>,
+    /// Maximum height in pixels
+    pub max_height: Option<f32>,
+
+    /// Display mode (flex, block, none)
+    pub display: Option<StyleDisplay>,
+    /// Flex direction (row, column, row-reverse, column-reverse)
+    pub flex_direction: Option<StyleFlexDirection>,
+    /// Flex wrap
+    pub flex_wrap: Option<bool>,
+    /// Flex grow factor
+    pub flex_grow: Option<f32>,
+    /// Flex shrink factor
+    pub flex_shrink: Option<f32>,
+
+    /// Align items on cross axis
+    pub align_items: Option<StyleAlign>,
+    /// Justify content on main axis
+    pub justify_content: Option<StyleJustify>,
+    /// Align self (override parent's align-items)
+    pub align_self: Option<StyleAlign>,
+
+    /// Padding (all sides in pixels)
+    pub padding: Option<SpacingRect>,
+    /// Margin (all sides in pixels)
+    pub margin: Option<SpacingRect>,
+    /// Uniform gap between children in pixels
+    pub gap: Option<f32>,
+
+    /// Overflow behavior
+    pub overflow: Option<StyleOverflow>,
+
+    /// Border width in pixels
+    pub border_width: Option<f32>,
+    /// Border color
+    pub border_color: Option<Color>,
 }
 
 impl ElementStyle {
@@ -231,6 +402,82 @@ impl ElementStyle {
     }
 
     // =========================================================================
+    // 3D Transform
+    // =========================================================================
+
+    /// Set X-axis rotation in degrees (3D tilt)
+    pub fn rotate_x_deg(mut self, degrees: f32) -> Self {
+        self.rotate_x = Some(degrees);
+        self
+    }
+
+    /// Set Y-axis rotation in degrees (3D turn)
+    pub fn rotate_y_deg(mut self, degrees: f32) -> Self {
+        self.rotate_y = Some(degrees);
+        self
+    }
+
+    /// Set perspective distance in pixels
+    pub fn perspective_px(mut self, px: f32) -> Self {
+        self.perspective = Some(px);
+        self
+    }
+
+    /// Set 3D shape type
+    pub fn shape_3d(mut self, shape: impl Into<String>) -> Self {
+        self.shape_3d = Some(shape.into());
+        self
+    }
+
+    /// Set 3D extrusion depth in pixels
+    pub fn depth_px(mut self, px: f32) -> Self {
+        self.depth = Some(px);
+        self
+    }
+
+    /// Set light direction
+    pub fn light_direction(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.light_direction = Some([x, y, z]);
+        self
+    }
+
+    /// Set light intensity
+    pub fn light_intensity(mut self, intensity: f32) -> Self {
+        self.light_intensity = Some(intensity);
+        self
+    }
+
+    /// Set ambient light level
+    pub fn ambient_light(mut self, level: f32) -> Self {
+        self.ambient = Some(level);
+        self
+    }
+
+    /// Set specular power
+    pub fn specular_power(mut self, power: f32) -> Self {
+        self.specular = Some(power);
+        self
+    }
+
+    /// Set translate-z offset in pixels (positive = toward viewer)
+    pub fn translate_z_px(mut self, px: f32) -> Self {
+        self.translate_z = Some(px);
+        self
+    }
+
+    /// Set 3D boolean operation type
+    pub fn op_3d_type(mut self, op: &str) -> Self {
+        self.op_3d = Some(op.to_string());
+        self
+    }
+
+    /// Set blend radius for smooth boolean operations
+    pub fn blend_3d_px(mut self, px: f32) -> Self {
+        self.blend_3d = Some(px);
+        self
+    }
+
+    // =========================================================================
     // Material
     // =========================================================================
 
@@ -325,6 +572,279 @@ impl ElementStyle {
     }
 
     // =========================================================================
+    // Layout: Sizing
+    // =========================================================================
+
+    /// Set width in pixels
+    pub fn w(mut self, px: f32) -> Self {
+        self.width = Some(px);
+        self
+    }
+
+    /// Set height in pixels
+    pub fn h(mut self, px: f32) -> Self {
+        self.height = Some(px);
+        self
+    }
+
+    /// Set minimum width in pixels
+    pub fn min_w(mut self, px: f32) -> Self {
+        self.min_width = Some(px);
+        self
+    }
+
+    /// Set minimum height in pixels
+    pub fn min_h(mut self, px: f32) -> Self {
+        self.min_height = Some(px);
+        self
+    }
+
+    /// Set maximum width in pixels
+    pub fn max_w(mut self, px: f32) -> Self {
+        self.max_width = Some(px);
+        self
+    }
+
+    /// Set maximum height in pixels
+    pub fn max_h(mut self, px: f32) -> Self {
+        self.max_height = Some(px);
+        self
+    }
+
+    // =========================================================================
+    // Layout: Flex Direction & Display
+    // =========================================================================
+
+    /// Set display to flex with row direction
+    pub fn flex_row(mut self) -> Self {
+        self.display = Some(StyleDisplay::Flex);
+        self.flex_direction = Some(StyleFlexDirection::Row);
+        self
+    }
+
+    /// Set display to flex with column direction
+    pub fn flex_col(mut self) -> Self {
+        self.display = Some(StyleDisplay::Flex);
+        self.flex_direction = Some(StyleFlexDirection::Column);
+        self
+    }
+
+    /// Set display to flex with row-reverse direction
+    pub fn flex_row_reverse(mut self) -> Self {
+        self.display = Some(StyleDisplay::Flex);
+        self.flex_direction = Some(StyleFlexDirection::RowReverse);
+        self
+    }
+
+    /// Set display to flex with column-reverse direction
+    pub fn flex_col_reverse(mut self) -> Self {
+        self.display = Some(StyleDisplay::Flex);
+        self.flex_direction = Some(StyleFlexDirection::ColumnReverse);
+        self
+    }
+
+    /// Enable flex wrapping
+    pub fn flex_wrap(mut self) -> Self {
+        self.flex_wrap = Some(true);
+        self
+    }
+
+    /// Set display to none (hidden)
+    pub fn display_none(mut self) -> Self {
+        self.display = Some(StyleDisplay::None);
+        self
+    }
+
+    // =========================================================================
+    // Layout: Flex Properties
+    // =========================================================================
+
+    /// Set flex-grow to 1
+    pub fn flex_grow(mut self) -> Self {
+        self.flex_grow = Some(1.0);
+        self
+    }
+
+    /// Set flex-grow to a specific value
+    pub fn flex_grow_value(mut self, value: f32) -> Self {
+        self.flex_grow = Some(value);
+        self
+    }
+
+    /// Set flex-shrink to 0 (prevent shrinking)
+    pub fn flex_shrink_0(mut self) -> Self {
+        self.flex_shrink = Some(0.0);
+        self
+    }
+
+    // =========================================================================
+    // Layout: Alignment
+    // =========================================================================
+
+    /// Align items to center on cross axis
+    pub fn items_center(mut self) -> Self {
+        self.align_items = Some(StyleAlign::Center);
+        self
+    }
+
+    /// Align items to start on cross axis
+    pub fn items_start(mut self) -> Self {
+        self.align_items = Some(StyleAlign::Start);
+        self
+    }
+
+    /// Align items to end on cross axis
+    pub fn items_end(mut self) -> Self {
+        self.align_items = Some(StyleAlign::End);
+        self
+    }
+
+    /// Stretch items on cross axis
+    pub fn items_stretch(mut self) -> Self {
+        self.align_items = Some(StyleAlign::Stretch);
+        self
+    }
+
+    /// Justify content to center on main axis
+    pub fn justify_center(mut self) -> Self {
+        self.justify_content = Some(StyleJustify::Center);
+        self
+    }
+
+    /// Justify content to start on main axis
+    pub fn justify_start(mut self) -> Self {
+        self.justify_content = Some(StyleJustify::Start);
+        self
+    }
+
+    /// Justify content to end on main axis
+    pub fn justify_end(mut self) -> Self {
+        self.justify_content = Some(StyleJustify::End);
+        self
+    }
+
+    /// Space between items on main axis
+    pub fn justify_between(mut self) -> Self {
+        self.justify_content = Some(StyleJustify::SpaceBetween);
+        self
+    }
+
+    /// Space around items on main axis
+    pub fn justify_around(mut self) -> Self {
+        self.justify_content = Some(StyleJustify::SpaceAround);
+        self
+    }
+
+    /// Space evenly on main axis
+    pub fn justify_evenly(mut self) -> Self {
+        self.justify_content = Some(StyleJustify::SpaceEvenly);
+        self
+    }
+
+    /// Align self to center (override parent's align-items)
+    pub fn self_center(mut self) -> Self {
+        self.align_self = Some(StyleAlign::Center);
+        self
+    }
+
+    /// Align self to start (override parent's align-items)
+    pub fn self_start(mut self) -> Self {
+        self.align_self = Some(StyleAlign::Start);
+        self
+    }
+
+    /// Align self to end (override parent's align-items)
+    pub fn self_end(mut self) -> Self {
+        self.align_self = Some(StyleAlign::End);
+        self
+    }
+
+    // =========================================================================
+    // Layout: Spacing
+    // =========================================================================
+
+    /// Set uniform padding in pixels
+    pub fn p(mut self, px: f32) -> Self {
+        self.padding = Some(SpacingRect::uniform(px));
+        self
+    }
+
+    /// Set horizontal and vertical padding in pixels
+    pub fn p_xy(mut self, x: f32, y: f32) -> Self {
+        self.padding = Some(SpacingRect::xy(x, y));
+        self
+    }
+
+    /// Set per-side padding in pixels (top, right, bottom, left)
+    pub fn p_trbl(mut self, top: f32, right: f32, bottom: f32, left: f32) -> Self {
+        self.padding = Some(SpacingRect::new(top, right, bottom, left));
+        self
+    }
+
+    /// Set uniform margin in pixels
+    pub fn m(mut self, px: f32) -> Self {
+        self.margin = Some(SpacingRect::uniform(px));
+        self
+    }
+
+    /// Set horizontal and vertical margin in pixels
+    pub fn m_xy(mut self, x: f32, y: f32) -> Self {
+        self.margin = Some(SpacingRect::xy(x, y));
+        self
+    }
+
+    /// Set per-side margin in pixels (top, right, bottom, left)
+    pub fn m_trbl(mut self, top: f32, right: f32, bottom: f32, left: f32) -> Self {
+        self.margin = Some(SpacingRect::new(top, right, bottom, left));
+        self
+    }
+
+    /// Set uniform gap between children in pixels
+    pub fn gap(mut self, px: f32) -> Self {
+        self.gap = Some(px);
+        self
+    }
+
+    // =========================================================================
+    // Layout: Overflow
+    // =========================================================================
+
+    /// Clip overflow
+    pub fn overflow_clip(mut self) -> Self {
+        self.overflow = Some(StyleOverflow::Clip);
+        self
+    }
+
+    /// Allow visible overflow
+    pub fn overflow_visible(mut self) -> Self {
+        self.overflow = Some(StyleOverflow::Visible);
+        self
+    }
+
+    /// Enable scroll overflow
+    pub fn overflow_scroll(mut self) -> Self {
+        self.overflow = Some(StyleOverflow::Scroll);
+        self
+    }
+
+    // =========================================================================
+    // Layout: Border
+    // =========================================================================
+
+    /// Set border width and color
+    pub fn border(mut self, width: f32, color: Color) -> Self {
+        self.border_width = Some(width);
+        self.border_color = Some(color);
+        self
+    }
+
+    /// Set border width only
+    pub fn border_w(mut self, width: f32) -> Self {
+        self.border_width = Some(width);
+        self
+    }
+
+    // =========================================================================
     // Merging
     // =========================================================================
 
@@ -334,27 +854,91 @@ impl ElementStyle {
     /// Unset properties in `other` will not override.
     pub fn merge(&self, other: &ElementStyle) -> ElementStyle {
         ElementStyle {
+            // Visual
             background: other.background.clone().or_else(|| self.background.clone()),
             corner_radius: other.corner_radius.or(self.corner_radius),
-            shadow: other.shadow.clone().or_else(|| self.shadow.clone()),
+            shadow: other.shadow.or(self.shadow),
             transform: other.transform.clone().or_else(|| self.transform.clone()),
             material: other.material.clone().or_else(|| self.material.clone()),
             render_layer: other.render_layer.or(self.render_layer),
             opacity: other.opacity.or(self.opacity),
             animation: other.animation.clone().or_else(|| self.animation.clone()),
+            // 3D
+            rotate_x: other.rotate_x.or(self.rotate_x),
+            rotate_y: other.rotate_y.or(self.rotate_y),
+            perspective: other.perspective.or(self.perspective),
+            shape_3d: other.shape_3d.clone().or_else(|| self.shape_3d.clone()),
+            depth: other.depth.or(self.depth),
+            light_direction: other.light_direction.or(self.light_direction),
+            light_intensity: other.light_intensity.or(self.light_intensity),
+            ambient: other.ambient.or(self.ambient),
+            specular: other.specular.or(self.specular),
+            translate_z: other.translate_z.or(self.translate_z),
+            op_3d: other.op_3d.clone().or_else(|| self.op_3d.clone()),
+            blend_3d: other.blend_3d.or(self.blend_3d),
+            // Layout
+            width: other.width.or(self.width),
+            height: other.height.or(self.height),
+            min_width: other.min_width.or(self.min_width),
+            min_height: other.min_height.or(self.min_height),
+            max_width: other.max_width.or(self.max_width),
+            max_height: other.max_height.or(self.max_height),
+            display: other.display.or(self.display),
+            flex_direction: other.flex_direction.or(self.flex_direction),
+            flex_wrap: other.flex_wrap.or(self.flex_wrap),
+            flex_grow: other.flex_grow.or(self.flex_grow),
+            flex_shrink: other.flex_shrink.or(self.flex_shrink),
+            align_items: other.align_items.or(self.align_items),
+            justify_content: other.justify_content.or(self.justify_content),
+            align_self: other.align_self.or(self.align_self),
+            padding: other.padding.or(self.padding),
+            margin: other.margin.or(self.margin),
+            gap: other.gap.or(self.gap),
+            overflow: other.overflow.or(self.overflow),
+            border_width: other.border_width.or(self.border_width),
+            border_color: other.border_color.or(self.border_color),
         }
     }
 
-    /// Check if any property is set
+    /// Check if any visual property is set
+    pub fn has_visual_props(&self) -> bool {
+        self.background.is_some()
+            || self.corner_radius.is_some()
+            || self.shadow.is_some()
+            || self.transform.is_some()
+            || self.material.is_some()
+            || self.render_layer.is_some()
+            || self.opacity.is_some()
+            || self.animation.is_some()
+    }
+
+    /// Check if any layout property is set
+    pub fn has_layout_props(&self) -> bool {
+        self.width.is_some()
+            || self.height.is_some()
+            || self.min_width.is_some()
+            || self.min_height.is_some()
+            || self.max_width.is_some()
+            || self.max_height.is_some()
+            || self.display.is_some()
+            || self.flex_direction.is_some()
+            || self.flex_wrap.is_some()
+            || self.flex_grow.is_some()
+            || self.flex_shrink.is_some()
+            || self.align_items.is_some()
+            || self.justify_content.is_some()
+            || self.align_self.is_some()
+            || self.padding.is_some()
+            || self.margin.is_some()
+            || self.gap.is_some()
+            || self.overflow.is_some()
+            || self.border_width.is_some()
+            || self.border_color.is_some()
+    }
+
+    /// Check if no property is set
     pub fn is_empty(&self) -> bool {
-        self.background.is_none()
-            && self.corner_radius.is_none()
-            && self.shadow.is_none()
-            && self.transform.is_none()
-            && self.material.is_none()
-            && self.render_layer.is_none()
-            && self.opacity.is_none()
-            && self.animation.is_none()
+        !self.has_visual_props() && !self.has_layout_props()
     }
 
     // =========================================================================
@@ -436,6 +1020,26 @@ pub fn style() -> ElementStyle {
 /// - `box-shadow`: Shadow
 /// - `opacity`: f32 (0.0-1.0)
 /// - `transform`: Transform
+///
+/// ## 3D Transform Properties
+/// - `rotate-x`: f32 (degrees)
+/// - `rotate-y`: f32 (degrees)
+/// - `perspective`: f32 (pixels)
+/// - `translate-z`: f32 (pixels)
+///
+/// ## 3D SDF Shape Properties
+/// - `shape-3d`: &str ("box", "sphere", "cylinder", "torus", "capsule", "group")
+/// - `depth`: f32 (pixels)
+///
+/// ## 3D Lighting Properties
+/// - `light-direction`: (f32, f32, f32)
+/// - `light-intensity`: f32
+/// - `ambient`: f32
+/// - `specular`: f32
+///
+/// ## 3D Boolean Operation Properties
+/// - `3d-op`: &str ("union", "subtract", "intersect", "smooth-union", "smooth-subtract", "smooth-intersect")
+/// - `3d-blend`: f32 (pixels)
 ///
 /// ## Blinc Extensions
 /// - `backdrop-filter`: `glass`, `metallic`, `chrome`, `gold`, `wood`
@@ -579,6 +1183,106 @@ macro_rules! css_impl {
     };
 
     // =========================================================================
+    // 3D Transform Properties
+    // =========================================================================
+    ($style:ident; rotate-x: $value:expr; $($rest:tt)*) => {
+        $style = $style.rotate_x_deg($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; rotate-x: $value:expr) => {
+        $style = $style.rotate_x_deg($value);
+    };
+    ($style:ident; rotate-y: $value:expr; $($rest:tt)*) => {
+        $style = $style.rotate_y_deg($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; rotate-y: $value:expr) => {
+        $style = $style.rotate_y_deg($value);
+    };
+    ($style:ident; perspective: $value:expr; $($rest:tt)*) => {
+        $style = $style.perspective_px($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; perspective: $value:expr) => {
+        $style = $style.perspective_px($value);
+    };
+    ($style:ident; translate-z: $value:expr; $($rest:tt)*) => {
+        $style = $style.translate_z_px($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; translate-z: $value:expr) => {
+        $style = $style.translate_z_px($value);
+    };
+
+    // =========================================================================
+    // 3D SDF Shape Properties
+    // =========================================================================
+    ($style:ident; shape-3d: $value:expr; $($rest:tt)*) => {
+        $style = $style.shape_3d($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; shape-3d: $value:expr) => {
+        $style = $style.shape_3d($value);
+    };
+    ($style:ident; depth: $value:expr; $($rest:tt)*) => {
+        $style = $style.depth_px($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; depth: $value:expr) => {
+        $style = $style.depth_px($value);
+    };
+
+    // =========================================================================
+    // 3D Lighting Properties
+    // =========================================================================
+    ($style:ident; light-direction: ($x:expr, $y:expr, $z:expr); $($rest:tt)*) => {
+        $style = $style.light_direction($x, $y, $z);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; light-direction: ($x:expr, $y:expr, $z:expr)) => {
+        $style = $style.light_direction($x, $y, $z);
+    };
+    ($style:ident; light-intensity: $value:expr; $($rest:tt)*) => {
+        $style = $style.light_intensity($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; light-intensity: $value:expr) => {
+        $style = $style.light_intensity($value);
+    };
+    ($style:ident; ambient: $value:expr; $($rest:tt)*) => {
+        $style = $style.ambient_light($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; ambient: $value:expr) => {
+        $style = $style.ambient_light($value);
+    };
+    ($style:ident; specular: $value:expr; $($rest:tt)*) => {
+        $style = $style.specular_power($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; specular: $value:expr) => {
+        $style = $style.specular_power($value);
+    };
+
+    // =========================================================================
+    // 3D Boolean Operation Properties
+    // =========================================================================
+    ($style:ident; 3d-op: $value:expr; $($rest:tt)*) => {
+        $style = $style.op_3d_type($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; 3d-op: $value:expr) => {
+        $style = $style.op_3d_type($value);
+    };
+    ($style:ident; 3d-blend: $value:expr; $($rest:tt)*) => {
+        $style = $style.blend_3d_px($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; 3d-blend: $value:expr) => {
+        $style = $style.blend_3d_px($value);
+    };
+
+    // =========================================================================
     // Backdrop Filter (Blinc extension for materials)
     // =========================================================================
     ($style:ident; backdrop-filter: glass; $($rest:tt)*) => {
@@ -648,6 +1352,217 @@ macro_rules! css_impl {
     };
     ($style:ident; animation-duration: $value:expr) => {
         $style = $style.animation_duration($value);
+    };
+
+    // =========================================================================
+    // Layout: Sizing (CSS: width, height, min-width, etc.)
+    // =========================================================================
+    ($style:ident; width: $value:expr; $($rest:tt)*) => {
+        $style = $style.w($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; width: $value:expr) => {
+        $style = $style.w($value);
+    };
+    ($style:ident; height: $value:expr; $($rest:tt)*) => {
+        $style = $style.h($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; height: $value:expr) => {
+        $style = $style.h($value);
+    };
+    ($style:ident; min-width: $value:expr; $($rest:tt)*) => {
+        $style = $style.min_w($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; min-width: $value:expr) => {
+        $style = $style.min_w($value);
+    };
+    ($style:ident; min-height: $value:expr; $($rest:tt)*) => {
+        $style = $style.min_h($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; min-height: $value:expr) => {
+        $style = $style.min_h($value);
+    };
+    ($style:ident; max-width: $value:expr; $($rest:tt)*) => {
+        $style = $style.max_w($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; max-width: $value:expr) => {
+        $style = $style.max_w($value);
+    };
+    ($style:ident; max-height: $value:expr; $($rest:tt)*) => {
+        $style = $style.max_h($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; max-height: $value:expr) => {
+        $style = $style.max_h($value);
+    };
+
+    // =========================================================================
+    // Layout: Flex Direction (CSS: display, flex-direction, flex-wrap)
+    // =========================================================================
+    ($style:ident; display: flex; $($rest:tt)*) => {
+        $style.display = Some($crate::element_style::StyleDisplay::Flex);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; display: none; $($rest:tt)*) => {
+        $style = $style.display_none();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; flex-direction: row; $($rest:tt)*) => {
+        $style = $style.flex_row();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; flex-direction: column; $($rest:tt)*) => {
+        $style = $style.flex_col();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; flex-direction: row-reverse; $($rest:tt)*) => {
+        $style = $style.flex_row_reverse();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; flex-direction: column-reverse; $($rest:tt)*) => {
+        $style = $style.flex_col_reverse();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; flex-wrap: wrap; $($rest:tt)*) => {
+        $style = $style.flex_wrap();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; flex-grow: $value:expr; $($rest:tt)*) => {
+        $style = $style.flex_grow_value($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; flex-grow: $value:expr) => {
+        $style = $style.flex_grow_value($value);
+    };
+    ($style:ident; flex-shrink: $value:expr; $($rest:tt)*) => {
+        $style.flex_shrink = Some($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; flex-shrink: $value:expr) => {
+        $style.flex_shrink = Some($value);
+    };
+
+    // =========================================================================
+    // Layout: Alignment (CSS: align-items, justify-content, align-self)
+    // =========================================================================
+    ($style:ident; align-items: center; $($rest:tt)*) => {
+        $style = $style.items_center();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; align-items: start; $($rest:tt)*) => {
+        $style = $style.items_start();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; align-items: end; $($rest:tt)*) => {
+        $style = $style.items_end();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; align-items: stretch; $($rest:tt)*) => {
+        $style = $style.items_stretch();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; justify-content: center; $($rest:tt)*) => {
+        $style = $style.justify_center();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; justify-content: start; $($rest:tt)*) => {
+        $style = $style.justify_start();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; justify-content: end; $($rest:tt)*) => {
+        $style = $style.justify_end();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; justify-content: space-between; $($rest:tt)*) => {
+        $style = $style.justify_between();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; justify-content: space-around; $($rest:tt)*) => {
+        $style = $style.justify_around();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; justify-content: space-evenly; $($rest:tt)*) => {
+        $style = $style.justify_evenly();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; align-self: center; $($rest:tt)*) => {
+        $style = $style.self_center();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; align-self: start; $($rest:tt)*) => {
+        $style = $style.self_start();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; align-self: end; $($rest:tt)*) => {
+        $style = $style.self_end();
+        $crate::css_impl!($style; $($rest)*);
+    };
+
+    // =========================================================================
+    // Layout: Spacing (CSS: padding, margin, gap)
+    // =========================================================================
+    ($style:ident; padding: $value:expr; $($rest:tt)*) => {
+        $style = $style.p($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; padding: $value:expr) => {
+        $style = $style.p($value);
+    };
+    ($style:ident; margin: $value:expr; $($rest:tt)*) => {
+        $style = $style.m($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; margin: $value:expr) => {
+        $style = $style.m($value);
+    };
+    ($style:ident; gap: $value:expr; $($rest:tt)*) => {
+        $style = $style.gap($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; gap: $value:expr) => {
+        $style = $style.gap($value);
+    };
+
+    // =========================================================================
+    // Layout: Overflow (CSS: overflow)
+    // =========================================================================
+    ($style:ident; overflow: clip; $($rest:tt)*) => {
+        $style = $style.overflow_clip();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; overflow: visible; $($rest:tt)*) => {
+        $style = $style.overflow_visible();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; overflow: scroll; $($rest:tt)*) => {
+        $style = $style.overflow_scroll();
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; overflow: hidden; $($rest:tt)*) => {
+        $style = $style.overflow_clip();
+        $crate::css_impl!($style; $($rest)*);
+    };
+
+    // =========================================================================
+    // Layout: Border (CSS: border-width, border-color)
+    // =========================================================================
+    ($style:ident; border-width: $value:expr; $($rest:tt)*) => {
+        $style = $style.border_w($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; border-width: $value:expr) => {
+        $style = $style.border_w($value);
+    };
+    ($style:ident; border-color: $value:expr; $($rest:tt)*) => {
+        $style.border_color = Some($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; border-color: $value:expr) => {
+        $style.border_color = Some($value);
     };
 }
 
@@ -821,6 +1736,70 @@ macro_rules! style_impl {
     };
 
     // =========================================================================
+    // 3D Transform properties
+    // =========================================================================
+    ($style:ident; rotate_x: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.rotate_x_deg($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; rotate_y: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.rotate_y_deg($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; perspective: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.perspective_px($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; translate_z: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.translate_z_px($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // 3D SDF Shape properties
+    // =========================================================================
+    ($style:ident; shape_3d: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.shape_3d($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; depth: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.depth_px($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // 3D Lighting properties
+    // =========================================================================
+    ($style:ident; light_direction: ($x:expr, $y:expr, $z:expr) $(, $($rest:tt)*)?) => {
+        $style = $style.light_direction($x, $y, $z);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; light_intensity: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.light_intensity($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; ambient: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.ambient_light($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; specular: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.specular_power($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // 3D Boolean Operation properties
+    // =========================================================================
+    ($style:ident; op_3d: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.op_3d_type($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; blend_3d: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.blend_3d_px($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
     // Opacity properties
     // =========================================================================
     ($style:ident; opacity: $value:expr $(, $($rest:tt)*)?) => {
@@ -897,6 +1876,190 @@ macro_rules! style_impl {
     };
     ($style:ident; animation_duration: $value:expr $(, $($rest:tt)*)?) => {
         $style = $style.animation_duration($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Layout: Sizing
+    // =========================================================================
+    ($style:ident; w: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.w($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; h: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.h($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; min_w: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.min_w($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; min_h: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.min_h($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; max_w: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.max_w($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; max_h: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.max_h($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Layout: Flex Direction & Display
+    // =========================================================================
+    ($style:ident; flex_row $(, $($rest:tt)*)?) => {
+        $style = $style.flex_row();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; flex_col $(, $($rest:tt)*)?) => {
+        $style = $style.flex_col();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; flex_row_reverse $(, $($rest:tt)*)?) => {
+        $style = $style.flex_row_reverse();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; flex_col_reverse $(, $($rest:tt)*)?) => {
+        $style = $style.flex_col_reverse();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; flex_wrap $(, $($rest:tt)*)?) => {
+        $style = $style.flex_wrap();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; display_none $(, $($rest:tt)*)?) => {
+        $style = $style.display_none();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Layout: Flex Properties
+    // =========================================================================
+    ($style:ident; flex_grow $(, $($rest:tt)*)?) => {
+        $style = $style.flex_grow();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; flex_grow_value: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.flex_grow_value($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; flex_shrink_0 $(, $($rest:tt)*)?) => {
+        $style = $style.flex_shrink_0();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Layout: Alignment
+    // =========================================================================
+    ($style:ident; items_center $(, $($rest:tt)*)?) => {
+        $style = $style.items_center();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; items_start $(, $($rest:tt)*)?) => {
+        $style = $style.items_start();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; items_end $(, $($rest:tt)*)?) => {
+        $style = $style.items_end();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; items_stretch $(, $($rest:tt)*)?) => {
+        $style = $style.items_stretch();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; justify_center $(, $($rest:tt)*)?) => {
+        $style = $style.justify_center();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; justify_start $(, $($rest:tt)*)?) => {
+        $style = $style.justify_start();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; justify_end $(, $($rest:tt)*)?) => {
+        $style = $style.justify_end();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; justify_between $(, $($rest:tt)*)?) => {
+        $style = $style.justify_between();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; justify_around $(, $($rest:tt)*)?) => {
+        $style = $style.justify_around();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; justify_evenly $(, $($rest:tt)*)?) => {
+        $style = $style.justify_evenly();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; self_center $(, $($rest:tt)*)?) => {
+        $style = $style.self_center();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; self_start $(, $($rest:tt)*)?) => {
+        $style = $style.self_start();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; self_end $(, $($rest:tt)*)?) => {
+        $style = $style.self_end();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Layout: Spacing
+    // =========================================================================
+    ($style:ident; p: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.p($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; p_xy: ($x:expr, $y:expr) $(, $($rest:tt)*)?) => {
+        $style = $style.p_xy($x, $y);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; m: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.m($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; m_xy: ($x:expr, $y:expr) $(, $($rest:tt)*)?) => {
+        $style = $style.m_xy($x, $y);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; gap: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.gap($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Layout: Overflow
+    // =========================================================================
+    ($style:ident; overflow_clip $(, $($rest:tt)*)?) => {
+        $style = $style.overflow_clip();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; overflow_visible $(, $($rest:tt)*)?) => {
+        $style = $style.overflow_visible();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; overflow_scroll $(, $($rest:tt)*)?) => {
+        $style = $style.overflow_scroll();
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Layout: Border
+    // =========================================================================
+    ($style:ident; border: ($width:expr, $color:expr) $(, $($rest:tt)*)?) => {
+        $style = $style.border($width, $color);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; border_width: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.border_w($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+    ($style:ident; border_color: $value:expr $(, $($rest:tt)*)?) => {
+        $style.border_color = Some($value);
         $crate::style_impl!($style; $($($rest)*)?);
     };
 }

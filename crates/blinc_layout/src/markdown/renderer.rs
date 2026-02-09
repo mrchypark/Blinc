@@ -163,6 +163,7 @@ struct RenderState<'a> {
     html_content: String,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum StackItem {
     Paragraph,
     Heading(u8),
@@ -1072,14 +1073,14 @@ impl<'a> RenderState<'a> {
             // Add footnotes section
             let mut footnotes_section = div().flex_col().gap(self.config.paragraph_spacing / 2.0);
 
-            for (_i, (label, content)) in self.footnote_defs.into_iter().enumerate() {
+            for (label, content) in self.footnote_defs {
                 // Create footnote row: number + content
                 let footnote_row = div()
                     .flex_row()
                     .gap(8.0)
                     .items_start()
                     .child(
-                        text(&format!("[{}]", label))
+                        text(format!("[{}]", label))
                             .size(self.config.body_size * 0.85)
                             .color(self.config.text_secondary),
                     )

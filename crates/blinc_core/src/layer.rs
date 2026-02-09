@@ -375,10 +375,10 @@ impl Mat4 {
     /// Multiply two matrices
     pub fn mul(&self, other: &Mat4) -> Mat4 {
         let mut result = [[0.0f32; 4]; 4];
-        for i in 0..4 {
-            for j in 0..4 {
+        for (i, result_col) in result.iter_mut().enumerate() {
+            for (j, result_elem) in result_col.iter_mut().enumerate() {
                 for k in 0..4 {
-                    result[i][j] += self.cols[k][j] * other.cols[i][k];
+                    *result_elem += self.cols[k][j] * other.cols[i][k];
                 }
             }
         }
@@ -1228,7 +1228,7 @@ impl LayerIdGenerator {
         Self { next: 1 }
     }
 
-    pub fn next(&mut self) -> LayerId {
+    pub fn next_id(&mut self) -> LayerId {
         let id = LayerId(self.next);
         self.next += 1;
         id
@@ -1581,9 +1581,10 @@ impl Default for Sdf3DViewport {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Emitter shape for GPU particle systems
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum ParticleEmitterShape {
     /// Single point emitter
+    #[default]
     Point,
     /// Sphere volume/surface
     Sphere { radius: f32 },
@@ -1595,12 +1596,6 @@ pub enum ParticleEmitterShape {
     Box { half_extents: Vec3 },
     /// Circle (XZ plane)
     Circle { radius: f32 },
-}
-
-impl Default for ParticleEmitterShape {
-    fn default() -> Self {
-        Self::Point
-    }
 }
 
 /// Force affector for GPU particles
@@ -2293,7 +2288,7 @@ impl SceneGraph {
 
     /// Generate a new unique layer ID
     pub fn new_layer_id(&mut self) -> LayerId {
-        self.id_generator.next()
+        self.id_generator.next_id()
     }
 
     /// Find a layer by ID (traverses the tree)

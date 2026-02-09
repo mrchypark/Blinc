@@ -468,7 +468,7 @@ impl Path {
     /// Create a circle path
     pub fn circle(center: Point, radius: f32) -> Self {
         // Approximate circle with 4 cubic Bézier curves
-        let k = 0.5522847498; // Magic number for cubic Bézier circle approximation
+        let k = 0.552_284_8; // Magic number for cubic Bézier circle approximation
         let r = radius;
         let cx = center.x;
         let cy = center.y;
@@ -566,7 +566,7 @@ impl Path {
         let bl = r.bottom_left.min(max_r);
 
         // Magic number for cubic Bézier circle approximation
-        let k = 0.5522847498;
+        let k = 0.552_284_8;
 
         let mut path = Self::new().move_to(x + tl, y);
 
@@ -1128,6 +1128,29 @@ pub trait DrawContext {
     fn z_layer(&self) -> u32 {
         0
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 3D Transform (per-element, transient)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Set 3D rotation and perspective for the current element
+    fn set_3d_transform(&mut self, _rx_rad: f32, _ry_rad: f32, _perspective_d: f32) {}
+
+    /// Set 3D shape parameters for the current element
+    fn set_3d_shape(&mut self, _shape_type: f32, _depth: f32, _ambient: f32, _specular: f32) {}
+
+    /// Set 3D light parameters for the current element
+    fn set_3d_light(&mut self, _direction: [f32; 3], _intensity: f32) {}
+
+    /// Set translate-z offset for 3D elements (positive = toward viewer)
+    fn set_3d_translate_z(&mut self, _z: f32) {}
+
+    /// Set group shape descriptors for compound 3D rendering
+    /// Each shape is 16 floats: [offset(4), params(4), half_ext(4), color(4)]
+    fn set_3d_group_raw(&mut self, _shapes: &[[f32; 16]]) {}
+
+    /// Reset 3D transient state to defaults
+    fn clear_3d(&mut self) {}
 
     // ─────────────────────────────────────────────────────────────────────────
     // 2D Drawing Operations
@@ -1765,17 +1788,17 @@ impl DrawContext for RecordingContext {
                         rect,
                         corner_radius,
                     } => {
-                        self.draw_shadow(*rect, *corner_radius, shadow.clone());
+                        self.draw_shadow(*rect, *corner_radius, *shadow);
                     }
                     SdfShape::Circle { center, radius } => {
                         // Use proper circle shadow for radially symmetric blur
-                        self.draw_circle_shadow(*center, *radius, shadow.clone());
+                        self.draw_circle_shadow(*center, *radius, *shadow);
                     }
                     SdfShape::Ellipse { center, radii } => {
                         let rect =
                             Rect::from_center(*center, Size::new(radii.x * 2.0, radii.y * 2.0));
                         // Use smaller radius for corner approximation
-                        self.draw_shadow(rect, radii.x.min(radii.y).into(), shadow.clone());
+                        self.draw_shadow(rect, radii.x.min(radii.y).into(), *shadow);
                     }
                     _ => {
                         // Complex shapes: use bounding box approximation

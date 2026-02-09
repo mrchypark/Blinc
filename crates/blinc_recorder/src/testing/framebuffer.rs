@@ -109,13 +109,11 @@ impl ScreenshotExporter {
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
 
-        let mut writer = encoder
-            .write_header()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let mut writer = encoder.write_header().map_err(std::io::Error::other)?;
 
         writer
             .write_image_data(&frame.data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         Ok(())
     }
@@ -248,7 +246,7 @@ fn adler32(data: &[u8], width: u32, height: u32) -> u32 {
     // Process each scanline with filter byte prefix
     for y in 0..height {
         // Filter byte (always 0 for "None")
-        a = (a + 0) % MOD;
+        a %= MOD;
         b = (b + a) % MOD;
 
         // Row data

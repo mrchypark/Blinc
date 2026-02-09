@@ -62,7 +62,7 @@ impl GlyphRasterizer {
         // Get the raw font data and create a swash FontRef with correct face index
         let font_data = font.data();
         let swash_font = swash::FontRef::from_index(font_data, font.face_index() as usize)
-            .ok_or_else(|| TextError::InvalidFontData)?;
+            .ok_or(TextError::InvalidFontData)?;
 
         // Create a scaler for this font at the requested size
         let mut scaler = self
@@ -139,7 +139,7 @@ impl GlyphRasterizer {
         // Get the raw font data and create a swash FontRef with correct face index
         let font_data = font.data();
         let swash_font = swash::FontRef::from_index(font_data, font.face_index() as usize)
-            .ok_or_else(|| TextError::InvalidFontData)?;
+            .ok_or(TextError::InvalidFontData)?;
 
         // Create a scaler for this font at the requested size
         let mut scaler = self

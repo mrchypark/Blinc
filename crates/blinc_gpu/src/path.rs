@@ -387,11 +387,11 @@ fn path_to_lyon_events(path: &Path) -> Vec<PathEvent> {
     for cmd in path.commands() {
         match cmd {
             PathCommand::MoveTo(p) => {
-                if first_point.is_some() {
+                if let Some(fp) = first_point {
                     // End previous subpath
                     events.push(PathEvent::End {
                         last: point(current_point.x, current_point.y),
-                        first: point(first_point.unwrap().x, first_point.unwrap().y),
+                        first: point(fp.x, fp.y),
                         close: false,
                     });
                 }

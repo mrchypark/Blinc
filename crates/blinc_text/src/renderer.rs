@@ -456,6 +456,7 @@ impl TextRenderer {
     /// * `generic` - Generic font fallback category
     /// * `weight` - Font weight (100-900, where 400 is normal, 700 is bold)
     /// * `italic` - Whether to use italic variant
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_text_with_style(
         &mut self,
         text: &str,
@@ -473,6 +474,7 @@ impl TextRenderer {
     }
 
     /// Internal method for preparing text with optional font family
+    #[allow(clippy::too_many_arguments)]
     fn prepare_text_internal(
         &mut self,
         text: &str,
@@ -566,6 +568,7 @@ impl TextRenderer {
     ///
     /// This renders text as a single unit but applies different colors to different ranges.
     /// Unlike creating separate text elements, this ensures proper character spacing.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_styled_text(
         &mut self,
         text: &str,
