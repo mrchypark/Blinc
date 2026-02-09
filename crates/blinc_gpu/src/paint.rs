@@ -51,8 +51,8 @@ use blinc_core::{
 
 use crate::path::{extract_brush_info, tessellate_fill, tessellate_stroke};
 use crate::primitives::{
-    ClipType, FillType, GlassType, GpuGlassPrimitive, GpuPrimitive, ImageDraw, ImageOp,
-    PrimitiveBatch, PrimitiveType, Sdf3DUniform, Viewport3D,
+    ClipType, FillType, GlassType, GpuGlassPrimitive, GpuLineSegment, GpuPrimitive, ImageDraw,
+    ImageOp, PrimitiveBatch, PrimitiveType, Sdf3DUniform, Viewport3D,
 };
 use crate::text::TextRenderingContext;
 use std::collections::HashMap;
@@ -1700,6 +1700,62 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             self.batch.push_foreground(primitive);
         } else {
             self.batch.push(primitive);
+        }
+    }
+
+    fn stroke_polyline(&mut self, points: &[Point], stroke: &Stroke, brush: Brush) {
+        if points.len() < 2 {
+            return;
+        }
+
+        // Fast path: solid color only. Other brushes fall back to path tessellation.
+        let Brush::Solid(color) = brush else {
+            let mut path = Path::new().move_to(points[0].x, points[0].y);
+            for &p in &points[1..] {
+                path = path.line_to(p.x, p.y);
+            }
+            self.stroke_path(&path, stroke, brush);
+            return;
+        };
+
+        // Reject dash/cap/join features for now (charts typically use solid strokes).
+        if !stroke.dash.is_empty() {
+            let mut path = Path::new().move_to(points[0].x, points[0].y);
+            for &p in &points[1..] {
+                path = path.line_to(p.x, p.y);
+            }
+            self.stroke_path(&path, stroke, Brush::Solid(color));
+            return;
+        }
+
+        let opacity = self.combined_opacity();
+        let a = (color.a * opacity).clamp(0.0, 1.0);
+        if a <= 0.0 {
+            return;
+        }
+
+        let half_width = (stroke.width * 0.5).max(0.0);
+        let (clip_bounds, _clip_radius, _clip_type) = self.get_clip_data();
+
+        // Transform points to screen space once.
+        // Note: We intentionally avoid allocations by pushing segments directly.
+        let mut prev = self.transform_point(points[0]);
+        for &p in &points[1..] {
+            let cur = self.transform_point(p);
+            let seg = GpuLineSegment::new(prev.x, prev.y, cur.x, cur.y)
+                .with_clip_bounds(clip_bounds)
+                .with_half_width(half_width)
+                .with_z_layer(self.z_layer)
+                // Premultiply RGB
+                .with_premul_color(color.r * a, color.g * a, color.b * a, a);
+
+            if self.is_foreground {
+                self.batch.push_foreground_line_segment(seg);
+            } else {
+                self.batch.push_line_segment(seg);
+            }
+
+            prev = cur;
         }
     }
 

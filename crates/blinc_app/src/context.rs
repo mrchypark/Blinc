@@ -454,6 +454,10 @@ impl RenderContext {
                 if !unified_primitives.is_empty() {
                     self.render_unified(target, &unified_primitives);
                 }
+                if !fg_batch.line_segments.is_empty() {
+                    self.renderer
+                        .render_line_segments_overlay(target, &fg_batch.line_segments);
+                }
 
                 // Render paths with MSAA for smooth edges (paths are not included in unified primitives)
                 if use_msaa_overlay && fg_batch.has_paths() {
@@ -551,6 +555,10 @@ impl RenderContext {
                     Self::build_unified_foreground_primitives(&fg_batch, &all_glyphs);
                 if !unified_primitives.is_empty() {
                     self.render_unified(target, &unified_primitives);
+                }
+                if !fg_batch.line_segments.is_empty() {
+                    self.renderer
+                        .render_line_segments_overlay(target, &fg_batch.line_segments);
                 }
 
                 // Render paths with MSAA for smooth edges (paths are not included in unified primitives)
