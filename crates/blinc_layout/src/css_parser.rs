@@ -2011,9 +2011,8 @@ fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
                         let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
                         let (rest2, _) = char(')')(rest2)?;
                         if let Ok(n) = n_str.parse::<usize>() {
-                            parts.push(SelectorPart::PseudoClass(
-                                StructuralPseudo::NthLastChild(n),
-                            ));
+                            parts
+                                .push(SelectorPart::PseudoClass(StructuralPseudo::NthLastChild(n)));
                         }
                         remaining = rest2;
                     } else {
@@ -3048,7 +3047,8 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
             for part in &parts {
                 if let Some(px) = parse_css_px(part) {
                     style.outline_width = Some(px);
-                } else if part != "solid" && part != "none" && part != "dotted" && part != "dashed" {
+                } else if part != "solid" && part != "none" && part != "dotted" && part != "dashed"
+                {
                     if let Some(color) = parse_color(part) {
                         style.outline_color = Some(color);
                     }
@@ -3658,7 +3658,8 @@ fn apply_property_with_errors(
             for part in &parts {
                 if let Some(px) = parse_css_px(part) {
                     style.outline_width = Some(px);
-                } else if part != "solid" && part != "none" && part != "dotted" && part != "dashed" {
+                } else if part != "solid" && part != "none" && part != "dotted" && part != "dashed"
+                {
                     if let Some(color) = parse_color(part) {
                         style.outline_color = Some(color);
                     }

@@ -5278,12 +5278,8 @@ impl RenderTree {
                         StructuralPseudo::OnlyChild => {
                             self.element_registry.get_sibling_count(node_id) == Some(1)
                         }
-                        StructuralPseudo::Empty => {
-                            !self.element_registry.has_children(node_id)
-                        }
-                        StructuralPseudo::Root => {
-                            self.element_registry.is_root(node_id)
-                        }
+                        StructuralPseudo::Empty => !self.element_registry.has_children(node_id),
+                        StructuralPseudo::Root => self.element_registry.is_root(node_id),
                     };
                     if !matches {
                         return false;
@@ -6357,23 +6353,43 @@ impl RenderTree {
             let (existing_start, existing_end) = match &props.background {
                 Some(blinc_core::Brush::Gradient(g)) => {
                     let stops = g.stops();
-                    let s = stops.first().map(|s| [s.color.r, s.color.g, s.color.b, s.color.a]);
-                    let e = stops.last().map(|s| [s.color.r, s.color.g, s.color.b, s.color.a]);
-                    (s.unwrap_or([0.0, 0.0, 0.0, 1.0]), e.unwrap_or([0.0, 0.0, 0.0, 1.0]))
+                    let s = stops
+                        .first()
+                        .map(|s| [s.color.r, s.color.g, s.color.b, s.color.a]);
+                    let e = stops
+                        .last()
+                        .map(|s| [s.color.r, s.color.g, s.color.b, s.color.a]);
+                    (
+                        s.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                        e.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                    )
                 }
                 _ => ([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]),
             };
             let start_color = anim_props.gradient_start_color.unwrap_or(existing_start);
             let end_color = anim_props.gradient_end_color.unwrap_or(existing_end);
-            let sc = blinc_core::Color::rgba(start_color[0], start_color[1], start_color[2], start_color[3]);
-            let ec = blinc_core::Color::rgba(end_color[0], end_color[1], end_color[2], end_color[3]);
+            let sc = blinc_core::Color::rgba(
+                start_color[0],
+                start_color[1],
+                start_color[2],
+                start_color[3],
+            );
+            let ec =
+                blinc_core::Color::rgba(end_color[0], end_color[1], end_color[2], end_color[3]);
 
             // Reconstruct gradient preserving the existing type if possible
             match &props.background {
                 Some(blinc_core::Brush::Gradient(existing)) => {
                     let new_gradient = match existing {
-                        blinc_core::Gradient::Linear { start, end, stops, space, spread } => {
-                            let (start_pt, end_pt) = if let Some(angle) = anim_props.gradient_angle {
+                        blinc_core::Gradient::Linear {
+                            start,
+                            end,
+                            stops,
+                            space,
+                            spread,
+                        } => {
+                            let (start_pt, end_pt) = if let Some(angle) = anim_props.gradient_angle
+                            {
                                 crate::css_parser::angle_to_gradient_points(angle)
                             } else {
                                 (*start, *end)
@@ -6387,7 +6403,14 @@ impl RenderTree {
                                 spread: *spread,
                             }
                         }
-                        blinc_core::Gradient::Radial { center, radius, focal, stops, space, spread } => {
+                        blinc_core::Gradient::Radial {
+                            center,
+                            radius,
+                            focal,
+                            stops,
+                            space,
+                            spread,
+                        } => {
                             let new_stops = Self::rebuild_two_stop_gradient(stops, sc, ec);
                             blinc_core::Gradient::Radial {
                                 center: *center,
@@ -6398,7 +6421,12 @@ impl RenderTree {
                                 spread: *spread,
                             }
                         }
-                        blinc_core::Gradient::Conic { center, start_angle, stops, space } => {
+                        blinc_core::Gradient::Conic {
+                            center,
+                            start_angle,
+                            stops,
+                            space,
+                        } => {
                             let new_stops = Self::rebuild_two_stop_gradient(stops, sc, ec);
                             blinc_core::Gradient::Conic {
                                 center: *center,
@@ -6414,8 +6442,8 @@ impl RenderTree {
                     // No existing gradient — create a linear from the animated angle
                     let angle = anim_props.gradient_angle.unwrap_or(180.0);
                     let (start_pt, end_pt) = crate::css_parser::angle_to_gradient_points(angle);
-                    props.background = Some(blinc_core::Brush::Gradient(
-                        blinc_core::Gradient::Linear {
+                    props.background =
+                        Some(blinc_core::Brush::Gradient(blinc_core::Gradient::Linear {
                             start: start_pt,
                             end: end_pt,
                             stops: vec![
@@ -6424,8 +6452,7 @@ impl RenderTree {
                             ],
                             space: blinc_core::GradientSpace::ObjectBoundingBox,
                             spread: blinc_core::GradientSpread::Pad,
-                        },
-                    ));
+                        }));
                 }
             }
         }
@@ -6663,9 +6690,8 @@ impl RenderTree {
                         Some([last.color.r, last.color.g, last.color.b, last.color.a]);
                 }
                 if let blinc_core::Gradient::Linear { start, end, .. } = gradient {
-                    kp.gradient_angle = Some(
-                        crate::css_parser::gradient_points_to_angle(*start, *end),
-                    );
+                    kp.gradient_angle =
+                        Some(crate::css_parser::gradient_points_to_angle(*start, *end));
                 }
             }
             _ => {}

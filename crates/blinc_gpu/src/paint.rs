@@ -482,9 +482,16 @@ impl<'a> GpuPaintContext<'a> {
     ) -> [f32; 4] {
         let is_obb = matches!(
             brush,
-            Brush::Gradient(blinc_core::Gradient::Linear { space: blinc_core::GradientSpace::ObjectBoundingBox, .. })
-            | Brush::Gradient(blinc_core::Gradient::Radial { space: blinc_core::GradientSpace::ObjectBoundingBox, .. })
-            | Brush::Gradient(blinc_core::Gradient::Conic { space: blinc_core::GradientSpace::ObjectBoundingBox, .. })
+            Brush::Gradient(blinc_core::Gradient::Linear {
+                space: blinc_core::GradientSpace::ObjectBoundingBox,
+                ..
+            }) | Brush::Gradient(blinc_core::Gradient::Radial {
+                space: blinc_core::GradientSpace::ObjectBoundingBox,
+                ..
+            }) | Brush::Gradient(blinc_core::Gradient::Conic {
+                space: blinc_core::GradientSpace::ObjectBoundingBox,
+                ..
+            })
         );
         if !is_obb || fill_type == FillType::Solid {
             return params;
@@ -1565,8 +1572,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
         // Convert OBB (0..1) gradient coords to rect-local pixel coords
-        let gradient_params =
-            Self::obb_to_rect_coords(&brush, gradient_params, rect, fill_type);
+        let gradient_params = Self::obb_to_rect_coords(&brush, gradient_params, rect, fill_type);
 
         // Transform gradient params to screen space
         let is_radial = fill_type == FillType::RadialGradient;
@@ -1677,8 +1683,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         ];
 
         // Convert OBB (0..1) gradient coords to rect-local pixel coords
-        let gradient_params =
-            Self::obb_to_rect_coords(&brush, gradient_params, rect, fill_type);
+        let gradient_params = Self::obb_to_rect_coords(&brush, gradient_params, rect, fill_type);
 
         // Transform gradient params to screen space
         let is_radial = fill_type == FillType::RadialGradient;
