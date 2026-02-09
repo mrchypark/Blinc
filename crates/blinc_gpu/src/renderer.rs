@@ -304,13 +304,17 @@ struct CachedTextResources {
     color_atlas_view_ptr: *const wgpu::TextureView,
 }
 
-/// Cached SDF bind group with glyph atlas textures (for unified text rendering)
-struct CachedSdfWithGlyphs {
-    /// Cached bind group with actual glyph atlas textures
-    bind_group: wgpu::BindGroup,
-    /// Pointer to grayscale atlas view when bind group was created (for invalidation)
+/// Active glyph atlas pointers for SDF bind group (set per-frame).
+///
+/// When CSS-transformed text is present, the real glyph atlas textures are bound
+/// into `self.bind_groups.sdf` instead of the placeholder textures. These pointers
+/// track the currently-bound atlas views so that `rebind_sdf_bind_group()` (called
+/// during aux buffer resize) can recreate the bind group with the real atlas.
+///
+/// SAFETY: Pointers are valid for the duration of a frame — they point to TextureViews
+/// owned by the text context, which outlives all render calls within a frame.
+struct ActiveGlyphAtlas {
     atlas_view_ptr: *const wgpu::TextureView,
-    /// Pointer to color atlas view when bind group was created (for invalidation)
     color_atlas_view_ptr: *const wgpu::TextureView,
 }
 
@@ -813,8 +817,8 @@ pub struct GpuRenderer {
     placeholder_color_glyph_atlas_view: wgpu::TextureView,
     /// Sampler for glyph atlas textures
     glyph_sampler: wgpu::Sampler,
-    /// Cached SDF bind group with actual glyph atlas textures (for unified text rendering)
-    cached_sdf_with_glyphs: Option<CachedSdfWithGlyphs>,
+    /// Active glyph atlas pointers — when set, `self.bind_groups.sdf` uses real atlas
+    active_glyph_atlas: Option<ActiveGlyphAtlas>,
     /// Gradient texture cache for multi-stop gradient support on paths
     gradient_texture_cache: GradientTextureCache,
     /// Placeholder image texture (1x1 white) for path bind group when no image is used
@@ -1360,7 +1364,7 @@ impl GpuRenderer {
             placeholder_glyph_atlas_view,
             placeholder_color_glyph_atlas_view,
             glyph_sampler,
-            cached_sdf_with_glyphs: None,
+            active_glyph_atlas: None,
             gradient_texture_cache,
             placeholder_path_image_view,
             path_image_sampler,
@@ -2885,6 +2889,43 @@ impl GpuRenderer {
         self.device.poll(wgpu::Maintain::Wait);
     }
 
+    /// Bind real glyph atlas textures into the default SDF bind group.
+    ///
+    /// Call once per frame before any rendering when CSS-transformed text is present.
+    /// This replaces the placeholder atlas with the real glyph atlas in
+    /// `self.bind_groups.sdf`, so ALL render paths automatically get the atlas
+    /// without needing to thread it through every method.
+    ///
+    /// Uses pointer comparison to avoid recreating the bind group when the atlas
+    /// hasn't changed between frames.
+    ///
+    /// SAFETY: The raw pointers stored in `active_glyph_atlas` must remain valid
+    /// for the duration of the frame. This is guaranteed because they point to
+    /// TextureViews owned by the text context, which outlives all render calls.
+    pub fn set_glyph_atlas(
+        &mut self,
+        atlas_view: &wgpu::TextureView,
+        color_atlas_view: &wgpu::TextureView,
+    ) {
+        let atlas_ptr = atlas_view as *const wgpu::TextureView;
+        let color_ptr = color_atlas_view as *const wgpu::TextureView;
+
+        let need_rebuild = match &self.active_glyph_atlas {
+            Some(active) => {
+                active.atlas_view_ptr != atlas_ptr || active.color_atlas_view_ptr != color_ptr
+            }
+            None => true,
+        };
+
+        if need_rebuild {
+            self.active_glyph_atlas = Some(ActiveGlyphAtlas {
+                atlas_view_ptr: atlas_ptr,
+                color_atlas_view_ptr: color_ptr,
+            });
+            self.rebind_sdf_bind_group();
+        }
+    }
+
     /// Render a batch of primitives to a texture view
     /// Render primitives with transparent background (default)
     pub fn render(&mut self, target: &wgpu::TextureView, batch: &PrimitiveBatch) {
@@ -2987,6 +3028,8 @@ impl GpuRenderer {
         }
 
         // Update auxiliary data buffer (group shapes, polygon clips)
+        // This may call rebind_sdf_bind_group() if the buffer needs resizing.
+        // When active_glyph_atlas is set, rebind uses the real atlas automatically.
         self.update_aux_data_buffer(batch);
 
         // Update path buffers if we have path geometry
@@ -3403,8 +3446,23 @@ impl GpuRenderer {
         );
     }
 
-    /// Recreate the SDF bind group (needed when aux_data buffer is resized)
+    /// Recreate the SDF bind group (needed when aux_data buffer is resized).
+    ///
+    /// Uses the real glyph atlas if `active_glyph_atlas` is set, otherwise
+    /// falls back to placeholder textures.
     fn rebind_sdf_bind_group(&mut self) {
+        // SAFETY: When active_glyph_atlas is Some, the pointers are valid for the
+        // duration of the frame (they point to TextureViews owned by the text context).
+        let (atlas_view, color_atlas_view): (&wgpu::TextureView, &wgpu::TextureView) =
+            if let Some(active) = &self.active_glyph_atlas {
+                unsafe { (&*active.atlas_view_ptr, &*active.color_atlas_view_ptr) }
+            } else {
+                (
+                    &self.placeholder_glyph_atlas_view,
+                    &self.placeholder_color_glyph_atlas_view,
+                )
+            };
+
         self.bind_groups.sdf = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SDF Bind Group (rebound)"),
             layout: &self.bind_group_layouts.sdf,
@@ -3419,9 +3477,7 @@ impl GpuRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self.placeholder_glyph_atlas_view,
-                    ),
+                    resource: wgpu::BindingResource::TextureView(atlas_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -3429,9 +3485,7 @@ impl GpuRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self.placeholder_color_glyph_atlas_view,
-                    ),
+                    resource: wgpu::BindingResource::TextureView(color_atlas_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
@@ -4437,6 +4491,8 @@ impl GpuRenderer {
     ///
     /// This is used for interleaved z-layer rendering where primitives need
     /// to be rendered per-layer to properly interleave with text.
+    /// Uses `self.bind_groups.sdf` which automatically includes the real glyph
+    /// atlas when `set_glyph_atlas()` was called at the start of the frame.
     pub fn render_primitives_overlay(
         &mut self,
         target: &wgpu::TextureView,
@@ -4547,12 +4603,8 @@ impl GpuRenderer {
     ///
     /// This method renders SDF primitives including text glyphs in a single pass.
     /// Text primitives (PrimitiveType::Text) sample from the provided glyph atlases.
-    ///
-    /// # Arguments
-    /// * `target` - The texture view to render to
-    /// * `primitives` - The SDF primitives including text glyph primitives
-    /// * `atlas_view` - The grayscale glyph atlas texture view
-    /// * `color_atlas_view` - The color (RGBA) glyph atlas texture view for emoji
+    /// Uses `set_glyph_atlas()` to bind the real atlas, then delegates to
+    /// `render_primitives_overlay()`.
     pub fn render_primitives_overlay_with_glyphs(
         &mut self,
         target: &wgpu::TextureView,
@@ -4560,108 +4612,8 @@ impl GpuRenderer {
         atlas_view: &wgpu::TextureView,
         color_atlas_view: &wgpu::TextureView,
     ) {
-        if primitives.is_empty() {
-            return;
-        }
-
-        // Update uniforms
-        let uniforms = Uniforms {
-            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
-            _padding: [0.0; 2],
-        };
-        self.queue
-            .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
-
-        // Update primitives buffer
-        self.queue.write_buffer(
-            &self.buffers.primitives,
-            0,
-            bytemuck::cast_slice(primitives),
-        );
-
-        // Check if we need to recreate the SDF bind group with actual glyph textures
-        let atlas_view_ptr = atlas_view as *const wgpu::TextureView;
-        let color_atlas_view_ptr = color_atlas_view as *const wgpu::TextureView;
-        let need_new_bind_group = match &self.cached_sdf_with_glyphs {
-            Some(cached) => {
-                cached.atlas_view_ptr != atlas_view_ptr
-                    || cached.color_atlas_view_ptr != color_atlas_view_ptr
-            }
-            None => true,
-        };
-
-        if need_new_bind_group {
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("SDF Bind Group with Glyphs"),
-                layout: &self.bind_group_layouts.sdf,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.buffers.uniforms.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.buffers.primitives.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(atlas_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(color_atlas_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: self.buffers.aux_data.as_entire_binding(),
-                    },
-                ],
-            });
-            self.cached_sdf_with_glyphs = Some(CachedSdfWithGlyphs {
-                bind_group,
-                atlas_view_ptr,
-                color_atlas_view_ptr,
-            });
-        }
-
-        let sdf_bind_group = &self.cached_sdf_with_glyphs.as_ref().unwrap().bind_group;
-
-        // Create command encoder
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Blinc Unified Primitives Encoder"),
-            });
-
-        // Begin render pass (load existing content)
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc Unified Primitives Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            // Render SDF primitives (including text glyphs)
-            render_pass.set_pipeline(&self.pipelines.sdf_overlay);
-            render_pass.set_bind_group(0, sdf_bind_group, &[]);
-            render_pass.draw(0..6, 0..primitives.len() as u32);
-        }
-
-        // Submit commands
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.set_glyph_atlas(atlas_view, color_atlas_view);
+        self.render_primitives_overlay(target, primitives);
     }
 
     /// Render overlay primitives with MSAA anti-aliasing

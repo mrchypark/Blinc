@@ -1003,6 +1003,12 @@ pub struct RenderProps {
     pub sticky_bottom: Option<f32>,
     /// CSS z-index for controlling render order within a layer
     pub z_index: i32,
+    /// Text foreground color override (when set, overrides TextData.color during rendering)
+    pub text_color: Option<[f32; 4]>,
+    /// Font size override (when set, overrides TextData.font_size during rendering)
+    pub font_size: Option<f32>,
+    /// Transform origin as percentages [x%, y%] (default 50%, 50% = center)
+    pub transform_origin: Option<[f32; 2]>,
     /// Layer effects applied to this element (blur, drop shadow, glow, color matrix)
     /// Effects are applied during layer composition when the element is rendered
     pub layer_effects: Vec<LayerEffect>,
@@ -1095,6 +1101,9 @@ impl Default for RenderProps {
             filter: None,
             motion_is_exiting: false,
             z_index: 0,
+            text_color: None,
+            font_size: None,
+            transform_origin: None,
         }
     }
 }

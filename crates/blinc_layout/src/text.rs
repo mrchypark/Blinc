@@ -74,6 +74,8 @@ pub struct Text {
     pointer_events_none: bool,
     /// Cursor style when hovering over this text (default: Text cursor)
     cursor: Option<crate::element::CursorStyle>,
+    /// Element ID for CSS selector matching and programmatic queries
+    element_id: Option<String>,
 }
 
 impl Text {
@@ -110,9 +112,16 @@ impl Text {
             underline: false,
             pointer_events_none: false,
             cursor: Some(crate::element::CursorStyle::Text), // Text cursor by default
+            element_id: None,
         };
         text.update_size_estimate();
         text
+    }
+
+    /// Set the element ID for CSS selector matching and programmatic queries
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.element_id = Some(id.into());
+        self
     }
 
     /// Set the font size
@@ -614,6 +623,10 @@ impl ElementBuilder for Text {
             strikethrough: self.strikethrough,
             underline: self.underline,
         })
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.element_id.as_deref()
     }
 
     fn layout_style(&self) -> Option<&taffy::Style> {

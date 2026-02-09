@@ -436,20 +436,15 @@ pub struct RenderTree {
     animated_render_bounds: HashMap<LayoutNodeId, AnimatedRenderBounds>,
 
     // ========================================================================
-    // CSS Keyframe Animation System
+    // CSS Animation/Transition System (shared with AnimationScheduler thread)
     // ========================================================================
-    /// Active CSS keyframe animations (from stylesheet `animation:` property)
-    /// Maps node_id to the running animation with all keyframes preserved
-    css_animations: HashMap<LayoutNodeId, crate::render_state::ActiveCssAnimation>,
+    /// Shared CSS animation/transition store
+    ///
+    /// Wrapped in `Arc<Mutex<>>` so the AnimationScheduler's background thread
+    /// can tick animations at 120fps while the main thread reads/writes.
+    css_anim_store: Arc<Mutex<crate::render_state::CssAnimationStore>>,
     /// Nodes that currently have hover-triggered CSS animations
     hover_css_animations: HashSet<LayoutNodeId>,
-
-    // ========================================================================
-    // CSS Transition System
-    // ========================================================================
-    /// Active CSS transitions (from stylesheet `transition:` property)
-    /// Maps node_id to the running transition animation
-    css_transitions: HashMap<LayoutNodeId, crate::render_state::ActiveCssAnimation>,
 
     /// Nodes that were affected by complex selector state rules (e.g. .class:hover)
     /// Used to reset render props when the state rule no longer matches
@@ -513,11 +508,9 @@ impl RenderTree {
             visual_animations: HashMap::new(),
             previous_visual_bounds: HashMap::new(),
             animated_render_bounds: HashMap::new(),
-            // CSS keyframe animation system
-            css_animations: HashMap::new(),
+            // CSS animation/transition system (shared with scheduler thread)
+            css_anim_store: Arc::new(Mutex::new(crate::render_state::CssAnimationStore::new())),
             hover_css_animations: HashSet::new(),
-            // CSS transition system
-            css_transitions: HashMap::new(),
             complex_state_affected: HashSet::new(),
         }
     }
@@ -531,6 +524,25 @@ impl RenderTree {
                 physics.lock().unwrap().set_scheduler(&scheduler_arc);
             }
         }
+    }
+
+    /// Get the shared CSS animation store
+    ///
+    /// Used to register a tick callback on the AnimationScheduler so the
+    /// background thread can tick CSS animations/transitions at 120fps.
+    pub fn css_anim_store(&self) -> Arc<Mutex<crate::render_state::CssAnimationStore>> {
+        Arc::clone(&self.css_anim_store)
+    }
+
+    /// Set the shared CSS animation store (to reuse across tree rebuilds)
+    ///
+    /// Call this after tree creation to share the store with the scheduler's
+    /// tick callback. The store persists across tree rebuilds.
+    pub fn set_css_anim_store(
+        &mut self,
+        store: Arc<Mutex<crate::render_state::CssAnimationStore>>,
+    ) {
+        self.css_anim_store = store;
     }
 
     /// Set a shared external element registry
@@ -4311,9 +4323,11 @@ impl RenderTree {
             .get(&element_id)
             .and_then(|s| s.transition.clone());
 
-        // Snapshot before-props for transition detection (visual + layout)
+        // Snapshot before-props for transition detection (visual + layout).
+        // Uses snapshot_before_keyframe_properties to avoid QR decomposition
+        // drift on transform fields when an active transition exists.
         let before_kp = if transition_set.is_some() {
-            self.snapshot_keyframe_properties(node_id)
+            self.snapshot_before_keyframe_properties(node_id)
         } else {
             None
         };
@@ -4467,6 +4481,36 @@ impl RenderTree {
         if let Some(filter) = style.filter {
             props.filter = Some(filter);
         }
+        // Text color
+        if let Some(c) = &style.text_color {
+            props.text_color = Some([c.r, c.g, c.b, c.a]);
+        }
+        // Font size
+        if let Some(fs) = style.font_size {
+            props.font_size = Some(fs);
+        }
+        // Transform origin
+        if let Some(to) = style.transform_origin {
+            props.transform_origin = Some(to);
+        }
+        // Skew (composed into existing transform as Affine2D)
+        if style.skew_x.is_some() || style.skew_y.is_some() {
+            use blinc_core::Affine2D;
+            let mut skew_affine = Affine2D::IDENTITY;
+            if let Some(sx) = style.skew_x {
+                skew_affine = skew_affine.then(&Affine2D::skew_x(sx.to_radians()));
+            }
+            if let Some(sy) = style.skew_y {
+                skew_affine = skew_affine.then(&Affine2D::skew_y(sy.to_radians()));
+            }
+            // Compose with existing transform or set new
+            if let Some(blinc_core::Transform::Affine2D(existing)) = &props.transform {
+                props.transform =
+                    Some(blinc_core::Transform::Affine2D(existing.then(&skew_affine)));
+            } else {
+                props.transform = Some(blinc_core::Transform::Affine2D(skew_affine));
+            }
+        }
         // Position flags (fixed/sticky are rendering concerns, not layout)
         if let Some(pos) = style.position {
             use crate::element_style::StylePosition;
@@ -4528,6 +4572,18 @@ impl RenderTree {
         if let Some(h) = es.height {
             taffy_style.size.height = Dimension::Length(h);
         }
+        if let Some(v) = es.min_width {
+            taffy_style.min_size.width = Dimension::Length(v);
+        }
+        if let Some(v) = es.max_width {
+            taffy_style.max_size.width = Dimension::Length(v);
+        }
+        if let Some(v) = es.min_height {
+            taffy_style.min_size.height = Dimension::Length(v);
+        }
+        if let Some(v) = es.max_height {
+            taffy_style.max_size.height = Dimension::Length(v);
+        }
         if let Some(ref p) = es.padding {
             taffy_style.padding = taffy::geometry::Rect {
                 top: LengthPercentage::Length(p.top),
@@ -4549,6 +4605,24 @@ impl RenderTree {
                 width: LengthPercentage::Length(g),
                 height: LengthPercentage::Length(g),
             };
+        }
+        if let Some(v) = es.flex_grow {
+            taffy_style.flex_grow = v;
+        }
+        if let Some(v) = es.flex_shrink {
+            taffy_style.flex_shrink = v;
+        }
+        if let Some(v) = es.top {
+            taffy_style.inset.top = LengthPercentageAuto::Length(v);
+        }
+        if let Some(v) = es.right {
+            taffy_style.inset.right = LengthPercentageAuto::Length(v);
+        }
+        if let Some(v) = es.bottom {
+            taffy_style.inset.bottom = LengthPercentageAuto::Length(v);
+        }
+        if let Some(v) = es.left {
+            taffy_style.inset.left = LengthPercentageAuto::Length(v);
         }
     }
 
@@ -4602,9 +4676,86 @@ impl RenderTree {
             if let taffy::LengthPercentage::Length(g) = style.gap.width {
                 kp.gap = Some(g);
             }
+            // Extract min/max constraints
+            if let taffy::Dimension::Length(v) = style.min_size.width {
+                kp.min_width = Some(v);
+            }
+            if let taffy::Dimension::Length(v) = style.max_size.width {
+                kp.max_width = Some(v);
+            }
+            if let taffy::Dimension::Length(v) = style.min_size.height {
+                kp.min_height = Some(v);
+            }
+            if let taffy::Dimension::Length(v) = style.max_size.height {
+                kp.max_height = Some(v);
+            }
+            // Extract flex grow/shrink
+            if style.flex_grow != 0.0 {
+                kp.flex_grow = Some(style.flex_grow);
+            }
+            if style.flex_shrink != 1.0 {
+                kp.flex_shrink = Some(style.flex_shrink);
+            }
+            // Extract inset (top/right/bottom/left)
+            if let Some(v) = Self::taffy_lpa_to_f32(&style.inset.top) {
+                kp.inset_top = Some(v);
+            }
+            if let Some(v) = Self::taffy_lpa_to_f32(&style.inset.right) {
+                kp.inset_right = Some(v);
+            }
+            if let Some(v) = Self::taffy_lpa_to_f32(&style.inset.bottom) {
+                kp.inset_bottom = Some(v);
+            }
+            if let Some(v) = Self::taffy_lpa_to_f32(&style.inset.left) {
+                kp.inset_left = Some(v);
+            }
         }
 
         Some(kp)
+    }
+
+    /// Snapshot keyframe properties for transition "before" state.
+    ///
+    /// When an active transition exists, overlays the transition's current
+    /// interpolated values for transform fields. This avoids QR decomposition
+    /// drift: the affine→decompose roundtrip introduces tiny floating-point
+    /// errors that would cause spurious property changes and defeat the
+    /// same-target guard in `detect_and_start_transitions`.
+    fn snapshot_before_keyframe_properties(
+        &self,
+        node_id: LayoutNodeId,
+    ) -> Option<blinc_animation::KeyframeProperties> {
+        self.snapshot_keyframe_properties(node_id).map(|mut kp| {
+            let store = self.css_anim_store.lock().unwrap();
+            if let Some(active) = store.transitions.get(&node_id) {
+                let cp = &active.current_properties;
+                if cp.rotate.is_some() {
+                    kp.rotate = cp.rotate;
+                }
+                if cp.scale_x.is_some() {
+                    kp.scale_x = cp.scale_x;
+                }
+                if cp.scale_y.is_some() {
+                    kp.scale_y = cp.scale_y;
+                }
+                if cp.translate_x.is_some() {
+                    kp.translate_x = cp.translate_x;
+                }
+                if cp.translate_y.is_some() {
+                    kp.translate_y = cp.translate_y;
+                }
+                if cp.skew_x.is_some() {
+                    kp.skew_x = cp.skew_x;
+                }
+                if cp.skew_y.is_some() {
+                    kp.skew_y = cp.skew_y;
+                }
+                if cp.transform_origin.is_some() {
+                    kp.transform_origin = cp.transform_origin;
+                }
+            }
+            kp
+        })
     }
 
     fn taffy_lp_to_f32(lp: &taffy::LengthPercentage) -> Option<f32> {
@@ -5238,7 +5389,7 @@ impl RenderTree {
         let mut pre_reset_snapshots: HashMap<LayoutNodeId, blinc_animation::KeyframeProperties> =
             HashMap::new();
         for &node_id in &prev_affected {
-            if let Some(kp) = self.snapshot_keyframe_properties(node_id) {
+            if let Some(kp) = self.snapshot_before_keyframe_properties(node_id) {
                 pre_reset_snapshots.insert(node_id, kp);
             }
         }
@@ -5334,7 +5485,7 @@ impl RenderTree {
                         pre_reset_snapshots
                             .get(&node_id)
                             .cloned()
-                            .or_else(|| self.snapshot_keyframe_properties(node_id))
+                            .or_else(|| self.snapshot_before_keyframe_properties(node_id))
                     } else {
                         None
                     };
@@ -5443,7 +5594,7 @@ impl RenderTree {
 
         // Resolve the full keyframe animation
         if let Some(animation) = stylesheet.resolve_keyframe_animation(&element_id) {
-            self.css_animations.insert(
+            self.css_anim_store.lock().unwrap().animations.insert(
                 node_id,
                 crate::render_state::ActiveCssAnimation::new(animation),
             );
@@ -5476,7 +5627,7 @@ impl RenderTree {
         if let Some(animation) =
             stylesheet.resolve_keyframe_animation_with_state(&element_id, state)
         {
-            self.css_animations.insert(
+            self.css_anim_store.lock().unwrap().animations.insert(
                 node_id,
                 crate::render_state::ActiveCssAnimation::new(animation),
             );
@@ -5486,37 +5637,12 @@ impl RenderTree {
         false
     }
 
-    /// Tick all active CSS animations
-    ///
-    /// Call this once per frame with the delta time in milliseconds.
-    /// Returns true if any animations are still playing.
-    pub fn tick_css_animations(&mut self, dt_ms: f32) -> bool {
-        let mut any_playing = false;
-        let mut completed = Vec::new();
-
-        for (node_id, active_anim) in &mut self.css_animations {
-            if active_anim.tick(dt_ms) {
-                any_playing = true;
-            } else {
-                completed.push(*node_id);
-            }
-        }
-
-        // Remove completed animations (respecting fill_mode is handled by ActiveCssAnimation)
-        for node_id in completed {
-            // Keep the animation if fill_mode is Forwards or Both (to hold final values)
-            // For now, we keep all completed animations for their final values
-            // A future optimization could check fill_mode and remove None/Backwards
-        }
-
-        any_playing
-    }
-
     /// Apply current CSS animation values to a node's render props
     ///
     /// Call this during rendering to apply animated values.
     pub fn apply_css_animation_to_props(&self, node_id: LayoutNodeId, props: &mut RenderProps) {
-        if let Some(active_anim) = self.css_animations.get(&node_id) {
+        let store = self.css_anim_store.lock().unwrap();
+        if let Some(active_anim) = store.animations.get(&node_id) {
             let anim_props = &active_anim.current_properties;
 
             // Apply animated opacity
@@ -5569,15 +5695,19 @@ impl RenderTree {
     pub fn get_css_animation_properties(
         &self,
         node_id: LayoutNodeId,
-    ) -> Option<&blinc_animation::KeyframeProperties> {
-        self.css_animations
+    ) -> Option<blinc_animation::KeyframeProperties> {
+        let store = self.css_anim_store.lock().unwrap();
+        store
+            .animations
             .get(&node_id)
-            .map(|a| &a.current_properties)
+            .map(|a| a.current_properties.clone())
     }
 
     /// Check if a node has an active CSS animation
     pub fn has_css_animation(&self, node_id: LayoutNodeId) -> bool {
-        self.css_animations
+        let store = self.css_anim_store.lock().unwrap();
+        store
+            .animations
             .get(&node_id)
             .map(|a| a.is_playing)
             .unwrap_or(false)
@@ -5585,12 +5715,22 @@ impl RenderTree {
 
     /// Stop CSS animation for a node
     pub fn stop_css_animation(&mut self, node_id: LayoutNodeId) {
-        self.css_animations.remove(&node_id);
+        self.css_anim_store
+            .lock()
+            .unwrap()
+            .animations
+            .remove(&node_id);
     }
 
     /// Check if there are no active CSS animations
     pub fn css_animations_empty(&self) -> bool {
-        self.css_animations.is_empty()
+        self.css_anim_store.lock().unwrap().animations.is_empty()
+    }
+
+    /// Check if the CSS animation store has any active work (animations or transitions)
+    pub fn css_has_active(&self) -> bool {
+        let store = self.css_anim_store.lock().unwrap();
+        store.has_active_animations() || store.has_active_transitions()
     }
 
     /// Start CSS animations for all registered elements that have animations defined
@@ -5610,8 +5750,14 @@ impl RenderTree {
             .collect();
 
         for (element_id, node_id) in &registered_ids {
-            // Skip if already has an active animation
-            if self.css_animations.contains_key(node_id) {
+            // Skip if already has an active animation (lock briefly, release before calling start)
+            let already_has = self
+                .css_anim_store
+                .lock()
+                .unwrap()
+                .animations
+                .contains_key(node_id);
+            if already_has {
                 continue;
             }
             let started = self.start_css_animation_for_element(*node_id);
@@ -5628,16 +5774,20 @@ impl RenderTree {
     /// Apply all active CSS animation values to their respective render props
     ///
     /// This mutates render props in-place with current animation values (opacity, transform).
-    /// Should be called each frame after `tick_css_animations()`.
+    /// The background thread ticks animations; this reads the latest values and applies them.
     pub fn apply_all_css_animation_props(&mut self) {
-        let node_ids: Vec<LayoutNodeId> = self.css_animations.keys().copied().collect();
-        for node_id in node_ids {
+        // Collect animation data under the lock, then release before modifying render_nodes
+        let anim_data: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = {
+            let store = self.css_anim_store.lock().unwrap();
+            store
+                .animations
+                .iter()
+                .map(|(nid, a)| (*nid, a.current_properties.clone()))
+                .collect()
+        };
+        for (node_id, anim_props) in anim_data {
             if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
-                // Clone animation data to avoid double borrow
-                if let Some(active_anim) = self.css_animations.get(&node_id) {
-                    let anim_props = active_anim.current_properties.clone();
-                    Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
-                }
+                Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
             }
         }
     }
@@ -5650,23 +5800,37 @@ impl RenderTree {
         let mut needs_layout = false;
 
         // Collect all nodes with active animations or transitions that have layout properties
-        let anim_nodes: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = self
-            .css_animations
-            .iter()
-            .map(|(nid, anim)| (*nid, anim.current_properties.clone()))
-            .chain(
-                self.css_transitions
-                    .iter()
-                    .map(|(nid, anim)| (*nid, anim.current_properties.clone())),
-            )
-            .collect();
+        let anim_nodes: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = {
+            let store = self.css_anim_store.lock().unwrap();
+            store
+                .animations
+                .iter()
+                .map(|(nid, anim)| (*nid, anim.current_properties.clone()))
+                .chain(
+                    store
+                        .transitions
+                        .iter()
+                        .map(|(nid, anim)| (*nid, anim.current_properties.clone())),
+                )
+                .collect()
+        };
 
         for (node_id, anim_props) in anim_nodes {
             let has_layout_props = anim_props.width.is_some()
                 || anim_props.height.is_some()
                 || anim_props.padding.is_some()
                 || anim_props.margin.is_some()
-                || anim_props.gap.is_some();
+                || anim_props.gap.is_some()
+                || anim_props.min_width.is_some()
+                || anim_props.max_width.is_some()
+                || anim_props.min_height.is_some()
+                || anim_props.max_height.is_some()
+                || anim_props.flex_grow.is_some()
+                || anim_props.flex_shrink.is_some()
+                || anim_props.inset_top.is_some()
+                || anim_props.inset_right.is_some()
+                || anim_props.inset_bottom.is_some()
+                || anim_props.inset_left.is_some();
 
             if !has_layout_props {
                 continue;
@@ -5681,6 +5845,22 @@ impl RenderTree {
                 }
                 if let Some(h) = anim_props.height {
                     style.size.height = Dimension::Length(h);
+                    changed = true;
+                }
+                if let Some(v) = anim_props.min_width {
+                    style.min_size.width = Dimension::Length(v);
+                    changed = true;
+                }
+                if let Some(v) = anim_props.max_width {
+                    style.max_size.width = Dimension::Length(v);
+                    changed = true;
+                }
+                if let Some(v) = anim_props.min_height {
+                    style.min_size.height = Dimension::Length(v);
+                    changed = true;
+                }
+                if let Some(v) = anim_props.max_height {
+                    style.max_size.height = Dimension::Length(v);
                     changed = true;
                 }
                 if let Some([top, right, bottom, left]) = anim_props.padding {
@@ -5706,6 +5886,33 @@ impl RenderTree {
                         width: LengthPercentage::Length(g),
                         height: LengthPercentage::Length(g),
                     };
+                    changed = true;
+                }
+                if let Some(v) = anim_props.flex_grow {
+                    style.flex_grow = v;
+                    changed = true;
+                }
+                if let Some(v) = anim_props.flex_shrink {
+                    style.flex_shrink = v;
+                    changed = true;
+                }
+                if anim_props.inset_top.is_some()
+                    || anim_props.inset_right.is_some()
+                    || anim_props.inset_bottom.is_some()
+                    || anim_props.inset_left.is_some()
+                {
+                    if let Some(v) = anim_props.inset_top {
+                        style.inset.top = LengthPercentageAuto::Length(v);
+                    }
+                    if let Some(v) = anim_props.inset_right {
+                        style.inset.right = LengthPercentageAuto::Length(v);
+                    }
+                    if let Some(v) = anim_props.inset_bottom {
+                        style.inset.bottom = LengthPercentageAuto::Length(v);
+                    }
+                    if let Some(v) = anim_props.inset_left {
+                        style.inset.left = LengthPercentageAuto::Length(v);
+                    }
                     changed = true;
                 }
 
@@ -5739,6 +5946,9 @@ impl RenderTree {
             FillMode, KeyframeProperties, MultiKeyframe, MultiKeyframeAnimation,
         };
 
+        // Lock the shared store for the duration of this method
+        let mut store = self.css_anim_store.lock().unwrap();
+
         // Build "from" properties: only include fields that differ AND have a transition spec
         let mut from = KeyframeProperties::default();
         let mut to = KeyframeProperties::default();
@@ -5753,7 +5963,7 @@ impl RenderTree {
                 if before.$field != after.$field {
                     if let Some(t) = transition_set.get($prop_name) {
                         // If a transition is already active, use current interpolated value as "from"
-                        let from_val = if let Some(active) = self.css_transitions.get(&node_id) {
+                        let from_val = if let Some(active) = store.transitions.get(&node_id) {
                             if active.current_properties.$field.is_some() {
                                 active.current_properties.$field.clone()
                             } else {
@@ -5776,7 +5986,7 @@ impl RenderTree {
             ($field:ident, $prop_name:expr, default $def:expr) => {
                 if before.$field != after.$field {
                     if let Some(t) = transition_set.get($prop_name) {
-                        let from_val = if let Some(active) = self.css_transitions.get(&node_id) {
+                        let from_val = if let Some(active) = store.transitions.get(&node_id) {
                             if active.current_properties.$field.is_some() {
                                 active.current_properties.$field.clone()
                             } else {
@@ -5798,6 +6008,8 @@ impl RenderTree {
 
         check_transition!(opacity, "opacity");
         check_transition!(background_color, "background");
+        check_transition!(text_color, "color");
+        check_transition!(font_size, "font-size");
         check_transition!(border_color, "border-color");
         check_transition!(border_width, "border-width");
         check_transition!(corner_radius, "border-radius");
@@ -5806,16 +6018,16 @@ impl RenderTree {
         check_transition!(clip_inset, "clip-path");
         check_transition!(clip_circle_radius, "clip-path");
         check_transition!(clip_ellipse_radii, "clip-path");
-        check_transition!(translate_x, "transform");
-        check_transition!(translate_y, "transform");
-        check_transition!(scale_x, "transform");
-        check_transition!(scale_y, "transform");
-        check_transition!(rotate, "transform");
-        check_transition!(rotate_x, "rotate-x");
-        check_transition!(rotate_y, "rotate-y");
+        check_transition!(translate_x, "transform", default 0.0);
+        check_transition!(translate_y, "transform", default 0.0);
+        check_transition!(scale_x, "transform", default 1.0);
+        check_transition!(scale_y, "transform", default 1.0);
+        check_transition!(rotate, "transform", default 0.0);
+        check_transition!(rotate_x, "rotate-x", default 0.0);
+        check_transition!(rotate_y, "rotate-y", default 0.0);
         check_transition!(perspective, "perspective");
         check_transition!(depth, "depth");
-        check_transition!(translate_z, "translate-z");
+        check_transition!(translate_z, "translate-z", default 0.0);
         check_transition!(light_intensity, "light-intensity");
         check_transition!(ambient, "ambient");
         check_transition!(specular, "specular");
@@ -5834,11 +6046,25 @@ impl RenderTree {
         check_transition!(padding, "padding");
         check_transition!(margin, "margin");
         check_transition!(gap, "gap");
+        check_transition!(min_width, "min-width");
+        check_transition!(max_width, "max-width");
+        check_transition!(min_height, "min-height");
+        check_transition!(max_height, "max-height");
+        check_transition!(flex_grow, "flex-grow");
+        check_transition!(flex_shrink, "flex-shrink");
+        check_transition!(inset_top, "top");
+        check_transition!(inset_right, "right");
+        check_transition!(inset_bottom, "bottom");
+        check_transition!(inset_left, "left");
+        check_transition!(z_index, "z-index");
+        check_transition!(skew_x, "transform", default 0.0);
+        check_transition!(skew_y, "transform", default 0.0);
+        check_transition!(transform_origin, "transform-origin");
 
         if has_any && duration_ms > 0 {
             // If a transition already exists heading to the same target, let it continue
             // rather than restarting with a fresh duration each frame
-            if let Some(existing) = self.css_transitions.get(&node_id) {
+            if let Some(existing) = store.transitions.get(&node_id) {
                 if let Some(last_kf) = existing.animation.last_keyframe() {
                     if last_kf.properties == to {
                         return; // Same target — let existing transition finish
@@ -5850,52 +6076,35 @@ impl RenderTree {
                 .keyframe(1.0, to, easing)
                 .delay(delay_ms)
                 .fill_mode(FillMode::Forwards);
-            self.css_transitions
+            store
+                .transitions
                 .insert(node_id, crate::render_state::ActiveCssAnimation::new(anim));
         }
     }
 
-    /// Tick all active CSS transitions
-    ///
-    /// Returns true if any transitions are still playing (need redraw).
-    pub fn tick_css_transitions(&mut self, dt_ms: f32) -> bool {
-        let mut any_playing = false;
-        let mut completed = Vec::new();
-
-        for (node_id, active_transition) in &mut self.css_transitions {
-            if active_transition.tick(dt_ms) {
-                any_playing = true;
-            } else {
-                completed.push(*node_id);
-            }
-        }
-
-        // Remove completed transitions
-        for node_id in completed {
-            self.css_transitions.remove(&node_id);
-        }
-
-        any_playing
-    }
-
     /// Apply all active CSS transition values to their respective render props
     ///
-    /// Should be called each frame after `tick_css_transitions()`.
+    /// The background thread ticks transitions; this reads the latest values and applies them.
     pub fn apply_all_css_transition_props(&mut self) {
-        let node_ids: Vec<LayoutNodeId> = self.css_transitions.keys().copied().collect();
-        for node_id in node_ids {
+        // Collect transition data under the lock, then release before modifying render_nodes
+        let trans_data: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = {
+            let store = self.css_anim_store.lock().unwrap();
+            store
+                .transitions
+                .iter()
+                .map(|(nid, a)| (*nid, a.current_properties.clone()))
+                .collect()
+        };
+        for (node_id, anim_props) in trans_data {
             if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
-                if let Some(active_transition) = self.css_transitions.get(&node_id) {
-                    let anim_props = active_transition.current_properties.clone();
-                    Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
-                }
+                Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
             }
         }
     }
 
     /// Check if there are no active CSS transitions
     pub fn css_transitions_empty(&self) -> bool {
-        self.css_transitions.is_empty()
+        self.css_anim_store.lock().unwrap().transitions.is_empty()
     }
 
     /// Apply keyframe animation properties to render props
@@ -5911,7 +6120,9 @@ impl RenderTree {
             || anim_props.translate_y.is_some()
             || anim_props.scale_x.is_some()
             || anim_props.scale_y.is_some()
-            || anim_props.rotate.is_some();
+            || anim_props.rotate.is_some()
+            || anim_props.skew_x.is_some()
+            || anim_props.skew_y.is_some();
 
         if has_transform {
             use blinc_core::{Affine2D, Transform};
@@ -5928,6 +6139,14 @@ impl RenderTree {
 
             if let Some(rotate) = anim_props.rotate {
                 affine = affine.then(&Affine2D::rotation(rotate.to_radians()));
+            }
+
+            // Skew
+            if let Some(skx) = anim_props.skew_x {
+                affine = affine.then(&Affine2D::skew_x(skx.to_radians()));
+            }
+            if let Some(sky) = anim_props.skew_y {
+                affine = affine.then(&Affine2D::skew_y(sky.to_radians()));
             }
 
             if let (Some(tx), Some(ty)) = (anim_props.translate_x, anim_props.translate_y) {
@@ -5993,6 +6212,16 @@ impl RenderTree {
             props.background = Some(blinc_core::Brush::Solid(blinc_core::Color::rgba(
                 r, g, b, a,
             )));
+        }
+
+        // Text color
+        if let Some(tc) = anim_props.text_color {
+            props.text_color = Some(tc);
+        }
+
+        // Font size
+        if let Some(fs) = anim_props.font_size {
+            props.font_size = Some(fs);
         }
 
         // Corner radius
@@ -6069,6 +6298,16 @@ impl RenderTree {
                 saturate: anim_props.filter_saturate.unwrap_or(existing.saturate),
             });
         }
+
+        // z-index (round from f32 to i32)
+        if let Some(z) = anim_props.z_index {
+            props.z_index = z.round() as i32;
+        }
+
+        // Transform origin
+        if let Some(to) = anim_props.transform_origin {
+            props.transform_origin = Some(to);
+        }
     }
 
     /// Extract animatable properties from RenderProps into KeyframeProperties
@@ -6085,17 +6324,31 @@ impl RenderTree {
             ..Default::default()
         };
 
-        // Extract transform components
+        // Extract transform components via QR decomposition
+        // Decomposes the 2x2 portion [a,c; b,d] into scale, rotation, and skew.
         if let Some(blinc_core::Transform::Affine2D(affine)) = &props.transform {
             let [a, b, c, d, tx, ty] = affine.elements;
             kp.translate_x = Some(tx);
             kp.translate_y = Some(ty);
-            if b.abs() < 0.0001 && c.abs() < 0.0001 {
-                kp.scale_x = Some(a);
-                kp.scale_y = Some(d);
-            } else {
-                let rotation = b.atan2(a);
-                kp.rotate = Some(rotation.to_degrees());
+
+            // QR decomposition of the 2x2 matrix:
+            // Step 1: scale_x = length of first column
+            let scale_x = (a * a + b * b).sqrt().max(1e-6);
+            // Step 2: rotation from normalized first column
+            let rotation = b.atan2(a);
+            kp.rotate = Some(rotation.to_degrees());
+            // Step 3: XY shear = dot(normalized_col0, col1)
+            let skew_xy = (a * c + b * d) / (scale_x * scale_x);
+            // Step 4: scale_y = det / scale_x (preserves sign)
+            let det = a * d - b * c;
+            let scale_y = det / scale_x;
+
+            kp.scale_x = Some(scale_x);
+            kp.scale_y = Some(scale_y);
+
+            // Only set skew if non-trivial
+            if skew_xy.abs() > 0.0001 {
+                kp.skew_x = Some(skew_xy.atan().to_degrees());
             }
         } else {
             kp.translate_x = Some(0.0);
@@ -6152,6 +6405,14 @@ impl RenderTree {
             kp.background_color = Some([c.r, c.g, c.b, c.a]);
         }
 
+        // Text color
+        if let Some(tc) = &props.text_color {
+            kp.text_color = Some(*tc);
+        }
+
+        // Font size
+        kp.font_size = props.font_size;
+
         // Corner radius
         let cr = &props.border_radius;
         kp.corner_radius = Some([cr.top_left, cr.top_right, cr.bottom_right, cr.bottom_left]);
@@ -6189,6 +6450,14 @@ impl RenderTree {
             kp.filter_saturate = Some(f.saturate);
             kp.filter_hue_rotate = Some(f.hue_rotate);
         }
+
+        // z-index (as f32 for smooth interpolation)
+        if props.z_index != 0 {
+            kp.z_index = Some(props.z_index as f32);
+        }
+
+        // Transform origin
+        kp.transform_origin = props.transform_origin;
 
         kp
     }
@@ -6333,7 +6602,11 @@ impl RenderTree {
                 if base_has_anim {
                     self.start_css_animation_for_element(node_id);
                 } else {
-                    self.css_animations.remove(&node_id);
+                    self.css_anim_store
+                        .lock()
+                        .unwrap()
+                        .animations
+                        .remove(&node_id);
                 }
                 any_applied = true;
             }
@@ -7248,11 +7521,19 @@ impl RenderTree {
         // Apply element-specific transform if present
         let has_element_transform = render_node.props.transform.is_some();
         if let Some(ref transform) = render_node.props.transform {
-            let center_x = bounds.width / 2.0;
-            let center_y = bounds.height / 2.0;
-            ctx.push_transform(Transform::translate(center_x, center_y));
+            // Use transform-origin if set, otherwise default to center
+            let (origin_x, origin_y) =
+                if let Some([ox_pct, oy_pct]) = render_node.props.transform_origin {
+                    (
+                        bounds.width * ox_pct / 100.0,
+                        bounds.height * oy_pct / 100.0,
+                    )
+                } else {
+                    (bounds.width / 2.0, bounds.height / 2.0)
+                };
+            ctx.push_transform(Transform::translate(origin_x, origin_y));
             ctx.push_transform(transform.clone());
-            ctx.push_transform(Transform::translate(-center_x, -center_y));
+            ctx.push_transform(Transform::translate(-origin_x, -origin_y));
         }
 
         // Determine if this node is a glass element
@@ -8817,6 +9098,10 @@ impl RenderTree {
             let abs_x = parent_offset.0 + bounds.x;
             let abs_y = parent_offset.1 + bounds.y;
 
+            // Use animated/overridden text color and font size if available
+            let color = render_node.props.text_color.unwrap_or(text_data.color);
+            let font_size = render_node.props.font_size.unwrap_or(text_data.font_size);
+
             if to_foreground {
                 renderer.render_text_foreground(
                     &text_data.content,
@@ -8824,8 +9109,8 @@ impl RenderTree {
                     abs_y,
                     bounds.width,
                     bounds.height,
-                    text_data.font_size,
-                    text_data.color,
+                    font_size,
+                    color,
                     text_data.align,
                     text_data.weight,
                 );
@@ -8836,8 +9121,8 @@ impl RenderTree {
                     abs_y,
                     bounds.width,
                     bounds.height,
-                    text_data.font_size,
-                    text_data.color,
+                    font_size,
+                    color,
                     text_data.align,
                     text_data.weight,
                 );

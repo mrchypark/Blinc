@@ -477,6 +477,203 @@ fn main() -> Result<()> {
                 animation: grow-shrink 3000ms ease-in-out infinite;
             }
 
+            /* --- Phase 1: Constraint & Position Animation demos --- */
+
+            /* min-width transition */
+            #constraint-minw {
+                background: #6366f1;
+                border-radius: 8px;
+                width: 80px;
+                height: 60px;
+                min-width: 80px;
+                transition: min-width 400ms ease;
+            }
+            #constraint-minw:hover {
+                min-width: 200px;
+            }
+
+            /* max-width transition */
+            #constraint-maxw {
+                background: #8b5cf6;
+                border-radius: 8px;
+                width: 300px;
+                height: 60px;
+                max-width: 300px;
+                transition: max-width 400ms ease;
+            }
+            #constraint-maxw:hover {
+                max-width: 120px;
+            }
+
+            /* top/left position animation */
+            #pos-anim-container {
+                position: relative;
+                width: 280px;
+                height: 140px;
+                background: #1e293b;
+                border-radius: 8px;
+            }
+            #pos-anim-dot {
+                position: absolute;
+                top: 10px;
+                left: 10px;
+                width: 40px;
+                height: 40px;
+                background: #f43f5e;
+                border-radius: 20px;
+                transition: all 500ms ease;
+            }
+            #pos-anim-dot:hover {
+                top: 90px;
+                left: 228px;
+            }
+
+            /* flex-grow transition */
+            .flex-grow-item {
+                background: #0ea5e9;
+                border-radius: 6px;
+                height: 50px;
+                flex-grow: 1;
+                transition: flex-grow 400ms ease;
+            }
+            .flex-grow-item:hover {
+                flex-grow: 4;
+            }
+
+            /* @keyframes with min/max constraints */
+            @keyframes constraint-pulse {
+                0% { min-width: 60px; max-width: 60px; }
+                50% { min-width: 180px; max-width: 180px; }
+                100% { min-width: 60px; max-width: 60px; }
+            }
+            #constraint-anim {
+                background: #14b8a6;
+                border-radius: 8px;
+                height: 50px;
+                animation: constraint-pulse 2500ms ease-in-out infinite;
+            }
+
+            /* --- Phase 2: Text Color Animation demos --- */
+
+            /* Text color transition on hover */
+            #text-color-hover {
+                color: #94a3b8;
+                transition: color 400ms ease;
+            }
+            #text-color-hover:hover {
+                color: #3b82f6;
+            }
+
+            /* Text color + background combined transition */
+            #text-color-combo {
+                background: #1e293b;
+                border-radius: 8px;
+                transition: all 400ms ease;
+            }
+            #text-color-combo:hover {
+                background: #3b82f6;
+            }
+            #text-color-combo-label {
+                color: #94a3b8;
+                transition: color 400ms ease;
+            }
+            #text-color-combo-label:hover {
+                color: #ffffff;
+            }
+
+            /* @keyframes text color cycling */
+            @keyframes color-cycle {
+                0% { color: #ef4444; }
+                33% { color: #22c55e; }
+                66% { color: #3b82f6; }
+                100% { color: #ef4444; }
+            }
+            #text-color-anim {
+                animation: color-cycle 3000ms linear infinite;
+            }
+
+            /* --- Phase 3: Transform Extensions demos --- */
+
+            /* SkewX on hover */
+            #skew-x-demo {
+                background: #3b82f6;
+                border-radius: 8px;
+                transition: all 400ms ease;
+            }
+            #skew-x-demo:hover {
+                transform: skewX(-12deg);
+            }
+
+            /* SkewY on hover */
+            #skew-y-demo {
+                background: #22c55e;
+                border-radius: 8px;
+                transition: all 400ms ease;
+            }
+            #skew-y-demo:hover {
+                transform: skewY(12deg);
+            }
+
+            /* Transform-origin: top-left rotation */
+            #origin-tl-demo {
+                background: #a855f7;
+                border-radius: 8px;
+                transform-origin: left top;
+                transition: all 400ms ease;
+            }
+            #origin-tl-demo:hover {
+                transform: rotate(15deg);
+            }
+
+            /* Transform-origin: bottom-right rotation */
+            #origin-br-demo {
+                background: #f97316;
+                border-radius: 8px;
+                transform-origin: right bottom;
+                transition: all 400ms ease;
+            }
+            #origin-br-demo:hover {
+                transform: rotate(-15deg);
+            }
+
+            /* @keyframes skew wobble */
+            @keyframes skew-wobble {
+                0% { transform: skew(0deg, 0deg); }
+                25% { transform: skew(10deg, 5deg); }
+                50% { transform: skew(0deg, 0deg); }
+                75% { transform: skew(-10deg, -5deg); }
+                100% { transform: skew(0deg, 0deg); }
+            }
+            #skew-wobble-demo {
+                background: #ec4899;
+                border-radius: 8px;
+                animation: skew-wobble 2000ms ease-in-out infinite;
+            }
+
+            /* --- Phase 4: Font Size Animation demos --- */
+
+            /* Font size transition on hover */
+            #font-size-hover {
+                font-size: 14px;
+                color: #94a3b8;
+                transition: all 400ms ease;
+            }
+            #font-size-hover:hover {
+                font-size: 28px;
+                color: #3b82f6;
+            }
+
+            /* @keyframes font size pulsing */
+            @keyframes font-pulse {
+                0% { font-size: 14px; }
+                50% { font-size: 24px; }
+                100% { font-size: 14px; }
+            }
+            #font-size-anim {
+                color: #22c55e;
+                animation: font-pulse 2000ms ease-in-out infinite;
+            }
+
             "#,
             );
             css_loaded = true;
@@ -505,6 +702,14 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .gap(theme.spacing().space_8)
                     // Layout property animation
                     .child(layout_animation_section())
+                    // Constraint & position animation (Phase 1)
+                    .child(constraint_position_animation_section())
+                    // Text color animation (Phase 2)
+                    .child(text_color_animation_section())
+                    // Transform extensions (Phase 3)
+                    .child(transform_extensions_section())
+                    // Font size animation (Phase 4)
+                    .child(font_size_animation_section())
                     // CSS Selector Hierarchy
                     .child(selector_hierarchy_section())
                     // CSS Stylesheet integration
@@ -685,6 +890,376 @@ fn layout_animation_section() -> impl ElementBuilder {
                                         .items_center()
                                         .child(text("Animated").size(12.0).color(Color::WHITE)),
                                 ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// CONSTRAINT & POSITION ANIMATION SECTION (Phase 1 properties)
+// ============================================================================
+
+fn constraint_position_animation_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Constraint & Position Animation"))
+        .child(section_description(
+            "Animate min/max-width/height, top/left positioning, flex-grow, and z-index via CSS transitions and @keyframes.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. min-width transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#constraint-minw { min-width: 80px; transition: min-width 400ms; } :hover { min-width: 200px }"))
+                        .child(
+                            div()
+                                .id("constraint-minw")
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover: min-width grows").size(11.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. max-width transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#constraint-maxw { max-width: 300px; transition: max-width 400ms; } :hover { max-width: 120px }"))
+                        .child(
+                            div()
+                                .id("constraint-maxw")
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover: max-width shrinks").size(11.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. top/left position transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#pos-anim-dot { top: 10px; left: 10px; transition: all 500ms; } :hover { top: 90px; left: 228px }"))
+                        .child(
+                            div()
+                                .id("pos-anim-container")
+                                .child(
+                                    div()
+                                        .id("pos-anim-dot"),
+                                ),
+                        ),
+                )
+                // 4. flex-grow transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".flex-grow-item { flex-grow: 1; transition: flex-grow 400ms; } :hover { flex-grow: 4 }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(4.0)
+                                .w(400.0)
+                                .child(
+                                    div()
+                                        .class("flex-grow-item")
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("A").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("flex-grow-item")
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("B").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("flex-grow-item")
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("C").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 5. @keyframes constraint animation
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes constraint-pulse { 0% { min-width: 60px } 50% { min-width: 180px } }"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(50.0)
+                                .child(
+                                    div()
+                                        .id("constraint-anim")
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Pulsing").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// TEXT COLOR ANIMATION SECTION (Phase 2)
+// ============================================================================
+
+fn text_color_animation_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Text Color Animation"))
+        .child(section_description(
+            "CSS color property with transitions and @keyframes. Hover to see smooth text color transitions.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .gap(24.0)
+                .flex_wrap()
+                // 1. Text color transition on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("color: #94a3b8; transition: color 400ms ease"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(60.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Hover me!")
+                                        .id("text-color-hover")
+                                        .size(18.0)
+                                        .weight(FontWeight::Bold)
+                                        .color(Color::rgba(0.58, 0.64, 0.72, 1.0)),
+                                ),
+                        ),
+                )
+                // 2. Text + background combined transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("background + text color transition combined"))
+                        .child(
+                            div()
+                                .id("text-color-combo")
+                                .w(200.0)
+                                .h(60.0)
+                                .p(16.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Combo hover")
+                                        .id("text-color-combo-label")
+                                        .size(16.0)
+                                        .weight(FontWeight::SemiBold)
+                                        .color(Color::rgba(0.58, 0.64, 0.72, 1.0)),
+                                ),
+                        ),
+                )
+                // 3. @keyframes text color cycling
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes color-cycle { 0% red, 33% green, 66% blue }"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(60.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Color cycling")
+                                        .id("text-color-anim")
+                                        .size(18.0)
+                                        .weight(FontWeight::Bold)
+                                        .color(Color::rgba(0.94, 0.27, 0.27, 1.0)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// FONT SIZE ANIMATION SECTION (Phase 4)
+// ============================================================================
+
+fn font_size_animation_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Font Size Animation"))
+        .child(section_description(
+            "CSS font-size property with transitions and @keyframes. Hover to see smooth font size transitions.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .gap(24.0)
+                .flex_wrap()
+                .items_center()
+                // 1. Font size transition on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("font-size: 14px → 28px on hover"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Hover to grow")
+                                        .id("font-size-hover")
+                                        .size(14.0)
+                                        .color(Color::rgba(0.58, 0.64, 0.72, 1.0)),
+                                ),
+                        ),
+                )
+                // 2. @keyframes font size pulsing
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes font-pulse { 14px → 24px }"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Pulsing size")
+                                        .id("font-size-anim")
+                                        .size(14.0)
+                                        .color(Color::rgba(0.13, 0.77, 0.37, 1.0)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// TRANSFORM EXTENSIONS SECTION (Phase 3)
+// ============================================================================
+
+fn transform_extensions_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Transform Extensions"))
+        .child(section_description(
+            "CSS skewX/skewY and transform-origin support. Hover to see skew transitions and custom pivot points.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .gap(24.0)
+                .flex_wrap()
+                .items_center()
+                // 1. SkewX on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transform: skewX(-12deg)"))
+                        .child(
+                            div()
+                                .id("skew-x-demo")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("SkewX").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. SkewY on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transform: skewY(12deg)"))
+                        .child(
+                            div()
+                                .id("skew-y-demo")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("SkewY").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. Transform-origin: top-left
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transform-origin: left top"))
+                        .child(
+                            div()
+                                .id("origin-tl-demo")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Top-Left").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 4. Transform-origin: bottom-right
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transform-origin: right bottom"))
+                        .child(
+                            div()
+                                .id("origin-br-demo")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Bot-Right").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 5. @keyframes skew wobble
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes skew-wobble"))
+                        .child(
+                            div()
+                                .id("skew-wobble-demo")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Wobble").size(14.0).color(Color::WHITE)),
                         ),
                 ),
         )

@@ -137,8 +137,8 @@ pub use canvas::{canvas, Canvas, CanvasBounds, CanvasData, CanvasRenderFn};
 pub use render_state::{
     create_shared_motion_states, get_global_scheduler, has_global_scheduler,
     queue_global_motion_exit_cancel, queue_global_motion_exit_start, queue_global_motion_start,
-    set_global_scheduler, ActiveMotion, MotionState, NodeRenderState, Overlay, RenderState,
-    SharedMotionStates,
+    set_global_scheduler, ActiveMotion, CssAnimationStore, MotionState, NodeRenderState, Overlay,
+    RenderState, SharedMotionStates,
 };
 
 // Stateful elements

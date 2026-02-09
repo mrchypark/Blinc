@@ -1641,6 +1641,25 @@ impl WindowedApp {
             blinc_animation::set_global_scheduler(scheduler_handle);
         }
 
+        // Shared CSS animation/transition store
+        // The scheduler's background thread keeps the redraw loop alive at 120fps
+        // via the tick callback below (acts as keep-alive signal). Actual ticking
+        // happens synchronously on the main thread to avoid phase jitter between
+        // the bg thread's tick timing and the frame's render timing.
+        let css_anim_store = Arc::new(Mutex::new(blinc_layout::CssAnimationStore::new()));
+        {
+            animations
+                .lock()
+                .unwrap()
+                .add_tick_callback(move |_dt_secs| {
+                    // Keep-alive no-op: the callback's existence ensures the scheduler
+                    // considers tick_callbacks as "active", triggering wake_callback()
+                    // at 120fps so the main thread gets continuous frame requests
+                    // while CSS animations are running.
+                    // Actual ticking happens on the main thread to avoid phase jitter.
+                });
+        }
+
         // Shared element registry for query API
         let element_registry: SharedElementRegistry =
             Arc::new(blinc_layout::selector::ElementRegistry::new());
@@ -2713,6 +2732,9 @@ impl WindowedApp {
                                         // Set animation scheduler for scroll bounce springs
                                         tree.set_animations(&windowed_ctx.animations);
 
+                                        // Share the CSS animation store (ticked by scheduler thread)
+                                        tree.set_css_anim_store(Arc::clone(&css_anim_store));
+
                                         // Set DPI scale factor for HiDPI rendering
                                         tree.set_scale_factor(windowed_ctx.scale_factor as f32);
 
@@ -2798,6 +2820,9 @@ impl WindowedApp {
                                     // Set animation scheduler for scroll bounce springs
                                     tree.set_animations(&windowed_ctx.animations);
 
+                                    // Share the CSS animation store (ticked by scheduler thread)
+                                    tree.set_css_anim_store(Arc::clone(&css_anim_store));
+
                                     // Set DPI scale factor for HiDPI rendering
                                     tree.set_scale_factor(windowed_ctx.scale_factor as f32);
 
@@ -2872,18 +2897,22 @@ impl WindowedApp {
                             // This updates dynamic properties without touching tree structure
                             let _animations_active = rs.tick(current_time);
 
-                            // Tick CSS animations and transitions (but don't apply yet — state styles must go first)
-                            let (css_animating, css_transitioning) = if let Some(ref mut tree) = render_tree {
-                                let dt_ms = if last_frame_time_ms > 0 {
-                                    (current_time - last_frame_time_ms) as f32
-                                } else {
-                                    16.0 // Assume ~60fps for first frame
-                                };
-                                let animating = tree.tick_css_animations(dt_ms);
-                                let transitioning = tree.tick_css_transitions(dt_ms);
-                                (animating, transitioning)
+                            // Tick CSS animations/transitions synchronously on the main thread.
+                            // The scheduler's bg thread drives 120fps redraws via wake_callback,
+                            // but actual ticking is done here to stay in phase with rendering.
+                            let dt_ms = if last_frame_time_ms > 0 {
+                                (current_time - last_frame_time_ms) as f32
                             } else {
-                                (false, false)
+                                16.0
+                            };
+                            let css_active = if let Some(ref tree) = render_tree {
+                                let store = tree.css_anim_store();
+                                let mut s = store.lock().unwrap();
+                                let (anim, trans) = s.tick(dt_ms);
+                                drop(s);
+                                anim || trans || tree.css_has_active()
+                            } else {
+                                false
                             };
                             last_frame_time_ms = current_time;
 
@@ -2909,33 +2938,12 @@ impl WindowedApp {
                                 }
                             }
 
-                            // Apply CSS animation values AFTER state styles
+                            // Apply CSS animation/transition values AFTER state styles
                             // (state styles reset to base, animations must override)
-                            if css_animating {
+                            if css_active || !render_tree.as_ref().map_or(true, |t| t.css_transitions_empty()) {
                                 if let Some(ref mut tree) = render_tree {
                                     tree.apply_all_css_animation_props();
-                                }
-                            }
-
-                            // Apply CSS transition values AFTER state styles
-                            // (transitions smoothly interpolate between state changes)
-                            if css_transitioning || !render_tree.as_ref().map_or(true, |t| t.css_transitions_empty()) {
-                                if let Some(ref mut tree) = render_tree {
                                     tree.apply_all_css_transition_props();
-                                }
-                            }
-
-                            // Apply animated layout properties (width, height, padding, etc.)
-                            // and recompute layout if any changed.
-                            // Also check css_transitions_empty() to catch transitions created
-                            // during apply_stylesheet_state_styles on this frame.
-                            if css_animating
-                                || css_transitioning
-                                || !render_tree
-                                    .as_ref()
-                                    .map_or(true, |t| t.css_transitions_empty())
-                            {
-                                if let Some(ref mut tree) = render_tree {
                                     if tree.apply_animated_layout_props() {
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
                                     }
@@ -3007,15 +3015,14 @@ impl WindowedApp {
                                 mgr.take_dirty() || mgr.has_visible_overlays()
                             };
 
-                            // Also check css_transitions_empty() to catch transitions
-                            // created during apply_complex_selector_styles this frame
-                            // (e.g. reverse transitions on hover-leave).
-                            let has_active_transitions = css_transitioning
+                            // Check if CSS animations/transitions need continued redraws
+                            // (includes transitions created during apply_complex_selector_styles)
+                            let css_needs_redraw = css_active
                                 || !render_tree
                                     .as_ref()
                                     .map_or(true, |t| t.css_transitions_empty());
 
-                            if needs_animation_redraw || needs_cursor_redraw || needs_motion_redraw || scroll_animating || needs_overlay_redraw || theme_animating || css_animating || has_active_transitions {
+                            if needs_animation_redraw || needs_cursor_redraw || needs_motion_redraw || scroll_animating || needs_overlay_redraw || theme_animating || css_needs_redraw {
                                 // Request another frame to render updated animation values
                                 // For cursor blink, also re-request continuous redraw for next frame
                                 if needs_cursor_redraw {

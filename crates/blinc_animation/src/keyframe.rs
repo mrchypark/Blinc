@@ -144,6 +144,8 @@ pub struct KeyframeProperties {
     pub background_color: Option<[f32; 4]>,
     /// Border color RGBA
     pub border_color: Option<[f32; 4]>,
+    /// Text foreground color RGBA
+    pub text_color: Option<[f32; 4]>,
 
     // --- Geometric properties ---
     /// Corner radius [top_left, top_right, bottom_right, bottom_left]
@@ -192,12 +194,52 @@ pub struct KeyframeProperties {
     pub width: Option<f32>,
     /// Height in pixels
     pub height: Option<f32>,
+    /// Min-width in pixels
+    pub min_width: Option<f32>,
+    /// Max-width in pixels
+    pub max_width: Option<f32>,
+    /// Min-height in pixels
+    pub min_height: Option<f32>,
+    /// Max-height in pixels
+    pub max_height: Option<f32>,
     /// Padding [top, right, bottom, left] in pixels
     pub padding: Option<[f32; 4]>,
     /// Margin [top, right, bottom, left] in pixels
     pub margin: Option<[f32; 4]>,
     /// Gap between flex items in pixels
     pub gap: Option<f32>,
+    /// Flex grow factor
+    pub flex_grow: Option<f32>,
+    /// Flex shrink factor
+    pub flex_shrink: Option<f32>,
+
+    // --- Positioning (require layout recomputation) ---
+    /// top inset in pixels
+    pub inset_top: Option<f32>,
+    /// right inset in pixels
+    pub inset_right: Option<f32>,
+    /// bottom inset in pixels
+    pub inset_bottom: Option<f32>,
+    /// left inset in pixels
+    pub inset_left: Option<f32>,
+
+    // --- Text properties ---
+    /// Font size in pixels
+    pub font_size: Option<f32>,
+
+    // --- Skew ---
+    /// Skew X in degrees
+    pub skew_x: Option<f32>,
+    /// Skew Y in degrees
+    pub skew_y: Option<f32>,
+
+    // --- Transform origin ---
+    /// Transform origin [x%, y%] (default 50%, 50% = center)
+    pub transform_origin: Option<[f32; 2]>,
+
+    // --- Stacking ---
+    /// z-index (f32 for smooth interpolation, rounded on apply)
+    pub z_index: Option<f32>,
 }
 
 impl KeyframeProperties {
@@ -323,6 +365,7 @@ impl KeyframeProperties {
             // Color
             background_color: lerp_opt_array4(self.background_color, other.background_color, t),
             border_color: lerp_opt_array4(self.border_color, other.border_color, t),
+            text_color: lerp_opt_array4(self.text_color, other.text_color, t),
             // Geometric
             corner_radius: lerp_opt_array4(self.corner_radius, other.corner_radius, t),
             border_width: lerp_opt(self.border_width, other.border_width, t),
@@ -351,9 +394,29 @@ impl KeyframeProperties {
             // Layout
             width: lerp_opt(self.width, other.width, t),
             height: lerp_opt(self.height, other.height, t),
+            min_width: lerp_opt(self.min_width, other.min_width, t),
+            max_width: lerp_opt(self.max_width, other.max_width, t),
+            min_height: lerp_opt(self.min_height, other.min_height, t),
+            max_height: lerp_opt(self.max_height, other.max_height, t),
             padding: lerp_opt_array4(self.padding, other.padding, t),
             margin: lerp_opt_array4(self.margin, other.margin, t),
             gap: lerp_opt(self.gap, other.gap, t),
+            flex_grow: lerp_opt(self.flex_grow, other.flex_grow, t),
+            flex_shrink: lerp_opt(self.flex_shrink, other.flex_shrink, t),
+            // Positioning
+            inset_top: lerp_opt(self.inset_top, other.inset_top, t),
+            inset_right: lerp_opt(self.inset_right, other.inset_right, t),
+            inset_bottom: lerp_opt(self.inset_bottom, other.inset_bottom, t),
+            inset_left: lerp_opt(self.inset_left, other.inset_left, t),
+            // Text properties
+            font_size: lerp_opt(self.font_size, other.font_size, t),
+            // Skew
+            skew_x: lerp_opt(self.skew_x, other.skew_x, t),
+            skew_y: lerp_opt(self.skew_y, other.skew_y, t),
+            // Transform origin
+            transform_origin: lerp_opt_array2(self.transform_origin, other.transform_origin, t),
+            // Stacking
+            z_index: lerp_opt(self.z_index, other.z_index, t),
         }
     }
 

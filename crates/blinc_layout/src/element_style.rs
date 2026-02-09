@@ -208,6 +208,16 @@ pub struct ElementStyle {
     pub render_layer: Option<RenderLayer>,
     /// Opacity (0.0 = transparent, 1.0 = opaque)
     pub opacity: Option<f32>,
+    /// Text foreground color
+    pub text_color: Option<blinc_core::Color>,
+    /// Font size in pixels
+    pub font_size: Option<f32>,
+    /// Skew X angle in degrees
+    pub skew_x: Option<f32>,
+    /// Skew Y angle in degrees
+    pub skew_y: Option<f32>,
+    /// Transform origin as percentages [x%, y%] (default 50%, 50% = center)
+    pub transform_origin: Option<[f32; 2]>,
     /// CSS animation configuration (animation: name duration timing delay iteration-count direction fill-mode)
     pub animation: Option<CssAnimation>,
     /// CSS transition configuration (transition: property duration timing delay)
@@ -959,6 +969,11 @@ impl ElementStyle {
             material: other.material.clone().or_else(|| self.material.clone()),
             render_layer: other.render_layer.or(self.render_layer),
             opacity: other.opacity.or(self.opacity),
+            text_color: other.text_color.or(self.text_color),
+            font_size: other.font_size.or(self.font_size),
+            skew_x: other.skew_x.or(self.skew_x),
+            skew_y: other.skew_y.or(self.skew_y),
+            transform_origin: other.transform_origin.or(self.transform_origin),
             animation: other.animation.clone().or_else(|| self.animation.clone()),
             transition: other.transition.clone().or_else(|| self.transition.clone()),
             // 3D

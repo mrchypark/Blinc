@@ -77,6 +77,10 @@ struct Primitive {
     gradient_params: vec4<f32>,
     // Rotation (sin_rz, cos_rz, sin_ry, cos_ry) - for rotated SDF evaluation
     rotation: vec4<f32>,
+    // Local 2x2 affine (a, b, c, d) - normalized (DPI removed).
+    // Maps local rect space → screen space. Supports rotation, scale, AND skew.
+    // Identity = (1, 0, 0, 1).
+    local_affine: vec4<f32>,
     // Perspective (sin_rx, cos_rx, perspective_d, shape_3d_type)
     // shape_3d_type: 0=none, 1=box, 2=sphere, 3=cylinder, 4=torus, 5=capsule, 6=group
     perspective: vec4<f32>,
@@ -118,7 +122,7 @@ fn vs_main(
     // Expand bounds for shadow blur
     let blur_expand = prim.shadow.z * 3.0 + abs(prim.shadow.x) + abs(prim.shadow.y);
 
-    // Check for rotation and 3D transforms
+    // Check for rotation, skew, and 3D transforms
     let sin_rz = prim.rotation.x;
     let cos_rz = prim.rotation.y;
     let sin_ry = prim.rotation.z;
@@ -126,8 +130,11 @@ fn vs_main(
     let sin_rx = prim.perspective.x;
     let cos_rx = prim.perspective.y;
     let persp_d = prim.perspective.z;
-    let has_rotation = abs(sin_rz) > 0.0001;
+    let la = prim.local_affine; // [a, b, c, d] of normalized 2x2 affine
     let has_3d = abs(sin_ry) > 0.0001 || abs(sin_rx) > 0.0001 || persp_d > 0.001;
+    // Check if local_affine is non-identity (rotation, skew, or non-uniform scale)
+    let has_local_affine = abs(la.x - 1.0) > 0.0001 || abs(la.y) > 0.0001
+                        || abs(la.z) > 0.0001 || abs(la.w - 1.0) > 0.0001;
 
     var bounds: vec4<f32>;
     if has_3d {
@@ -169,17 +176,23 @@ fn vs_main(
         min_p -= vec2<f32>(blur_expand + 2.0);
         max_p += vec2<f32>(blur_expand + 2.0);
         bounds = vec4<f32>(ctr + min_p, max_p - min_p);
-    } else if has_rotation {
-        // For rotated rects, compute the AABB that covers the rotated shape
+    } else if has_local_affine {
+        // General 2D affine (rotation, skew, non-uniform scale):
+        // Transform the 4 corners of the local rect by the local_affine to find AABB
         let center = prim.bounds.xy + prim.bounds.zw * 0.5;
-        let half = prim.bounds.zw * 0.5;
-        let abs_cos = abs(cos_rz);
-        let abs_sin = abs(sin_rz);
-        let aabb_hw = half.x * abs_cos + half.y * abs_sin + blur_expand;
-        let aabb_hh = half.x * abs_sin + half.y * abs_cos + blur_expand;
+        let hw = prim.bounds.z * 0.5;
+        let hh = prim.bounds.w * 0.5;
+        // Transform corners: la * (±hw, ±hh)
+        // new_x = la.x * cx + la.z * cy, new_y = la.y * cx + la.w * cy
+        let c0x = la.x * hw + la.z * hh;
+        let c0y = la.y * hw + la.w * hh;
+        let c1x = -la.x * hw + la.z * hh;
+        let c1y = -la.y * hw + la.w * hh;
+        let aabb_hw = max(abs(c0x), abs(c1x)) + blur_expand;
+        let aabb_hh = max(abs(c0y), abs(c1y)) + blur_expand;
         bounds = vec4<f32>(center.x - aabb_hw, center.y - aabb_hh, aabb_hw * 2.0, aabb_hh * 2.0);
     } else {
-        // Original non-rotated path
+        // Original non-rotated, non-skewed path
         bounds = vec4<f32>(
             prim.bounds.x - blur_expand,
             prim.bounds.y - blur_expand,
@@ -1030,10 +1043,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         let safe_w = max(abs(w), 0.001) * sign(w + 0.001);
         sp = vec2<f32>(u / safe_w, v / safe_w) + center;
-    } else if abs(sin_rz) > 0.0001 {
-        // 2D rotation only (existing fast path)
-        let rel = p - center;
-        sp = vec2<f32>(rel.x * cos_rz + rel.y * sin_rz, -rel.x * sin_rz + rel.y * cos_rz) + center;
+    } else {
+        // 2D affine (rotation, skew, non-uniform scale) via inverse local_affine
+        let la = prim.local_affine;
+        let is_identity = abs(la.x - 1.0) < 0.0001 && abs(la.y) < 0.0001
+                       && abs(la.z) < 0.0001 && abs(la.w - 1.0) < 0.0001;
+        if !is_identity {
+            let rel = p - center;
+            // Compute inverse of 2x2 [a,b; c,d]: inv = [d,-b; -c,a] / det
+            let det = la.x * la.w - la.y * la.z;
+            let inv_det = select(-1.0, 1.0, det >= 0.0) / max(abs(det), 0.0001);
+            let inv_a = la.w * inv_det;
+            let inv_b = -la.y * inv_det;
+            let inv_c = -la.z * inv_det;
+            let inv_d = la.x * inv_det;
+            sp = vec2<f32>(inv_a * rel.x + inv_c * rel.y, inv_b * rel.x + inv_d * rel.y) + center;
+        }
     }
 
     var result = vec4<f32>(0.0);
@@ -1175,8 +1200,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let is_color = fill_type == 1u;
 
             // Calculate UV within the glyph quad
-            // p is in screen coordinates, bounds defines the glyph quad
-            let local_uv = (p - origin) / size;
+            // Use sp (inverse-transformed point) so rotated/skewed text samples correctly
+            let local_uv = (sp - origin) / size;
 
             // Map to atlas UV coordinates
             let atlas_uv = uv_bounds.xy + local_uv * (uv_bounds.zw - uv_bounds.xy);

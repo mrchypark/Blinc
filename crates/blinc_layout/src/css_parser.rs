@@ -865,6 +865,16 @@ impl CssKeyframes {
             props.background_color = Some([c.r, c.g, c.b, c.a]);
         }
 
+        // Text color
+        if let Some(c) = &style.text_color {
+            props.text_color = Some([c.r, c.g, c.b, c.a]);
+        }
+
+        // Font size
+        if let Some(fs) = style.font_size {
+            props.font_size = Some(fs);
+        }
+
         // Corner radius
         if let Some(cr) = &style.corner_radius {
             props.corner_radius =
@@ -931,6 +941,52 @@ impl CssKeyframes {
         }
         if let Some(g) = style.gap {
             props.gap = Some(g);
+        }
+        if let Some(v) = style.min_width {
+            props.min_width = Some(v);
+        }
+        if let Some(v) = style.max_width {
+            props.max_width = Some(v);
+        }
+        if let Some(v) = style.min_height {
+            props.min_height = Some(v);
+        }
+        if let Some(v) = style.max_height {
+            props.max_height = Some(v);
+        }
+        if let Some(v) = style.flex_grow {
+            props.flex_grow = Some(v);
+        }
+        if let Some(v) = style.flex_shrink {
+            props.flex_shrink = Some(v);
+        }
+        if let Some(v) = style.top {
+            props.inset_top = Some(v);
+        }
+        if let Some(v) = style.right {
+            props.inset_right = Some(v);
+        }
+        if let Some(v) = style.bottom {
+            props.inset_bottom = Some(v);
+        }
+        if let Some(v) = style.left {
+            props.inset_left = Some(v);
+        }
+        if let Some(z) = style.z_index {
+            props.z_index = Some(z as f32);
+        }
+
+        // Skew
+        if let Some(sx) = style.skew_x {
+            props.skew_x = Some(sx);
+        }
+        if let Some(sy) = style.skew_y {
+            props.skew_y = Some(sy);
+        }
+
+        // Transform origin
+        if let Some(to) = style.transform_origin {
+            props.transform_origin = Some(to);
         }
 
         props
@@ -1066,14 +1122,20 @@ impl AnimationTiming {
     }
 
     /// Convert CSS animation timing to blinc_animation Easing
+    ///
+    /// Uses the exact cubic-bezier curves from the CSS specification:
+    /// - ease:        cubic-bezier(0.25, 0.1, 0.25, 1.0)
+    /// - ease-in:     cubic-bezier(0.42, 0.0, 1.0, 1.0)
+    /// - ease-out:    cubic-bezier(0.0, 0.0, 0.58, 1.0)
+    /// - ease-in-out: cubic-bezier(0.42, 0.0, 0.58, 1.0)
     pub fn to_easing(&self) -> blinc_animation::Easing {
         use blinc_animation::Easing;
         match self {
             AnimationTiming::Linear => Easing::Linear,
-            AnimationTiming::Ease => Easing::EaseInOut,
-            AnimationTiming::EaseIn => Easing::EaseIn,
-            AnimationTiming::EaseOut => Easing::EaseOut,
-            AnimationTiming::EaseInOut => Easing::EaseInOut,
+            AnimationTiming::Ease => Easing::CubicBezier(0.25, 0.1, 0.25, 1.0),
+            AnimationTiming::EaseIn => Easing::CubicBezier(0.42, 0.0, 1.0, 1.0),
+            AnimationTiming::EaseOut => Easing::CubicBezier(0.0, 0.0, 0.58, 1.0),
+            AnimationTiming::EaseInOut => Easing::CubicBezier(0.42, 0.0, 0.58, 1.0),
         }
     }
 }
@@ -2439,6 +2501,16 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.background = Some(brush);
             }
         }
+        "color" => {
+            if let Some(c) = parse_color(value) {
+                style.text_color = Some(c);
+            }
+        }
+        "font-size" => {
+            if let Some(px) = parse_length_value(value) {
+                style.font_size = Some(px);
+            }
+        }
         "border-radius" => {
             if let Some(radius) = parse_radius(value) {
                 style.corner_radius = Some(radius);
@@ -2451,6 +2523,11 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
         }
         "transform" => {
             parse_transform_with_3d(value, style);
+        }
+        "transform-origin" => {
+            if let Some(origin) = parse_transform_origin(value) {
+                style.transform_origin = Some(origin);
+            }
         }
         "opacity" => {
             if let Ok((_, opacity)) = parse_opacity::<nom::error::Error<&str>>(value) {
@@ -2895,6 +2972,20 @@ fn apply_property_with_errors(
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
+        "color" => {
+            if let Some(c) = parse_color(value) {
+                style.text_color = Some(c);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "font-size" => {
+            if let Some(px) = parse_length_value(value) {
+                style.font_size = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
         "border-radius" => {
             if let Some(radius) = parse_radius(value) {
                 style.corner_radius = Some(radius);
@@ -2911,6 +3002,13 @@ fn apply_property_with_errors(
         }
         "transform" => {
             if !parse_transform_with_3d(value, style) {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "transform-origin" => {
+            if let Some(origin) = parse_transform_origin(value) {
+                style.transform_origin = Some(origin);
+            } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
@@ -3658,6 +3756,25 @@ fn parse_transform_with_3d(value: &str, style: &mut ElementStyle) -> bool {
         return true;
     }
 
+    // Try skewX(deg)
+    if let Some(deg) = parse_function_angle(trimmed, "skewX") {
+        style.skew_x = Some(deg);
+        return true;
+    }
+
+    // Try skewY(deg)
+    if let Some(deg) = parse_function_angle(trimmed, "skewY") {
+        style.skew_y = Some(deg);
+        return true;
+    }
+
+    // Try skew(xdeg) or skew(xdeg, ydeg)
+    if let Some((sx, sy)) = parse_skew_function(trimmed) {
+        style.skew_x = Some(sx);
+        style.skew_y = Some(sy);
+        return true;
+    }
+
     // Try perspective(px)
     if let Some(px) = parse_function_px(trimmed, "perspective") {
         style.perspective = Some(px);
@@ -3671,6 +3788,74 @@ fn parse_transform_with_3d(value: &str, style: &mut ElementStyle) -> bool {
     }
 
     false
+}
+
+/// Parse `skew(Xdeg)` or `skew(Xdeg, Ydeg)`
+fn parse_skew_function(input: &str) -> Option<(f32, f32)> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+    if !lower.starts_with("skew(") {
+        return None;
+    }
+    let inner = trimmed[5..].strip_suffix(')')?.trim();
+    let parts: Vec<&str> = inner.split(',').collect();
+    match parts.len() {
+        1 => {
+            let x = parse_angle_str(parts[0].trim())?;
+            Some((x, 0.0))
+        }
+        2 => {
+            let x = parse_angle_str(parts[0].trim())?;
+            let y = parse_angle_str(parts[1].trim())?;
+            Some((x, y))
+        }
+        _ => None,
+    }
+}
+
+/// Parse `transform-origin: X Y` where X/Y can be percentages or keywords
+/// Returns [x%, y%] where 0% = left/top, 50% = center, 100% = right/bottom
+fn parse_transform_origin(value: &str) -> Option<[f32; 2]> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    let parse_one = |s: &str| -> Option<f32> {
+        match s {
+            "left" | "top" => Some(0.0),
+            "center" => Some(50.0),
+            "right" | "bottom" => Some(100.0),
+            _ => {
+                if let Some(pct) = s.strip_suffix('%') {
+                    pct.trim().parse::<f32>().ok()
+                } else {
+                    s.parse::<f32>().ok() // bare number = percentage
+                }
+            }
+        }
+    };
+    match parts.len() {
+        1 => {
+            let v = parse_one(parts[0])?;
+            Some([v, v])
+        }
+        2 => {
+            let x = parse_one(parts[0])?;
+            let y = parse_one(parts[1])?;
+            Some([x, y])
+        }
+        _ => None,
+    }
+}
+
+/// Parse an angle string like "30deg", "0.5rad", or plain number (assumed degrees)
+fn parse_angle_str(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if let Some(deg_str) = s.strip_suffix("deg") {
+        deg_str.trim().parse::<f32>().ok()
+    } else if let Some(rad_str) = s.strip_suffix("rad") {
+        rad_str.trim().parse::<f32>().ok().map(|r| r.to_degrees())
+    } else {
+        // Plain number assumed to be degrees
+        s.parse::<f32>().ok()
+    }
 }
 
 /// Parse a CSS function like `funcName(30deg)` and return degrees
@@ -7398,21 +7583,25 @@ mod tests {
             AnimationTiming::Linear.to_easing(),
             Easing::Linear
         ));
+        // CSS ease = cubic-bezier(0.25, 0.1, 0.25, 1.0)
         assert!(matches!(
             AnimationTiming::Ease.to_easing(),
-            Easing::EaseInOut
+            Easing::CubicBezier(0.25, 0.1, 0.25, 1.0)
         ));
+        // CSS ease-in = cubic-bezier(0.42, 0.0, 1.0, 1.0)
         assert!(matches!(
             AnimationTiming::EaseIn.to_easing(),
-            Easing::EaseIn
+            Easing::CubicBezier(0.42, 0.0, 1.0, 1.0)
         ));
+        // CSS ease-out = cubic-bezier(0.0, 0.0, 0.58, 1.0)
         assert!(matches!(
             AnimationTiming::EaseOut.to_easing(),
-            Easing::EaseOut
+            Easing::CubicBezier(0.0, 0.0, 0.58, 1.0)
         ));
+        // CSS ease-in-out = cubic-bezier(0.42, 0.0, 0.58, 1.0)
         assert!(matches!(
             AnimationTiming::EaseInOut.to_easing(),
-            Easing::EaseInOut
+            Easing::CubicBezier(0.42, 0.0, 0.58, 1.0)
         ));
     }
 

@@ -82,7 +82,7 @@ pub enum ClipType {
 /// - filter_a: `vec4<f32>`        (16 bytes) - (grayscale, invert, sepia, hue_rotate_rad)
 /// - filter_b: `vec4<f32>`        (16 bytes) - (brightness, contrast, saturate, 0)
 /// - type_info: `vec4<u32>`       (16 bytes) - (primitive_type, fill_type, clip_type, z_layer)
-///   Total: 288 bytes
+///   Total: 304 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuPrimitive {
@@ -110,6 +110,11 @@ pub struct GpuPrimitive {
     pub gradient_params: [f32; 4],
     /// Rotation (sin_rz, cos_rz, sin_ry, cos_ry) - pre-computed for GPU efficiency
     pub rotation: [f32; 4],
+    /// Local 2x2 affine transform (a, b, c, d) - normalized (DPI-scale removed).
+    /// Maps from local rect space to screen space. Used by the fragment shader
+    /// to apply inverse transform (supports rotation, scale, AND skew).
+    /// Identity = [1, 0, 0, 1].
+    pub local_affine: [f32; 4],
     /// Perspective (sin_rx, cos_rx, perspective_d, shape_3d_type)
     /// shape_3d_type: 0=none, 1=box, 2=sphere, 3=cylinder, 4=torus, 5=capsule, 6=group
     pub perspective: [f32; 4],
@@ -143,6 +148,8 @@ impl Default for GpuPrimitive {
             gradient_params: [0.0, 0.0, 1.0, 0.0],
             // No rotation: sin_rz=0, cos_rz=1, sin_ry=0, cos_ry=1
             rotation: [0.0, 1.0, 0.0, 1.0],
+            // Identity local affine: a=1, b=0, c=0, d=1
+            local_affine: [1.0, 0.0, 0.0, 1.0],
             // No perspective: sin_rx=0, cos_rx=1, persp_d=0, shape=none
             perspective: [0.0, 1.0, 0.0, 0.0],
             // No 3D: depth=0, ambient=0.3, specular=32, unused=0
@@ -395,6 +402,7 @@ impl GpuPrimitive {
             clip_radius: [0.0; 4],
             gradient_params: glyph.uv_bounds,
             rotation: [0.0, 1.0, 0.0, 1.0],
+            local_affine: [1.0, 0.0, 0.0, 1.0],
             perspective: [0.0, 1.0, 0.0, 0.0],
             sdf_3d: [0.0, 0.3, 32.0, 0.0],
             light: [0.0, -1.0, 0.5, 0.8],
@@ -435,6 +443,7 @@ impl GpuPrimitive {
             clip_radius: [0.0; 4],
             gradient_params: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
             rotation: [0.0, 1.0, 0.0, 1.0],
+            local_affine: [1.0, 0.0, 0.0, 1.0],
             perspective: [0.0, 1.0, 0.0, 0.0],
             sdf_3d: [0.0, 0.3, 32.0, 0.0],
             light: [0.0, -1.0, 0.5, 0.8],

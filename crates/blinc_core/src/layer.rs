@@ -427,6 +427,22 @@ impl Affine2D {
         }
     }
 
+    /// Create a skew-X transform (shear along X axis)
+    /// `angle` is in radians
+    pub fn skew_x(angle: f32) -> Self {
+        Self {
+            elements: [1.0, 0.0, angle.tan(), 1.0, 0.0, 0.0],
+        }
+    }
+
+    /// Create a skew-Y transform (shear along Y axis)
+    /// `angle` is in radians
+    pub fn skew_y(angle: f32) -> Self {
+        Self {
+            elements: [1.0, angle.tan(), 0.0, 1.0, 0.0, 0.0],
+        }
+    }
+
     pub fn transform_point(&self, point: Point) -> Point {
         let [a, b, c, d, tx, ty] = self.elements;
         Point::new(

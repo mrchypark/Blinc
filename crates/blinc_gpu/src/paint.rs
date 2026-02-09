@@ -270,28 +270,29 @@ impl<'a> GpuPaintContext<'a> {
         )
     }
 
-    /// Transform a rect by the current transform (rotation-safe)
+    /// Transform a rect by the current transform (rotation+skew safe)
     ///
-    /// Transforms the center of the rect through the full affine, then computes
-    /// the axis-aligned bounds from the scaled dimensions. This produces correct
-    /// results for scale+translate AND for transforms that include rotation.
+    /// Transforms the center of the rect through the full affine. Uses the
+    /// determinant-based uniform scale for dimensions so that skew transforms
+    /// don't inflate the bounds (the local_affine carries the full 2x2 to the shader).
     fn transform_rect(&self, rect: Rect) -> Rect {
         let affine = self.current_affine();
-        let a = affine.elements[0];
-        let b = affine.elements[1];
-        let c = affine.elements[2];
-        let d = affine.elements[3];
-        let scale_x = (a * a + b * b).sqrt();
-        let scale_y = (c * c + d * d).sqrt();
+        let [a, b, c, d, ..] = affine.elements;
 
-        // Transform the CENTER (not origin) — correct for rotated transforms
+        // Uniform scale = sqrt(|det|) — extracts DPI + any uniform element scale.
+        // This is exact for area-preserving transforms (rotation, skew) and a good
+        // approximation for non-uniform scales.
+        let det = a * d - b * c;
+        let uniform_scale = det.abs().sqrt().max(1e-6);
+
+        // Transform the CENTER (not origin)
         let center = Point::new(
             rect.origin.x + rect.size.width * 0.5,
             rect.origin.y + rect.size.height * 0.5,
         );
         let tc = self.transform_point(center);
-        let sw = rect.size.width * scale_x;
-        let sh = rect.size.height * scale_y;
+        let sw = rect.size.width * uniform_scale;
+        let sh = rect.size.height * uniform_scale;
 
         Rect::new(tc.x - sw * 0.5, tc.y - sh * 0.5, sw, sh)
     }
@@ -330,6 +331,25 @@ impl<'a> GpuPaintContext<'a> {
         let scale_x = (a * a + b * b).sqrt();
         let scale_y = (c * c + d * d).sqrt();
         (scale_x + scale_y) * 0.5
+    }
+
+    /// Extract the normalized local 2x2 affine [a, b, c, d] from the current transform.
+    ///
+    /// This removes the uniform scale (DPI + uniform element scale) so that the
+    /// remaining 2x2 captures rotation, skew, and non-uniform scale ratios.
+    /// The shader uses this to apply the full inverse transform to sample points,
+    /// enabling correct SDF evaluation for skewed/rotated elements.
+    fn current_local_affine(&self) -> [f32; 4] {
+        let affine = self.current_affine();
+        let [a, b, c, d, ..] = affine.elements;
+        let det = a * d - b * c;
+        let uniform_scale = det.abs().sqrt().max(1e-6);
+        [
+            a / uniform_scale,
+            b / uniform_scale,
+            c / uniform_scale,
+            d / uniform_scale,
+        ]
     }
 
     /// Get the current 3D perspective params for GpuPrimitive.perspective.
@@ -1568,6 +1588,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_radius,
             gradient_params: transformed_gradient_params,
             rotation: self.current_rotation_sincos(),
+            local_affine: self.current_local_affine(),
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
@@ -1654,6 +1675,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_radius,
             gradient_params: transformed_gradient_params,
             rotation: self.current_rotation_sincos(),
+            local_affine: self.current_local_affine(),
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
@@ -1709,6 +1731,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_radius,
             gradient_params,
             rotation: self.current_rotation_sincos(),
+            local_affine: self.current_local_affine(),
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
@@ -1785,6 +1808,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_radius,
             gradient_params: transformed_gradient_params,
             rotation: [0.0, 1.0, 0.0, 1.0],
+            local_affine: [1.0, 0.0, 0.0, 1.0],
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
@@ -1844,6 +1868,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_radius,
             gradient_params: transformed_gradient_params,
             rotation: [0.0, 1.0, 0.0, 1.0],
+            local_affine: [1.0, 0.0, 0.0, 1.0],
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
@@ -1971,6 +1996,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_radius,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
             rotation: self.current_rotation_sincos(),
+            local_affine: self.current_local_affine(),
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
@@ -2025,6 +2051,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_radius,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
             rotation: self.current_rotation_sincos(),
+            local_affine: self.current_local_affine(),
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
@@ -2075,6 +2102,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_radius,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
             rotation: [0.0, 1.0, 0.0, 1.0],
+            local_affine: [1.0, 0.0, 0.0, 1.0],
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
@@ -2124,6 +2152,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             clip_radius,
             gradient_params: [0.0, 0.0, 1.0, 0.0],
             rotation: [0.0, 1.0, 0.0, 1.0],
+            local_affine: [1.0, 0.0, 0.0, 1.0],
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
