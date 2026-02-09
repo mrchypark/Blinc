@@ -10,7 +10,27 @@ use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_charts::prelude::*;
 use blinc_core::{Brush, Color, DrawContext, Point, Rect, TextStyle};
-use blinc_layout::prelude::Scroll;
+use blinc_layout::prelude::{ButtonState, NoState};
+
+const ITEMS: &[(&str, &str)] = &[
+    ("Line", "Ultra-large time series line"),
+    ("Multi-line", "Many series with gap breaks"),
+    ("Area", "Single-series area fill"),
+    ("Bar / Stacked bar", "Stacked bars (screen-binned)"),
+    ("Histogram", "Pre-binned histogram"),
+    ("Scatter / Bubble", "Scatter points (capped primitives)"),
+    ("Candlestick", "OHLC candles (screen-binned)"),
+    ("Heatmap", "2D grid heatmap (screen-sampled)"),
+    ("Area (stacked)", "Placeholder"),
+    ("Density map / patch_map", "Placeholder"),
+    ("Contour / Isobands", "Placeholder"),
+    ("Boxplot / Violin / Error bands", "Placeholder"),
+    ("Treemap / Sunburst / Icicle / Packing", "Placeholder"),
+    ("Graph / Sankey / Chord", "Placeholder"),
+    ("Parallel / Polar / Radar", "Placeholder"),
+    ("Gauge / Funnel / Streamgraph", "Placeholder"),
+    ("Geo", "Placeholder"),
+];
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -36,31 +56,51 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         .filter(|&v| v >= 2)
         .unwrap_or(200_000);
 
-    let line_series = make_series(line_n).expect("failed to create series (x must be sorted)");
-    let line_handle = LineChartHandle::new(LineChartModel::new(line_series.clone()));
+    let selected = ctx.use_state_keyed("charts_gallery_selected", || 0usize);
 
-    let area_handle = AreaChartHandle::new(AreaChartModel::new(line_series.clone()));
-
-    let scatter_handle = ScatterChartHandle::new(ScatterChartModel::new(line_series.clone()));
-
-    let multi_handle = MultiLineChartHandle::new(
-        MultiLineChartModel::new(make_multi_series(64, 240)).expect("multiline requires series"),
-    );
-
-    let bar_handle = BarChartHandle::new(
-        BarChartModel::new(make_bar_series(3, 3_000)).expect("bar requires series"),
-    );
-
-    let hist_handle =
-        HistogramChartHandle::new(HistogramChartModel::new(make_hist_values(100_000)).unwrap());
-
-    let candle_handle = CandlestickChartHandle::new(CandlestickChartModel::new(
-        CandleSeries::new(make_candles(120_000)).expect("candles must be sorted"),
-    ));
-
-    let heat_handle = HeatmapChartHandle::new(
-        HeatmapChartModel::new(320, 160, make_heat_values(320, 160)).expect("valid heatmap"),
-    );
+    // Persist heavy models/handles so selection changes don't regenerate data.
+    let line_series = ctx.use_state_keyed("charts_gallery_line_series", || {
+        make_series(line_n).expect("failed to create series (x must be sorted)")
+    });
+    let line_handle = ctx.use_state_keyed("charts_gallery_line", || {
+        LineChartHandle::new(LineChartModel::new(
+            line_series.try_get().expect("line series exists"),
+        ))
+    });
+    let area_handle = ctx.use_state_keyed("charts_gallery_area", || {
+        AreaChartHandle::new(AreaChartModel::new(
+            line_series.try_get().expect("line series exists"),
+        ))
+    });
+    let scatter_handle = ctx.use_state_keyed("charts_gallery_scatter", || {
+        ScatterChartHandle::new(ScatterChartModel::new(
+            line_series.try_get().expect("line series exists"),
+        ))
+    });
+    let multi_handle = ctx.use_state_keyed("charts_gallery_multiline", || {
+        MultiLineChartHandle::new(
+            MultiLineChartModel::new(make_multi_series(64, 240))
+                .expect("multiline requires series"),
+        )
+    });
+    let bar_handle = ctx.use_state_keyed("charts_gallery_bar", || {
+        BarChartHandle::new(
+            BarChartModel::new(make_bar_series(3, 3_000)).expect("bar requires series"),
+        )
+    });
+    let hist_handle = ctx.use_state_keyed("charts_gallery_hist", || {
+        HistogramChartHandle::new(HistogramChartModel::new(make_hist_values(100_000)).unwrap())
+    });
+    let candle_handle = ctx.use_state_keyed("charts_gallery_candle", || {
+        CandlestickChartHandle::new(CandlestickChartModel::new(
+            CandleSeries::new(make_candles(120_000)).expect("candles must be sorted"),
+        ))
+    });
+    let heat_handle = ctx.use_state_keyed("charts_gallery_heat", || {
+        HeatmapChartHandle::new(
+            HeatmapChartModel::new(320, 160, make_heat_values(320, 160)).expect("valid heatmap"),
+        )
+    });
 
     let header = div()
         .flex_row()
@@ -78,6 +118,137 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                 .color(Color::rgba(0.70, 0.75, 0.82, 1.0)),
         );
 
+    let sidebar = {
+        let selected_for_list = selected.clone();
+        let selected_signal = selected.signal_id();
+
+        div()
+            .w(280.0)
+            .h_full()
+            .rounded(14.0)
+            .bg(Color::rgba(0.04, 0.05, 0.07, 1.0))
+            .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.06))
+            .p(10.0)
+            .flex_col()
+            .gap(8.0)
+            .child(
+                text("Charts")
+                    .size(14.0)
+                    .weight(FontWeight::SemiBold)
+                    .color(Color::rgba(1.0, 1.0, 1.0, 0.80)),
+            )
+            .child(div().h(1.0).bg(Color::rgba(1.0, 1.0, 1.0, 0.06)))
+            .child({
+                let mut list = div().flex_col().gap(6.0);
+                for (i, (title, _desc)) in ITEMS.iter().enumerate() {
+                    let title = *title;
+                    let selected_for_state = selected_for_list.clone();
+                    let selected_for_click = selected_for_list.clone();
+
+                    list = list.child(
+                        stateful::<ButtonState>()
+                            .initial(ButtonState::Idle)
+                            .deps([selected_signal])
+                            .on_state(move |ctx| {
+                                let is_selected = selected_for_state.get() == i;
+                                let bg = if is_selected {
+                                    Color::rgba(0.20, 0.35, 0.60, 0.55)
+                                } else {
+                                    match ctx.state() {
+                                        ButtonState::Idle => Color::rgba(1.0, 1.0, 1.0, 0.04),
+                                        ButtonState::Hovered => Color::rgba(1.0, 1.0, 1.0, 0.07),
+                                        ButtonState::Pressed => Color::rgba(1.0, 1.0, 1.0, 0.10),
+                                        ButtonState::Disabled => Color::rgba(1.0, 1.0, 1.0, 0.02),
+                                    }
+                                };
+                                let fg = if is_selected {
+                                    Color::rgba(0.95, 0.96, 0.98, 1.0)
+                                } else {
+                                    Color::rgba(0.85, 0.88, 0.92, 0.90)
+                                };
+                                div().px(10.0).py(8.0).rounded(10.0).bg(bg).child(
+                                    text(title)
+                                        .size(12.0)
+                                        .weight(FontWeight::Medium)
+                                        .color(fg)
+                                        .no_wrap()
+                                        .pointer_events_none(),
+                                )
+                            })
+                            .on_click(move |_| {
+                                selected_for_click.set(i);
+                            }),
+                    );
+                }
+                list
+            })
+    };
+
+    let main = {
+        let selected_for_main = selected.clone();
+        let selected_signal = selected.signal_id();
+
+        let line_handle = line_handle.try_get().expect("line handle exists");
+        let area_handle = area_handle.try_get().expect("area handle exists");
+        let scatter_handle = scatter_handle.try_get().expect("scatter handle exists");
+        let multi_handle = multi_handle.try_get().expect("multiline handle exists");
+        let bar_handle = bar_handle.try_get().expect("bar handle exists");
+        let hist_handle = hist_handle.try_get().expect("hist handle exists");
+        let candle_handle = candle_handle.try_get().expect("candle handle exists");
+        let heat_handle = heat_handle.try_get().expect("heat handle exists");
+
+        stateful::<NoState>()
+            .deps([selected_signal])
+            .on_state(move |_ctx| {
+                let idx = selected_for_main.get();
+                let (title, desc) = ITEMS.get(idx).copied().unwrap_or(("Unknown", ""));
+
+                div()
+                    .flex_1()
+                    .h_full()
+                    .rounded(14.0)
+                    .bg(Color::rgba(0.04, 0.05, 0.07, 1.0))
+                    .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.06))
+                    .p(10.0)
+                    .flex_col()
+                    .gap(10.0)
+                    .child(
+                        div()
+                            .flex_col()
+                            .gap(2.0)
+                            .child(
+                                text(title)
+                                    .size(16.0)
+                                    .weight(FontWeight::SemiBold)
+                                    .color(Color::rgba(0.92, 0.93, 0.95, 1.0)),
+                            )
+                            .child(
+                                text(desc)
+                                    .size(12.0)
+                                    .color(Color::rgba(0.68, 0.72, 0.78, 1.0)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .rounded(14.0)
+                            .overflow_clip()
+                            .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
+                            .child_box(chart_for(
+                                idx,
+                                line_handle.clone(),
+                                multi_handle.clone(),
+                                area_handle.clone(),
+                                bar_handle.clone(),
+                                hist_handle.clone(),
+                                scatter_handle.clone(),
+                                candle_handle.clone(),
+                                heat_handle.clone(),
+                            )),
+                    )
+            })
+    };
+
     div()
         .w(ctx.width)
         .h(ctx.height)
@@ -87,167 +258,37 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         .gap(12.0)
         .child(header)
         .child(
-            Scroll::new()
-                .w_full()
-                .h_full()
-                .rounded(14.0)
-                .bg(Color::rgba(0.04, 0.05, 0.07, 1.0))
-                .p(10.0)
-                .child(
-                    div()
-                        .flex_col()
-                        .gap(14.0)
-                        .child(section(
-                            "Line",
-                            "Ultra-large time series line (LOD downsampling + GPU polyline path).",
-                            div()
-                                .h(320.0)
-                                .rounded(14.0)
-                                .overflow_clip()
-                                .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                                .child(line_chart(line_handle)),
-                        ))
-                        .child(section(
-                            "Multi-line",
-                            "Many series with gap breaks + global segment budgeting.",
-                            div()
-                                .h(320.0)
-                                .rounded(14.0)
-                                .overflow_clip()
-                                .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                                .child(multi_line_chart(multi_handle)),
-                        ))
-                        .child(section(
-                            "Area",
-                            "Single-series area fill + outline (same LOD as line).",
-                            div()
-                                .h(300.0)
-                                .rounded(14.0)
-                                .overflow_clip()
-                                .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                                .child(area_chart(area_handle)),
-                        ))
-                        .child(section(
-                            "Bar / Stacked bar",
-                            "Stacked bars with screen-binned aggregation (mean per x-bin).",
-                            div()
-                                .h(300.0)
-                                .rounded(14.0)
-                                .overflow_clip()
-                                .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                                .child(bar_chart(bar_handle)),
-                        ))
-                        .child(section(
-                            "Histogram",
-                            "Pre-binned histogram (demo: global bins).",
-                            div()
-                                .h(260.0)
-                                .rounded(14.0)
-                                .overflow_clip()
-                                .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                                .child(histogram_chart(hist_handle)),
-                        ))
-                        .child(section(
-                            "Scatter / Bubble",
-                            "Scatter using min/max downsample per x-bin (capped point count).",
-                            div()
-                                .h(300.0)
-                                .rounded(14.0)
-                                .overflow_clip()
-                                .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                                .child(scatter_chart(scatter_handle)),
-                        ))
-                        .child(section(
-                            "Candlestick (OHLC)",
-                            "Candles resampled to screen bins, then drawn as wick+body.",
-                            div()
-                                .h(320.0)
-                                .rounded(14.0)
-                                .overflow_clip()
-                                .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                                .child(candlestick_chart(candle_handle)),
-                        ))
-                        .child(section(
-                            "Heatmap (2D bins)",
-                            "Grid heatmap screen-sampled to keep cost bounded.",
-                            div()
-                                .h(320.0)
-                                .rounded(14.0)
-                                .overflow_clip()
-                                .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                                .child(heatmap_chart(heat_handle)),
-                        ))
-                        // Placeholders for remaining candidates (canvas-first).
-                        .child(section(
-                            "Area (stacked)",
-                            "Placeholder: stacked area renderer (will share binning/LOD with multi-line).",
-                            todo_canvas("TODO: stacked area"),
-                        ))
-                        .child(section(
-                            "Density map / patch_map",
-                            "Placeholder: integrate existing patch_map implementation as a linked chart view.",
-                            todo_canvas("TODO: patch_map chart adapter"),
-                        ))
-                        .child(section(
-                            "Contour / Isobands",
-                            "Placeholder: contouring over 2D bins.",
-                            todo_canvas("TODO: contours"),
-                        ))
-                        .child(section(
-                            "Boxplot / Violin / Error bands",
-                            "Placeholder: analytics overlays and distribution charts.",
-                            todo_canvas("TODO: box/violin/error bands"),
-                        ))
-                        .child(section(
-                            "Treemap / Sunburst / Icicle / Packing",
-                            "Placeholder: hierarchy layout + canvas renderer.",
-                            todo_canvas("TODO: hierarchy"),
-                        ))
-                        .child(section(
-                            "Graph / Sankey / Chord",
-                            "Placeholder: node-link and flow layouts.",
-                            todo_canvas("TODO: network/flow"),
-                        ))
-                        .child(section(
-                            "Parallel coordinates / Polar / Radar",
-                            "Placeholder: alternative coordinate systems.",
-                            todo_canvas("TODO: coords"),
-                        ))
-                        .child(section(
-                            "Gauge / Funnel / Streamgraph",
-                            "Placeholder: specialized series types.",
-                            todo_canvas("TODO: specialized"),
-                        ))
-                        .child(section(
-                            "Geo",
-                            "Placeholder: projections + tile/image layers.",
-                            todo_canvas("TODO: geo"),
-                        )),
-                ),
+            div()
+                .flex_1()
+                .flex_row()
+                .gap(12.0)
+                .child(sidebar)
+                .child(main),
         )
 }
 
-fn section(title: &str, desc: &str, content: impl ElementBuilder + 'static) -> impl ElementBuilder {
-    div()
-        .flex_col()
-        .gap(8.0)
-        .child(
-            div()
-                .flex_col()
-                .gap(2.0)
-                .child(
-                    text(title)
-                        .size(16.0)
-                        .weight(FontWeight::SemiBold)
-                        .color(Color::rgba(0.92, 0.93, 0.95, 1.0)),
-                )
-                .child(
-                    text(desc)
-                        .size(12.0)
-                        .color(Color::rgba(0.68, 0.72, 0.78, 1.0)),
-                ),
-        )
-        .child(content)
+fn chart_for(
+    idx: usize,
+    line: LineChartHandle,
+    multi: MultiLineChartHandle,
+    area: AreaChartHandle,
+    bar: BarChartHandle,
+    hist: HistogramChartHandle,
+    scatter: ScatterChartHandle,
+    candle: CandlestickChartHandle,
+    heat: HeatmapChartHandle,
+) -> Box<dyn ElementBuilder> {
+    match idx {
+        0 => Box::new(line_chart(line)),
+        1 => Box::new(multi_line_chart(multi)),
+        2 => Box::new(area_chart(area)),
+        3 => Box::new(bar_chart(bar)),
+        4 => Box::new(histogram_chart(hist)),
+        5 => Box::new(scatter_chart(scatter)),
+        6 => Box::new(candlestick_chart(candle)),
+        7 => Box::new(heatmap_chart(heat)),
+        _ => Box::new(todo_canvas("TODO: not implemented yet")),
+    }
 }
 
 fn todo_canvas(label: &'static str) -> impl ElementBuilder {
