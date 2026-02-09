@@ -1013,6 +1013,8 @@ pub struct RenderProps {
     pub text_color: Option<[f32; 4]>,
     /// Font size override (when set, overrides TextData.font_size during rendering)
     pub font_size: Option<f32>,
+    /// Text shadow (offset, blur, color)
+    pub text_shadow: Option<Shadow>,
     /// Transform origin as percentages [x%, y%] (default 50%, 50% = center)
     pub transform_origin: Option<[f32; 2]>,
     /// Layer effects applied to this element (blur, drop shadow, glow, color matrix)
@@ -1112,6 +1114,7 @@ impl Default for RenderProps {
             z_index: 0,
             text_color: None,
             font_size: None,
+            text_shadow: None,
             transform_origin: None,
         }
     }

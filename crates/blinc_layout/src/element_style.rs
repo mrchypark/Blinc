@@ -212,6 +212,8 @@ pub struct ElementStyle {
     pub text_color: Option<blinc_core::Color>,
     /// Font size in pixels
     pub font_size: Option<f32>,
+    /// Text shadow (offset, blur, color)
+    pub text_shadow: Option<Shadow>,
     /// Skew X angle in degrees
     pub skew_x: Option<f32>,
     /// Skew Y angle in degrees
@@ -1001,6 +1003,7 @@ impl ElementStyle {
             opacity: other.opacity.or(self.opacity),
             text_color: other.text_color.or(self.text_color),
             font_size: other.font_size.or(self.font_size),
+            text_shadow: other.text_shadow.or(self.text_shadow),
             skew_x: other.skew_x.or(self.skew_x),
             skew_y: other.skew_y.or(self.skew_y),
             transform_origin: other.transform_origin.or(self.transform_origin),

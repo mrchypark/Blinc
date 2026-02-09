@@ -529,6 +529,22 @@ fn main() -> Result<()> {
                 animation: gradient-cycle 4000ms linear infinite;
             }
 
+            /* --- Text Shadow demos --- */
+
+            #text-shadow-basic {
+                text-shadow: 3px 3px 0px rgba(255, 68, 68, 1.0);
+            }
+            #text-shadow-glow {
+                text-shadow: 2px 2px 0px rgba(34, 197, 94, 0.9);
+            }
+            #text-shadow-hover {
+                text-shadow: 0px 0px 0px rgba(239, 68, 68, 0);
+                transition: all 500ms ease;
+            }
+            #text-shadow-hover:hover {
+                text-shadow: 3px 3px 0px rgba(239, 68, 68, 1.0);
+            }
+
             /* --- Layout Property Animation demos --- */
 
             /* Width transition on hover */
@@ -817,6 +833,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(advanced_selectors_section())
                     // Gradient animation (Phase 6)
                     .child(gradient_animation_section())
+                    // Text shadow (Phase 7)
+                    .child(text_shadow_section())
                     // CSS Stylesheet integration
                     .child(css_stylesheet_section())
                     .child(css_hover_section())
@@ -1823,7 +1841,9 @@ fn gradient_animation_section() -> impl ElementBuilder {
                     div()
                         .flex_col()
                         .gap(8.0)
-                        .child(code_label("transition: all 800ms ease — gradient angle 0deg → 180deg"))
+                        .child(code_label(
+                            "transition: all 800ms ease — gradient angle 0deg → 180deg",
+                        ))
                         .child(
                             div()
                                 .id("grad-angle")
@@ -1840,7 +1860,9 @@ fn gradient_animation_section() -> impl ElementBuilder {
                     div()
                         .flex_col()
                         .gap(8.0)
-                        .child(code_label("@keyframes gradient-cycle { 0%..100% gradient colors }"))
+                        .child(code_label(
+                            "@keyframes gradient-cycle { 0%..100% gradient colors }",
+                        ))
                         .child(
                             div()
                                 .id("grad-anim")
@@ -1850,6 +1872,90 @@ fn gradient_animation_section() -> impl ElementBuilder {
                                 .justify_center()
                                 .items_center()
                                 .child(text("Cycling gradient").size(14.0).color(Color::WHITE)),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// TEXT SHADOW SECTION (Phase 7)
+// ============================================================================
+
+fn text_shadow_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Text Shadow"))
+        .child(section_description(
+            "CSS text-shadow property with offset, blur, and color. Supports transitions and @keyframes.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .gap(24.0)
+                .flex_wrap()
+                // 1. Basic drop shadow
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("text-shadow: 3px 3px 0px rgba(255, 68, 68, 1.0)"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(60.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Drop Shadow")
+                                        .id("text-shadow-basic")
+                                        .size(22.0)
+                                        .weight(FontWeight::Bold)
+                                        .color(Color::WHITE),
+                                ),
+                        ),
+                )
+                // 2. Green offset shadow
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("text-shadow: 2px 2px 0px rgba(34, 197, 94, 0.9)"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(60.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Green Shadow")
+                                        .id("text-shadow-glow")
+                                        .size(22.0)
+                                        .weight(FontWeight::Bold)
+                                        .color(Color::rgba(0.23, 0.51, 0.96, 1.0)),
+                                ),
+                        ),
+                )
+                // 3. Hover transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("text-shadow transition on :hover"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(60.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Hover me")
+                                        .id("text-shadow-hover")
+                                        .size(22.0)
+                                        .weight(FontWeight::Bold)
+                                        .color(Color::WHITE),
+                                ),
                         ),
                 ),
         )

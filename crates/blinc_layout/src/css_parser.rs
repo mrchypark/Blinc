@@ -901,6 +901,12 @@ impl CssKeyframes {
             props.text_color = Some([c.r, c.g, c.b, c.a]);
         }
 
+        // Text shadow
+        if let Some(ts) = &style.text_shadow {
+            props.text_shadow_params = Some([ts.offset_x, ts.offset_y, ts.blur, ts.spread]);
+            props.text_shadow_color = Some([ts.color.r, ts.color.g, ts.color.b, ts.color.a]);
+        }
+
         // Font size
         if let Some(fs) = style.font_size {
             props.font_size = Some(fs);
@@ -2630,6 +2636,11 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.shadow = Some(shadow);
             }
         }
+        "text-shadow" => {
+            if let Some(shadow) = parse_shadow(value) {
+                style.text_shadow = Some(shadow);
+            }
+        }
         "transform" => {
             parse_transform_with_3d(value, style);
         }
@@ -3033,11 +3044,11 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
         "outline" => {
             // Shorthand: outline: <width> solid <color>
             // We ignore the style (always solid) and parse width + color
-            let parts: Vec<&str> = value.split_whitespace().collect();
+            let parts = split_whitespace_respecting_parens(value);
             for part in &parts {
                 if let Some(px) = parse_css_px(part) {
                     style.outline_width = Some(px);
-                } else if *part != "solid" && *part != "none" && *part != "dotted" && *part != "dashed" {
+                } else if part != "solid" && part != "none" && part != "dotted" && part != "dashed" {
                     if let Some(color) = parse_color(part) {
                         style.outline_color = Some(color);
                     }
@@ -3137,6 +3148,13 @@ fn apply_property_with_errors(
         "box-shadow" => {
             if let Some(shadow) = parse_shadow(value) {
                 style.shadow = Some(shadow);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "text-shadow" => {
+            if let Some(shadow) = parse_shadow(value) {
+                style.text_shadow = Some(shadow);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
@@ -3636,11 +3654,11 @@ fn apply_property_with_errors(
             }
         }
         "outline" => {
-            let parts: Vec<&str> = value.split_whitespace().collect();
+            let parts = split_whitespace_respecting_parens(value);
             for part in &parts {
                 if let Some(px) = parse_css_px(part) {
                     style.outline_width = Some(px);
-                } else if *part != "solid" && *part != "none" && *part != "dotted" && *part != "dashed" {
+                } else if part != "solid" && part != "none" && part != "dotted" && part != "dashed" {
                     if let Some(color) = parse_color(part) {
                         style.outline_color = Some(color);
                     }
@@ -3882,14 +3900,60 @@ fn parse_theme_shadow<'a, E: NomParseError<&'a str>>(
     Ok((input, shadow))
 }
 
-/// Parse explicit shadow: offset-x offset-y blur color
+/// Split a CSS value by whitespace while keeping parenthesized groups intact.
+/// e.g. "2px 2px 0px rgba(0, 0, 0, 0.5)" → ["2px", "2px", "0px", "rgba(0, 0, 0, 0.5)"]
+fn split_whitespace_respecting_parens(input: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut paren_depth: i32 = 0;
+
+    for c in input.chars() {
+        match c {
+            '(' => {
+                paren_depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                paren_depth = (paren_depth - 1).max(0);
+                current.push(c);
+            }
+            c if c.is_whitespace() && paren_depth == 0 => {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed);
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        parts.push(trimmed);
+    }
+
+    parts
+}
+
+/// Parse explicit shadow: offset-x offset-y blur [spread] color
 fn parse_explicit_shadow(input: &str) -> Option<Shadow> {
-    let parts: Vec<&str> = input.split_whitespace().collect();
+    let parts = split_whitespace_respecting_parens(input);
     if parts.len() >= 4 {
-        let offset_x = parse_length_value(parts[0])?;
-        let offset_y = parse_length_value(parts[1])?;
-        let blur = parse_length_value(parts[2])?;
-        let color = parse_color(parts[3])?;
+        let offset_x = parse_length_value(&parts[0])?;
+        let offset_y = parse_length_value(&parts[1])?;
+        let blur = parse_length_value(&parts[2])?;
+        // Try 5-part form: offset-x offset-y blur spread color
+        if parts.len() >= 5 {
+            if let Some(spread) = parse_length_value(&parts[3]) {
+                let color = parse_color(&parts[4])?;
+                let mut shadow = Shadow::new(offset_x, offset_y, blur, color);
+                shadow.spread = spread;
+                return Some(shadow);
+            }
+        }
+        // 4-part form: offset-x offset-y blur color
+        let color = parse_color(&parts[3])?;
         return Some(Shadow::new(offset_x, offset_y, blur, color));
     }
     None

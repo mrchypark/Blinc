@@ -4485,6 +4485,10 @@ impl RenderTree {
         if let Some(c) = &style.text_color {
             props.text_color = Some([c.r, c.g, c.b, c.a]);
         }
+        // Text shadow
+        if let Some(ts) = &style.text_shadow {
+            props.text_shadow = Some(*ts);
+        }
         // Font size
         if let Some(fs) = style.font_size {
             props.font_size = Some(fs);
@@ -6107,6 +6111,8 @@ impl RenderTree {
         check_transition!(gradient_end_color, "background");
         check_transition!(gradient_angle, "background");
         check_transition!(text_color, "color");
+        check_transition!(text_shadow_params, "text-shadow");
+        check_transition!(text_shadow_color, "text-shadow");
         check_transition!(font_size, "font-size");
         check_transition!(border_color, "border-color");
         check_transition!(border_width, "border-width");
@@ -6429,6 +6435,26 @@ impl RenderTree {
             props.text_color = Some(tc);
         }
 
+        // Text shadow
+        if let Some([ox, oy, blur, spread]) = anim_props.text_shadow_params {
+            let color = anim_props
+                .text_shadow_color
+                .map(|[r, g, b, a]| blinc_core::Color::rgba(r, g, b, a))
+                .or_else(|| props.text_shadow.as_ref().map(|s| s.color))
+                .unwrap_or(blinc_core::Color::rgba(0.0, 0.0, 0.0, 0.5));
+            props.text_shadow = Some(Shadow {
+                offset_x: ox,
+                offset_y: oy,
+                blur,
+                spread,
+                color,
+            });
+        } else if let Some([r, g, b, a]) = anim_props.text_shadow_color {
+            if let Some(ts) = &mut props.text_shadow {
+                ts.color = blinc_core::Color::rgba(r, g, b, a);
+            }
+        }
+
         // Font size
         if let Some(fs) = anim_props.font_size {
             props.font_size = Some(fs);
@@ -6648,6 +6674,12 @@ impl RenderTree {
         // Text color
         if let Some(tc) = &props.text_color {
             kp.text_color = Some(*tc);
+        }
+
+        // Text shadow
+        if let Some(ts) = &props.text_shadow {
+            kp.text_shadow_params = Some([ts.offset_x, ts.offset_y, ts.blur, ts.spread]);
+            kp.text_shadow_color = Some([ts.color.r, ts.color.g, ts.color.b, ts.color.a]);
         }
 
         // Font size
@@ -9464,6 +9496,7 @@ impl RenderTree {
             let color = render_node.props.text_color.unwrap_or(text_data.color);
             let font_size = render_node.props.font_size.unwrap_or(text_data.font_size);
 
+            // Render normal text
             if to_foreground {
                 renderer.render_text_foreground(
                     &text_data.content,

@@ -105,6 +105,8 @@ struct TextElement {
     /// Inherited CSS transform from ancestor elements (full 6-element affine in layout coords)
     /// [a, b, c, d, tx, ty] where new_x = a*x + c*y + tx, new_y = b*x + d*y + ty
     css_affine: Option<[f32; 6]>,
+    /// Text shadow (offset_x, offset_y, blur, color) from CSS text-shadow property
+    text_shadow: Option<blinc_core::Shadow>,
 }
 
 /// Image element data for rendering
@@ -1732,6 +1734,7 @@ impl RenderContext {
                         strikethrough: text_data.strikethrough,
                         underline: text_data.underline,
                         css_affine: inherited_css_affine,
+                        text_shadow: render_node.props.text_shadow,
                     });
                 }
                 ElementType::Svg(svg_data) => {
@@ -2013,6 +2016,7 @@ impl RenderContext {
                             strikethrough,
                             underline,
                             css_affine: inherited_css_affine,
+                            text_shadow: render_node.props.text_shadow,
                         });
 
                         x_offset += segment_width;
@@ -2283,6 +2287,66 @@ impl RenderContext {
             } else {
                 None
             };
+
+            // Render text shadow first (behind text) if present
+            if let Some(shadow) = &text.text_shadow {
+                let shadow_color = [
+                    shadow.color.r,
+                    shadow.color.g,
+                    shadow.color.b,
+                    shadow.color.a * text.motion_opacity,
+                ];
+                let shadow_x = text.x + shadow.offset_x * scale_factor;
+                let shadow_y = y_pos + shadow.offset_y * scale_factor;
+                if let Ok(mut shadow_glyphs) = self.text_ctx.prepare_text_with_style(
+                    &text.content,
+                    shadow_x,
+                    shadow_y,
+                    text.font_size,
+                    shadow_color,
+                    anchor,
+                    alignment,
+                    wrap_width,
+                    needs_wrap,
+                    font_name,
+                    generic,
+                    font_weight,
+                    text.italic,
+                    layout_height,
+                ) {
+                    if let Some(clip) = text.clip_bounds {
+                        for glyph in &mut shadow_glyphs {
+                            glyph.clip_bounds = clip;
+                        }
+                    }
+                    if let Some(affine) = text.css_affine {
+                        let [a, b, c, d, tx, ty] = affine;
+                        let tx_scaled = tx * scale_factor;
+                        let ty_scaled = ty * scale_factor;
+                        for glyph in &shadow_glyphs {
+                            let gc_x = glyph.bounds[0] + glyph.bounds[2] / 2.0;
+                            let gc_y = glyph.bounds[1] + glyph.bounds[3] / 2.0;
+                            let new_gc_x = a * gc_x + c * gc_y + tx_scaled;
+                            let new_gc_y = b * gc_x + d * gc_y + ty_scaled;
+                            let mut prim = GpuPrimitive::from_glyph(glyph);
+                            prim.bounds = [
+                                new_gc_x - glyph.bounds[2] / 2.0,
+                                new_gc_y - glyph.bounds[3] / 2.0,
+                                glyph.bounds[2],
+                                glyph.bounds[3],
+                            ];
+                            prim.local_affine = [a, b, c, d];
+                            prim.set_z_layer(text.z_index);
+                            css_transformed_text_prims.push(prim);
+                        }
+                    } else {
+                        glyphs_by_layer
+                            .entry(text.z_index)
+                            .or_default()
+                            .extend(shadow_glyphs);
+                    }
+                }
+            }
 
             match self.text_ctx.prepare_text_with_style(
                 &text.content,

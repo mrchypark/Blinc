@@ -174,6 +174,10 @@ pub struct KeyframeProperties {
     pub shadow_params: Option<[f32; 4]>,
     /// Shadow color RGBA
     pub shadow_color: Option<[f32; 4]>,
+    /// Text shadow [offset_x, offset_y, blur, spread]
+    pub text_shadow_params: Option<[f32; 4]>,
+    /// Text shadow color RGBA
+    pub text_shadow_color: Option<[f32; 4]>,
 
     // --- 3D lighting ---
     /// Light intensity (0.0-1.0+)
@@ -404,6 +408,12 @@ impl KeyframeProperties {
             // Shadow
             shadow_params: lerp_opt_array4(self.shadow_params, other.shadow_params, t),
             shadow_color: lerp_opt_array4(self.shadow_color, other.shadow_color, t),
+            text_shadow_params: lerp_opt_array4(
+                self.text_shadow_params,
+                other.text_shadow_params,
+                t,
+            ),
+            text_shadow_color: lerp_opt_array4(self.text_shadow_color, other.text_shadow_color, t),
             // 3D lighting
             light_intensity: lerp_opt(self.light_intensity, other.light_intensity, t),
             ambient: lerp_opt(self.ambient, other.ambient, t),
