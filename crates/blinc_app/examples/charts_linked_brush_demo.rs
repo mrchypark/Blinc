@@ -45,6 +45,15 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
     let (x0, x1) = series_a.x_min_max();
     let link = chart_link(x0, x1);
 
+    // Demonstrate configurable bindings: use Ctrl+Drag for brush instead of Shift+Drag.
+    let bindings = ChartInputBindings {
+        brush_drag: DragBinding {
+            required: ModifiersReq::ctrl(),
+            action: DragAction::BrushX,
+        },
+        ..ChartInputBindings::default()
+    };
+
     let handle_a = LineChartHandle::new(LineChartModel::new(series_a));
     let handle_b = LineChartHandle::new(LineChartModel::new(series_b));
 
@@ -71,7 +80,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         .color(Color::rgba(0.7, 0.75, 0.82, 1.0)),
                 )
                 .child(
-                    text("Drag: pan | Wheel/Pinch: zoom | Shift+Drag: brush")
+                    text("Drag: pan | Wheel/Pinch: zoom | Ctrl+Drag: brush")
                         .size(12.0)
                         .color(Color::rgba(0.7, 0.75, 0.82, 1.0)),
                 ),
@@ -82,7 +91,11 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                 .rounded(14.0)
                 .overflow_clip()
                 .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                .child(linked_line_chart(handle_a, link.clone())),
+                .child(linked_line_chart_with_bindings(
+                    handle_a,
+                    link.clone(),
+                    bindings,
+                )),
         )
         .child(
             div()
@@ -90,7 +103,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                 .rounded(14.0)
                 .overflow_clip()
                 .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                .child(linked_line_chart(handle_b, link)),
+                .child(linked_line_chart_with_bindings(handle_b, link, bindings)),
         )
 }
 

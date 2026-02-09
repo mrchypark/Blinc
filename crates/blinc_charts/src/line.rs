@@ -6,6 +6,7 @@ use blinc_layout::stack::stack;
 use blinc_layout::ElementBuilder;
 
 use crate::brush::BrushX;
+use crate::input::{ChartInputBindings, DragAction};
 use crate::link::ChartLinkHandle;
 use crate::lod::{downsample_min_max, DownsampleParams};
 use crate::time_series::TimeSeriesF32;
@@ -83,6 +84,7 @@ pub struct LineChartModel {
     last_drag_total_x: Option<f32>,
 
     brush_x: BrushX,
+    active_drag: DragAction,
 }
 
 impl LineChartModel {
@@ -113,6 +115,7 @@ impl LineChartModel {
             last_sample_key: None,
             last_drag_total_x: None,
             brush_x: BrushX::default(),
+            active_drag: DragAction::None,
         }
     }
 
@@ -202,10 +205,16 @@ impl LineChartModel {
 
     pub fn on_drag_end(&mut self) {
         self.last_drag_total_x = None;
+        self.active_drag = DragAction::None;
     }
 
-    pub fn on_mouse_down(&mut self, shift: bool, local_x: f32, w: f32, h: f32) {
-        if !shift {
+    pub fn on_mouse_down(&mut self, action: DragAction, local_x: f32, w: f32, h: f32) {
+        self.active_drag = action;
+        if action != DragAction::BrushX {
+            // Avoid stale brush visuals if the user clicks without brush binding.
+            self.brush_x.cancel();
+        }
+        if action != DragAction::BrushX {
             return;
         }
         let (px, _py, pw, _ph) = self.plot_rect(w, h);
@@ -232,7 +241,32 @@ impl LineChartModel {
         self.brush_x.update(x.clamp(px, px + pw));
     }
 
+    pub fn on_drag_total(&mut self, drag_total_dx: f32, w: f32, h: f32) {
+        match self.active_drag {
+            DragAction::PanX => self.on_drag_pan_total(drag_total_dx, w, h),
+            DragAction::BrushX => self.on_drag_brush_x_total(drag_total_dx, w, h),
+            DragAction::None => {}
+        }
+    }
+
+    pub fn brush_selection_domain(&self, w: f32, h: f32) -> Option<(f32, f32)> {
+        if self.active_drag != DragAction::BrushX {
+            return None;
+        }
+        let (px, _py, pw, _ph) = self.plot_rect(w, h);
+        if pw <= 0.0 {
+            return None;
+        }
+        let (a_px, b_px) = self.brush_x.range_px()?;
+        let a = self.view.px_to_x(a_px, px, pw);
+        let b = self.view.px_to_x(b_px, px, pw);
+        Some(if a <= b { (a, b) } else { (b, a) })
+    }
+
     pub fn on_mouse_up_finish_brush_x(&mut self, w: f32, h: f32) -> Option<(f32, f32)> {
+        if self.active_drag != DragAction::BrushX {
+            return None;
+        }
         let (px, _py, pw, _ph) = self.plot_rect(w, h);
         if pw <= 0.0 {
             self.brush_x.cancel();
@@ -384,6 +418,13 @@ impl LineChartHandle {
 /// - `on_scroll` / `on_pinch`: zoom X about cursor
 /// - `on_drag`: pan X
 pub fn line_chart(handle: LineChartHandle) -> impl ElementBuilder {
+    line_chart_with_bindings(handle, ChartInputBindings::default())
+}
+
+pub fn line_chart_with_bindings(
+    handle: LineChartHandle,
+    bindings: ChartInputBindings,
+) -> impl ElementBuilder {
     let model_plot = handle.0.clone();
     let model_overlay = handle.0.clone();
 
@@ -395,6 +436,26 @@ pub fn line_chart(handle: LineChartHandle) -> impl ElementBuilder {
     let model_drag = handle.0.clone();
     let model_up = handle.0.clone();
     let model_drag_end = handle.0.clone();
+
+    fn choose_drag_action(
+        bindings: ChartInputBindings,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) -> DragAction {
+        if bindings.brush_drag.action == DragAction::BrushX
+            && bindings.brush_drag.required.matches(shift, ctrl, alt, meta)
+        {
+            return DragAction::BrushX;
+        }
+        if bindings.pan_drag.action == DragAction::PanX
+            && bindings.pan_drag.required.matches(shift, ctrl, alt, meta)
+        {
+            return DragAction::PanX;
+        }
+        DragAction::None
+    }
 
     stack()
         .w_full()
@@ -409,7 +470,8 @@ pub fn line_chart(handle: LineChartHandle) -> impl ElementBuilder {
         })
         .on_mouse_down(move |e| {
             if let Ok(mut m) = model_down.lock() {
-                m.on_mouse_down(e.shift, e.local_x, e.bounds_width, e.bounds_height);
+                let action = choose_drag_action(bindings, e.shift, e.ctrl, e.alt, e.meta);
+                m.on_mouse_down(action, e.local_x, e.bounds_width, e.bounds_height);
                 blinc_layout::stateful::request_redraw();
             }
         })
@@ -427,11 +489,7 @@ pub fn line_chart(handle: LineChartHandle) -> impl ElementBuilder {
         })
         .on_drag(move |e| {
             if let Ok(mut m) = model_drag.lock() {
-                if e.shift {
-                    m.on_drag_brush_x_total(e.drag_delta_x, e.bounds_width, e.bounds_height);
-                } else {
-                    m.on_drag_pan_total(e.drag_delta_x, e.bounds_width, e.bounds_height);
-                }
+                m.on_drag_total(e.drag_delta_x, e.bounds_width, e.bounds_height);
                 blinc_layout::stateful::request_redraw();
             }
         })
@@ -473,8 +531,16 @@ pub fn line_chart(handle: LineChartHandle) -> impl ElementBuilder {
 /// Additional behaviors:
 /// - Pan/zoom is synchronized via `link.x_domain` (shared X domain).
 /// - Hover is broadcast via `link.hover_x`.
-/// - Selection (brush) is created with Shift+Drag and stored in `link.selection_x`.
+/// - Selection (brush) is created via `bindings.brush_drag` and stored in `link.selection_x`.
 pub fn linked_line_chart(handle: LineChartHandle, link: ChartLinkHandle) -> impl ElementBuilder {
+    linked_line_chart_with_bindings(handle, link, ChartInputBindings::default())
+}
+
+pub fn linked_line_chart_with_bindings(
+    handle: LineChartHandle,
+    link: ChartLinkHandle,
+    bindings: ChartInputBindings,
+) -> impl ElementBuilder {
     let model_plot = handle.0.clone();
     let model_overlay = handle.0.clone();
 
@@ -494,6 +560,26 @@ pub fn linked_line_chart(handle: LineChartHandle, link: ChartLinkHandle) -> impl
     let link_up = link.clone();
     let link_plot = link.clone();
     let link_overlay = link.clone();
+
+    fn choose_drag_action(
+        bindings: ChartInputBindings,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) -> DragAction {
+        if bindings.brush_drag.action == DragAction::BrushX
+            && bindings.brush_drag.required.matches(shift, ctrl, alt, meta)
+        {
+            return DragAction::BrushX;
+        }
+        if bindings.pan_drag.action == DragAction::PanX
+            && bindings.pan_drag.required.matches(shift, ctrl, alt, meta)
+        {
+            return DragAction::PanX;
+        }
+        DragAction::None
+    }
 
     stack()
         .w_full()
@@ -518,7 +604,8 @@ pub fn linked_line_chart(handle: LineChartHandle, link: ChartLinkHandle) -> impl
         })
         .on_mouse_down(move |e| {
             if let (Ok(_l), Ok(mut m)) = (link_down.lock(), model_down.lock()) {
-                m.on_mouse_down(e.shift, e.local_x, e.bounds_width, e.bounds_height);
+                let action = choose_drag_action(bindings, e.shift, e.ctrl, e.alt, e.meta);
+                m.on_mouse_down(action, e.local_x, e.bounds_width, e.bounds_height);
                 blinc_layout::stateful::request_redraw();
             }
         })
@@ -541,10 +628,15 @@ pub fn linked_line_chart(handle: LineChartHandle, link: ChartLinkHandle) -> impl
         .on_drag(move |e| {
             if let (Ok(mut l), Ok(mut m)) = (link_drag.lock(), model_drag.lock()) {
                 m.view.domain.x = l.x_domain;
-                if e.shift {
-                    m.on_drag_brush_x_total(e.drag_delta_x, e.bounds_width, e.bounds_height);
-                } else {
-                    m.on_drag_pan_total(e.drag_delta_x, e.bounds_width, e.bounds_height);
+                m.on_drag_total(e.drag_delta_x, e.bounds_width, e.bounds_height);
+
+                // Publish continuous selection updates for cross-filtering.
+                if let Some(sel) = m.brush_selection_domain(e.bounds_width, e.bounds_height) {
+                    l.set_selection_x(Some(sel));
+                }
+
+                // Publish domain changes on pan.
+                if m.active_drag == DragAction::PanX {
                     l.set_x_domain(m.view.domain.x);
                 }
                 blinc_layout::stateful::request_redraw();
