@@ -3062,6 +3062,23 @@ impl GpuRenderer {
         batch: &PrimitiveBatch,
         clear_color: [f64; 4],
     ) {
+        if std::env::var_os("BLINC_DEBUG_LINES").is_some() {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static LOGS: AtomicU32 = AtomicU32::new(0);
+            let n = LOGS.fetch_add(1, Ordering::Relaxed);
+            if n < 3 {
+                tracing::info!(
+                    "render_with_clear_simple: viewport_size={:?} prims={} lines={} fg_lines={} paths_v={} paths_i={}",
+                    self.viewport_size,
+                    batch.primitives.len(),
+                    batch.line_segments.len(),
+                    batch.foreground_line_segments.len(),
+                    batch.paths.vertices.len(),
+                    batch.paths.indices.len()
+                );
+            }
+        }
+
         // Update uniforms
         let uniforms = Uniforms {
             viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
@@ -4555,6 +4572,19 @@ impl GpuRenderer {
     ) {
         if segments.is_empty() {
             return;
+        }
+
+        if std::env::var_os("BLINC_DEBUG_LINES").is_some() {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static LOGS: AtomicU32 = AtomicU32::new(0);
+            let n = LOGS.fetch_add(1, Ordering::Relaxed);
+            if n < 10 {
+                tracing::info!(
+                    "render_line_segments_overlay: segments={} viewport_size={:?}",
+                    segments.len(),
+                    self.viewport_size
+                );
+            }
         }
 
         // Update uniforms

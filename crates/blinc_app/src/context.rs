@@ -262,6 +262,21 @@ impl RenderContext {
 
         // Take the batch from bg_ctx before we can reuse text_ctx for fg_ctx
         let bg_batch = bg_ctx.take_batch();
+        if std::env::var_os("BLINC_DEBUG_BATCHES").is_some() {
+            tracing::info!(
+                "bg_batch: prims={} fg_prims={} lines={} fg_lines={} glass={} glyphs={} paths(v/i)={}/{} fg_paths(v/i)={}/{}",
+                bg_batch.primitives.len(),
+                bg_batch.foreground_primitives.len(),
+                bg_batch.line_segments.len(),
+                bg_batch.foreground_line_segments.len(),
+                bg_batch.glass_primitives.len(),
+                bg_batch.glyphs.len(),
+                bg_batch.paths.vertices.len(),
+                bg_batch.paths.indices.len(),
+                bg_batch.foreground_paths.vertices.len(),
+                bg_batch.foreground_paths.indices.len(),
+            );
+        }
 
         // Create foreground context with text rendering support
         let mut fg_ctx =
@@ -270,6 +285,21 @@ impl RenderContext {
 
         // Take the batch from fg_ctx before reusing text_ctx for text elements
         let fg_batch = fg_ctx.take_batch();
+        if std::env::var_os("BLINC_DEBUG_BATCHES").is_some() {
+            tracing::info!(
+                "fg_batch: prims={} fg_prims={} lines={} fg_lines={} glass={} glyphs={} paths(v/i)={}/{} fg_paths(v/i)={}/{}",
+                fg_batch.primitives.len(),
+                fg_batch.foreground_primitives.len(),
+                fg_batch.line_segments.len(),
+                fg_batch.foreground_line_segments.len(),
+                fg_batch.glass_primitives.len(),
+                fg_batch.glyphs.len(),
+                fg_batch.paths.vertices.len(),
+                fg_batch.paths.indices.len(),
+                fg_batch.foreground_paths.vertices.len(),
+                fg_batch.foreground_paths.indices.len(),
+            );
+        }
 
         // Collect text, SVG, and image elements
         let (texts, svgs, images) = self.collect_render_elements(tree);
@@ -2254,6 +2284,18 @@ impl RenderContext {
 
         // Take the batch
         let batch = ctx.take_batch();
+        if std::env::var_os("BLINC_DEBUG_BATCHES").is_some() {
+            tracing::info!(
+                "motion_batch: prims={} fg_prims={} lines={} fg_lines={} glass={} glyphs={} max_z={}",
+                batch.primitives.len(),
+                batch.foreground_primitives.len(),
+                batch.line_segments.len(),
+                batch.foreground_line_segments.len(),
+                batch.glass_primitives.len(),
+                batch.glyphs.len(),
+                batch.max_z_layer(),
+            );
+        }
 
         // Collect text, SVG, and image elements WITH motion state
         let (texts, svgs, images) =
@@ -2529,6 +2571,29 @@ impl RenderContext {
                 let max_image_z = images_by_layer.keys().cloned().max().unwrap_or(0);
                 let max_layer = max_layer.max(max_image_z);
 
+                // Helper: build contiguous ranges of line segments for each z-layer.
+                // z-layer is monotonically non-decreasing in traversal (Stack only increments),
+                // so ranges are already sorted by z.
+                fn line_ranges_by_z(
+                    segs: &[blinc_gpu::GpuLineSegment],
+                ) -> Vec<(u32, usize, usize)> {
+                    let mut out = Vec::new();
+                    let mut i = 0usize;
+                    while i < segs.len() {
+                        let z = segs[i].params[1].max(0.0) as u32;
+                        let start = i;
+                        i += 1;
+                        while i < segs.len() && (segs[i].params[1].max(0.0) as u32) == z {
+                            i += 1;
+                        }
+                        out.push((z, start, i));
+                    }
+                    out
+                }
+
+                let line_ranges = line_ranges_by_z(&batch.line_segments);
+                let mut line_range_i = 0usize;
+
                 // First pass: render z_layer=0 primitives with clear
                 let z0_primitives = batch.primitives_for_layer(0);
                 // Create a temporary batch for z=0 (include paths - they don't have z-layer support)
@@ -2537,6 +2602,14 @@ impl RenderContext {
                 z0_batch.paths = batch.paths.clone();
                 self.renderer
                     .render_with_clear(target, &z0_batch, [0.0, 0.0, 0.0, 1.0]);
+
+                // Render z=0 line segments (if any)
+                while line_range_i < line_ranges.len() && line_ranges[line_range_i].0 == 0 {
+                    let (_z, start, end) = line_ranges[line_range_i];
+                    self.renderer
+                        .render_line_segments_overlay(target, &batch.line_segments[start..end]);
+                    line_range_i += 1;
+                }
 
                 // Render paths with MSAA for smooth edges on curved shapes like notch
                 if use_msaa_overlay && z0_batch.has_paths() {
@@ -2567,6 +2640,14 @@ impl RenderContext {
                             .render_primitives_overlay(target, &layer_primitives);
                     }
 
+                    // Render line segments for this layer
+                    while line_range_i < line_ranges.len() && line_ranges[line_range_i].0 == z {
+                        let (_z, start, end) = line_ranges[line_range_i];
+                        self.renderer
+                            .render_line_segments_overlay(target, &batch.line_segments[start..end]);
+                        line_range_i += 1;
+                    }
+
                     // Render images for this layer
                     if let Some(layer_images) = images_by_layer.get(&z) {
                         self.render_images_ref(target, layer_images);
@@ -2582,6 +2663,12 @@ impl RenderContext {
                 if !batch.foreground_primitives.is_empty() {
                     self.renderer
                         .render_primitives_overlay(target, &batch.foreground_primitives);
+                }
+
+                // Render foreground line segments on top (for .foreground() canvases)
+                if !batch.foreground_line_segments.is_empty() {
+                    self.renderer
+                        .render_line_segments_overlay(target, &batch.foreground_line_segments);
                 }
 
                 if !batch.foreground_image_draws.is_empty() {

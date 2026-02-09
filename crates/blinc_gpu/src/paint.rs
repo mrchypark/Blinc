@@ -56,9 +56,10 @@ use crate::primitives::{
 };
 use crate::text::TextRenderingContext;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
+static DEBUG_POLYLINE_LOGS: AtomicU32 = AtomicU32::new(0);
 const NO_CLIP_BOUNDS: [f32; 4] = [-10000.0, -10000.0, 100000.0, 100000.0];
 const NO_CLIP_RADIUS: [f32; 4] = [0.0; 4];
 
@@ -1736,6 +1737,28 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
 
         let half_width = (stroke.width * 0.5).max(0.0);
         let (clip_bounds, _clip_radius, _clip_type) = self.get_clip_data();
+
+        if std::env::var_os("BLINC_DEBUG_POLYLINE").is_some() {
+            let n = DEBUG_POLYLINE_LOGS.fetch_add(1, Ordering::Relaxed);
+            if n < 3 {
+                let p0 = points[0];
+                let p1 = points[points.len() - 1];
+                let tp0 = self.transform_point(p0);
+                let tp1 = self.transform_point(p1);
+                tracing::info!(
+                    "stroke_polyline: fg={} n_points={} half_width={} alpha={} clip_bounds={:?} p0={:?} pN={:?} tp0={:?} tpN={:?}",
+                    self.is_foreground,
+                    points.len(),
+                    half_width,
+                    a,
+                    clip_bounds,
+                    p0,
+                    p1,
+                    tp0,
+                    tp1
+                );
+            }
+        }
 
         // Transform points to screen space once.
         // Note: We intentionally avoid allocations by pushing segments directly.

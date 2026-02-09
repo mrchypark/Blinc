@@ -847,6 +847,15 @@ impl Stack {
         self
     }
 
+    /// Register a drag end handler
+    pub fn on_drag_end<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = self.inner.on_drag_end(handler);
+        self
+    }
+
     /// Register a scroll handler
     pub fn on_scroll<F>(mut self, handler: F) -> Self
     where
