@@ -1952,7 +1952,7 @@ impl WindowedApp {
                         }
 
                         // First phase: collect events using immutable borrow
-                        let (pending_events, keyboard_events, scroll_ended, gesture_ended, scroll_info) = if let (Some(ref mut windowed_ctx), Some(ref tree)) =
+                        let (pending_events, keyboard_events, scroll_ended, gesture_ended, scroll_info, pinch_info) = if let (Some(ref mut windowed_ctx), Some(ref tree)) =
                             (&mut ctx, &render_tree)
                         {
                             let router = &mut windowed_ctx.event_router;
@@ -1967,6 +1967,8 @@ impl WindowedApp {
                             let mut gesture_ended = false;
                             // Track scroll info for nested scroll dispatch (mouse_x, mouse_y, delta_x, delta_y)
                             let mut scroll_info: Option<(f32, f32, f32, f32)> = None;
+                            // Track pinch (magnify) info for dispatch (mouse_x, mouse_y, scale_ratio_delta)
+                            let mut pinch_info: Option<(f32, f32, f32)> = None;
 
                             // Set up callback to collect events
                             router.set_event_callback({
@@ -2347,6 +2349,10 @@ impl WindowedApp {
                                     // We'll re-do hit test in dispatch phase since we need mutable borrow
                                     scroll_info = Some((mx, my, ldx, ldy));
                                 }
+                                InputEvent::Pinch { scale } => {
+                                    let (mx, my) = router.mouse_position();
+                                    pinch_info = Some((mx, my, scale));
+                                }
                                 InputEvent::ScrollEnd => {
                                     // Scroll momentum ended - full stop
                                     scroll_ended = true;
@@ -2354,9 +2360,9 @@ impl WindowedApp {
                             }
 
                             router.clear_event_callback();
-                            (pending_events, keyboard_events, scroll_ended, gesture_ended, scroll_info)
+                            (pending_events, keyboard_events, scroll_ended, gesture_ended, scroll_info, pinch_info)
                         } else {
-                            (Vec::new(), Vec::new(), false, false, None)
+                            (Vec::new(), Vec::new(), false, false, None, None)
                         };
 
                         // Second phase: dispatch events with mutable borrow
@@ -2386,6 +2392,17 @@ impl WindowedApp {
                                 .as_ref()
                                 .map(|c| c.overlay_manager.has_blocking_overlay())
                                 .unwrap_or(false);
+
+                            if let Some((mouse_x, mouse_y, scale)) = pinch_info {
+                                if has_overlay_backdrop {
+                                    tracing::trace!("Skipping pinch - overlay with backdrop is visible");
+                                } else if let Some(ref mut windowed_ctx) = ctx {
+                                    let router = &mut windowed_ctx.event_router;
+                                    if let Some(hit) = router.hit_test(tree, mouse_x, mouse_y) {
+                                        tree.dispatch_pinch_chain(&hit, mouse_x, mouse_y, scale);
+                                    }
+                                }
+                            }
 
                             if let Some((mouse_x, mouse_y, delta_x, delta_y)) = scroll_info {
                                 // Skip if gesture ended in this same event - go straight to bounce

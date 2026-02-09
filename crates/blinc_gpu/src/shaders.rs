@@ -2498,6 +2498,101 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// Shader for compact line segment rendering (polylines).
+///
+/// Renders one quad per segment instance (2 triangles), suitable for large
+/// time-series lines after downsampling.
+pub const LINE_SHADER: &str = r#"
+// ============================================================================
+// Blinc Line Segment Shader
+// ============================================================================
+
+struct Uniforms {
+    viewport_size: vec2<f32>,
+    _padding: vec2<f32>,
+}
+
+struct LineSegment {
+    // (x0, y0, x1, y1) in screen pixels
+    p0p1: vec4<f32>,
+    // Clip bounds (x, y, width, height). Sentinel disables clip.
+    clip_bounds: vec4<f32>,
+    // Premultiplied RGBA
+    color: vec4<f32>,
+    // Params: (half_width, z_layer, reserved, reserved)
+    params: vec4<f32>,
+}
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) world_pos: vec2<f32>,
+    @location(2) clip_bounds: vec4<f32>,
+}
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var<storage, read> segments: array<LineSegment>;
+
+// Vertex layout for a segment quad: (t, side)
+// t: 0=start, 1=end
+// side: -1/ +1
+var<private> QUAD: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
+    vec2<f32>(0.0, -1.0),
+    vec2<f32>(0.0,  1.0),
+    vec2<f32>(1.0, -1.0),
+    vec2<f32>(1.0, -1.0),
+    vec2<f32>(0.0,  1.0),
+    vec2<f32>(1.0,  1.0),
+);
+
+@vertex
+fn vs_main(
+    @builtin(vertex_index) vertex_index: u32,
+    @builtin(instance_index) instance_index: u32,
+) -> VertexOutput {
+    let seg = segments[instance_index];
+    let p0 = seg.p0p1.xy;
+    let p1 = seg.p0p1.zw;
+
+    let d = p1 - p0;
+    let len = max(length(d), 0.0001);
+    let dir = d / len;
+    let n = vec2<f32>(-dir.y, dir.x);
+
+    let t = QUAD[vertex_index].x;
+    let side = QUAD[vertex_index].y;
+    let half_w = seg.params.x;
+
+    let p = mix(p0, p1, t) + n * (side * half_w);
+
+    // Convert to clip space (-1..1)
+    let clip_pos = vec2<f32>(
+        (p.x / uniforms.viewport_size.x) * 2.0 - 1.0,
+        1.0 - (p.y / uniforms.viewport_size.y) * 2.0
+    );
+
+    var out: VertexOutput;
+    out.position = vec4<f32>(clip_pos, 0.0, 1.0);
+    out.color = seg.color;
+    out.world_pos = p;
+    out.clip_bounds = seg.clip_bounds;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // Rect clip only (fast). Matches the "no clip" sentinel used elsewhere.
+    if (in.clip_bounds.x > -9000.0) {
+        let minp = in.clip_bounds.xy;
+        let maxp = in.clip_bounds.xy + in.clip_bounds.zw;
+        if (in.world_pos.x < minp.x || in.world_pos.x > maxp.x || in.world_pos.y < minp.y || in.world_pos.y > maxp.y) {
+            discard;
+        }
+    }
+    return in.color;
+}
+"#;
+
 /// Shader for image rendering
 ///
 /// Renders images with:

@@ -1284,6 +1284,7 @@ pub extern "C" fn blinc_init_gpu(
 
     let renderer_config = RendererConfig {
         max_primitives: config.max_primitives,
+        max_line_segments: config.max_line_segments,
         max_glass_primitives: config.max_glass_primitives,
         max_glyphs: config.max_glyphs,
         sample_count: 1,

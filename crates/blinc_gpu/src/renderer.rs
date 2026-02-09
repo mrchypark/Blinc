@@ -13,12 +13,12 @@ use crate::image::GpuImageInstance;
 use crate::path::PathVertex;
 use crate::primitives::{
     BlurUniforms, ColorMatrixUniforms, DropShadowUniforms, GlassType, GlassUniforms, GlowUniforms,
-    GpuGlassPrimitive, GpuGlyph, GpuPrimitive, PathUniforms, PrimitiveBatch, Sdf3DUniform,
-    Uniforms, Viewport3D,
+    GpuGlassPrimitive, GpuGlyph, GpuLineSegment, GpuPrimitive, PathUniforms, PrimitiveBatch,
+    Sdf3DUniform, Uniforms, Viewport3D,
 };
 use crate::shaders::{
     BLUR_SHADER, COLOR_MATRIX_SHADER, COMPOSITE_SHADER, DROP_SHADOW_SHADER, GLASS_SHADER,
-    GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, PATH_SHADER, SDF_SHADER,
+    GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, LINE_SHADER, PATH_SHADER, SDF_SHADER,
     SIMPLE_GLASS_SHADER, TEXT_SHADER,
 };
 
@@ -75,10 +75,14 @@ fn apply_renderer_config_overrides(
     //
     // Env:
     // - BLINC_GPU_MAX_PRIMITIVES=20000
+    // - BLINC_GPU_MAX_LINE_SEGMENTS=200000
     // - BLINC_GPU_MAX_GLYPHS=50000
     // - BLINC_GPU_MAX_GLASS_PRIMITIVES=1000
     if let Some(v) = env_usize("BLINC_GPU_MAX_PRIMITIVES") {
         config.max_primitives = v;
+    }
+    if let Some(v) = env_usize("BLINC_GPU_MAX_LINE_SEGMENTS") {
+        config.max_line_segments = v;
     }
     if let Some(v) = env_usize("BLINC_GPU_MAX_GLYPHS") {
         config.max_glyphs = v;
@@ -91,6 +95,9 @@ fn apply_renderer_config_overrides(
     let prim_cap = (required_limits.max_storage_buffer_binding_size as u64
         / std::mem::size_of::<GpuPrimitive>() as u64)
         .max(1) as usize;
+    let line_cap = (required_limits.max_storage_buffer_binding_size as u64
+        / std::mem::size_of::<GpuLineSegment>() as u64)
+        .max(1) as usize;
     let glyph_cap = (required_limits.max_storage_buffer_binding_size as u64
         / std::mem::size_of::<GpuGlyph>() as u64)
         .max(1) as usize;
@@ -99,6 +106,7 @@ fn apply_renderer_config_overrides(
         .max(1) as usize;
 
     config.max_primitives = config.max_primitives.clamp(1, prim_cap);
+    config.max_line_segments = config.max_line_segments.clamp(1, line_cap);
     config.max_glyphs = config.max_glyphs.clamp(1, glyph_cap);
     config.max_glass_primitives = config.max_glass_primitives.clamp(1, glass_cap);
 
@@ -107,8 +115,9 @@ fn apply_renderer_config_overrides(
 
 fn log_renderer_config(config: &RendererConfig) {
     tracing::info!(
-        "gpu config: max_primitives={}, max_glyphs={}, max_glass_primitives={}, sample_count={}",
+        "gpu config: max_primitives={}, max_line_segments={}, max_glyphs={}, max_glass_primitives={}, sample_count={}",
         config.max_primitives,
+        config.max_line_segments,
         config.max_glyphs,
         config.max_glass_primitives,
         config.sample_count
@@ -146,6 +155,8 @@ impl std::error::Error for RendererError {}
 pub struct RendererConfig {
     /// Maximum number of primitives per batch
     pub max_primitives: usize,
+    /// Maximum number of line segments per batch (compact polyline rendering)
+    pub max_line_segments: usize,
     /// Maximum number of glass primitives per batch
     pub max_glass_primitives: usize,
     /// Maximum number of glyphs per batch
@@ -171,6 +182,7 @@ impl Default for RendererConfig {
             // Reduced defaults for lower memory footprint (~1 MB total vs ~5+ MB)
             // These can still handle typical UI scenes while using less memory
             max_primitives: 2_000,     // ~384 KB (was 1.92 MB)
+            max_line_segments: 50_000, // ~3.2 MB (64 B each)
             max_glass_primitives: 100, // ~25 KB (was 256 KB)
             max_glyphs: 10_000,        // ~640 KB (was 3.2 MB)
             sample_count: 1,
@@ -186,6 +198,10 @@ struct Pipelines {
     sdf: wgpu::RenderPipeline,
     /// Pipeline for SDF primitives rendering on top of existing content (1x sampled)
     sdf_overlay: wgpu::RenderPipeline,
+    /// Pipeline for compact line segments (MSAA)
+    lines: wgpu::RenderPipeline,
+    /// Pipeline for compact line segments rendering on top of existing content (1x sampled)
+    lines_overlay: wgpu::RenderPipeline,
     /// Pipeline for glass/vibrancy effects (liquid glass with refraction)
     glass: wgpu::RenderPipeline,
     /// Pipeline for simple frosted glass (pure blur, no refraction)
@@ -230,6 +246,8 @@ struct Buffers {
     uniforms: wgpu::Buffer,
     /// Storage buffer for SDF primitives
     primitives: wgpu::Buffer,
+    /// Storage buffer for compact line segments (polylines)
+    line_segments: wgpu::Buffer,
     /// Storage buffer for glass primitives
     glass_primitives: wgpu::Buffer,
     /// Uniform buffer for glass shader
@@ -256,6 +274,8 @@ struct Buffers {
 struct BindGroups {
     /// Bind group for SDF pipeline
     sdf: wgpu::BindGroup,
+    /// Bind group for compact line segment pipeline
+    lines: wgpu::BindGroup,
     /// Bind group for glass pipeline (needs backdrop texture)
     _glass: Option<wgpu::BindGroup>,
     /// Bind group for path pipeline
@@ -812,6 +832,7 @@ struct ImagePipeline {
 
 struct BindGroupLayouts {
     sdf: wgpu::BindGroupLayout,
+    lines: wgpu::BindGroupLayout,
     glass: wgpu::BindGroupLayout,
     text: wgpu::BindGroupLayout,
     composite: wgpu::BindGroupLayout,
@@ -882,6 +903,30 @@ impl GpuRenderer {
             0,
             bytemuck::cast_slice(primitives_to_write),
         );
+    }
+
+    /// Safely write line segments to buffer, truncating if necessary to prevent overflow
+    fn write_line_segments_safe(&self, segments: &[GpuLineSegment]) -> usize {
+        if segments.is_empty() {
+            return 0;
+        }
+        let max_segments = self.config.max_line_segments;
+        let segs_to_write = if segments.len() > max_segments {
+            tracing::warn!(
+                "Line segment count {} exceeds buffer capacity {}, truncating",
+                segments.len(),
+                max_segments
+            );
+            &segments[..max_segments]
+        } else {
+            segments
+        };
+        self.queue.write_buffer(
+            &self.buffers.line_segments,
+            0,
+            bytemuck::cast_slice(segs_to_write),
+        );
+        segs_to_write.len()
     }
 
     /// Create a new renderer without a surface (for headless rendering)
@@ -1123,6 +1168,11 @@ impl GpuRenderer {
             source: wgpu::ShaderSource::Wgsl(SDF_SHADER.into()),
         });
 
+        let line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Line Shader"),
+            source: wgpu::ShaderSource::Wgsl(LINE_SHADER.into()),
+        });
+
         let glass_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Glass Shader"),
             source: wgpu::ShaderSource::Wgsl(GLASS_SHADER.into()),
@@ -1179,6 +1229,7 @@ impl GpuRenderer {
             &device,
             &bind_group_layouts,
             &sdf_shader,
+            &line_shader,
             &glass_shader,
             &simple_glass_shader,
             &text_shader,
@@ -1394,6 +1445,35 @@ impl GpuRenderer {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        // Lines bind group layout (uniforms + line segments storage buffer)
+        let lines = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Lines Bind Group Layout"),
+            entries: &[
+                // Uniforms
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Line segments storage buffer
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -1806,6 +1886,7 @@ impl GpuRenderer {
 
         BindGroupLayouts {
             sdf,
+            lines,
             glass,
             text,
             composite,
@@ -1823,6 +1904,7 @@ impl GpuRenderer {
         device: &wgpu::Device,
         layouts: &BindGroupLayouts,
         sdf_shader: &wgpu::ShaderModule,
+        line_shader: &wgpu::ShaderModule,
         glass_shader: &wgpu::ShaderModule,
         simple_glass_shader: &wgpu::ShaderModule,
         text_shader: &wgpu::ShaderModule,
@@ -1918,6 +2000,57 @@ impl GpuRenderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: sdf_shader,
+                entry_point: Some("fs_main"),
+                targets: color_targets,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: primitive_state,
+            depth_stencil: None,
+            multisample: overlay_multisample_state,
+            multiview: None,
+            cache: None,
+        });
+
+        // Lines pipeline
+        let lines_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Lines Pipeline Layout"),
+            bind_group_layouts: &[&layouts.lines],
+            push_constant_ranges: &[],
+        });
+
+        let lines = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Lines Pipeline"),
+            layout: Some(&lines_layout),
+            vertex: wgpu::VertexState {
+                module: line_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: line_shader,
+                entry_point: Some("fs_main"),
+                targets: color_targets,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: primitive_state,
+            depth_stencil: None,
+            multisample: multisample_state,
+            multiview: None,
+            cache: None,
+        });
+
+        let lines_overlay = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Lines Overlay Pipeline"),
+            layout: Some(&lines_layout),
+            vertex: wgpu::VertexState {
+                module: line_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: line_shader,
                 entry_point: Some("fs_main"),
                 targets: color_targets,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -2424,6 +2557,8 @@ impl GpuRenderer {
         Pipelines {
             sdf,
             sdf_overlay,
+            lines,
+            lines_overlay,
             glass,
             simple_glass,
             _text: text,
@@ -2451,6 +2586,13 @@ impl GpuRenderer {
         let primitives = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Primitives Buffer"),
             size: (std::mem::size_of::<GpuPrimitive>() * config.max_primitives) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let line_segments = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Line Segments Buffer"),
+            size: (std::mem::size_of::<GpuLineSegment>() * config.max_line_segments) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -2515,6 +2657,7 @@ impl GpuRenderer {
         Buffers {
             uniforms,
             primitives,
+            line_segments,
             glass_primitives,
             glass_uniforms,
             _glyphs: glyphs,
@@ -2570,6 +2713,21 @@ impl GpuRenderer {
             ],
         });
 
+        let lines = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Lines Bind Group"),
+            layout: &layouts.lines,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffers.uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buffers.line_segments.as_entire_binding(),
+                },
+            ],
+        });
+
         // Path bind group (with gradient texture, image texture, and backdrop for glass)
         let path = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Path Bind Group"),
@@ -2615,6 +2773,7 @@ impl GpuRenderer {
         // Glass bind group will be created when we have a backdrop texture
         BindGroups {
             sdf,
+            lines,
             _glass: None,
             path,
         }
@@ -2903,6 +3062,23 @@ impl GpuRenderer {
         batch: &PrimitiveBatch,
         clear_color: [f64; 4],
     ) {
+        if std::env::var_os("BLINC_DEBUG_LINES").is_some() {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static LOGS: AtomicU32 = AtomicU32::new(0);
+            let n = LOGS.fetch_add(1, Ordering::Relaxed);
+            if n < 3 {
+                tracing::info!(
+                    "render_with_clear_simple: viewport_size={:?} prims={} lines={} fg_lines={} paths_v={} paths_i={}",
+                    self.viewport_size,
+                    batch.primitives.len(),
+                    batch.line_segments.len(),
+                    batch.foreground_line_segments.len(),
+                    batch.paths.vertices.len(),
+                    batch.paths.indices.len()
+                );
+            }
+        }
+
         // Update uniforms
         let uniforms = Uniforms {
             viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
@@ -2912,24 +3088,10 @@ impl GpuRenderer {
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         // Update primitives buffer (with safety limit to prevent buffer overflow)
-        if !batch.primitives.is_empty() {
-            let max_primitives = self.config.max_primitives;
-            let primitives_to_write = if batch.primitives.len() > max_primitives {
-                tracing::warn!(
-                    "Primitive count {} exceeds buffer capacity {}, truncating",
-                    batch.primitives.len(),
-                    max_primitives
-                );
-                &batch.primitives[..max_primitives]
-            } else {
-                &batch.primitives
-            };
-            self.queue.write_buffer(
-                &self.buffers.primitives,
-                0,
-                bytemuck::cast_slice(primitives_to_write),
-            );
-        }
+        self.write_primitives_safe(&batch.primitives);
+
+        // Update line segments buffer
+        let line_count = self.write_line_segments_safe(&batch.line_segments);
 
         // Update path buffers if we have path geometry
         let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
@@ -2972,6 +3134,13 @@ impl GpuRenderer {
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
                 // 6 vertices per quad (2 triangles), one instance per primitive
                 render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+            }
+
+            // Render compact line segments
+            if line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..line_count as u32);
             }
 
             // Render paths
@@ -3175,6 +3344,18 @@ impl GpuRenderer {
                 );
                 self.layer_texture_cache.release(effected);
             }
+        }
+
+        // Layer effects currently operate on primitive index ranges only.
+        // Compact line segments are stored in separate buffers (no order indices),
+        // so they would otherwise disappear in scenes that take the layer-effects path.
+        //
+        // Render them last as an overlay so they remain visible.
+        if !batch.line_segments.is_empty() {
+            self.render_line_segments_overlay(target, &batch.line_segments);
+        }
+        if !batch.foreground_line_segments.is_empty() {
+            self.render_line_segments_overlay(target, &batch.foreground_line_segments);
         }
     }
 
@@ -3656,7 +3837,7 @@ impl GpuRenderer {
         _backdrop_size: (u32, u32),
         batch: &PrimitiveBatch,
     ) {
-        if batch.primitives.is_empty() {
+        if batch.primitives.is_empty() && batch.line_segments.is_empty() {
             return;
         }
 
@@ -3673,12 +3854,9 @@ impl GpuRenderer {
             bytemuck::bytes_of(&main_uniforms),
         );
 
-        // Update primitives buffer
-        self.queue.write_buffer(
-            &self.buffers.primitives,
-            0,
-            bytemuck::cast_slice(&batch.primitives),
-        );
+        // Update buffers
+        self.write_primitives_safe(&batch.primitives);
+        let line_count = self.write_line_segments_safe(&batch.line_segments);
 
         // Create command encoder
         let mut encoder = self
@@ -3704,9 +3882,17 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.pipelines.sdf);
-            render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-            render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+            if !batch.primitives.is_empty() {
+                render_pass.set_pipeline(&self.pipelines.sdf);
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+            }
+
+            if line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..line_count as u32);
+            }
         }
 
         // Submit commands
@@ -3736,13 +3922,8 @@ impl GpuRenderer {
         };
 
         // Update primitives buffer
-        if !batch.primitives.is_empty() {
-            self.queue.write_buffer(
-                &self.buffers.primitives,
-                0,
-                bytemuck::cast_slice(&batch.primitives),
-            );
-        }
+        self.write_primitives_safe(&batch.primitives);
+        let bg_line_count = self.write_line_segments_safe(&batch.line_segments);
 
         // Split glass primitives into simple and liquid for separate rendering
         let mut simple_primitives: Vec<GpuGlassPrimitive> = Vec::new();
@@ -3876,6 +4057,12 @@ impl GpuRenderer {
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
                 render_pass.draw(0..6, 0..batch.primitives.len() as u32);
             }
+
+            if bg_line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..bg_line_count as u32);
+            }
         }
 
         // Pass 2: Render background primitives to target (at full resolution)
@@ -3905,6 +4092,12 @@ impl GpuRenderer {
                 render_pass.set_pipeline(&self.pipelines.sdf);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
                 render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+            }
+
+            if bg_line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..bg_line_count as u32);
             }
         }
 
@@ -3954,15 +4147,12 @@ impl GpuRenderer {
         // Submit background and glass passes first
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // Pass 4: Render foreground primitives (on top of glass)
+        // Pass 4: Render foreground primitives/lines (on top of glass)
         // This requires a separate submission because we need to overwrite the primitives buffer
-        if !batch.foreground_primitives.is_empty() {
-            // Upload foreground primitives to the buffer
-            self.queue.write_buffer(
-                &self.buffers.primitives,
-                0,
-                bytemuck::cast_slice(&batch.foreground_primitives),
-            );
+        if !batch.foreground_primitives.is_empty() || !batch.foreground_line_segments.is_empty() {
+            // Upload foreground primitives/lines to the buffers
+            self.write_primitives_safe(&batch.foreground_primitives);
+            let fg_line_count = self.write_line_segments_safe(&batch.foreground_line_segments);
 
             let mut encoder = self
                 .device
@@ -3985,9 +4175,17 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.pipelines.sdf);
-            render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-            render_pass.draw(0..6, 0..batch.foreground_primitives.len() as u32);
+            if !batch.foreground_primitives.is_empty() {
+                render_pass.set_pipeline(&self.pipelines.sdf);
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                render_pass.draw(0..6, 0..batch.foreground_primitives.len() as u32);
+            }
+
+            if fg_line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..fg_line_count as u32);
+            }
 
             drop(render_pass);
             self.queue.submit(std::iter::once(encoder.finish()));
@@ -4080,6 +4278,9 @@ impl GpuRenderer {
             );
         }
 
+        // Update line segments buffer
+        let line_count = self.write_line_segments_safe(&batch.line_segments);
+
         // Update path buffers if we have path geometry
         let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
@@ -4121,6 +4322,13 @@ impl GpuRenderer {
                     render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                     render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
                 }
+            }
+
+            // Render compact line segments
+            if line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..line_count as u32);
             }
 
             // Render SDF primitives using overlay pipeline
@@ -4241,6 +4449,9 @@ impl GpuRenderer {
             );
         }
 
+        // Update line segments buffer
+        let line_count = self.write_line_segments_safe(&batch.line_segments);
+
         // Update path buffers if we have path geometry
         let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
@@ -4282,6 +4493,13 @@ impl GpuRenderer {
                     render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                     render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
                 }
+            }
+
+            // Render compact line segments
+            if line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..line_count as u32);
             }
 
             // Render SDF primitives
@@ -4355,6 +4573,72 @@ impl GpuRenderer {
         }
 
         // Submit commands
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Render compact line segments as an overlay on existing content (LoadOp::Load).
+    pub fn render_line_segments_overlay(
+        &mut self,
+        target: &wgpu::TextureView,
+        segments: &[GpuLineSegment],
+    ) {
+        if segments.is_empty() {
+            return;
+        }
+
+        if std::env::var_os("BLINC_DEBUG_LINES").is_some() {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static LOGS: AtomicU32 = AtomicU32::new(0);
+            let n = LOGS.fetch_add(1, Ordering::Relaxed);
+            if n < 10 {
+                tracing::info!(
+                    "render_line_segments_overlay: segments={} viewport_size={:?}",
+                    segments.len(),
+                    self.viewport_size
+                );
+            }
+        }
+
+        // Update uniforms
+        let uniforms = Uniforms {
+            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
+            _padding: [0.0; 2],
+        };
+        self.queue
+            .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
+
+        let seg_count = self.write_line_segments_safe(segments);
+        if seg_count == 0 {
+            return;
+        }
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Blinc Line Segments Overlay Encoder"),
+            });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blinc Line Segments Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.lines_overlay);
+            render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+            render_pass.draw(0..6, 0..seg_count as u32);
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
@@ -4539,7 +4823,10 @@ impl GpuRenderer {
         batch: &PrimitiveBatch,
         sample_count: u32,
     ) {
-        if batch.paths.vertices.is_empty() && batch.primitives.is_empty() {
+        if batch.paths.vertices.is_empty()
+            && batch.primitives.is_empty()
+            && batch.line_segments.is_empty()
+        {
             return;
         }
 
@@ -4774,6 +5061,12 @@ impl GpuRenderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Render compact line segments after the MSAA composite.
+        // (Lines are geometry and typically look acceptable without MSAA here.)
+        if !batch.line_segments.is_empty() {
+            self.render_line_segments_overlay(target, &batch.line_segments);
+        }
     }
 
     /// Render only paths with MSAA anti-aliasing

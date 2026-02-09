@@ -1200,6 +1200,21 @@ pub trait DrawContext {
     /// Stroke a circle (convenience method)
     fn stroke_circle(&mut self, center: Point, radius: f32, stroke: &Stroke, brush: Brush);
 
+    /// Stroke a polyline through the given points.
+    ///
+    /// Implementations may provide a fast GPU path for large point counts.
+    /// The default implementation builds a [`Path`] and calls [`DrawContext::stroke_path`].
+    fn stroke_polyline(&mut self, points: &[Point], stroke: &Stroke, brush: Brush) {
+        if points.len() < 2 {
+            return;
+        }
+        let mut path = Path::new().move_to(points[0].x, points[0].y);
+        for &p in &points[1..] {
+            path = path.line_to(p.x, p.y);
+        }
+        self.stroke_path(&path, stroke, brush);
+    }
+
     /// Draw text at a position
     fn draw_text(&mut self, text: &str, origin: Point, style: &TextStyle);
 

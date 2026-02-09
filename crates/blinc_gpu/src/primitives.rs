@@ -107,6 +107,62 @@ pub struct ImageDraw {
     pub clip_type: ClipType,
 }
 
+/// A GPU line segment instance.
+///
+/// This is a compact per-segment representation intended for large polylines
+/// (e.g., time-series charts). The GPU generates quad geometry per instance.
+///
+/// Notes:
+/// - Coordinates are in screen space (post-transform).
+/// - Clipping is rectangular only for now (bounds in screen space).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuLineSegment {
+    /// (x0, y0, x1, y1) in screen pixels
+    pub p0p1: [f32; 4],
+    /// Clip bounds (x, y, width, height). Use "no clip" sentinel like primitives.
+    pub clip_bounds: [f32; 4],
+    /// Premultiplied RGBA
+    pub color: [f32; 4],
+    /// Params: (half_width, z_layer, reserved, reserved)
+    pub params: [f32; 4],
+}
+
+impl GpuLineSegment {
+    pub fn new(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
+        Self {
+            p0p1: [x0, y0, x1, y1],
+            clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+            params: [0.5, 0.0, 0.0, 0.0],
+        }
+    }
+
+    pub fn with_clip_bounds(mut self, clip_bounds: [f32; 4]) -> Self {
+        self.clip_bounds = clip_bounds;
+        self
+    }
+
+    pub fn with_half_width(mut self, half_width: f32) -> Self {
+        self.params[0] = half_width.max(0.0);
+        self
+    }
+
+    pub fn with_z_layer(mut self, z_layer: u32) -> Self {
+        self.params[1] = z_layer as f32;
+        self
+    }
+
+    pub fn with_premul_color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
+        self.color = [r, g, b, a];
+        self
+    }
+
+    pub fn z_layer(&self) -> u32 {
+        self.params[1].max(0.0) as u32
+    }
+}
+
 /// A GPU primitive ready for rendering (matches shader `Primitive` struct)
 ///
 /// Memory layout:
@@ -1277,6 +1333,10 @@ pub struct PrimitiveBatch {
     pub primitives: Vec<GpuPrimitive>,
     /// Foreground primitives (rendered after glass)
     pub foreground_primitives: Vec<GpuPrimitive>,
+    /// Background line segments (compact polyline rendering)
+    pub line_segments: Vec<GpuLineSegment>,
+    /// Foreground line segments (rendered after glass)
+    pub foreground_line_segments: Vec<GpuLineSegment>,
     pub glass_primitives: Vec<GpuGlassPrimitive>,
     pub glyphs: Vec<GpuGlyph>,
     /// Tessellated path geometry
@@ -1302,6 +1362,8 @@ impl PrimitiveBatch {
         Self {
             primitives: Vec::new(),
             foreground_primitives: Vec::new(),
+            line_segments: Vec::new(),
+            foreground_line_segments: Vec::new(),
             glass_primitives: Vec::new(),
             glyphs: Vec::new(),
             paths: PathBatch::default(),
@@ -1318,6 +1380,8 @@ impl PrimitiveBatch {
     pub fn clear(&mut self) {
         self.primitives.clear();
         self.foreground_primitives.clear();
+        self.line_segments.clear();
+        self.foreground_line_segments.clear();
         self.glass_primitives.clear();
         self.glyphs.clear();
         self.paths = PathBatch::default();
@@ -1381,6 +1445,14 @@ impl PrimitiveBatch {
     /// Push a primitive to the foreground layer (rendered after glass)
     pub fn push_foreground(&mut self, primitive: GpuPrimitive) {
         self.foreground_primitives.push(primitive);
+    }
+
+    pub fn push_line_segment(&mut self, seg: GpuLineSegment) {
+        self.line_segments.push(seg);
+    }
+
+    pub fn push_foreground_line_segment(&mut self, seg: GpuLineSegment) {
+        self.foreground_line_segments.push(seg);
     }
 
     pub fn push_glass(&mut self, glass: GpuGlassPrimitive) {
@@ -1636,11 +1708,14 @@ impl PrimitiveBatch {
     pub fn is_empty(&self) -> bool {
         self.primitives.is_empty()
             && self.foreground_primitives.is_empty()
+            && self.line_segments.is_empty()
+            && self.foreground_line_segments.is_empty()
             && self.glass_primitives.is_empty()
             && self.glyphs.is_empty()
             && self.paths.vertices.is_empty()
             && self.foreground_paths.vertices.is_empty()
             && self.viewports_3d.is_empty()
+            && self.particle_viewports.is_empty()
     }
 
     /// Check if the batch contains any tessellated path geometry
@@ -1723,8 +1798,15 @@ impl PrimitiveBatch {
         self.primitives.extend(other.primitives);
         self.foreground_primitives
             .extend(other.foreground_primitives);
+        self.line_segments.extend(other.line_segments);
+        self.foreground_line_segments
+            .extend(other.foreground_line_segments);
         self.glass_primitives.extend(other.glass_primitives);
         self.glyphs.extend(other.glyphs);
+        self.image_ops.extend(other.image_ops);
+        self.image_draws.extend(other.image_draws);
+        self.foreground_image_draws
+            .extend(other.foreground_image_draws);
 
         // Merge paths with index offset
         let base_vertex = self.paths.vertices.len() as u32;
@@ -1754,6 +1836,7 @@ impl PrimitiveBatch {
 
         // Merge 3D viewports
         self.viewports_3d.extend(other.viewports_3d);
+        self.particle_viewports.extend(other.particle_viewports);
     }
 }
 
