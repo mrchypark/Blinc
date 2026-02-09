@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/blinc_app",
     "crates/blinc_cli",
+    "crates/blinc_charts",
     "crates/blinc_core",
     "crates/blinc_animation",
     "crates/blinc_image",
