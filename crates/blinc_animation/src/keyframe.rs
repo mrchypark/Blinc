@@ -136,6 +136,8 @@ pub struct KeyframeProperties {
     pub translate_z: Option<f32>,
     /// Blend radius for smooth boolean operations (in pixels)
     pub blend_3d: Option<f32>,
+    /// Clip-path inset [top%, right%, bottom%, left%]
+    pub clip_inset: Option<[f32; 4]>,
 }
 
 impl KeyframeProperties {
@@ -257,6 +259,7 @@ impl KeyframeProperties {
             depth: lerp_opt(self.depth, other.depth, t),
             translate_z: lerp_opt(self.translate_z, other.translate_z, t),
             blend_3d: lerp_opt(self.blend_3d, other.blend_3d, t),
+            clip_inset: lerp_opt_array4(self.clip_inset, other.clip_inset, t),
         }
     }
 
@@ -308,6 +311,21 @@ impl KeyframeProperties {
 fn lerp_opt(a: Option<f32>, b: Option<f32>, t: f32) -> Option<f32> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a + (b - a) * t),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// Helper to interpolate optional [f32; 4] arrays
+fn lerp_opt_array4(a: Option<[f32; 4]>, b: Option<[f32; 4]>, t: f32) -> Option<[f32; 4]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+            a[3] + (b[3] - a[3]) * t,
+        ]),
         (Some(a), None) => Some(a),
         (None, Some(b)) => Some(b),
         (None, None) => None,

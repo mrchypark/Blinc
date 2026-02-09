@@ -729,6 +729,23 @@ impl CssKeyframes {
             props.blend_3d = Some(b);
         }
 
+        // Clip-path inset
+        if let Some(blinc_core::ClipPath::Inset {
+            top,
+            right,
+            bottom,
+            left,
+            ..
+        }) = &style.clip_path
+        {
+            props.clip_inset = Some([
+                clip_length_to_percent(top),
+                clip_length_to_percent(right),
+                clip_length_to_percent(bottom),
+                clip_length_to_percent(left),
+            ]);
+        }
+
         props
     }
 
@@ -1781,6 +1798,16 @@ fn parse_stylesheet_with_errors<'a>(
         let trimmed = remaining.trim_start();
         if trimmed.is_empty() {
             break;
+        }
+
+        // Skip CSS comments at the top level
+        if trimmed.starts_with("/*") {
+            if let Some(end) = trimmed.find("*/") {
+                remaining = &trimmed[end + 2..];
+                continue;
+            } else {
+                break; // Unterminated comment
+            }
         }
 
         // Try to parse a :root block first
@@ -4026,6 +4053,14 @@ fn parse_position_value(input: &str) -> Option<f32> {
 // ============================================================================
 
 /// Parse a CSS length value (px or %) into a ClipLength
+/// Convert a ClipLength to a float value for animation interpolation
+fn clip_length_to_percent(len: &ClipLength) -> f32 {
+    match len {
+        ClipLength::Percent(p) => *p,
+        ClipLength::Px(px) => *px,
+    }
+}
+
 fn parse_clip_length(s: &str) -> Option<ClipLength> {
     let s = s.trim();
     if let Some(stripped) = s.strip_suffix('%') {

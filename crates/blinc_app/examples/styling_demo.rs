@@ -329,6 +329,63 @@ fn main() -> Result<()> {
                 clip-path: polygon(40% 0%, 40% 40%, 0% 40%, 50% 100%, 100% 40%, 60% 40%, 60% 0%);
             }
 
+            @keyframes clip-reveal-center {
+                from { clip-path: inset(50% 50% 50% 50%); }
+                to { clip-path: inset(0% 0% 0% 0%); }
+            }
+            #clip-over-center {
+                position: absolute;
+                top: 0px;
+                left: 0px;
+                width: 200px;
+                height: 150px;
+                background: #3b82f6;
+                border-radius: 12px;
+                clip-path: inset(50% 50% 50% 50%);
+            }
+            #clip-over-center:hover {
+                animation: clip-reveal-center 400ms ease-out forwards;
+                clip-path: inset(0% 0% 0% 0%);
+            }
+
+            @keyframes clip-reveal-top {
+                from { clip-path: inset(100% 0% 0% 0%); }
+                to { clip-path: inset(0% 0% 0% 0%); }
+            }
+            #clip-over-top {
+                position: absolute;
+                top: 0px;
+                left: 0px;
+                width: 200px;
+                height: 150px;
+                background: #22c55e;
+                border-radius: 12px;
+                clip-path: inset(100% 0% 0% 0%);
+            }
+            #clip-over-top:hover {
+                animation: clip-reveal-top 400ms ease-out forwards;
+                clip-path: inset(0% 0% 0% 0%);
+            }
+
+            @keyframes clip-reveal-left {
+                from { clip-path: inset(0% 100% 0% 0%); }
+                to { clip-path: inset(0% 0% 0% 0%); }
+            }
+            #clip-over-left {
+                position: absolute;
+                top: 0px;
+                left: 0px;
+                width: 200px;
+                height: 150px;
+                background: #a855f7;
+                border-radius: 12px;
+                clip-path: inset(0% 100% 0% 0%);
+            }
+            #clip-over-left:hover {
+                animation: clip-reveal-left 400ms ease-out forwards;
+                clip-path: inset(0% 0% 0% 0%);
+            }
+
             "#,
             );
             css_loaded = true;
@@ -380,6 +437,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(animation_3d_section())
                     .child(group_composition_section())
                     .child(clip_path_section())
+                    .child(clip_path_animation_section())
                     .child(css_position_section())
                     .child(api_comparison_section()),
             ),
@@ -1916,6 +1974,70 @@ fn clip_path_section() -> impl ElementBuilder {
                         .gap(8.0)
                         .child(code_label("polygon (arrow)"))
                         .child(div().w(120.0).h(120.0).id("clip-polygon-arrow")),
+                ),
+        )
+}
+
+// ============================================================================
+// ANIMATED CLIP-PATH SECTION (hover-triggered clip-path keyframe animations)
+// ============================================================================
+
+fn clip_path_animation_section() -> impl ElementBuilder {
+    let dark_blue = Color::from_hex(0x1e3a5f);
+    let dark_green = Color::from_hex(0x0f3d2a);
+    let dark_purple = Color::from_hex(0x3d1f5e);
+
+    section_container()
+        .child(section_title("Animated clip-path"))
+        .child(section_description(
+            "Hover to reveal content with animated clip-path transitions. A bright overlay clips over a dark base layer.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("Center reveal"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(150.0)
+                                .relative()
+                                .child(div().absolute().top(0.0).left(0.0).w(200.0).h(150.0).bg(dark_blue).rounded(12.0))
+                                .child(div().id("clip-over-center")),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("Top-down"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(150.0)
+                                .relative()
+                                .child(div().absolute().top(0.0).left(0.0).w(200.0).h(150.0).bg(dark_green).rounded(12.0))
+                                .child(div().id("clip-over-top")),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("Left-to-right"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(150.0)
+                                .relative()
+                                .child(div().absolute().top(0.0).left(0.0).w(200.0).h(150.0).bg(dark_purple).rounded(12.0))
+                                .child(div().id("clip-over-left")),
+                        ),
                 ),
         )
 }

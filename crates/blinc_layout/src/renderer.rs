@@ -4,7 +4,7 @@
 //! and the DrawContext rendering API.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
 
 use blinc_animation::AnimationScheduler;
@@ -435,6 +435,8 @@ pub struct RenderTree {
     /// Active CSS keyframe animations (from stylesheet `animation:` property)
     /// Maps node_id to the running animation with all keyframes preserved
     css_animations: HashMap<LayoutNodeId, crate::render_state::ActiveCssAnimation>,
+    /// Nodes that currently have hover-triggered CSS animations
+    hover_css_animations: HashSet<LayoutNodeId>,
 }
 
 /// Result of an incremental update attempt
@@ -495,6 +497,7 @@ impl RenderTree {
             animated_render_bounds: HashMap::new(),
             // CSS keyframe animation system
             css_animations: HashMap::new(),
+            hover_css_animations: HashSet::new(),
         }
     }
 
@@ -5077,6 +5080,18 @@ impl RenderTree {
         if let Some(b) = anim_props.blend_3d {
             props.blend_3d = Some(b);
         }
+
+        // Clip-path inset animation
+        if let Some(inset) = &anim_props.clip_inset {
+            use blinc_core::{ClipLength, ClipPath};
+            props.clip_path = Some(ClipPath::Inset {
+                top: ClipLength::Percent(inset[0]),
+                right: ClipLength::Percent(inset[1]),
+                bottom: ClipLength::Percent(inset[2]),
+                left: ClipLength::Percent(inset[3]),
+                round: None,
+            });
+        }
     }
 
     /// Apply base stylesheet styles to all registered elements
@@ -5161,6 +5176,32 @@ impl RenderTree {
                     pressed,
                     focused
                 );
+            }
+
+            // Trigger/stop hover CSS animations
+            let stylesheet = self.stylesheet.as_ref().unwrap();
+            if hovered && !self.hover_css_animations.contains(&node_id) {
+                let has_hover_anim = stylesheet
+                    .get_with_state(&element_id, ElementState::Hover)
+                    .and_then(|s| s.animation.as_ref())
+                    .is_some();
+                if has_hover_anim {
+                    self.start_css_animation_for_state(node_id, ElementState::Hover);
+                    self.hover_css_animations.insert(node_id);
+                    any_applied = true;
+                }
+            } else if !hovered && self.hover_css_animations.remove(&node_id) {
+                // Hover left — remove hover animation if no base animation exists
+                let base_has_anim = stylesheet
+                    .get(&element_id)
+                    .and_then(|s| s.animation.as_ref())
+                    .is_some();
+                if base_has_anim {
+                    self.start_css_animation_for_element(node_id);
+                } else {
+                    self.css_animations.remove(&node_id);
+                }
+                any_applied = true;
             }
         }
 
