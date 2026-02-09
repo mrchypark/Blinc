@@ -25,7 +25,7 @@ fn main() -> Result<()> {
         .init();
 
     let config = WindowConfig {
-        title: "Blinc Unified Styling API Demo".to_string(),
+        title: "Blinc Styling API Demo".to_string(),
         width: 1000,
         height: 800,
         resizable: true,
@@ -884,7 +884,7 @@ fn header() -> impl ElementBuilder {
         .justify_center()
         .gap(16.0)
         .child(
-            text("Unified Styling API")
+            text("Blinc Styling API")
                 .size(28.0)
                 .weight(FontWeight::Bold)
                 .color(text_primary),
