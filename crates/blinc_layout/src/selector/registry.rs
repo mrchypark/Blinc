@@ -31,6 +31,12 @@ pub struct ElementRegistry {
     /// Cached element bounds (populated after layout computation)
     /// Maps string ID → computed bounds
     bounds_cache: RwLock<HashMap<String, Bounds>>,
+    /// CSS classes for each node (for .class selector matching)
+    classes: RwLock<HashMap<LayoutNodeId, Vec<String>>>,
+    /// Child index within parent (0-based) for :nth-child/:first-child/:last-child
+    child_indices: RwLock<HashMap<LayoutNodeId, usize>>,
+    /// Total sibling count for :last-child/:only-child
+    sibling_counts: RwLock<HashMap<LayoutNodeId, usize>>,
 }
 
 impl std::fmt::Debug for ElementRegistry {
@@ -66,6 +72,9 @@ impl ElementRegistry {
             pending_on_ready: Mutex::new(Vec::new()),
             triggered_on_ready_ids: Mutex::new(std::collections::HashSet::new()),
             bounds_cache: RwLock::new(HashMap::new()),
+            classes: RwLock::new(HashMap::new()),
+            child_indices: RwLock::new(HashMap::new()),
+            sibling_counts: RwLock::new(HashMap::new()),
         }
     }
 
@@ -103,6 +112,44 @@ impl ElementRegistry {
         if let Ok(mut parents) = self.parents.write() {
             parents.insert(child, parent);
         }
+    }
+
+    /// Register CSS classes for a node
+    pub fn register_classes(&self, node_id: LayoutNodeId, classes: Vec<String>) {
+        if !classes.is_empty() {
+            if let Ok(mut map) = self.classes.write() {
+                map.insert(node_id, classes);
+            }
+        }
+    }
+
+    /// Register a child's index within its parent and sibling count
+    pub fn register_child_index(&self, child: LayoutNodeId, index: usize, total_siblings: usize) {
+        if let Ok(mut indices) = self.child_indices.write() {
+            indices.insert(child, index);
+        }
+        if let Ok(mut counts) = self.sibling_counts.write() {
+            counts.insert(child, total_siblings);
+        }
+    }
+
+    /// Check if a node has a specific CSS class
+    pub fn has_class(&self, node_id: LayoutNodeId, class: &str) -> bool {
+        self.classes
+            .read()
+            .ok()
+            .and_then(|map| map.get(&node_id).map(|c| c.iter().any(|s| s == class)))
+            .unwrap_or(false)
+    }
+
+    /// Get child index within parent (0-based)
+    pub fn get_child_index(&self, node_id: LayoutNodeId) -> Option<usize> {
+        self.child_indices.read().ok()?.get(&node_id).copied()
+    }
+
+    /// Get total sibling count for a node
+    pub fn get_sibling_count(&self, node_id: LayoutNodeId) -> Option<usize> {
+        self.sibling_counts.read().ok()?.get(&node_id).copied()
     }
 
     /// Look up a node ID by string ID
@@ -158,6 +205,15 @@ impl ElementRegistry {
         }
         if let Ok(mut parents) = self.parents.write() {
             parents.clear();
+        }
+        if let Ok(mut classes) = self.classes.write() {
+            classes.clear();
+        }
+        if let Ok(mut indices) = self.child_indices.write() {
+            indices.clear();
+        }
+        if let Ok(mut counts) = self.sibling_counts.write() {
+            counts.clear();
         }
         // Note: bounds_cache is NOT cleared here - it's cleared separately
         // via clear_bounds() when layout is recomputed

@@ -899,16 +899,29 @@ impl AndroidApp {
                         16.0
                     };
                     let css_animating = tree.tick_css_animations(dt_ms);
+                    let css_transitioning = tree.tick_css_transitions(dt_ms);
+                    // Apply CSS state styles (:hover, :active, :focus)
+                    // This also detects property changes and starts new transitions
+                    if let Some(ref windowed_ctx) = ctx {
+                        if tree.stylesheet().is_some() {
+                            tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
+                        }
+                    }
                     if css_animating {
                         tree.apply_all_css_animation_props();
                         needs_redraw = true;
                         needs_redraw_next_frame = true;
                     }
-                    // Apply CSS state styles (:hover, :active, :focus)
-                    if let Some(ref windowed_ctx) = ctx {
-                        if tree.stylesheet().is_some() {
-                            tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
-                        }
+                    if css_transitioning || !tree.css_transitions_empty() {
+                        tree.apply_all_css_transition_props();
+                        needs_redraw = true;
+                        needs_redraw_next_frame = true;
+                    }
+                    // Apply animated layout properties and recompute layout if needed
+                    if (css_animating || css_transitioning || !tree.css_transitions_empty())
+                        && tree.apply_animated_layout_props()
+                    {
+                        tree.compute_layout(ctx.width, ctx.height);
                     }
                 }
                 last_frame_time_ms = current_time;

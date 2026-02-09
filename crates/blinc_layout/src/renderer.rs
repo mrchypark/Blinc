@@ -18,7 +18,10 @@ use taffy::prelude::*;
 use taffy::Overflow;
 
 use crate::canvas::CanvasData;
-use crate::css_parser::{ElementState, Stylesheet};
+use crate::css_parser::{
+    Combinator, ComplexSelector, CompoundSelector, ElementState, SelectorPart, StructuralPseudo,
+    Stylesheet,
+};
 use crate::diff::{render_props_eq, ChangeCategory, DivHash};
 use crate::div::{ElementBuilder, ElementTypeId};
 use crate::element::{ElementBounds, GlassMaterial, Material, RenderLayer, RenderProps};
@@ -392,6 +395,9 @@ pub struct RenderTree {
     /// Base styles for elements (before state modifiers)
     /// Used to restore original styles when state changes
     base_styles: HashMap<LayoutNodeId, RenderProps>,
+    /// Base taffy layout styles for elements (before state modifiers)
+    /// Used to restore original layout when state changes affect layout properties
+    base_taffy_styles: HashMap<LayoutNodeId, taffy::Style>,
     /// Layout animation configs for nodes (from element builders)
     /// Maps node_id to the LayoutAnimationConfig specifying which properties to animate
     layout_animation_configs: HashMap<LayoutNodeId, LayoutAnimationConfig>,
@@ -437,6 +443,17 @@ pub struct RenderTree {
     css_animations: HashMap<LayoutNodeId, crate::render_state::ActiveCssAnimation>,
     /// Nodes that currently have hover-triggered CSS animations
     hover_css_animations: HashSet<LayoutNodeId>,
+
+    // ========================================================================
+    // CSS Transition System
+    // ========================================================================
+    /// Active CSS transitions (from stylesheet `transition:` property)
+    /// Maps node_id to the running transition animation
+    css_transitions: HashMap<LayoutNodeId, crate::render_state::ActiveCssAnimation>,
+
+    /// Nodes that were affected by complex selector state rules (e.g. .class:hover)
+    /// Used to reset render props when the state rule no longer matches
+    complex_state_affected: HashSet<LayoutNodeId>,
 }
 
 /// Result of an incremental update attempt
@@ -483,6 +500,7 @@ impl RenderTree {
             on_ready_callbacks: HashMap::new(),
             stylesheet: None,
             base_styles: HashMap::new(),
+            base_taffy_styles: HashMap::new(),
             layout_animation_configs: HashMap::new(),
             layout_animations: HashMap::new(),
             previous_bounds: HashMap::new(),
@@ -498,6 +516,9 @@ impl RenderTree {
             // CSS keyframe animation system
             css_animations: HashMap::new(),
             hover_css_animations: HashSet::new(),
+            // CSS transition system
+            css_transitions: HashMap::new(),
+            complex_state_affected: HashSet::new(),
         }
     }
 
@@ -1191,6 +1212,13 @@ impl RenderTree {
             self.element_registry.register(id, node_id);
         }
 
+        // Register CSS classes for complex selector matching
+        let classes = element.element_classes();
+        if !classes.is_empty() {
+            self.element_registry
+                .register_classes(node_id, classes.to_vec());
+        }
+
         // Bind ScrollRef if present (for scroll containers)
         if let Some(scroll_ref) = element.bound_scroll_ref() {
             self.register_scroll_ref(node_id, scroll_ref);
@@ -1200,12 +1228,6 @@ impl RenderTree {
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
 
-        // Debug: see what's happening with children
-        // eprintln!(
-        //     "collect_render_props<E>: node={:?}, type_id={:?}, layout_children={}, builder_children={}",
-        //     node_id, element.element_type_id(), child_node_ids.len(), child_builders.len()
-        // );
-
         // Log mismatch to help debug stateful/motion issues (in collect_render_props)
         if child_node_ids.len() != child_builders.len() && !child_node_ids.is_empty() {
             tracing::warn!(
@@ -1214,8 +1236,17 @@ impl RenderTree {
             );
         }
 
+        let total_children = child_node_ids.len();
+
         // Match children by index (they were built in order)
-        for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
+        for (index, (child_builder, &child_node_id)) in
+            child_builders.iter().zip(child_node_ids.iter()).enumerate()
+        {
+            // Register parent-child relationship and child index
+            self.element_registry
+                .register_parent(child_node_id, node_id);
+            self.element_registry
+                .register_child_index(child_node_id, index, total_children);
             self.collect_render_props_boxed(child_builder.as_ref(), child_node_id);
         }
     }
@@ -1404,6 +1435,13 @@ impl RenderTree {
             self.element_registry.register(id, node_id);
         }
 
+        // Register CSS classes for complex selector matching
+        let classes = element.element_classes();
+        if !classes.is_empty() {
+            self.element_registry
+                .register_classes(node_id, classes.to_vec());
+        }
+
         // Bind ScrollRef if present (for scroll containers)
         if let Some(scroll_ref) = element.bound_scroll_ref() {
             self.register_scroll_ref(node_id, scroll_ref);
@@ -1422,6 +1460,8 @@ impl RenderTree {
                 child_builders.len()
             );
         }
+
+        let total_children = child_node_ids.len();
 
         // Check if this is a Motion container
         let is_motion = element.element_type_id() == ElementTypeId::Motion;
@@ -1462,6 +1502,12 @@ impl RenderTree {
         for (index, (child_builder, &child_node_id)) in
             child_builders.iter().zip(child_node_ids.iter()).enumerate()
         {
+            // Register parent-child relationship and child index
+            self.element_registry
+                .register_parent(child_node_id, node_id);
+            self.element_registry
+                .register_child_index(child_node_id, index, total_children);
+
             // If parent is Motion, propagate motion animation to child
             if is_motion {
                 if let Some(motion_config) = element.motion_animation_for_child(index) {
@@ -1682,6 +1728,13 @@ impl RenderTree {
             self.element_registry.register(id, node_id);
         }
 
+        // Register CSS classes for complex selector matching
+        let classes = element.element_classes();
+        if !classes.is_empty() {
+            self.element_registry
+                .register_classes(node_id, classes.to_vec());
+        }
+
         // Bind ScrollRef if present (for scroll containers)
         if let Some(scroll_ref) = element.bound_scroll_ref() {
             self.register_scroll_ref(node_id, scroll_ref);
@@ -1690,8 +1743,15 @@ impl RenderTree {
         // Recursively process children (without motion - motion only applies to direct children)
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
+        let total_children = child_node_ids.len();
 
-        for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
+        for (index, (child_builder, &child_node_id)) in
+            child_builders.iter().zip(child_node_ids.iter()).enumerate()
+        {
+            self.element_registry
+                .register_parent(child_node_id, node_id);
+            self.element_registry
+                .register_child_index(child_node_id, index, total_children);
             self.collect_render_props_boxed(child_builder.as_ref(), child_node_id);
         }
     }
@@ -4233,11 +4293,29 @@ impl RenderTree {
                 self.base_styles.insert(node_id, render_node.props.clone());
             }
         }
+        // Get or store base taffy style for layout transition support
+        if !self.base_taffy_styles.contains_key(&node_id) {
+            if let Some(style) = self.layout_tree.get_style(node_id) {
+                self.base_taffy_styles.insert(node_id, style);
+            }
+        }
 
         // Start with base style
         let base_props = match self.base_styles.get(&node_id) {
             Some(props) => props.clone(),
             None => return false,
+        };
+
+        // Check if this element has transitions defined
+        let transition_set = stylesheet
+            .get(&element_id)
+            .and_then(|s| s.transition.clone());
+
+        // Snapshot before-props for transition detection (visual + layout)
+        let before_kp = if transition_set.is_some() {
+            self.snapshot_keyframe_properties(node_id)
+        } else {
+            None
         };
 
         // Apply state-specific styles in order of precedence
@@ -4250,9 +4328,20 @@ impl RenderTree {
         // Reset to base style first
         render_node.props = base_props;
 
+        // Reset taffy style to base before applying state layout overrides
+        if let Some(base_taffy) = self.base_taffy_styles.get(&node_id) {
+            self.layout_tree.set_style(node_id, base_taffy.clone());
+        }
+
         // Apply base stylesheet style (if any)
         if let Some(base_style) = stylesheet.get(&element_id) {
             Self::apply_element_style_to_props(&mut render_node.props, base_style);
+            if base_style.has_layout_props() {
+                if let Some(mut taffy_style) = self.layout_tree.get_style(node_id) {
+                    Self::apply_element_style_to_taffy(&mut taffy_style, base_style);
+                    self.layout_tree.set_style(node_id, taffy_style);
+                }
+            }
             applied = true;
         }
 
@@ -4260,6 +4349,12 @@ impl RenderTree {
         if hovered {
             if let Some(hover_style) = stylesheet.get_with_state(&element_id, ElementState::Hover) {
                 Self::apply_element_style_to_props(&mut render_node.props, hover_style);
+                if hover_style.has_layout_props() {
+                    if let Some(mut taffy_style) = self.layout_tree.get_style(node_id) {
+                        Self::apply_element_style_to_taffy(&mut taffy_style, hover_style);
+                        self.layout_tree.set_style(node_id, taffy_style);
+                    }
+                }
                 applied = true;
             }
         }
@@ -4269,6 +4364,12 @@ impl RenderTree {
             if let Some(active_style) = stylesheet.get_with_state(&element_id, ElementState::Active)
             {
                 Self::apply_element_style_to_props(&mut render_node.props, active_style);
+                if active_style.has_layout_props() {
+                    if let Some(mut taffy_style) = self.layout_tree.get_style(node_id) {
+                        Self::apply_element_style_to_taffy(&mut taffy_style, active_style);
+                        self.layout_tree.set_style(node_id, taffy_style);
+                    }
+                }
                 applied = true;
             }
         }
@@ -4277,7 +4378,20 @@ impl RenderTree {
         if focused {
             if let Some(focus_style) = stylesheet.get_with_state(&element_id, ElementState::Focus) {
                 Self::apply_element_style_to_props(&mut render_node.props, focus_style);
+                if focus_style.has_layout_props() {
+                    if let Some(mut taffy_style) = self.layout_tree.get_style(node_id) {
+                        Self::apply_element_style_to_taffy(&mut taffy_style, focus_style);
+                        self.layout_tree.set_style(node_id, taffy_style);
+                    }
+                }
                 applied = true;
+            }
+        }
+
+        // Detect and start transitions for changed properties (visual + layout)
+        if let (Some(before_kp), Some(transition_set)) = (before_kp, transition_set) {
+            if let Some(after_kp) = self.snapshot_keyframe_properties(node_id) {
+                self.detect_and_start_transitions(node_id, &before_kp, &after_kp, &transition_set);
             }
         }
 
@@ -4350,6 +4464,9 @@ impl RenderTree {
         if let Some(ref cp) = style.clip_path {
             props.clip_path = Some(cp.clone());
         }
+        if let Some(filter) = style.filter {
+            props.filter = Some(filter);
+        }
         // Position flags (fixed/sticky are rendering concerns, not layout)
         if let Some(pos) = style.position {
             use crate::element_style::StylePosition;
@@ -4392,6 +4509,115 @@ impl RenderTree {
             if matches!(oy, StyleOverflow::Clip | StyleOverflow::Scroll) {
                 props.clips_content = true;
             }
+        }
+    }
+
+    /// Apply layout properties from an ElementStyle to a taffy Style.
+    ///
+    /// This mirrors `apply_element_style_to_props` but for layout properties
+    /// that live in the taffy layout system rather than RenderProps.
+    fn apply_element_style_to_taffy(
+        taffy_style: &mut taffy::Style,
+        es: &crate::element_style::ElementStyle,
+    ) {
+        use taffy::prelude::*;
+
+        if let Some(w) = es.width {
+            taffy_style.size.width = Dimension::Length(w);
+        }
+        if let Some(h) = es.height {
+            taffy_style.size.height = Dimension::Length(h);
+        }
+        if let Some(ref p) = es.padding {
+            taffy_style.padding = taffy::geometry::Rect {
+                top: LengthPercentage::Length(p.top),
+                right: LengthPercentage::Length(p.right),
+                bottom: LengthPercentage::Length(p.bottom),
+                left: LengthPercentage::Length(p.left),
+            };
+        }
+        if let Some(ref m) = es.margin {
+            taffy_style.margin = taffy::geometry::Rect {
+                top: LengthPercentageAuto::Length(m.top),
+                right: LengthPercentageAuto::Length(m.right),
+                bottom: LengthPercentageAuto::Length(m.bottom),
+                left: LengthPercentageAuto::Length(m.left),
+            };
+        }
+        if let Some(g) = es.gap {
+            taffy_style.gap = taffy::geometry::Size {
+                width: LengthPercentage::Length(g),
+                height: LengthPercentage::Length(g),
+            };
+        }
+    }
+
+    /// Snapshot all animatable properties (visual + layout) for a node.
+    ///
+    /// Combines visual properties from RenderProps with layout properties
+    /// from the taffy Style to create a complete KeyframeProperties snapshot
+    /// suitable for transition detection.
+    fn snapshot_keyframe_properties(
+        &self,
+        node_id: LayoutNodeId,
+    ) -> Option<blinc_animation::KeyframeProperties> {
+        let render_node = self.render_nodes.get(&node_id)?;
+        let mut kp = Self::render_props_to_keyframe_properties(&render_node.props);
+
+        // Also extract layout properties from taffy style
+        if let Some(style) = self.layout_tree.get_style(node_id) {
+            if let taffy::Dimension::Length(w) = style.size.width {
+                kp.width = Some(w);
+            }
+            if let taffy::Dimension::Length(h) = style.size.height {
+                kp.height = Some(h);
+            }
+            // Extract padding
+            let pt = Self::taffy_lp_to_f32(&style.padding.top);
+            let pr = Self::taffy_lp_to_f32(&style.padding.right);
+            let pb = Self::taffy_lp_to_f32(&style.padding.bottom);
+            let pl = Self::taffy_lp_to_f32(&style.padding.left);
+            if pt.is_some() || pr.is_some() || pb.is_some() || pl.is_some() {
+                kp.padding = Some([
+                    pt.unwrap_or(0.0),
+                    pr.unwrap_or(0.0),
+                    pb.unwrap_or(0.0),
+                    pl.unwrap_or(0.0),
+                ]);
+            }
+            // Extract margin
+            let mt = Self::taffy_lpa_to_f32(&style.margin.top);
+            let mr = Self::taffy_lpa_to_f32(&style.margin.right);
+            let mb = Self::taffy_lpa_to_f32(&style.margin.bottom);
+            let ml = Self::taffy_lpa_to_f32(&style.margin.left);
+            if mt.is_some() || mr.is_some() || mb.is_some() || ml.is_some() {
+                kp.margin = Some([
+                    mt.unwrap_or(0.0),
+                    mr.unwrap_or(0.0),
+                    mb.unwrap_or(0.0),
+                    ml.unwrap_or(0.0),
+                ]);
+            }
+            // Extract gap
+            if let taffy::LengthPercentage::Length(g) = style.gap.width {
+                kp.gap = Some(g);
+            }
+        }
+
+        Some(kp)
+    }
+
+    fn taffy_lp_to_f32(lp: &taffy::LengthPercentage) -> Option<f32> {
+        match lp {
+            taffy::LengthPercentage::Length(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    fn taffy_lpa_to_f32(lpa: &taffy::LengthPercentageAuto) -> Option<f32> {
+        match lpa {
+            taffy::LengthPercentageAuto::Length(v) => Some(*v),
+            _ => None,
         }
     }
 
@@ -4784,11 +5010,409 @@ impl RenderTree {
             None => return false,
         };
 
-        // Check if any state styles exist
-        stylesheet.contains_with_state(&element_id, ElementState::Hover)
+        // Check if any simple state styles exist
+        if stylesheet.contains_with_state(&element_id, ElementState::Hover)
             || stylesheet.contains_with_state(&element_id, ElementState::Active)
             || stylesheet.contains_with_state(&element_id, ElementState::Focus)
             || stylesheet.contains_with_state(&element_id, ElementState::Disabled)
+        {
+            return true;
+        }
+
+        // Check if any complex rules with state exist that could affect this node
+        stylesheet.has_complex_state_rules()
+    }
+
+    // =========================================================================
+    // Complex Selector Matching Engine
+    // =========================================================================
+
+    /// Check if a compound selector matches a given node
+    fn compound_matches(
+        &self,
+        compound: &CompoundSelector,
+        node_id: LayoutNodeId,
+        hovered: bool,
+        pressed: bool,
+        focused: bool,
+    ) -> bool {
+        for part in &compound.parts {
+            match part {
+                SelectorPart::Id(id) => {
+                    let node_id_str = self.element_registry.get_id(node_id);
+                    if node_id_str.as_deref() != Some(id.as_str()) {
+                        return false;
+                    }
+                }
+                SelectorPart::Class(class) => {
+                    if !self.element_registry.has_class(node_id, class) {
+                        return false;
+                    }
+                }
+                SelectorPart::State(state) => {
+                    let matches = match state {
+                        ElementState::Hover => hovered,
+                        ElementState::Active => pressed,
+                        ElementState::Focus => focused,
+                        ElementState::Disabled => false, // TODO: track disabled state
+                    };
+                    if !matches {
+                        return false;
+                    }
+                }
+                SelectorPart::PseudoClass(pseudo) => {
+                    let matches = match pseudo {
+                        StructuralPseudo::FirstChild => {
+                            self.element_registry.get_child_index(node_id) == Some(0)
+                        }
+                        StructuralPseudo::LastChild => {
+                            let index = self.element_registry.get_child_index(node_id);
+                            let count = self.element_registry.get_sibling_count(node_id);
+                            match (index, count) {
+                                (Some(i), Some(c)) if c > 0 => i == c - 1,
+                                _ => false,
+                            }
+                        }
+                        StructuralPseudo::NthChild(n) => {
+                            // nth-child is 1-based in CSS
+                            self.element_registry.get_child_index(node_id)
+                                == Some(n.saturating_sub(1))
+                        }
+                        StructuralPseudo::OnlyChild => {
+                            self.element_registry.get_sibling_count(node_id) == Some(1)
+                        }
+                    };
+                    if !matches {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Check if a complex selector matches a given target node
+    ///
+    /// Walks the selector chain right-to-left (target element first),
+    /// checking combinators against the ancestor chain.
+    fn complex_selector_matches(
+        &self,
+        selector: &ComplexSelector,
+        target_node: LayoutNodeId,
+        hovered_nodes: &std::collections::HashSet<LayoutNodeId>,
+        pressed_nodes: &std::collections::HashSet<LayoutNodeId>,
+        focused_node: Option<LayoutNodeId>,
+    ) -> bool {
+        if selector.segments.is_empty() {
+            return false;
+        }
+
+        // Start from the rightmost segment (the target)
+        let segments = &selector.segments;
+        let (target_compound, _) = &segments[segments.len() - 1];
+
+        // Check target node against the rightmost compound
+        let target_hovered = hovered_nodes.contains(&target_node);
+        let target_pressed = pressed_nodes.contains(&target_node);
+        let target_focused = focused_node == Some(target_node);
+
+        if !self.compound_matches(
+            target_compound,
+            target_node,
+            target_hovered,
+            target_pressed,
+            target_focused,
+        ) {
+            return false;
+        }
+
+        // Walk backwards through remaining segments (ancestors)
+        if segments.len() == 1 {
+            return true; // Simple selector, already matched
+        }
+
+        let mut current_node = target_node;
+
+        // Walk from right-to-left through the selector segments (skip the last which is the target)
+        for i in (0..segments.len() - 1).rev() {
+            let (compound, combinator) = &segments[i];
+            let combinator = combinator.unwrap_or(Combinator::Descendant);
+
+            match combinator {
+                Combinator::Child => {
+                    // Must match the immediate parent
+                    let parent = match self.element_registry.get_parent(current_node) {
+                        Some(p) => p,
+                        None => return false,
+                    };
+                    let parent_hovered = hovered_nodes.contains(&parent);
+                    let parent_pressed = pressed_nodes.contains(&parent);
+                    let parent_focused = focused_node == Some(parent);
+
+                    if !self.compound_matches(
+                        compound,
+                        parent,
+                        parent_hovered,
+                        parent_pressed,
+                        parent_focused,
+                    ) {
+                        return false;
+                    }
+                    current_node = parent;
+                }
+                Combinator::Descendant => {
+                    // Walk up ancestors until a match is found
+                    let ancestors = self.element_registry.ancestors(current_node);
+                    let mut found = false;
+                    for ancestor in &ancestors {
+                        let anc_hovered = hovered_nodes.contains(ancestor);
+                        let anc_pressed = pressed_nodes.contains(ancestor);
+                        let anc_focused = focused_node == Some(*ancestor);
+
+                        if self.compound_matches(
+                            compound,
+                            *ancestor,
+                            anc_hovered,
+                            anc_pressed,
+                            anc_focused,
+                        ) {
+                            current_node = *ancestor;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Apply complex selector rules that match the current state
+    ///
+    /// Returns true if any styles were applied.
+    fn apply_complex_selector_styles(&mut self, router: &crate::event_router::EventRouter) -> bool {
+        let stylesheet = match &self.stylesheet {
+            Some(s) => s.clone(),
+            None => return false,
+        };
+
+        let complex_rules = stylesheet.complex_rules();
+        if complex_rules.is_empty() {
+            return false;
+        }
+
+        // Collect current interaction state into sets for efficient lookup
+        let hovered_nodes: std::collections::HashSet<LayoutNodeId> =
+            router.hovered_nodes().collect();
+        let pressed_nodes: std::collections::HashSet<LayoutNodeId> =
+            router.pressed_target().into_iter().collect();
+        let focused_node: Option<LayoutNodeId> = {
+            // Check all registered nodes for focus
+            let mut focused = None;
+            for id in self.element_registry.all_ids() {
+                if let Some(nid) = self.element_registry.get(&id) {
+                    if router.is_focused(nid) {
+                        focused = Some(nid);
+                        break;
+                    }
+                }
+            }
+            focused
+        };
+
+        // Collect ALL render node IDs (not just those with IDs — .class selectors can match any node)
+        let all_node_ids: Vec<LayoutNodeId> = self.render_nodes.keys().copied().collect();
+
+        // Reset previously state-affected nodes to their base props so that
+        // styles from rules that no longer match (e.g. :hover ended) are removed
+        let prev_affected: HashSet<LayoutNodeId> = std::mem::take(&mut self.complex_state_affected);
+
+        // Snapshot BEFORE the reset for prev_affected nodes — captures the actual
+        // visual state (e.g. hover values after a transition completed).  This way
+        // when the same hover state is re-applied, before == after → no spurious
+        // re-transition.
+        let mut pre_reset_snapshots: HashMap<LayoutNodeId, blinc_animation::KeyframeProperties> =
+            HashMap::new();
+        for &node_id in &prev_affected {
+            if let Some(kp) = self.snapshot_keyframe_properties(node_id) {
+                pre_reset_snapshots.insert(node_id, kp);
+            }
+        }
+
+        for &node_id in &prev_affected {
+            if let Some(base) = self.base_styles.get(&node_id) {
+                if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                    render_node.props = base.clone();
+                }
+            }
+        }
+
+        // Re-apply all base (non-state) complex rules first for reset nodes
+        // so that base class styles are always present
+        for (selector, style) in complex_rules {
+            if !selector.has_state() {
+                for &node_id in &prev_affected {
+                    if self.complex_selector_matches(
+                        selector,
+                        node_id,
+                        &hovered_nodes,
+                        &pressed_nodes,
+                        focused_node,
+                    ) {
+                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                            Self::apply_element_style_to_props(&mut render_node.props, style);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut any_applied = false;
+
+        for (selector, style) in complex_rules {
+            // Only state-dependent rules need the full treatment here;
+            // base rules for non-previously-affected nodes are handled below
+            let is_state_rule = selector.has_state();
+
+            for &node_id in &all_node_ids {
+                // For base rules on nodes that were just reset above, skip (already applied)
+                if !is_state_rule && prev_affected.contains(&node_id) {
+                    continue;
+                }
+
+                if self.complex_selector_matches(
+                    selector,
+                    node_id,
+                    &hovered_nodes,
+                    &pressed_nodes,
+                    focused_node,
+                ) {
+                    // Save base styles for nodes affected by state rules (for future reset)
+                    if is_state_rule {
+                        if !self.base_styles.contains_key(&node_id) {
+                            if let Some(render_node) = self.render_nodes.get(&node_id) {
+                                self.base_styles.insert(node_id, render_node.props.clone());
+                            }
+                        }
+                        self.complex_state_affected.insert(node_id);
+                    }
+
+                    // Check for transition support — look in both ID-based and class-based rules
+                    let transition_set = {
+                        // First try by element ID
+                        let by_id = self.element_registry.get_id(node_id).and_then(|eid| {
+                            stylesheet.get(&eid).and_then(|s| s.transition.clone())
+                        });
+                        // If not found, check if any matching base complex rule has a transition
+                        by_id.or_else(|| {
+                            complex_rules.iter().find_map(|(sel, sty)| {
+                                if !sel.has_state()
+                                    && self.complex_selector_matches(
+                                        sel,
+                                        node_id,
+                                        &hovered_nodes,
+                                        &pressed_nodes,
+                                        focused_node,
+                                    )
+                                {
+                                    sty.transition.clone()
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                    };
+
+                    // Snapshot for transition detection (visual + layout)
+                    // For prev_affected nodes, use the pre-reset snapshot so that
+                    // "still hovering after transition completed" sees before==after
+                    let before_kp = if transition_set.is_some() {
+                        pre_reset_snapshots
+                            .get(&node_id)
+                            .cloned()
+                            .or_else(|| self.snapshot_keyframe_properties(node_id))
+                    } else {
+                        None
+                    };
+
+                    if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                        Self::apply_element_style_to_props(&mut render_node.props, style);
+                        any_applied = true;
+                    }
+                    // Apply layout changes from complex selector styles
+                    if style.has_layout_props() {
+                        if let Some(mut taffy_style) = self.layout_tree.get_style(node_id) {
+                            Self::apply_element_style_to_taffy(&mut taffy_style, style);
+                            self.layout_tree.set_style(node_id, taffy_style);
+                        }
+                    }
+
+                    // Detect transitions (visual + layout)
+                    if let (Some(before_kp), Some(transition_set)) = (before_kp, transition_set) {
+                        if let Some(after_kp) = self.snapshot_keyframe_properties(node_id) {
+                            self.detect_and_start_transitions(
+                                node_id,
+                                &before_kp,
+                                &after_kp,
+                                &transition_set,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Detect reverse transitions for nodes that WERE state-affected but
+        // are no longer matched (e.g. mouse left a :hover element).  These nodes
+        // were reset to base above but the transition detection inside the main
+        // loop only runs for *matching* rules, so we handle the leave case here.
+        for &node_id in &prev_affected {
+            if self.complex_state_affected.contains(&node_id) {
+                continue; // still matched — already handled above
+            }
+            // Look up transition set for this node
+            let transition_set = {
+                let by_id = self
+                    .element_registry
+                    .get_id(node_id)
+                    .and_then(|eid| stylesheet.get(&eid).and_then(|s| s.transition.clone()));
+                by_id.or_else(|| {
+                    complex_rules.iter().find_map(|(sel, sty)| {
+                        if !sel.has_state()
+                            && self.complex_selector_matches(
+                                sel,
+                                node_id,
+                                &hovered_nodes,
+                                &pressed_nodes,
+                                focused_node,
+                            )
+                        {
+                            sty.transition.clone()
+                        } else {
+                            None
+                        }
+                    })
+                })
+            };
+            if let Some(transition_set) = transition_set {
+                if let Some(before_kp) = pre_reset_snapshots.get(&node_id) {
+                    if let Some(after_kp) = self.snapshot_keyframe_properties(node_id) {
+                        self.detect_and_start_transitions(
+                            node_id,
+                            before_kp,
+                            &after_kp,
+                            &transition_set,
+                        );
+                    }
+                }
+            }
+        }
+
+        any_applied
     }
 
     // =========================================================================
@@ -5018,6 +5642,262 @@ impl RenderTree {
         }
     }
 
+    /// Apply animated layout properties from CSS animations/transitions to taffy styles
+    ///
+    /// Returns true if any layout properties were modified (requiring layout recomputation).
+    pub fn apply_animated_layout_props(&mut self) -> bool {
+        use taffy::prelude::*;
+        let mut needs_layout = false;
+
+        // Collect all nodes with active animations or transitions that have layout properties
+        let anim_nodes: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = self
+            .css_animations
+            .iter()
+            .map(|(nid, anim)| (*nid, anim.current_properties.clone()))
+            .chain(
+                self.css_transitions
+                    .iter()
+                    .map(|(nid, anim)| (*nid, anim.current_properties.clone())),
+            )
+            .collect();
+
+        for (node_id, anim_props) in anim_nodes {
+            let has_layout_props = anim_props.width.is_some()
+                || anim_props.height.is_some()
+                || anim_props.padding.is_some()
+                || anim_props.margin.is_some()
+                || anim_props.gap.is_some();
+
+            if !has_layout_props {
+                continue;
+            }
+
+            if let Some(mut style) = self.layout_tree.get_style(node_id) {
+                let mut changed = false;
+
+                if let Some(w) = anim_props.width {
+                    style.size.width = Dimension::Length(w);
+                    changed = true;
+                }
+                if let Some(h) = anim_props.height {
+                    style.size.height = Dimension::Length(h);
+                    changed = true;
+                }
+                if let Some([top, right, bottom, left]) = anim_props.padding {
+                    style.padding = taffy::geometry::Rect {
+                        top: LengthPercentage::Length(top),
+                        right: LengthPercentage::Length(right),
+                        bottom: LengthPercentage::Length(bottom),
+                        left: LengthPercentage::Length(left),
+                    };
+                    changed = true;
+                }
+                if let Some([top, right, bottom, left]) = anim_props.margin {
+                    style.margin = taffy::geometry::Rect {
+                        top: LengthPercentageAuto::Length(top),
+                        right: LengthPercentageAuto::Length(right),
+                        bottom: LengthPercentageAuto::Length(bottom),
+                        left: LengthPercentageAuto::Length(left),
+                    };
+                    changed = true;
+                }
+                if let Some(g) = anim_props.gap {
+                    style.gap = taffy::geometry::Size {
+                        width: LengthPercentage::Length(g),
+                        height: LengthPercentage::Length(g),
+                    };
+                    changed = true;
+                }
+
+                if changed {
+                    self.layout_tree.set_style(node_id, style);
+                    needs_layout = true;
+                }
+            }
+        }
+
+        needs_layout
+    }
+
+    // =========================================================================
+    // CSS Transition Methods
+    // =========================================================================
+
+    /// Detect property changes and start transitions where applicable
+    ///
+    /// Compares before/after keyframe properties, finds changed properties that
+    /// have a matching `transition:` spec, and creates a 2-keyframe animation
+    /// for each transitioning property group.
+    fn detect_and_start_transitions(
+        &mut self,
+        node_id: LayoutNodeId,
+        before: &blinc_animation::KeyframeProperties,
+        after: &blinc_animation::KeyframeProperties,
+        transition_set: &crate::css_parser::CssTransitionSet,
+    ) {
+        use blinc_animation::{
+            FillMode, KeyframeProperties, MultiKeyframe, MultiKeyframeAnimation,
+        };
+
+        // Build "from" properties: only include fields that differ AND have a transition spec
+        let mut from = KeyframeProperties::default();
+        let mut to = KeyframeProperties::default();
+        let mut has_any = false;
+        let mut duration_ms: u32 = 300;
+        let mut delay_ms: u32 = 0;
+        let mut easing = blinc_animation::Easing::EaseInOut;
+
+        // Helper macro: check if a property changed and is covered by transition
+        macro_rules! check_transition {
+            ($field:ident, $prop_name:expr) => {
+                if before.$field != after.$field {
+                    if let Some(t) = transition_set.get($prop_name) {
+                        // If a transition is already active, use current interpolated value as "from"
+                        let from_val = if let Some(active) = self.css_transitions.get(&node_id) {
+                            if active.current_properties.$field.is_some() {
+                                active.current_properties.$field.clone()
+                            } else {
+                                before.$field.clone()
+                            }
+                        } else {
+                            before.$field.clone()
+                        };
+                        from.$field = from_val;
+                        to.$field = after.$field.clone();
+                        duration_ms = t.duration_ms;
+                        delay_ms = t.delay_ms;
+                        easing = t.timing.to_easing();
+                        has_any = true;
+                    }
+                }
+            };
+            // Variant with an identity default — used for filter properties where
+            // None means "use default" (e.g. brightness=1.0) rather than "not set"
+            ($field:ident, $prop_name:expr, default $def:expr) => {
+                if before.$field != after.$field {
+                    if let Some(t) = transition_set.get($prop_name) {
+                        let from_val = if let Some(active) = self.css_transitions.get(&node_id) {
+                            if active.current_properties.$field.is_some() {
+                                active.current_properties.$field.clone()
+                            } else {
+                                Some(before.$field.unwrap_or($def))
+                            }
+                        } else {
+                            Some(before.$field.unwrap_or($def))
+                        };
+                        from.$field = from_val;
+                        to.$field = Some(after.$field.unwrap_or($def));
+                        duration_ms = t.duration_ms;
+                        delay_ms = t.delay_ms;
+                        easing = t.timing.to_easing();
+                        has_any = true;
+                    }
+                }
+            };
+        }
+
+        check_transition!(opacity, "opacity");
+        check_transition!(background_color, "background");
+        check_transition!(border_color, "border-color");
+        check_transition!(border_width, "border-width");
+        check_transition!(corner_radius, "border-radius");
+        check_transition!(shadow_params, "box-shadow");
+        check_transition!(shadow_color, "box-shadow");
+        check_transition!(clip_inset, "clip-path");
+        check_transition!(clip_circle_radius, "clip-path");
+        check_transition!(clip_ellipse_radii, "clip-path");
+        check_transition!(translate_x, "transform");
+        check_transition!(translate_y, "transform");
+        check_transition!(scale_x, "transform");
+        check_transition!(scale_y, "transform");
+        check_transition!(rotate, "transform");
+        check_transition!(rotate_x, "rotate-x");
+        check_transition!(rotate_y, "rotate-y");
+        check_transition!(perspective, "perspective");
+        check_transition!(depth, "depth");
+        check_transition!(translate_z, "translate-z");
+        check_transition!(light_intensity, "light-intensity");
+        check_transition!(ambient, "ambient");
+        check_transition!(specular, "specular");
+        check_transition!(light_direction, "light-direction");
+        check_transition!(filter_grayscale, "filter", default 0.0);
+        check_transition!(filter_invert, "filter", default 0.0);
+        check_transition!(filter_sepia, "filter", default 0.0);
+        check_transition!(filter_brightness, "filter", default 1.0);
+        check_transition!(filter_contrast, "filter", default 1.0);
+        check_transition!(filter_saturate, "filter", default 1.0);
+        check_transition!(filter_hue_rotate, "filter", default 0.0);
+
+        // Layout properties (require layout recomputation when transitioning)
+        check_transition!(width, "width");
+        check_transition!(height, "height");
+        check_transition!(padding, "padding");
+        check_transition!(margin, "margin");
+        check_transition!(gap, "gap");
+
+        if has_any && duration_ms > 0 {
+            // If a transition already exists heading to the same target, let it continue
+            // rather than restarting with a fresh duration each frame
+            if let Some(existing) = self.css_transitions.get(&node_id) {
+                if let Some(last_kf) = existing.animation.last_keyframe() {
+                    if last_kf.properties == to {
+                        return; // Same target — let existing transition finish
+                    }
+                }
+            }
+            let anim = MultiKeyframeAnimation::new(duration_ms)
+                .keyframe(0.0, from, easing)
+                .keyframe(1.0, to, easing)
+                .delay(delay_ms)
+                .fill_mode(FillMode::Forwards);
+            self.css_transitions
+                .insert(node_id, crate::render_state::ActiveCssAnimation::new(anim));
+        }
+    }
+
+    /// Tick all active CSS transitions
+    ///
+    /// Returns true if any transitions are still playing (need redraw).
+    pub fn tick_css_transitions(&mut self, dt_ms: f32) -> bool {
+        let mut any_playing = false;
+        let mut completed = Vec::new();
+
+        for (node_id, active_transition) in &mut self.css_transitions {
+            if active_transition.tick(dt_ms) {
+                any_playing = true;
+            } else {
+                completed.push(*node_id);
+            }
+        }
+
+        // Remove completed transitions
+        for node_id in completed {
+            self.css_transitions.remove(&node_id);
+        }
+
+        any_playing
+    }
+
+    /// Apply all active CSS transition values to their respective render props
+    ///
+    /// Should be called each frame after `tick_css_transitions()`.
+    pub fn apply_all_css_transition_props(&mut self) {
+        let node_ids: Vec<LayoutNodeId> = self.css_transitions.keys().copied().collect();
+        for node_id in node_ids {
+            if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                if let Some(active_transition) = self.css_transitions.get(&node_id) {
+                    let anim_props = active_transition.current_properties.clone();
+                    Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
+                }
+            }
+        }
+    }
+
+    /// Check if there are no active CSS transitions
+    pub fn css_transitions_empty(&self) -> bool {
+        self.css_transitions.is_empty()
+    }
+
     /// Apply keyframe animation properties to render props
     fn apply_keyframe_props_to_render(
         props: &mut RenderProps,
@@ -5081,7 +5961,7 @@ impl RenderTree {
             props.blend_3d = Some(b);
         }
 
-        // Clip-path inset animation
+        // Clip-path animation
         if let Some(inset) = &anim_props.clip_inset {
             use blinc_core::{ClipLength, ClipPath};
             props.clip_path = Some(ClipPath::Inset {
@@ -5091,6 +5971,233 @@ impl RenderTree {
                 left: ClipLength::Percent(inset[3]),
                 round: None,
             });
+        }
+        if let Some(r) = anim_props.clip_circle_radius {
+            use blinc_core::{ClipLength, ClipPath};
+            props.clip_path = Some(ClipPath::Circle {
+                radius: Some(ClipLength::Percent(r)),
+                center: (ClipLength::Percent(50.0), ClipLength::Percent(50.0)),
+            });
+        }
+        if let Some(radii) = &anim_props.clip_ellipse_radii {
+            use blinc_core::{ClipLength, ClipPath};
+            props.clip_path = Some(ClipPath::Ellipse {
+                rx: Some(ClipLength::Percent(radii[0])),
+                ry: Some(ClipLength::Percent(radii[1])),
+                center: (ClipLength::Percent(50.0), ClipLength::Percent(50.0)),
+            });
+        }
+
+        // Background color
+        if let Some([r, g, b, a]) = anim_props.background_color {
+            props.background = Some(blinc_core::Brush::Solid(blinc_core::Color::rgba(
+                r, g, b, a,
+            )));
+        }
+
+        // Corner radius
+        if let Some([tl, tr, br, bl]) = anim_props.corner_radius {
+            props.border_radius = blinc_core::CornerRadius {
+                top_left: tl,
+                top_right: tr,
+                bottom_right: br,
+                bottom_left: bl,
+            };
+        }
+
+        // Border
+        if let Some(bw) = anim_props.border_width {
+            props.border_width = bw;
+        }
+        if let Some([r, g, b, a]) = anim_props.border_color {
+            props.border_color = Some(blinc_core::Color::rgba(r, g, b, a));
+        }
+
+        // Shadow
+        if let Some([ox, oy, blur, spread]) = anim_props.shadow_params {
+            let color = if let Some([r, g, b, a]) = anim_props.shadow_color {
+                blinc_core::Color::rgba(r, g, b, a)
+            } else if let Some(ref existing) = props.shadow {
+                existing.color
+            } else {
+                blinc_core::Color::rgba(0.0, 0.0, 0.0, 0.5)
+            };
+            props.shadow = Some(blinc_core::Shadow {
+                offset_x: ox,
+                offset_y: oy,
+                blur,
+                spread,
+                color,
+            });
+        } else if let Some([r, g, b, a]) = anim_props.shadow_color {
+            if let Some(ref mut shadow) = props.shadow {
+                shadow.color = blinc_core::Color::rgba(r, g, b, a);
+            }
+        }
+
+        // 3D lighting
+        if let Some(li) = anim_props.light_intensity {
+            props.light_intensity = Some(li);
+        }
+        if let Some(a) = anim_props.ambient {
+            props.ambient = Some(a);
+        }
+        if let Some(s) = anim_props.specular {
+            props.specular = Some(s);
+        }
+        if let Some(ld) = anim_props.light_direction {
+            props.light_direction = Some(ld);
+        }
+
+        // CSS filter properties
+        let has_filter = anim_props.filter_grayscale.is_some()
+            || anim_props.filter_invert.is_some()
+            || anim_props.filter_sepia.is_some()
+            || anim_props.filter_brightness.is_some()
+            || anim_props.filter_contrast.is_some()
+            || anim_props.filter_saturate.is_some()
+            || anim_props.filter_hue_rotate.is_some();
+        if has_filter {
+            let existing = props.filter.unwrap_or_default();
+            props.filter = Some(crate::element_style::CssFilter {
+                grayscale: anim_props.filter_grayscale.unwrap_or(existing.grayscale),
+                invert: anim_props.filter_invert.unwrap_or(existing.invert),
+                sepia: anim_props.filter_sepia.unwrap_or(existing.sepia),
+                hue_rotate: anim_props.filter_hue_rotate.unwrap_or(existing.hue_rotate),
+                brightness: anim_props.filter_brightness.unwrap_or(existing.brightness),
+                contrast: anim_props.filter_contrast.unwrap_or(existing.contrast),
+                saturate: anim_props.filter_saturate.unwrap_or(existing.saturate),
+            });
+        }
+    }
+
+    /// Extract animatable properties from RenderProps into KeyframeProperties
+    ///
+    /// This is the reverse of `apply_keyframe_props_to_render()` — used to snapshot
+    /// the current visual state before/after a state change for transition detection.
+    fn render_props_to_keyframe_properties(
+        props: &RenderProps,
+    ) -> blinc_animation::KeyframeProperties {
+        use blinc_animation::KeyframeProperties;
+
+        let mut kp = KeyframeProperties {
+            opacity: Some(props.opacity),
+            ..Default::default()
+        };
+
+        // Extract transform components
+        if let Some(blinc_core::Transform::Affine2D(affine)) = &props.transform {
+            let [a, b, c, d, tx, ty] = affine.elements;
+            kp.translate_x = Some(tx);
+            kp.translate_y = Some(ty);
+            if b.abs() < 0.0001 && c.abs() < 0.0001 {
+                kp.scale_x = Some(a);
+                kp.scale_y = Some(d);
+            } else {
+                let rotation = b.atan2(a);
+                kp.rotate = Some(rotation.to_degrees());
+            }
+        } else {
+            kp.translate_x = Some(0.0);
+            kp.translate_y = Some(0.0);
+            kp.scale_x = Some(1.0);
+            kp.scale_y = Some(1.0);
+            kp.rotate = Some(0.0);
+        }
+
+        // 3D
+        kp.rotate_x = props.rotate_x;
+        kp.rotate_y = props.rotate_y;
+        kp.perspective = props.perspective;
+        kp.depth = props.depth;
+        kp.translate_z = props.translate_z;
+        kp.blend_3d = props.blend_3d;
+
+        // Clip-path
+        match &props.clip_path {
+            Some(blinc_core::ClipPath::Inset {
+                top,
+                right,
+                bottom,
+                left,
+                ..
+            }) => {
+                kp.clip_inset = Some([
+                    Self::clip_length_to_percent(top),
+                    Self::clip_length_to_percent(right),
+                    Self::clip_length_to_percent(bottom),
+                    Self::clip_length_to_percent(left),
+                ]);
+            }
+            Some(blinc_core::ClipPath::Circle {
+                radius: Some(r), ..
+            }) => {
+                kp.clip_circle_radius = Some(Self::clip_length_to_percent(r));
+            }
+            Some(blinc_core::ClipPath::Ellipse {
+                rx: Some(rx),
+                ry: Some(ry),
+                ..
+            }) => {
+                kp.clip_ellipse_radii = Some([
+                    Self::clip_length_to_percent(rx),
+                    Self::clip_length_to_percent(ry),
+                ]);
+            }
+            _ => {}
+        }
+
+        // Background color
+        if let Some(blinc_core::Brush::Solid(c)) = &props.background {
+            kp.background_color = Some([c.r, c.g, c.b, c.a]);
+        }
+
+        // Corner radius
+        let cr = &props.border_radius;
+        kp.corner_radius = Some([cr.top_left, cr.top_right, cr.bottom_right, cr.bottom_left]);
+
+        // Border
+        kp.border_width = Some(props.border_width);
+        if let Some(bc) = &props.border_color {
+            kp.border_color = Some([bc.r, bc.g, bc.b, bc.a]);
+        }
+
+        // Shadow
+        if let Some(shadow) = &props.shadow {
+            kp.shadow_params = Some([shadow.offset_x, shadow.offset_y, shadow.blur, shadow.spread]);
+            kp.shadow_color = Some([
+                shadow.color.r,
+                shadow.color.g,
+                shadow.color.b,
+                shadow.color.a,
+            ]);
+        }
+
+        // 3D lighting
+        kp.light_intensity = props.light_intensity;
+        kp.ambient = props.ambient;
+        kp.specular = props.specular;
+        kp.light_direction = props.light_direction;
+
+        // CSS filter properties
+        if let Some(f) = &props.filter {
+            kp.filter_grayscale = Some(f.grayscale);
+            kp.filter_invert = Some(f.invert);
+            kp.filter_sepia = Some(f.sepia);
+            kp.filter_brightness = Some(f.brightness);
+            kp.filter_contrast = Some(f.contrast);
+            kp.filter_saturate = Some(f.saturate);
+            kp.filter_hue_rotate = Some(f.hue_rotate);
+        }
+
+        kp
+    }
+
+    /// Helper: convert ClipLength to percent value
+    fn clip_length_to_percent(len: &blinc_core::ClipLength) -> f32 {
+        match len {
+            blinc_core::ClipLength::Percent(p) => *p,
+            blinc_core::ClipLength::Px(px) => *px,
         }
     }
 
@@ -5115,10 +6222,37 @@ impl RenderTree {
             .filter_map(|id| self.element_registry.get(&id).map(|node_id| (id, node_id)))
             .collect();
 
-        for (element_id, node_id) in registered_ids {
-            if let Some(base_style) = stylesheet.get(&element_id) {
-                if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+        for (element_id, node_id) in &registered_ids {
+            if let Some(base_style) = stylesheet.get(element_id) {
+                if let Some(render_node) = self.render_nodes.get_mut(node_id) {
                     Self::apply_element_style_to_props(&mut render_node.props, base_style);
+                }
+            }
+        }
+
+        // Apply complex base rules (non-state selectors like .class, structural pseudos)
+        // Must iterate ALL render nodes (not just those with IDs) since .class selectors
+        // can match elements without explicit IDs.
+        let complex_rules = stylesheet.complex_rules();
+        if !complex_rules.is_empty() {
+            let all_node_ids: Vec<LayoutNodeId> = self.render_nodes.keys().copied().collect();
+
+            // For base styles, no interaction state is active
+            let empty_set = std::collections::HashSet::new();
+
+            for (selector, style) in complex_rules {
+                // Skip selectors that require state — they'll be applied in apply_stylesheet_state_styles
+                if selector.has_state() {
+                    continue;
+                }
+                for &node_id in &all_node_ids {
+                    if self
+                        .complex_selector_matches(selector, node_id, &empty_set, &empty_set, None)
+                    {
+                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                            Self::apply_element_style_to_props(&mut render_node.props, style);
+                        }
+                    }
                 }
             }
         }
@@ -5203,6 +6337,11 @@ impl RenderTree {
                 }
                 any_applied = true;
             }
+        }
+
+        // Apply complex selector rules (class selectors, descendant/child combinators, etc.)
+        if self.apply_complex_selector_styles(router) {
+            any_applied = true;
         }
 
         any_applied
@@ -6275,6 +7414,22 @@ impl RenderTree {
             }
         }
 
+        // CSS filter setup
+        let has_filter = render_node.props.filter.is_some();
+        if let Some(f) = &render_node.props.filter {
+            if !f.is_identity() {
+                ctx.set_css_filter(
+                    f.grayscale,
+                    f.invert,
+                    f.sepia,
+                    f.hue_rotate,
+                    f.brightness,
+                    f.contrast,
+                    f.saturate,
+                );
+            }
+        }
+
         // 3D Group composition: collect child shapes into compound SDF
         // MUST happen before fill_rect so the primitive gets the group shape descriptors.
         let is_3d_group = render_node.props.shape_3d == Some(6.0);
@@ -6736,6 +7891,11 @@ impl RenderTree {
         // Clear 3D transient state
         if has_3d {
             ctx.clear_3d();
+        }
+
+        // Clear CSS filter transient state
+        if has_filter {
+            ctx.clear_css_filter();
         }
 
         // Restore z_layer after this subtree

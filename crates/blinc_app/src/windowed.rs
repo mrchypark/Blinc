@@ -2872,16 +2872,18 @@ impl WindowedApp {
                             // This updates dynamic properties without touching tree structure
                             let _animations_active = rs.tick(current_time);
 
-                            // Tick CSS animations (but don't apply yet — state styles must go first)
-                            let css_animating = if let Some(ref mut tree) = render_tree {
+                            // Tick CSS animations and transitions (but don't apply yet — state styles must go first)
+                            let (css_animating, css_transitioning) = if let Some(ref mut tree) = render_tree {
                                 let dt_ms = if last_frame_time_ms > 0 {
                                     (current_time - last_frame_time_ms) as f32
                                 } else {
                                     16.0 // Assume ~60fps for first frame
                                 };
-                                tree.tick_css_animations(dt_ms)
+                                let animating = tree.tick_css_animations(dt_ms);
+                                let transitioning = tree.tick_css_transitions(dt_ms);
+                                (animating, transitioning)
                             } else {
-                                false
+                                (false, false)
                             };
                             last_frame_time_ms = current_time;
 
@@ -2900,7 +2902,7 @@ impl WindowedApp {
                             // =========================================================
 
                             // Apply CSS state styles (:hover, :active, :focus) from stylesheet
-                            // This is visual-only — no tree rebuild, just prop mutation
+                            // This also detects property changes and starts new transitions
                             if let Some(ref mut tree) = render_tree {
                                 if tree.stylesheet().is_some() {
                                     tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
@@ -2912,6 +2914,31 @@ impl WindowedApp {
                             if css_animating {
                                 if let Some(ref mut tree) = render_tree {
                                     tree.apply_all_css_animation_props();
+                                }
+                            }
+
+                            // Apply CSS transition values AFTER state styles
+                            // (transitions smoothly interpolate between state changes)
+                            if css_transitioning || !render_tree.as_ref().map_or(true, |t| t.css_transitions_empty()) {
+                                if let Some(ref mut tree) = render_tree {
+                                    tree.apply_all_css_transition_props();
+                                }
+                            }
+
+                            // Apply animated layout properties (width, height, padding, etc.)
+                            // and recompute layout if any changed.
+                            // Also check css_transitions_empty() to catch transitions created
+                            // during apply_stylesheet_state_styles on this frame.
+                            if css_animating
+                                || css_transitioning
+                                || !render_tree
+                                    .as_ref()
+                                    .map_or(true, |t| t.css_transitions_empty())
+                            {
+                                if let Some(ref mut tree) = render_tree {
+                                    if tree.apply_animated_layout_props() {
+                                        tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                    }
                                 }
                             }
 
@@ -2980,7 +3007,15 @@ impl WindowedApp {
                                 mgr.take_dirty() || mgr.has_visible_overlays()
                             };
 
-                            if needs_animation_redraw || needs_cursor_redraw || needs_motion_redraw || scroll_animating || needs_overlay_redraw || theme_animating || css_animating {
+                            // Also check css_transitions_empty() to catch transitions
+                            // created during apply_complex_selector_styles this frame
+                            // (e.g. reverse transitions on hover-leave).
+                            let has_active_transitions = css_transitioning
+                                || !render_tree
+                                    .as_ref()
+                                    .map_or(true, |t| t.css_transitions_empty());
+
+                            if needs_animation_redraw || needs_cursor_redraw || needs_motion_redraw || scroll_animating || needs_overlay_redraw || theme_animating || css_animating || has_active_transitions {
                                 // Request another frame to render updated animation values
                                 // For cursor blink, also re-request continuous redraw for next frame
                                 if needs_cursor_redraw {

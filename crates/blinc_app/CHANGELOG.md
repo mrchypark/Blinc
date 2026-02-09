@@ -20,9 +20,16 @@ All notable changes to `blinc_app` will be documented in this file.
 - CSS animation support wired through the app runtime
 - `backdrop-filter` property support in windowed runner
 - Stylesheet base styles applied after tree construction
+- CSS transition ticking and application in frame loop
+- Animated layout property support with per-frame `compute_layout()` recomputation
+
+#### Styling Demo Enhancements
+
+- CSS filter hover demo (`.filter-card:hover` with brightness, saturate, contrast)
 
 ### Fixed
 
+- Mid-frame transition redraw: transitions created during `apply_complex_selector_styles` now properly trigger frame requests (prevents stalled hover-leave animations)
 - iOS runner cleanup for platform trait consistency
 - Clippy warnings in windowed.rs and ios.rs
 

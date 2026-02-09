@@ -37,6 +37,13 @@ All notable changes to `blinc_gpu` will be documented in this file.
 - `perspective[4]` field: `(sin_rx, cos_rx, persp_d, shape_type)`
 - `sdf_3d[4]` field: `(depth, ambient, specular_power, translate_z)`
 - `light[4]` field: `(dir_x, dir_y, dir_z, intensity)`
+- `filter_a[4]` field: `(grayscale, invert, sepia, hue_rotate_rad)` for CSS filters
+- `filter_b[4]` field: `(brightness, contrast, saturate, 0)` for CSS filters
+
+#### CSS Filters (GPU)
+
+- `apply_css_filter()` WGSL function: grayscale, invert, sepia, hue-rotate, brightness, contrast, saturate
+- Identity-skip guard in fragment shader for zero-cost when no filter is active
 
 #### Paint Context
 
@@ -44,9 +51,11 @@ All notable changes to `blinc_gpu` will be documented in this file.
 - `set_3d_translate_z()` for Z-axis offset
 - `set_3d_group_raw()` for compound shape composition from raw float arrays
 - 3D transient state management with `clear_3d()` reset
+- `set_css_filter()` / `clear_css_filter()` for per-element CSS filter state
 
 ### Fixed
 
+- `set_css_filter` and `clear_css_filter` now properly override the `DrawContext` trait (previously only defined as inherent methods, causing no-op dispatch via `&mut dyn DrawContext`)
 - Clippy warnings across image.rs, particles.rs, path.rs, primitives.rs, renderer.rs, text.rs
 
 ## [0.1.1] - Initial Release

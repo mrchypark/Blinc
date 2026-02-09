@@ -1033,6 +1033,8 @@ pub struct RenderProps {
     pub blend_3d: Option<f32>,
     /// CSS clip-path shape function
     pub clip_path: Option<ClipPath>,
+    /// CSS filter functions (grayscale, invert, sepia, brightness, contrast, saturate, hue-rotate)
+    pub filter: Option<crate::element_style::CssFilter>,
     /// DEPRECATED: Whether the motion should start exiting
     ///
     /// This field is deprecated. Motion exit is now triggered explicitly via
@@ -1090,6 +1092,7 @@ impl Default for RenderProps {
             op_3d: None,
             blend_3d: None,
             clip_path: None,
+            filter: None,
             motion_is_exiting: false,
             z_index: 0,
         }

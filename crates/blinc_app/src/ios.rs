@@ -451,11 +451,21 @@ impl IOSRenderContext {
                 16.0
             };
             let css_animating = tree.tick_css_animations(dt_ms);
+            let css_transitioning = tree.tick_css_transitions(dt_ms);
+            if tree.stylesheet().is_some() {
+                tree.apply_stylesheet_state_styles(&self.windowed_ctx.event_router);
+            }
             if css_animating {
                 tree.apply_all_css_animation_props();
             }
-            if tree.stylesheet().is_some() {
-                tree.apply_stylesheet_state_styles(&self.windowed_ctx.event_router);
+            if css_transitioning || !tree.css_transitions_empty() {
+                tree.apply_all_css_transition_props();
+            }
+            // Apply animated layout properties and recompute layout if needed
+            if (css_animating || css_transitioning || !tree.css_transitions_empty())
+                && tree.apply_animated_layout_props()
+            {
+                tree.compute_layout(self.width, self.height);
             }
             self.last_frame_time_ms = current_time;
         }
@@ -1072,14 +1082,24 @@ pub extern "C" fn blinc_tick_animations(ctx: *mut IOSRenderContext) -> bool {
                 16.0
             };
             let animating = tree.tick_css_animations(dt_ms);
-            if animating {
-                tree.apply_all_css_animation_props();
-            }
+            let transitioning = tree.tick_css_transitions(dt_ms);
             if tree.stylesheet().is_some() {
                 tree.apply_stylesheet_state_styles(&ctx.windowed_ctx.event_router);
             }
+            if animating {
+                tree.apply_all_css_animation_props();
+            }
+            if transitioning || !tree.css_transitions_empty() {
+                tree.apply_all_css_transition_props();
+            }
+            // Apply animated layout properties and recompute layout if needed
+            if (animating || transitioning || !tree.css_transitions_empty())
+                && tree.apply_animated_layout_props()
+            {
+                tree.compute_layout(ctx.width, ctx.height);
+            }
             ctx.last_frame_time_ms = current_time;
-            animating
+            animating || transitioning
         } else {
             false
         };

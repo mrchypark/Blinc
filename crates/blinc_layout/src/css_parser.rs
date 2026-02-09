@@ -520,6 +520,105 @@ impl CssSelector {
     }
 }
 
+// ============================================================================
+// Complex Selector Types (Phase 4: Selector Hierarchy)
+// ============================================================================
+
+/// Structural pseudo-class selectors
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum StructuralPseudo {
+    /// :first-child
+    FirstChild,
+    /// :last-child
+    LastChild,
+    /// :nth-child(n) — 1-based index
+    NthChild(usize),
+    /// :only-child
+    OnlyChild,
+}
+
+/// A single part of a compound selector
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SelectorPart {
+    /// #id selector
+    Id(String),
+    /// .class selector
+    Class(String),
+    /// :hover, :active, :focus, :disabled
+    State(ElementState),
+    /// :first-child, :last-child, :nth-child(n), :only-child
+    PseudoClass(StructuralPseudo),
+}
+
+/// Combinator between compound selectors
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Combinator {
+    /// Descendant combinator (space): `#parent .child`
+    Descendant,
+    /// Child combinator (>): `#parent > .child`
+    Child,
+}
+
+/// A compound selector is a sequence of simple selectors with no combinator.
+/// e.g. `#id.class:hover` = [Id("id"), Class("class"), State(Hover)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CompoundSelector {
+    pub parts: Vec<SelectorPart>,
+}
+
+impl CompoundSelector {
+    /// Check if this compound selector contains any state pseudo-class
+    pub fn has_state(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|p| matches!(p, SelectorPart::State(_)))
+    }
+
+    /// Get the state pseudo-class if present
+    pub fn get_state(&self) -> Option<&ElementState> {
+        self.parts.iter().find_map(|p| match p {
+            SelectorPart::State(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    /// Check if this compound selector contains any structural pseudo-class
+    pub fn has_structural_pseudo(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|p| matches!(p, SelectorPart::PseudoClass(_)))
+    }
+}
+
+/// A complex selector is a chain of compound selectors joined by combinators.
+/// e.g. `#parent:hover > .child:first-child`
+/// segments: [(parent compound, Some(Child)), (child compound, None)]
+///
+/// The last segment always has `combinator = None` (it's the target element).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ComplexSelector {
+    pub segments: Vec<(CompoundSelector, Option<Combinator>)>,
+}
+
+impl ComplexSelector {
+    /// Get the rightmost (target) compound selector
+    pub fn target(&self) -> Option<&CompoundSelector> {
+        self.segments.last().map(|(compound, _)| compound)
+    }
+
+    /// Check if this complex selector has any state pseudo-classes
+    pub fn has_state(&self) -> bool {
+        self.segments
+            .iter()
+            .any(|(compound, _)| compound.has_state())
+    }
+
+    /// Returns true if this is a simple selector (single compound, no combinators)
+    pub fn is_simple(&self) -> bool {
+        self.segments.len() == 1
+    }
+}
+
 /// A CSS keyframe animation definition
 ///
 /// Represents a parsed `@keyframes` rule with multiple stops.
@@ -729,21 +828,109 @@ impl CssKeyframes {
             props.blend_3d = Some(b);
         }
 
-        // Clip-path inset
-        if let Some(blinc_core::ClipPath::Inset {
-            top,
-            right,
-            bottom,
-            left,
-            ..
-        }) = &style.clip_path
-        {
-            props.clip_inset = Some([
-                clip_length_to_percent(top),
-                clip_length_to_percent(right),
-                clip_length_to_percent(bottom),
-                clip_length_to_percent(left),
+        // Clip-path
+        match &style.clip_path {
+            Some(blinc_core::ClipPath::Inset {
+                top,
+                right,
+                bottom,
+                left,
+                ..
+            }) => {
+                props.clip_inset = Some([
+                    clip_length_to_percent(top),
+                    clip_length_to_percent(right),
+                    clip_length_to_percent(bottom),
+                    clip_length_to_percent(left),
+                ]);
+            }
+            Some(blinc_core::ClipPath::Circle {
+                radius: Some(r), ..
+            }) => {
+                props.clip_circle_radius = Some(clip_length_to_percent(r));
+            }
+            Some(blinc_core::ClipPath::Ellipse {
+                rx: Some(rx),
+                ry: Some(ry),
+                ..
+            }) => {
+                props.clip_ellipse_radii =
+                    Some([clip_length_to_percent(rx), clip_length_to_percent(ry)]);
+            }
+            _ => {}
+        }
+
+        // Background color (solid only)
+        if let Some(blinc_core::Brush::Solid(c)) = &style.background {
+            props.background_color = Some([c.r, c.g, c.b, c.a]);
+        }
+
+        // Corner radius
+        if let Some(cr) = &style.corner_radius {
+            props.corner_radius =
+                Some([cr.top_left, cr.top_right, cr.bottom_right, cr.bottom_left]);
+        }
+
+        // Border
+        if let Some(bw) = style.border_width {
+            props.border_width = Some(bw);
+        }
+        if let Some(bc) = &style.border_color {
+            props.border_color = Some([bc.r, bc.g, bc.b, bc.a]);
+        }
+
+        // Shadow
+        if let Some(shadow) = &style.shadow {
+            props.shadow_params =
+                Some([shadow.offset_x, shadow.offset_y, shadow.blur, shadow.spread]);
+            props.shadow_color = Some([
+                shadow.color.r,
+                shadow.color.g,
+                shadow.color.b,
+                shadow.color.a,
             ]);
+        }
+
+        // 3D lighting
+        if let Some(li) = style.light_intensity {
+            props.light_intensity = Some(li);
+        }
+        if let Some(a) = style.ambient {
+            props.ambient = Some(a);
+        }
+        if let Some(s) = style.specular {
+            props.specular = Some(s);
+        }
+        if let Some(ld) = &style.light_direction {
+            props.light_direction = Some(*ld);
+        }
+
+        // CSS filter properties
+        if let Some(f) = &style.filter {
+            props.filter_grayscale = Some(f.grayscale);
+            props.filter_invert = Some(f.invert);
+            props.filter_sepia = Some(f.sepia);
+            props.filter_brightness = Some(f.brightness);
+            props.filter_contrast = Some(f.contrast);
+            props.filter_saturate = Some(f.saturate);
+            props.filter_hue_rotate = Some(f.hue_rotate);
+        }
+
+        // Layout properties
+        if let Some(w) = style.width {
+            props.width = Some(w);
+        }
+        if let Some(h) = style.height {
+            props.height = Some(h);
+        }
+        if let Some(ref p) = style.padding {
+            props.padding = Some([p.top, p.right, p.bottom, p.left]);
+        }
+        if let Some(ref m) = style.margin {
+            props.margin = Some([m.top, m.right, m.bottom, m.left]);
+        }
+        if let Some(g) = style.gap {
+            props.gap = Some(g);
         }
 
         props
@@ -791,6 +978,34 @@ impl CssKeyframes {
         // Mat4 transforms are more complex, skip for now
 
         kf
+    }
+}
+
+/// A single CSS transition specification
+#[derive(Clone, Debug)]
+pub struct CssTransition {
+    /// Property name to transition (e.g. "opacity", "clip-path", "all")
+    pub property: String,
+    /// Duration in milliseconds
+    pub duration_ms: u32,
+    /// Timing function
+    pub timing: AnimationTiming,
+    /// Delay before starting in milliseconds
+    pub delay_ms: u32,
+}
+
+/// Set of CSS transitions parsed from `transition:` property
+#[derive(Clone, Debug, Default)]
+pub struct CssTransitionSet {
+    pub transitions: Vec<CssTransition>,
+}
+
+impl CssTransitionSet {
+    /// Find transition spec for a given property name (also matches "all")
+    pub fn get(&self, property: &str) -> Option<&CssTransition> {
+        self.transitions
+            .iter()
+            .find(|t| t.property == "all" || t.property == property)
     }
 }
 
@@ -918,8 +1133,10 @@ impl AnimationFillMode {
 /// A parsed stylesheet containing styles keyed by element ID
 #[derive(Clone, Default, Debug)]
 pub struct Stylesheet {
-    /// Styles keyed by selector (id or id:state)
+    /// Simple rules: styles keyed by selector (id or id:state) for O(1) lookup
     styles: HashMap<String, ElementStyle>,
+    /// Complex selector rules (class selectors, combinators, structural pseudos)
+    complex_rules: Vec<(ComplexSelector, ElementStyle)>,
     /// CSS custom properties (variables) defined in :root
     variables: HashMap<String, String>,
     /// Keyframe animations defined with @keyframes
@@ -977,6 +1194,7 @@ impl Stylesheet {
                 for (id, style) in parsed.rules {
                     stylesheet.styles.insert(id, style);
                 }
+                stylesheet.complex_rules = parsed.complex_rules;
                 for keyframes in parsed.keyframes {
                     stylesheet
                         .keyframes
@@ -1143,7 +1361,17 @@ impl Stylesheet {
 
     /// Check if the stylesheet is empty
     pub fn is_empty(&self) -> bool {
-        self.styles.is_empty()
+        self.styles.is_empty() && self.complex_rules.is_empty()
+    }
+
+    /// Get all complex selector rules
+    pub fn complex_rules(&self) -> &[(ComplexSelector, ElementStyle)] {
+        &self.complex_rules
+    }
+
+    /// Check if there are any complex rules that involve state changes
+    pub fn has_complex_state_rules(&self) -> bool {
+        self.complex_rules.iter().any(|(sel, _)| sel.has_state())
     }
 
     /// Merge another stylesheet into this one (cascade — later rules override earlier)
@@ -1154,6 +1382,7 @@ impl Stylesheet {
         for (key, style) in other.styles {
             self.styles.insert(key, style);
         }
+        self.complex_rules.extend(other.complex_rules);
         for (key, value) in other.variables {
             self.variables.insert(key, value);
         }
@@ -1524,6 +1753,143 @@ fn id_selector(input: &str) -> ParseResult<CssSelector> {
     })(input)
 }
 
+/// Parse a complex selector: handles #id, .class, :state, :pseudo, combinators
+///
+/// Examples:
+///   `#card`
+///   `#card:hover`
+///   `.item:first-child`
+///   `#parent:hover > .child`
+///   `#list .item:last-child`
+///   `#parent:hover > #child:first-child`
+fn parse_complex_selector(input: &str) -> ParseResult<ComplexSelector> {
+    let mut segments = Vec::new();
+    let mut remaining = input;
+
+    loop {
+        // Parse a compound selector (one or more simple selectors with no combinator)
+        let (rest, compound) = parse_compound_selector(remaining)?;
+        remaining = rest;
+
+        // Look ahead for a combinator or the start of `{`
+        let trimmed = remaining.trim_start();
+
+        if trimmed.starts_with('{') || trimmed.is_empty() {
+            // End of selector — this is the last (target) segment
+            segments.push((compound, None));
+            break;
+        }
+
+        // Check for child combinator `>`
+        if let Some(after_gt) = trimmed.strip_prefix('>') {
+            remaining = after_gt.trim_start();
+            segments.push((compound, Some(Combinator::Child)));
+        } else {
+            // Must be a descendant combinator (whitespace between compound selectors)
+            // Check that next char is a valid selector start (#, ., :, or alpha)
+            let next_ch = trimmed.chars().next().unwrap_or('{');
+            if next_ch == '#' || next_ch == '.' || next_ch == ':' || next_ch.is_alphabetic() {
+                remaining = trimmed;
+                segments.push((compound, Some(Combinator::Descendant)));
+            } else {
+                // Not a selector continuation — end here
+                segments.push((compound, None));
+                break;
+            }
+        }
+    }
+
+    if segments.is_empty() {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            remaining,
+            nom::error::ErrorKind::Many1,
+        )));
+    }
+
+    Ok((remaining, ComplexSelector { segments }))
+}
+
+/// Parse a compound selector: one or more simple selector parts with no combinator.
+/// e.g. `#id.class:hover:first-child`
+fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
+    let mut parts = Vec::new();
+    let mut remaining = input;
+
+    loop {
+        if remaining.starts_with('#') {
+            // ID selector
+            let (rest, _) = char('#')(remaining)?;
+            let (rest, id) = identifier::<VerboseError<&str>>(rest)?;
+            parts.push(SelectorPart::Id(id.to_string()));
+            remaining = rest;
+        } else if remaining.starts_with('.') {
+            // Class selector
+            let (rest, _) = char('.')(remaining)?;
+            let (rest, class) = identifier::<VerboseError<&str>>(rest)?;
+            parts.push(SelectorPart::Class(class.to_string()));
+            remaining = rest;
+        } else if remaining.starts_with(':') {
+            // Pseudo-class (state or structural)
+            let (rest, _) = char(':')(remaining)?;
+            let (rest, name) = identifier::<VerboseError<&str>>(rest)?;
+
+            // Check if it's a structural pseudo-class
+            match name.to_lowercase().as_str() {
+                "first-child" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::FirstChild));
+                    remaining = rest;
+                }
+                "last-child" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::LastChild));
+                    remaining = rest;
+                }
+                "only-child" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::OnlyChild));
+                    remaining = rest;
+                }
+                "nth-child" => {
+                    // Parse nth-child(N)
+                    if rest.starts_with('(') {
+                        let (rest2, _) = char('(')(rest)?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        // Parse the number
+                        let (rest2, n_str) =
+                            take_while1::<_, _, VerboseError<&str>>(|c: char| c.is_ascii_digit())(
+                                rest2,
+                            )?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, _) = char(')')(rest2)?;
+                        if let Ok(n) = n_str.parse::<usize>() {
+                            parts.push(SelectorPart::PseudoClass(StructuralPseudo::NthChild(n)));
+                        }
+                        remaining = rest2;
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                _ => {
+                    // Try as element state
+                    if let Some(state) = ElementState::parse_state(name) {
+                        parts.push(SelectorPart::State(state));
+                    }
+                    remaining = rest;
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    if parts.is_empty() {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            input,
+            nom::error::ErrorKind::Many1,
+        )));
+    }
+
+    Ok((remaining, CompoundSelector { parts }))
+}
+
 /// Parse a property name (including CSS custom properties like --var-name)
 fn property_name(input: &str) -> ParseResult<&str> {
     context(
@@ -1776,6 +2142,7 @@ where
 /// Result of parsing a stylesheet - rules, variables, and keyframes
 struct ParsedStylesheet {
     rules: Vec<(String, ElementStyle)>,
+    complex_rules: Vec<(ComplexSelector, ElementStyle)>,
     variables: HashMap<String, String>,
     keyframes: Vec<CssKeyframes>,
 }
@@ -1790,6 +2157,7 @@ fn parse_stylesheet_with_errors<'a>(
 
     // Parse blocks one at a time to collect errors
     let mut rules = Vec::new();
+    let mut complex_rules = Vec::new();
     let mut parsed_variables = variables.clone();
     let mut parsed_keyframes = Vec::new();
     let mut remaining = input;
@@ -1840,10 +2208,14 @@ fn parse_stylesheet_with_errors<'a>(
             }
         }
 
-        // Try to parse a rule
-        match css_rule_with_errors_and_vars(css, errors, &parsed_variables)(trimmed) {
-            Ok((rest, rule)) => {
-                rules.push(rule);
+        // Try to parse a rule (complex selector or simple #id selector)
+        match css_rule_complex_or_simple(css, errors, &parsed_variables)(trimmed) {
+            Ok((rest, ParsedRule::Simple(key, style))) => {
+                rules.push((key, style));
+                remaining = rest;
+            }
+            Ok((rest, ParsedRule::Complex(selector, style))) => {
+                complex_rules.push((selector, style));
                 remaining = rest;
             }
             Err(nom::Err::Error(_)) | Err(nom::Err::Failure(_)) => {
@@ -1861,10 +2233,98 @@ fn parse_stylesheet_with_errors<'a>(
         input,
         ParsedStylesheet {
             rules,
+            complex_rules,
             variables: parsed_variables,
             keyframes: parsed_keyframes,
         },
     ))
+}
+
+/// Result of parsing a CSS rule — either a simple #id rule or a complex selector rule
+enum ParsedRule {
+    /// Simple rule: key is "id" or "id:state"
+    Simple(String, ElementStyle),
+    /// Complex rule with a full selector chain
+    Complex(ComplexSelector, ElementStyle),
+}
+
+/// Parse a CSS rule with either a complex or simple selector
+fn css_rule_complex_or_simple<'a, 'b>(
+    original_css: &'a str,
+    errors: &'b mut Vec<ParseError>,
+    variables: &'b HashMap<String, String>,
+) -> impl FnMut(&'a str) -> ParseResult<'a, ParsedRule> + 'b
+where
+    'a: 'b,
+{
+    move |input: &'a str| {
+        let (input, _) = ws(input)?;
+
+        // Try to parse a complex selector (handles #id, .class, combinators, etc.)
+        let (input, selector) = context("CSS rule selector", parse_complex_selector)(input)?;
+        let (input, _) = ws(input)?;
+        let (input, properties) = context("CSS rule block", rule_block)(input)?;
+
+        let mut style = ElementStyle::new();
+        for (name, value) in properties {
+            let resolved_value = resolve_var_references(value, variables);
+            apply_property_with_errors(
+                &mut style,
+                name,
+                &resolved_value,
+                original_css,
+                input,
+                errors,
+            );
+        }
+
+        // Determine if this is a simple or complex rule for fast-path storage
+        let rule = if selector.is_simple() {
+            // Single compound selector — check if it's a simple #id or #id:state
+            let compound = &selector.segments[0].0;
+            if let Some(simple_key) = try_as_simple_selector(compound) {
+                ParsedRule::Simple(simple_key, style)
+            } else {
+                ParsedRule::Complex(selector, style)
+            }
+        } else {
+            ParsedRule::Complex(selector, style)
+        };
+
+        Ok((input, rule))
+    }
+}
+
+/// Try to convert a compound selector to a simple "id" or "id:state" key.
+/// Returns Some(key) if the compound is just #id or #id:state, None otherwise.
+fn try_as_simple_selector(compound: &CompoundSelector) -> Option<String> {
+    let mut id = None;
+    let mut state = None;
+
+    for part in &compound.parts {
+        match part {
+            SelectorPart::Id(i) => {
+                if id.is_some() {
+                    return None; // Multiple IDs
+                }
+                id = Some(i.as_str());
+            }
+            SelectorPart::State(s) => {
+                if state.is_some() {
+                    return None; // Multiple states
+                }
+                state = Some(s);
+            }
+            // If there are classes or structural pseudos, it's not simple
+            SelectorPart::Class(_) | SelectorPart::PseudoClass(_) => return None,
+        }
+    }
+
+    let id = id?; // Must have an ID to be a simple selector
+    match state {
+        Some(s) => Some(format!("{}:{}", id, s)),
+        None => Some(id.to_string()),
+    }
 }
 
 /// Parse a complete rule with error collection and variable resolution: #id { ... } or #id:state { ... }
@@ -2122,6 +2582,78 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 let mut anim = style.animation.take().unwrap_or_default();
                 anim.fill_mode = fill_mode;
                 style.animation = Some(anim);
+            }
+        }
+        "transition" => {
+            if let Some(transitions) = parse_transition(value) {
+                style.transition = Some(transitions);
+            }
+        }
+        "transition-property" => {
+            let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                transitions: vec![CssTransition {
+                    property: String::new(),
+                    duration_ms: 0,
+                    timing: AnimationTiming::Ease,
+                    delay_ms: 0,
+                }],
+            });
+            if let Some(t) = ts.transitions.first_mut() {
+                t.property = value.trim().to_string();
+            }
+            style.transition = Some(ts);
+        }
+        "transition-duration" => {
+            if let Some(ms) = parse_time_value(value) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.duration_ms = ms;
+                }
+                style.transition = Some(ts);
+            }
+        }
+        "transition-timing-function" => {
+            if let Some(timing) = AnimationTiming::from_str(value.trim()) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.timing = timing;
+                }
+                style.transition = Some(ts);
+            }
+        }
+        "transition-delay" => {
+            if let Some(ms) = parse_time_value(value) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.delay_ms = ms;
+                }
+                style.transition = Some(ts);
+            }
+        }
+        "filter" => {
+            if let Some(filter) = parse_css_filter(value) {
+                style.filter = Some(filter);
             }
         }
         "backdrop-filter" => {
@@ -2555,6 +3087,88 @@ fn apply_property_with_errors(
                 let mut anim = style.animation.take().unwrap_or_default();
                 anim.fill_mode = fill_mode;
                 style.animation = Some(anim);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "transition" => {
+            if let Some(transitions) = parse_transition(value) {
+                style.transition = Some(transitions);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "transition-property" => {
+            let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                transitions: vec![CssTransition {
+                    property: String::new(),
+                    duration_ms: 0,
+                    timing: AnimationTiming::Ease,
+                    delay_ms: 0,
+                }],
+            });
+            if let Some(t) = ts.transitions.first_mut() {
+                t.property = value.trim().to_string();
+            }
+            style.transition = Some(ts);
+        }
+        "transition-duration" => {
+            if let Some(ms) = parse_time_value(value) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.duration_ms = ms;
+                }
+                style.transition = Some(ts);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "transition-timing-function" => {
+            if let Some(timing) = AnimationTiming::from_str(value.trim()) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.timing = timing;
+                }
+                style.transition = Some(ts);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "transition-delay" => {
+            if let Some(ms) = parse_time_value(value) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.delay_ms = ms;
+                }
+                style.transition = Some(ts);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "filter" => {
+            if let Some(filter) = parse_css_filter(value) {
+                style.filter = Some(filter);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
@@ -3392,6 +4006,179 @@ fn parse_animation_fill_mode(input: &str) -> Option<AnimationFillMode> {
         "backwards" => Some(AnimationFillMode::Backwards),
         "both" => Some(AnimationFillMode::Both),
         _ => None,
+    }
+}
+
+// ============================================================================
+// Transition Parsing
+// ============================================================================
+
+/// Parse CSS transition shorthand
+///
+/// Supports:
+/// - `transition: all 300ms ease`
+/// - `transition: opacity 200ms ease-in-out`
+/// - `transition: opacity 200ms ease, clip-path 500ms ease-out 100ms`
+/// - `transition: none`
+fn parse_transition(value: &str) -> Option<CssTransitionSet> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Some(CssTransitionSet::default());
+    }
+
+    let mut transitions = Vec::new();
+    for segment in value.split(',') {
+        if let Some(t) = parse_single_transition(segment.trim()) {
+            transitions.push(t);
+        } else {
+            return None;
+        }
+    }
+
+    if transitions.is_empty() {
+        return None;
+    }
+
+    Some(CssTransitionSet { transitions })
+}
+
+/// Parse a single transition: `property duration [timing] [delay]`
+fn parse_single_transition(value: &str) -> Option<CssTransition> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut property = String::new();
+    let mut duration_ms = 0u32;
+    let mut timing = AnimationTiming::Ease;
+    let mut delay_ms = 0u32;
+    let mut duration_set = false;
+
+    for part in parts {
+        // Try as timing function
+        if let Some(t) = AnimationTiming::from_str(part) {
+            timing = t;
+            continue;
+        }
+
+        // Try as time value (first = duration, second = delay)
+        if let Some(ms) = parse_time_value(part) {
+            if !duration_set {
+                duration_ms = ms;
+                duration_set = true;
+            } else {
+                delay_ms = ms;
+            }
+            continue;
+        }
+
+        // Otherwise treat as property name
+        if property.is_empty() {
+            property = part.to_string();
+        }
+    }
+
+    if property.is_empty() {
+        return None;
+    }
+
+    Some(CssTransition {
+        property,
+        duration_ms,
+        timing,
+        delay_ms,
+    })
+}
+
+/// Parse CSS filter functions: `filter: grayscale(1) invert(0.5) brightness(1.2)`
+///
+/// Supports: grayscale, invert, sepia, hue-rotate, brightness, contrast, saturate
+/// Values can be plain numbers, percentages, or degrees (for hue-rotate)
+fn parse_css_filter(value: &str) -> Option<crate::element_style::CssFilter> {
+    use crate::element_style::CssFilter;
+
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Some(CssFilter::default());
+    }
+
+    let mut filter = CssFilter::default();
+    let mut found_any = false;
+    let mut remaining = value;
+
+    while !remaining.is_empty() {
+        remaining = remaining.trim_start();
+        if remaining.is_empty() {
+            break;
+        }
+
+        // Find function name and opening paren
+        if let Some(paren_pos) = remaining.find('(') {
+            let func_name = remaining[..paren_pos].trim();
+            let after_paren = &remaining[paren_pos + 1..];
+
+            // Find closing paren
+            if let Some(close_pos) = after_paren.find(')') {
+                let arg_str = after_paren[..close_pos].trim();
+                remaining = after_paren[close_pos + 1..].trim_start();
+
+                // Parse the argument value
+                let arg_val = if let Some(deg_str) = arg_str.strip_suffix("deg") {
+                    deg_str.trim().parse::<f32>().ok()
+                } else if let Some(pct_str) = arg_str.strip_suffix('%') {
+                    pct_str.trim().parse::<f32>().ok().map(|v| v / 100.0)
+                } else {
+                    arg_str.parse::<f32>().ok()
+                };
+
+                if let Some(v) = arg_val {
+                    match func_name.to_lowercase().as_str() {
+                        "grayscale" => {
+                            filter.grayscale = v;
+                            found_any = true;
+                        }
+                        "invert" => {
+                            filter.invert = v;
+                            found_any = true;
+                        }
+                        "sepia" => {
+                            filter.sepia = v;
+                            found_any = true;
+                        }
+                        "hue-rotate" => {
+                            filter.hue_rotate = v;
+                            found_any = true;
+                        }
+                        "brightness" => {
+                            filter.brightness = v;
+                            found_any = true;
+                        }
+                        "contrast" => {
+                            filter.contrast = v;
+                            found_any = true;
+                        }
+                        "saturate" => {
+                            filter.saturate = v;
+                            found_any = true;
+                        }
+                        _ => {
+                            // Unknown filter function, skip
+                        }
+                    }
+                }
+            } else {
+                break; // No closing paren
+            }
+        } else {
+            break; // No opening paren
+        }
+    }
+
+    if found_any {
+        Some(filter)
+    } else {
+        None
     }
 }
 

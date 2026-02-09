@@ -1147,6 +1147,23 @@ pub trait DrawContext {
     /// Reset 3D transient state to defaults
     fn clear_3d(&mut self) {}
 
+    /// Set CSS filter parameters for the current element
+    #[allow(clippy::too_many_arguments)]
+    fn set_css_filter(
+        &mut self,
+        _grayscale: f32,
+        _invert: f32,
+        _sepia: f32,
+        _hue_rotate_deg: f32,
+        _brightness: f32,
+        _contrast: f32,
+        _saturate: f32,
+    ) {
+    }
+
+    /// Reset CSS filter state to identity
+    fn clear_css_filter(&mut self) {}
+
     // ─────────────────────────────────────────────────────────────────────────
     // 2D Drawing Operations
     // ─────────────────────────────────────────────────────────────────────────

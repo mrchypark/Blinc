@@ -84,6 +84,10 @@ struct Primitive {
     sdf_3d: vec4<f32>,
     // Light params (dir_x, dir_y, dir_z, intensity)
     light: vec4<f32>,
+    // CSS filter A (grayscale, invert, sepia, hue_rotate_rad)
+    filter_a: vec4<f32>,
+    // CSS filter B (brightness, contrast, saturate, 0)
+    filter_b: vec4<f32>,
     // Type info (primitive_type, fill_type, clip_type, 0)
     type_info: vec4<u32>,
 }
@@ -472,6 +476,81 @@ fn calculate_polygon_clip_alpha(p: vec2<f32>, vertex_count: u32, aux_offset: u32
     // Anti-aliased edge
     let aa_width = 0.75;
     return 1.0 - smoothstep(-aa_width, aa_width, signed_dist);
+}
+
+// ============================================================================
+// CSS Filter Functions
+// ============================================================================
+
+/// Apply CSS filter effects to a color.
+/// filter_a = (grayscale, invert, sepia, hue_rotate_rad)
+/// filter_b = (brightness, contrast, saturate, 0)
+fn apply_css_filter(color: vec4<f32>, filter_a: vec4<f32>, filter_b: vec4<f32>) -> vec4<f32> {
+    var rgb = color.rgb;
+
+    // Grayscale: desaturate using luminance weights
+    let grayscale = filter_a.x;
+    if grayscale > 0.0 {
+        let lum = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        rgb = mix(rgb, vec3<f32>(lum, lum, lum), grayscale);
+    }
+
+    // Sepia: apply sepia tone matrix
+    let sepia = filter_a.z;
+    if sepia > 0.0 {
+        let sepia_r = dot(rgb, vec3<f32>(0.393, 0.769, 0.189));
+        let sepia_g = dot(rgb, vec3<f32>(0.349, 0.686, 0.168));
+        let sepia_b = dot(rgb, vec3<f32>(0.272, 0.534, 0.131));
+        rgb = mix(rgb, vec3<f32>(sepia_r, sepia_g, sepia_b), sepia);
+    }
+
+    // Invert
+    let invert = filter_a.y;
+    if invert > 0.0 {
+        rgb = mix(rgb, vec3<f32>(1.0) - rgb, invert);
+    }
+
+    // Hue-rotate: rotate in RGB space using rotation matrix
+    let hue_rad = filter_a.w;
+    if abs(hue_rad) > 0.001 {
+        let cos_h = cos(hue_rad);
+        let sin_h = sin(hue_rad);
+        let w = vec3<f32>(0.2126, 0.7152, 0.0722);
+        // Rodrigues-style hue rotation matrix
+        let r = vec3<f32>(
+            cos_h + (1.0 - cos_h) * w.x,
+            (1.0 - cos_h) * w.x * w.y - sin_h * w.z,
+            (1.0 - cos_h) * w.x * w.z + sin_h * w.y
+        );
+        let g = vec3<f32>(
+            (1.0 - cos_h) * w.x * w.y + sin_h * w.z,
+            cos_h + (1.0 - cos_h) * w.y,
+            (1.0 - cos_h) * w.y * w.z - sin_h * w.x
+        );
+        let b = vec3<f32>(
+            (1.0 - cos_h) * w.x * w.z - sin_h * w.y,
+            (1.0 - cos_h) * w.y * w.z + sin_h * w.x,
+            cos_h + (1.0 - cos_h) * w.z
+        );
+        rgb = vec3<f32>(dot(rgb, r), dot(rgb, g), dot(rgb, b));
+    }
+
+    // Brightness
+    let brightness = filter_b.x;
+    rgb = rgb * brightness;
+
+    // Contrast
+    let contrast = filter_b.y;
+    rgb = (rgb - vec3<f32>(0.5)) * contrast + vec3<f32>(0.5);
+
+    // Saturate
+    let saturate = filter_b.z;
+    if abs(saturate - 1.0) > 0.001 {
+        let lum = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        rgb = mix(vec3<f32>(lum, lum, lum), rgb, saturate);
+    }
+
+    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), color.a);
 }
 
 // ============================================================================
@@ -1291,6 +1370,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // NOW apply outer edge anti-aliasing to the combined result
     // This gives smooth edges against the background without shadow bleed
     result.a *= fill_alpha;
+
+    // Apply CSS filters (grayscale, invert, sepia, hue-rotate, brightness, contrast, saturate)
+    // Skip if all identity (filter_a all zero, filter_b = (1,1,1,0))
+    let fa = prim.filter_a;
+    let fb = prim.filter_b;
+    if fa.x != 0.0 || fa.y != 0.0 || fa.z != 0.0 || abs(fa.w) > 0.001 || fb.x != 1.0 || fb.y != 1.0 || fb.z != 1.0 {
+        result = apply_css_filter(result, fa, fb);
+    }
 
     return result;
 }

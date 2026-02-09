@@ -79,8 +79,10 @@ pub enum ClipType {
 /// - perspective: `vec4<f32>`     (16 bytes) - (sin_rx, cos_rx, perspective_d, shape_3d_type)
 /// - sdf_3d: `vec4<f32>`          (16 bytes) - (depth, ambient, specular_power, translate_z)
 /// - light: `vec4<f32>`           (16 bytes) - (dir_x, dir_y, dir_z, intensity)
+/// - filter_a: `vec4<f32>`        (16 bytes) - (grayscale, invert, sepia, hue_rotate_rad)
+/// - filter_b: `vec4<f32>`        (16 bytes) - (brightness, contrast, saturate, 0)
 /// - type_info: `vec4<u32>`       (16 bytes) - (primitive_type, fill_type, clip_type, z_layer)
-///   Total: 256 bytes
+///   Total: 288 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuPrimitive {
@@ -115,6 +117,10 @@ pub struct GpuPrimitive {
     pub sdf_3d: [f32; 4],
     /// Light params (dir_x, dir_y, dir_z, intensity)
     pub light: [f32; 4],
+    /// CSS filter A (grayscale, invert, sepia, hue_rotate_rad)
+    pub filter_a: [f32; 4],
+    /// CSS filter B (brightness, contrast, saturate, 0)
+    pub filter_b: [f32; 4],
     /// Type info (primitive_type, fill_type, clip_type, z_layer)
     pub type_info: [u32; 4],
 }
@@ -143,7 +149,10 @@ impl Default for GpuPrimitive {
             sdf_3d: [0.0, 0.3, 32.0, 0.0],
             // Default light: top direction, intensity 0.8
             light: [0.0, -1.0, 0.5, 0.8],
-            type_info: [0; 4], // clip_type defaults to None (0)
+            // Default filter: identity (no effect)
+            filter_a: [0.0, 0.0, 0.0, 0.0], // grayscale=0, invert=0, sepia=0, hue_rotate=0
+            filter_b: [1.0, 1.0, 1.0, 0.0], // brightness=1, contrast=1, saturate=1, unused=0
+            type_info: [0; 4],              // clip_type defaults to None (0)
         }
     }
 }
@@ -389,6 +398,8 @@ impl GpuPrimitive {
             perspective: [0.0, 1.0, 0.0, 0.0],
             sdf_3d: [0.0, 0.3, 32.0, 0.0],
             light: [0.0, -1.0, 0.5, 0.8],
+            filter_a: [0.0, 0.0, 0.0, 0.0],
+            filter_b: [1.0, 1.0, 1.0, 0.0],
             type_info: [
                 PrimitiveType::Text as u32,
                 is_color_flag,
@@ -427,6 +438,8 @@ impl GpuPrimitive {
             perspective: [0.0, 1.0, 0.0, 0.0],
             sdf_3d: [0.0, 0.3, 32.0, 0.0],
             light: [0.0, -1.0, 0.5, 0.8],
+            filter_a: [0.0, 0.0, 0.0, 0.0],
+            filter_b: [1.0, 1.0, 1.0, 0.0],
             type_info: [PrimitiveType::Text as u32, 0, ClipType::None as u32, 0],
         }
     }

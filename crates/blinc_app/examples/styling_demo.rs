@@ -386,6 +386,97 @@ fn main() -> Result<()> {
                 clip-path: inset(0% 0% 0% 0%);
             }
 
+            /* --- CSS Selector Hierarchy demos --- */
+
+            /* Class selector: .card applies to all elements with class="card" */
+            .card {
+                background: #1e3a5f;
+                border-radius: 12px;
+                transition: all 300ms ease;
+            }
+            .card:hover {
+                background: #3b82f6;
+                border-radius: 24px;
+                box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+            }
+
+            /* Child combinator: #parent > .child */
+            #selector-parent > .child-item {
+                background: #374151;
+                border-radius: 8px;
+            }
+            #selector-parent:hover > .child-item {
+                background: #6366f1;
+            }
+
+            /* Structural pseudo-classes */
+            .list-item:first-child {
+                background: #22c55e;
+                border-radius: 8px 8px 0 0;
+            }
+            .list-item:last-child {
+                background: #ef4444;
+                border-radius: 0 0 8px 8px;
+            }
+
+            /* Filter + transition demo */
+            .filter-card {
+                border-radius: 12px;
+                transition: all 400ms ease;
+            }
+            .filter-card:hover {
+                filter: brightness(1.8) saturate(2.0) contrast(1.3);
+            }
+
+            /* --- Layout Property Animation demos --- */
+
+            /* Width transition on hover */
+            #layout-width {
+                background: #3b82f6;
+                border-radius: 8px;
+                width: 120px;
+                height: 60px;
+                transition: width 400ms ease;
+            }
+            #layout-width:hover {
+                width: 280px;
+            }
+
+            /* Height transition on hover */
+            #layout-height {
+                background: #22c55e;
+                border-radius: 8px;
+                width: 120px;
+                height: 60px;
+                transition: height 400ms ease;
+            }
+            #layout-height:hover {
+                height: 120px;
+            }
+
+            /* Padding transition on hover */
+            #layout-padding {
+                background: #a855f7;
+                border-radius: 8px;
+                padding: 8px;
+                transition: padding 300ms ease;
+            }
+            #layout-padding:hover {
+                padding: 24px;
+            }
+
+            /* Combined width + height via @keyframes */
+            @keyframes grow-shrink {
+                0% { width: 80px; height: 50px; }
+                50% { width: 200px; height: 100px; }
+                100% { width: 80px; height: 50px; }
+            }
+            #layout-anim {
+                background: #f97316;
+                border-radius: 12px;
+                animation: grow-shrink 3000ms ease-in-out infinite;
+            }
+
             "#,
             );
             css_loaded = true;
@@ -412,7 +503,11 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .p(theme.spacing().space_6)
                     .flex_col()
                     .gap(theme.spacing().space_8)
-                    // CSS Stylesheet integration (new!)
+                    // Layout property animation
+                    .child(layout_animation_section())
+                    // CSS Selector Hierarchy
+                    .child(selector_hierarchy_section())
+                    // CSS Stylesheet integration
                     .child(css_stylesheet_section())
                     .child(css_hover_section())
                     .child(css_animation_section())
@@ -511,6 +606,271 @@ fn section_description(desc: &str) -> impl ElementBuilder {
 
 fn code_label(label: &str) -> impl ElementBuilder {
     inline_code(label).size(12.0)
+}
+
+// ============================================================================
+// LAYOUT PROPERTY ANIMATION SECTION
+// ============================================================================
+
+fn layout_animation_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Layout Property Animation"))
+        .child(section_description(
+            "Animate width, height, and padding via CSS transitions and @keyframes. Layout is recomputed each frame.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. Width transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#layout-width { width: 120px; transition: width 400ms ease; } :hover { width: 280px; }"))
+                        .child(
+                            div()
+                                .id("layout-width")
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover to grow width").size(12.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. Height transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#layout-height { height: 60px; transition: height 400ms ease; } :hover { height: 120px; }"))
+                        .child(
+                            div()
+                                .id("layout-height")
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover to grow height").size(12.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. Padding transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#layout-padding { padding: 8px; transition: padding 300ms ease; } :hover { padding: 24px; }"))
+                        .child(
+                            div()
+                                .id("layout-padding")
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover to expand padding").size(12.0).color(Color::WHITE)),
+                        ),
+                )
+                // 4. @keyframes layout animation
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes grow-shrink { 0% { width: 80px; height: 50px; } 50% { width: 200px; height: 100px; } }"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(100.0)
+                                .child(
+                                    div()
+                                        .id("layout-anim")
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Animated").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// CSS SELECTOR HIERARCHY SECTION
+// ============================================================================
+
+fn selector_hierarchy_section() -> impl ElementBuilder {
+    let theme = ThemeState::get();
+    let text_color = theme.color(ColorToken::TextPrimary);
+
+    section_container()
+        .child(section_title("CSS Selector Hierarchy"))
+        .child(section_description(
+            "Class selectors (.class), child combinators (>), structural pseudo-classes (:first-child, :last-child), and transitions.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. Class selectors with transitions
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".card { transition: all 300ms ease; }  .card:hover { ... }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("card")
+                                        .w(100.0)
+                                        .h(80.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Card A").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("card")
+                                        .w(100.0)
+                                        .h(80.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Card B").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("card")
+                                        .w(100.0)
+                                        .h(80.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Card C").size(13.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 2. Child combinator: #parent:hover > .child-item
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#selector-parent:hover > .child-item { background: #6366f1 }"))
+                        .child(
+                            div()
+                                .id("selector-parent")
+                                .bg(Color::rgba(0.1, 0.1, 0.15, 1.0))
+                                .rounded(12.0)
+                                .p(12.0)
+                                .flex_row()
+                                .gap(8.0)
+                                .child(
+                                    div()
+                                        .class("child-item")
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("1").size(14.0).color(text_color)),
+                                )
+                                .child(
+                                    div()
+                                        .class("child-item")
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("2").size(14.0).color(text_color)),
+                                )
+                                .child(
+                                    div()
+                                        .class("child-item")
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("3").size(14.0).color(text_color)),
+                                ),
+                        ),
+                )
+                // 3. Structural pseudo-classes
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".list-item:first-child / :last-child"))
+                        .child(
+                            div()
+                                .id("pseudo-list")
+                                .flex_col()
+                                .w(200.0)
+                                .child(
+                                    div()
+                                        .class("list-item")
+                                        .h(40.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("First").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("list-item")
+                                        .h(40.0)
+                                        .bg(Color::rgba(0.3, 0.3, 0.35, 1.0))
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Middle").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("list-item")
+                                        .h(40.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Last").size(13.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 4. Filter + transition on class
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".filter-card:hover { filter: brightness(1.8) saturate(2.0) contrast(1.3) }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("filter-card")
+                                        .w(100.0)
+                                        .h(80.0)
+                                        .bg(Color::rgba(0.9, 0.2, 0.3, 1.0))
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Hover me").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("filter-card")
+                                        .w(100.0)
+                                        .h(80.0)
+                                        .bg(Color::rgba(0.2, 0.6, 0.9, 1.0))
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Hover me").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                ),
+        )
 }
 
 // ============================================================================

@@ -28,9 +28,59 @@
 //! ```
 
 use blinc_core::{Brush, ClipPath, Color, CornerRadius, Shadow, Transform};
+
+/// CSS filter functions applied to an element
+///
+/// Each field corresponds to a CSS filter function.
+/// Default/identity values: grayscale=0, invert=0, sepia=0, hue_rotate=0,
+/// brightness=1, contrast=1, saturate=1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CssFilter {
+    /// Grayscale amount (0.0 = none, 1.0 = full grayscale)
+    pub grayscale: f32,
+    /// Invert amount (0.0 = none, 1.0 = fully inverted)
+    pub invert: f32,
+    /// Sepia amount (0.0 = none, 1.0 = full sepia)
+    pub sepia: f32,
+    /// Hue rotation in degrees
+    pub hue_rotate: f32,
+    /// Brightness multiplier (1.0 = normal)
+    pub brightness: f32,
+    /// Contrast multiplier (1.0 = normal)
+    pub contrast: f32,
+    /// Saturation multiplier (1.0 = normal)
+    pub saturate: f32,
+}
+
+impl Default for CssFilter {
+    fn default() -> Self {
+        Self {
+            grayscale: 0.0,
+            invert: 0.0,
+            sepia: 0.0,
+            hue_rotate: 0.0,
+            brightness: 1.0,
+            contrast: 1.0,
+            saturate: 1.0,
+        }
+    }
+}
+
+impl CssFilter {
+    /// Returns true if all filter values are at identity (no effect)
+    pub fn is_identity(&self) -> bool {
+        self.grayscale == 0.0
+            && self.invert == 0.0
+            && self.sepia == 0.0
+            && self.hue_rotate == 0.0
+            && self.brightness == 1.0
+            && self.contrast == 1.0
+            && self.saturate == 1.0
+    }
+}
 use blinc_theme::ThemeState;
 
-use crate::css_parser::CssAnimation;
+use crate::css_parser::{CssAnimation, CssTransitionSet};
 use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, WoodMaterial};
 
 // ============================================================================
@@ -160,6 +210,8 @@ pub struct ElementStyle {
     pub opacity: Option<f32>,
     /// CSS animation configuration (animation: name duration timing delay iteration-count direction fill-mode)
     pub animation: Option<CssAnimation>,
+    /// CSS transition configuration (transition: property duration timing delay)
+    pub transition: Option<CssTransitionSet>,
 
     // =========================================================================
     // 3D Transform Properties
@@ -194,6 +246,8 @@ pub struct ElementStyle {
     // =========================================================================
     /// CSS clip-path shape function
     pub clip_path: Option<ClipPath>,
+    /// CSS filter functions (grayscale, invert, sepia, brightness, contrast, saturate, hue-rotate)
+    pub filter: Option<CssFilter>,
 
     // =========================================================================
     // Layout Properties
@@ -906,6 +960,7 @@ impl ElementStyle {
             render_layer: other.render_layer.or(self.render_layer),
             opacity: other.opacity.or(self.opacity),
             animation: other.animation.clone().or_else(|| self.animation.clone()),
+            transition: other.transition.clone().or_else(|| self.transition.clone()),
             // 3D
             rotate_x: other.rotate_x.or(self.rotate_x),
             rotate_y: other.rotate_y.or(self.rotate_y),
@@ -921,6 +976,7 @@ impl ElementStyle {
             blend_3d: other.blend_3d.or(self.blend_3d),
             // Clip-path
             clip_path: other.clip_path.clone().or_else(|| self.clip_path.clone()),
+            filter: other.filter.or(self.filter),
             // Layout
             width: other.width.or(self.width),
             height: other.height.or(self.height),

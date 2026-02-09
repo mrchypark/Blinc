@@ -155,6 +155,9 @@ pub struct GpuPaintContext<'a> {
     current_3d_translate_z: f32,
     current_3d_light: [f32; 4],
     current_3d_group_shapes: Vec<crate::primitives::ShapeDesc>,
+    // CSS filter transient fields (set per-element, reset after)
+    current_filter_a: [f32; 4], // grayscale, invert, sepia, hue_rotate_rad
+    current_filter_b: [f32; 4], // brightness, contrast, saturate, 0
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -186,6 +189,8 @@ impl<'a> GpuPaintContext<'a> {
             current_3d_translate_z: 0.0,
             current_3d_light: [0.0, -1.0, 0.5, 0.8],
             current_3d_group_shapes: Vec::new(),
+            current_filter_a: [0.0, 0.0, 0.0, 0.0],
+            current_filter_b: [1.0, 1.0, 1.0, 0.0],
         }
     }
 
@@ -229,6 +234,8 @@ impl<'a> GpuPaintContext<'a> {
             current_3d_translate_z: 0.0,
             current_3d_light: [0.0, -1.0, 0.5, 0.8],
             current_3d_group_shapes: Vec::new(),
+            current_filter_a: [0.0, 0.0, 0.0, 0.0],
+            current_filter_b: [1.0, 1.0, 1.0, 0.0],
         }
     }
 
@@ -400,6 +407,28 @@ impl<'a> GpuPaintContext<'a> {
         self.current_3d_translate_z = 0.0;
         self.current_3d_light = [0.0, -1.0, 0.5, 0.8];
         self.current_3d_group_shapes.clear();
+    }
+
+    /// Set CSS filter parameters for the current element
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_css_filter(
+        &mut self,
+        grayscale: f32,
+        invert: f32,
+        sepia: f32,
+        hue_rotate_deg: f32,
+        brightness: f32,
+        contrast: f32,
+        saturate: f32,
+    ) {
+        self.current_filter_a = [grayscale, invert, sepia, hue_rotate_deg.to_radians()];
+        self.current_filter_b = [brightness, contrast, saturate, 0.0];
+    }
+
+    /// Reset CSS filter state to identity (call after rendering each element)
+    pub fn clear_css_filter(&mut self) {
+        self.current_filter_a = [0.0, 0.0, 0.0, 0.0];
+        self.current_filter_b = [1.0, 1.0, 1.0, 0.0];
     }
 
     /// Scale corner radius by the current transform's average scale factor
@@ -1218,6 +1247,25 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         self.current_3d_group_shapes.clear();
     }
 
+    fn set_css_filter(
+        &mut self,
+        grayscale: f32,
+        invert: f32,
+        sepia: f32,
+        hue_rotate_deg: f32,
+        brightness: f32,
+        contrast: f32,
+        saturate: f32,
+    ) {
+        self.current_filter_a = [grayscale, invert, sepia, hue_rotate_deg.to_radians()];
+        self.current_filter_b = [brightness, contrast, saturate, 0.0];
+    }
+
+    fn clear_css_filter(&mut self) {
+        self.current_filter_a = [0.0, 0.0, 0.0, 0.0];
+        self.current_filter_b = [1.0, 1.0, 1.0, 0.0];
+    }
+
     fn fill_path(&mut self, path: &Path, brush: Brush) {
         // Apply current opacity to the brush
         let opacity = self.combined_opacity();
@@ -1523,6 +1571,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
+            filter_a: self.current_filter_a,
+            filter_b: self.current_filter_b,
             type_info: [
                 PrimitiveType::Rect as u32,
                 fill_type as u32,
@@ -1607,6 +1657,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
+            filter_a: self.current_filter_a,
+            filter_b: self.current_filter_b,
             type_info: [
                 PrimitiveType::Rect as u32,
                 fill_type as u32,
@@ -1660,6 +1712,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
+            filter_a: self.current_filter_a,
+            filter_b: self.current_filter_b,
             type_info: [
                 PrimitiveType::Rect as u32,
                 fill_type as u32,
@@ -1734,6 +1788,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
+            filter_a: self.current_filter_a,
+            filter_b: self.current_filter_b,
             type_info: [
                 PrimitiveType::Circle as u32,
                 fill_type as u32,
@@ -1791,6 +1847,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
+            filter_a: self.current_filter_a,
+            filter_b: self.current_filter_b,
             type_info: [
                 PrimitiveType::Circle as u32,
                 fill_type as u32,
@@ -1916,6 +1974,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
+            filter_a: self.current_filter_a,
+            filter_b: self.current_filter_b,
             type_info: [
                 PrimitiveType::Shadow as u32,
                 FillType::Solid as u32,
@@ -1968,6 +2028,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
+            filter_a: self.current_filter_a,
+            filter_b: self.current_filter_b,
             type_info: [
                 PrimitiveType::InnerShadow as u32,
                 FillType::Solid as u32,
@@ -2016,6 +2078,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
+            filter_a: self.current_filter_a,
+            filter_b: self.current_filter_b,
             type_info: [
                 PrimitiveType::CircleShadow as u32,
                 FillType::Solid as u32,
@@ -2063,6 +2127,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             perspective: self.current_perspective_params(),
             sdf_3d: self.current_sdf_3d_params(),
             light: self.current_light_params(),
+            filter_a: self.current_filter_a,
+            filter_b: self.current_filter_b,
             type_info: [
                 PrimitiveType::CircleInnerShadow as u32,
                 FillType::Solid as u32,

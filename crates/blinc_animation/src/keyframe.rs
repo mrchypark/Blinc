@@ -110,7 +110,7 @@ impl KeyframeAnimation {
 // ============================================================================
 
 /// Properties that can be animated in a multi-property keyframe
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct KeyframeProperties {
     /// Opacity (0.0 to 1.0)
     pub opacity: Option<f32>,
@@ -138,6 +138,66 @@ pub struct KeyframeProperties {
     pub blend_3d: Option<f32>,
     /// Clip-path inset [top%, right%, bottom%, left%]
     pub clip_inset: Option<[f32; 4]>,
+
+    // --- Color properties ---
+    /// Background color RGBA
+    pub background_color: Option<[f32; 4]>,
+    /// Border color RGBA
+    pub border_color: Option<[f32; 4]>,
+
+    // --- Geometric properties ---
+    /// Corner radius [top_left, top_right, bottom_right, bottom_left]
+    pub corner_radius: Option<[f32; 4]>,
+    /// Border width in pixels
+    pub border_width: Option<f32>,
+    /// Clip-path circle radius (percent)
+    pub clip_circle_radius: Option<f32>,
+    /// Clip-path ellipse radii [rx, ry] (percent)
+    pub clip_ellipse_radii: Option<[f32; 2]>,
+
+    // --- Shadow properties ---
+    /// Shadow [offset_x, offset_y, blur, spread]
+    pub shadow_params: Option<[f32; 4]>,
+    /// Shadow color RGBA
+    pub shadow_color: Option<[f32; 4]>,
+
+    // --- 3D lighting ---
+    /// Light intensity (0.0-1.0+)
+    pub light_intensity: Option<f32>,
+    /// Ambient light level (0.0-1.0)
+    pub ambient: Option<f32>,
+    /// Specular power (higher = sharper highlights)
+    pub specular: Option<f32>,
+    /// Light direction [x, y, z]
+    pub light_direction: Option<[f32; 3]>,
+
+    // --- CSS filter properties ---
+    /// filter: grayscale(0..1)
+    pub filter_grayscale: Option<f32>,
+    /// filter: invert(0..1)
+    pub filter_invert: Option<f32>,
+    /// filter: sepia(0..1)
+    pub filter_sepia: Option<f32>,
+    /// filter: brightness(multiplier, 1.0 = normal)
+    pub filter_brightness: Option<f32>,
+    /// filter: contrast(multiplier, 1.0 = normal)
+    pub filter_contrast: Option<f32>,
+    /// filter: saturate(multiplier, 1.0 = normal)
+    pub filter_saturate: Option<f32>,
+    /// filter: hue-rotate(degrees)
+    pub filter_hue_rotate: Option<f32>,
+
+    // --- Layout properties (require layout recomputation) ---
+    /// Width in pixels
+    pub width: Option<f32>,
+    /// Height in pixels
+    pub height: Option<f32>,
+    /// Padding [top, right, bottom, left] in pixels
+    pub padding: Option<[f32; 4]>,
+    /// Margin [top, right, bottom, left] in pixels
+    pub margin: Option<[f32; 4]>,
+    /// Gap between flex items in pixels
+    pub gap: Option<f32>,
 }
 
 impl KeyframeProperties {
@@ -260,6 +320,40 @@ impl KeyframeProperties {
             translate_z: lerp_opt(self.translate_z, other.translate_z, t),
             blend_3d: lerp_opt(self.blend_3d, other.blend_3d, t),
             clip_inset: lerp_opt_array4(self.clip_inset, other.clip_inset, t),
+            // Color
+            background_color: lerp_opt_array4(self.background_color, other.background_color, t),
+            border_color: lerp_opt_array4(self.border_color, other.border_color, t),
+            // Geometric
+            corner_radius: lerp_opt_array4(self.corner_radius, other.corner_radius, t),
+            border_width: lerp_opt(self.border_width, other.border_width, t),
+            clip_circle_radius: lerp_opt(self.clip_circle_radius, other.clip_circle_radius, t),
+            clip_ellipse_radii: lerp_opt_array2(
+                self.clip_ellipse_radii,
+                other.clip_ellipse_radii,
+                t,
+            ),
+            // Shadow
+            shadow_params: lerp_opt_array4(self.shadow_params, other.shadow_params, t),
+            shadow_color: lerp_opt_array4(self.shadow_color, other.shadow_color, t),
+            // 3D lighting
+            light_intensity: lerp_opt(self.light_intensity, other.light_intensity, t),
+            ambient: lerp_opt(self.ambient, other.ambient, t),
+            specular: lerp_opt(self.specular, other.specular, t),
+            light_direction: lerp_opt_array3(self.light_direction, other.light_direction, t),
+            // Filters
+            filter_grayscale: lerp_opt(self.filter_grayscale, other.filter_grayscale, t),
+            filter_invert: lerp_opt(self.filter_invert, other.filter_invert, t),
+            filter_sepia: lerp_opt(self.filter_sepia, other.filter_sepia, t),
+            filter_brightness: lerp_opt(self.filter_brightness, other.filter_brightness, t),
+            filter_contrast: lerp_opt(self.filter_contrast, other.filter_contrast, t),
+            filter_saturate: lerp_opt(self.filter_saturate, other.filter_saturate, t),
+            filter_hue_rotate: lerp_opt(self.filter_hue_rotate, other.filter_hue_rotate, t),
+            // Layout
+            width: lerp_opt(self.width, other.width, t),
+            height: lerp_opt(self.height, other.height, t),
+            padding: lerp_opt_array4(self.padding, other.padding, t),
+            margin: lerp_opt_array4(self.margin, other.margin, t),
+            gap: lerp_opt(self.gap, other.gap, t),
         }
     }
 
@@ -311,6 +405,30 @@ impl KeyframeProperties {
 fn lerp_opt(a: Option<f32>, b: Option<f32>, t: f32) -> Option<f32> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a + (b - a) * t),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// Helper to interpolate optional [f32; 2] arrays
+fn lerp_opt_array2(a: Option<[f32; 2]>, b: Option<[f32; 2]>, t: f32) -> Option<[f32; 2]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// Helper to interpolate optional [f32; 3] arrays
+fn lerp_opt_array3(a: Option<[f32; 3]>, b: Option<[f32; 3]>, t: f32) -> Option<[f32; 3]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]),
         (Some(a), None) => Some(a),
         (None, Some(b)) => Some(b),
         (None, None) => None,

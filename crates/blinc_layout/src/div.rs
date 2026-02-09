@@ -388,6 +388,8 @@ pub struct Div {
     pub(crate) event_handlers: crate::event_handler::EventHandlers,
     /// Element ID for selector API queries
     pub(crate) element_id: Option<String>,
+    /// CSS class names for selector matching
+    pub(crate) classes: Vec<String>,
     // 3D transform properties (stored separately to flow through to render_props)
     pub(crate) rotate_x: Option<f32>,
     pub(crate) rotate_y: Option<f32>,
@@ -452,6 +454,7 @@ impl Div {
             is_stack_layer: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
+            classes: Vec::new(),
             rotate_x: None,
             rotate_y: None,
             perspective_3d: None,
@@ -500,6 +503,7 @@ impl Div {
             is_stack_layer: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
+            classes: Vec::new(),
             rotate_x: None,
             rotate_y: None,
             perspective_3d: None,
@@ -543,6 +547,20 @@ impl Div {
     /// Get the element ID if set
     pub fn element_id(&self) -> Option<&str> {
         self.element_id.as_deref()
+    }
+
+    /// Add a CSS class name for selector matching
+    ///
+    /// Classes can be used with `.class` selectors in stylesheets.
+    /// Multiple classes can be added by chaining `.class()` calls.
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.classes.push(name.into());
+        self
+    }
+
+    /// Get the element's class list
+    pub fn classes(&self) -> &[String] {
+        &self.classes
     }
 
     /// Set the stateful context key for automatic key derivation
@@ -3643,6 +3661,11 @@ pub trait ElementBuilder {
         None
     }
 
+    /// Get the element's CSS class list for selector matching
+    fn element_classes(&self) -> &[String] {
+        &[]
+    }
+
     /// Get the bound ScrollRef for programmatic scroll control
     ///
     /// Only scroll containers return a ScrollRef. This is used by the renderer
@@ -3758,6 +3781,10 @@ impl ElementBuilder for Div {
 
     fn element_id(&self) -> Option<&str> {
         self.element_id.as_deref()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        &self.classes
     }
 
     fn layout_animation_config(&self) -> Option<crate::layout_animation::LayoutAnimationConfig> {
