@@ -874,9 +874,26 @@ impl CssKeyframes {
             _ => {}
         }
 
-        // Background color (solid only)
-        if let Some(blinc_core::Brush::Solid(c)) = &style.background {
-            props.background_color = Some([c.r, c.g, c.b, c.a]);
+        // Background color (solid or gradient)
+        match &style.background {
+            Some(blinc_core::Brush::Solid(c)) => {
+                props.background_color = Some([c.r, c.g, c.b, c.a]);
+            }
+            Some(blinc_core::Brush::Gradient(gradient)) => {
+                let stops = gradient.stops();
+                if let Some(first) = stops.first() {
+                    props.gradient_start_color =
+                        Some([first.color.r, first.color.g, first.color.b, first.color.a]);
+                }
+                if let Some(last) = stops.last() {
+                    props.gradient_end_color =
+                        Some([last.color.r, last.color.g, last.color.b, last.color.a]);
+                }
+                if let blinc_core::Gradient::Linear { start, end, .. } = gradient {
+                    props.gradient_angle = Some(gradient_points_to_angle(*start, *end));
+                }
+            }
+            _ => {}
         }
 
         // Text color
@@ -5011,7 +5028,7 @@ fn parse_angle_value(input: &str) -> Option<f32> {
 /// Convert CSS gradient angle to start/end points
 /// CSS angles: 0deg = to top, 90deg = to right, 180deg = to bottom, 270deg = to left
 /// In ObjectBoundingBox space (0-1 coordinates)
-fn angle_to_gradient_points(angle_deg: f32) -> (Point, Point) {
+pub fn angle_to_gradient_points(angle_deg: f32) -> (Point, Point) {
     // CSS gradient angles are measured clockwise from top (0deg = up)
     // Convert to mathematical angle (counterclockwise from right)
     let angle_rad = (90.0 - angle_deg) * std::f32::consts::PI / 180.0;
@@ -5037,6 +5054,19 @@ fn angle_to_gradient_points(angle_deg: f32) -> (Point, Point) {
     let end = Point::new(center.x + dx * len, center.y + dy * len);
 
     (start, end)
+}
+
+/// Reverse-compute CSS gradient angle (in degrees) from ObjectBoundingBox start/end points.
+/// Inverse of `angle_to_gradient_points`.
+pub fn gradient_points_to_angle(start: Point, end: Point) -> f32 {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    // CSS: 0deg = to top, 90deg = to right, clockwise
+    // atan2 gives counterclockwise from positive-x
+    let math_angle = (-dy).atan2(dx); // negate dy for screen coords
+    let css_deg = 90.0 - math_angle * 180.0 / std::f32::consts::PI;
+    // Normalize to 0..360
+    ((css_deg % 360.0) + 360.0) % 360.0
 }
 
 /// Parse color stops from gradient parts

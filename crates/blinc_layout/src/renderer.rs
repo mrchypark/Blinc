@@ -4763,6 +4763,20 @@ impl RenderTree {
                 if cp.transform_origin.is_some() {
                     kp.transform_origin = cp.transform_origin;
                 }
+                // Overlay gradient fields from active transition to avoid
+                // snapshot mismatch (render props may lag 1 frame behind)
+                if cp.gradient_start_color.is_some() {
+                    kp.gradient_start_color = cp.gradient_start_color;
+                }
+                if cp.gradient_end_color.is_some() {
+                    kp.gradient_end_color = cp.gradient_end_color;
+                }
+                if cp.gradient_angle.is_some() {
+                    kp.gradient_angle = cp.gradient_angle;
+                }
+                if cp.background_color.is_some() {
+                    kp.background_color = cp.background_color;
+                }
             }
             kp
         })
@@ -6089,6 +6103,9 @@ impl RenderTree {
 
         check_transition!(opacity, "opacity");
         check_transition!(background_color, "background");
+        check_transition!(gradient_start_color, "background");
+        check_transition!(gradient_end_color, "background");
+        check_transition!(gradient_angle, "background");
         check_transition!(text_color, "color");
         check_transition!(font_size, "font-size");
         check_transition!(border_color, "border-color");
@@ -6191,6 +6208,35 @@ impl RenderTree {
         self.css_anim_store.lock().unwrap().transitions.is_empty()
     }
 
+    /// Rebuild gradient stops, interpolating the first and last stop colors
+    /// while preserving the positions of any intermediate stops.
+    fn rebuild_two_stop_gradient(
+        existing_stops: &[blinc_core::GradientStop],
+        start_color: blinc_core::Color,
+        end_color: blinc_core::Color,
+    ) -> Vec<blinc_core::GradientStop> {
+        if existing_stops.len() <= 2 {
+            vec![
+                blinc_core::GradientStop::new(0.0, start_color),
+                blinc_core::GradientStop::new(1.0, end_color),
+            ]
+        } else {
+            // Keep intermediate stops but lerp their colors proportionally
+            let mut new_stops = Vec::with_capacity(existing_stops.len());
+            for stop in existing_stops {
+                let t = stop.offset;
+                let c = blinc_core::Color::rgba(
+                    start_color.r + (end_color.r - start_color.r) * t,
+                    start_color.g + (end_color.g - start_color.g) * t,
+                    start_color.b + (end_color.b - start_color.b) * t,
+                    start_color.a + (end_color.a - start_color.a) * t,
+                );
+                new_stops.push(blinc_core::GradientStop::new(stop.offset, c));
+            }
+            new_stops
+        }
+    }
+
     /// Apply keyframe animation properties to render props
     fn apply_keyframe_props_to_render(
         props: &mut RenderProps,
@@ -6291,11 +6337,91 @@ impl RenderTree {
             });
         }
 
-        // Background color
+        // Background color (solid)
         if let Some([r, g, b, a]) = anim_props.background_color {
             props.background = Some(blinc_core::Brush::Solid(blinc_core::Color::rgba(
                 r, g, b, a,
             )));
+        }
+
+        // Gradient color stops animation
+        if anim_props.gradient_start_color.is_some() || anim_props.gradient_end_color.is_some() {
+            // Derive fallback colors from existing gradient stops to avoid
+            // flashing to black/white when only one color is in the transition
+            let (existing_start, existing_end) = match &props.background {
+                Some(blinc_core::Brush::Gradient(g)) => {
+                    let stops = g.stops();
+                    let s = stops.first().map(|s| [s.color.r, s.color.g, s.color.b, s.color.a]);
+                    let e = stops.last().map(|s| [s.color.r, s.color.g, s.color.b, s.color.a]);
+                    (s.unwrap_or([0.0, 0.0, 0.0, 1.0]), e.unwrap_or([0.0, 0.0, 0.0, 1.0]))
+                }
+                _ => ([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]),
+            };
+            let start_color = anim_props.gradient_start_color.unwrap_or(existing_start);
+            let end_color = anim_props.gradient_end_color.unwrap_or(existing_end);
+            let sc = blinc_core::Color::rgba(start_color[0], start_color[1], start_color[2], start_color[3]);
+            let ec = blinc_core::Color::rgba(end_color[0], end_color[1], end_color[2], end_color[3]);
+
+            // Reconstruct gradient preserving the existing type if possible
+            match &props.background {
+                Some(blinc_core::Brush::Gradient(existing)) => {
+                    let new_gradient = match existing {
+                        blinc_core::Gradient::Linear { start, end, stops, space, spread } => {
+                            let (start_pt, end_pt) = if let Some(angle) = anim_props.gradient_angle {
+                                crate::css_parser::angle_to_gradient_points(angle)
+                            } else {
+                                (*start, *end)
+                            };
+                            let new_stops = Self::rebuild_two_stop_gradient(stops, sc, ec);
+                            blinc_core::Gradient::Linear {
+                                start: start_pt,
+                                end: end_pt,
+                                stops: new_stops,
+                                space: *space,
+                                spread: *spread,
+                            }
+                        }
+                        blinc_core::Gradient::Radial { center, radius, focal, stops, space, spread } => {
+                            let new_stops = Self::rebuild_two_stop_gradient(stops, sc, ec);
+                            blinc_core::Gradient::Radial {
+                                center: *center,
+                                radius: *radius,
+                                focal: *focal,
+                                stops: new_stops,
+                                space: *space,
+                                spread: *spread,
+                            }
+                        }
+                        blinc_core::Gradient::Conic { center, start_angle, stops, space } => {
+                            let new_stops = Self::rebuild_two_stop_gradient(stops, sc, ec);
+                            blinc_core::Gradient::Conic {
+                                center: *center,
+                                start_angle: *start_angle,
+                                stops: new_stops,
+                                space: *space,
+                            }
+                        }
+                    };
+                    props.background = Some(blinc_core::Brush::Gradient(new_gradient));
+                }
+                _ => {
+                    // No existing gradient — create a linear from the animated angle
+                    let angle = anim_props.gradient_angle.unwrap_or(180.0);
+                    let (start_pt, end_pt) = crate::css_parser::angle_to_gradient_points(angle);
+                    props.background = Some(blinc_core::Brush::Gradient(
+                        blinc_core::Gradient::Linear {
+                            start: start_pt,
+                            end: end_pt,
+                            stops: vec![
+                                blinc_core::GradientStop::new(0.0, sc),
+                                blinc_core::GradientStop::new(1.0, ec),
+                            ],
+                            space: blinc_core::GradientSpace::ObjectBoundingBox,
+                            spread: blinc_core::GradientSpread::Pad,
+                        },
+                    ));
+                }
+            }
         }
 
         // Text color
@@ -6495,9 +6621,28 @@ impl RenderTree {
             _ => {}
         }
 
-        // Background color
-        if let Some(blinc_core::Brush::Solid(c)) = &props.background {
-            kp.background_color = Some([c.r, c.g, c.b, c.a]);
+        // Background color (solid or gradient)
+        match &props.background {
+            Some(blinc_core::Brush::Solid(c)) => {
+                kp.background_color = Some([c.r, c.g, c.b, c.a]);
+            }
+            Some(blinc_core::Brush::Gradient(gradient)) => {
+                let stops = gradient.stops();
+                if let Some(first) = stops.first() {
+                    kp.gradient_start_color =
+                        Some([first.color.r, first.color.g, first.color.b, first.color.a]);
+                }
+                if let Some(last) = stops.last() {
+                    kp.gradient_end_color =
+                        Some([last.color.r, last.color.g, last.color.b, last.color.a]);
+                }
+                if let blinc_core::Gradient::Linear { start, end, .. } = gradient {
+                    kp.gradient_angle = Some(
+                        crate::css_parser::gradient_points_to_angle(*start, *end),
+                    );
+                }
+            }
+            _ => {}
         }
 
         // Text color

@@ -140,8 +140,14 @@ pub struct KeyframeProperties {
     pub clip_inset: Option<[f32; 4]>,
 
     // --- Color properties ---
-    /// Background color RGBA
+    /// Background color RGBA (solid brush)
     pub background_color: Option<[f32; 4]>,
+    /// Gradient start color RGBA (first stop)
+    pub gradient_start_color: Option<[f32; 4]>,
+    /// Gradient end color RGBA (last stop)
+    pub gradient_end_color: Option<[f32; 4]>,
+    /// Gradient angle in degrees (linear gradients)
+    pub gradient_angle: Option<f32>,
     /// Border color RGBA
     pub border_color: Option<[f32; 4]>,
     /// Text foreground color RGBA
@@ -370,6 +376,17 @@ impl KeyframeProperties {
             clip_inset: lerp_opt_array4(self.clip_inset, other.clip_inset, t),
             // Color
             background_color: lerp_opt_array4(self.background_color, other.background_color, t),
+            gradient_start_color: lerp_opt_array4(
+                self.gradient_start_color,
+                other.gradient_start_color,
+                t,
+            ),
+            gradient_end_color: lerp_opt_array4(
+                self.gradient_end_color,
+                other.gradient_end_color,
+                t,
+            ),
+            gradient_angle: lerp_opt(self.gradient_angle, other.gradient_angle, t),
             border_color: lerp_opt_array4(self.border_color, other.border_color, t),
             text_color: lerp_opt_array4(self.text_color, other.text_color, t),
             // Geometric

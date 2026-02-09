@@ -495,6 +495,40 @@ fn main() -> Result<()> {
                 box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
             }
 
+            /* --- Gradient Animation demos --- */
+
+            /* Gradient transition on hover */
+            #grad-hover {
+                background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+                border-radius: 12px;
+                transition: all 500ms ease;
+            }
+            #grad-hover:hover {
+                background: linear-gradient(135deg, #f59e0b, #ef4444);
+            }
+
+            /* Gradient angle transition */
+            #grad-angle {
+                background: linear-gradient(0deg, #06b6d4, #8b5cf6);
+                border-radius: 12px;
+                transition: all 800ms ease;
+            }
+            #grad-angle:hover {
+                background: linear-gradient(180deg, #06b6d4, #8b5cf6);
+            }
+
+            /* Gradient keyframe animation */
+            @keyframes gradient-cycle {
+                0% { background: linear-gradient(90deg, #ef4444, #f97316); }
+                33% { background: linear-gradient(90deg, #22c55e, #06b6d4); }
+                66% { background: linear-gradient(90deg, #8b5cf6, #ec4899); }
+                100% { background: linear-gradient(90deg, #ef4444, #f97316); }
+            }
+            #grad-anim {
+                border-radius: 12px;
+                animation: gradient-cycle 4000ms linear infinite;
+            }
+
             /* --- Layout Property Animation demos --- */
 
             /* Width transition on hover */
@@ -781,6 +815,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(selector_hierarchy_section())
                     // Advanced selectors (+, ~, :not(), :empty, *)
                     .child(advanced_selectors_section())
+                    // Gradient animation (Phase 6)
+                    .child(gradient_animation_section())
                     // CSS Stylesheet integration
                     .child(css_stylesheet_section())
                     .child(css_hover_section())
@@ -1746,6 +1782,74 @@ fn advanced_selectors_section() -> impl ElementBuilder {
                                         .items_center()
                                         .child(text("C").size(14.0).color(Color::WHITE)),
                                 ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// GRADIENT ANIMATION SECTION (Phase 6)
+// ============================================================================
+
+fn gradient_animation_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Gradient Animation"))
+        .child(section_description(
+            "Gradient color stop and angle interpolation via transitions and @keyframes.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. Gradient hover transition (color change)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transition: all 500ms ease — gradient colors"))
+                        .child(
+                            div()
+                                .id("grad-hover")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover me").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. Gradient angle transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transition: all 800ms ease — gradient angle 0deg → 180deg"))
+                        .child(
+                            div()
+                                .id("grad-angle")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover me").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. Gradient keyframe animation
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes gradient-cycle { 0%..100% gradient colors }"))
+                        .child(
+                            div()
+                                .id("grad-anim")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Cycling gradient").size(14.0).color(Color::WHITE)),
                         ),
                 ),
         )

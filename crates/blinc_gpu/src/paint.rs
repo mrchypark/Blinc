@@ -473,6 +473,40 @@ impl<'a> GpuPaintContext<'a> {
     /// Transform gradient parameters by the current transform
     /// For linear gradients, transforms (x1, y1, x2, y2) to screen space
     /// For radial gradients, transforms (cx, cy, radius, 0) to screen space
+    /// Convert ObjectBoundingBox gradient coords (0..1) to local rect pixel coords.
+    fn obb_to_rect_coords(
+        brush: &Brush,
+        params: [f32; 4],
+        rect: Rect,
+        fill_type: FillType,
+    ) -> [f32; 4] {
+        let is_obb = matches!(
+            brush,
+            Brush::Gradient(blinc_core::Gradient::Linear { space: blinc_core::GradientSpace::ObjectBoundingBox, .. })
+            | Brush::Gradient(blinc_core::Gradient::Radial { space: blinc_core::GradientSpace::ObjectBoundingBox, .. })
+            | Brush::Gradient(blinc_core::Gradient::Conic { space: blinc_core::GradientSpace::ObjectBoundingBox, .. })
+        );
+        if !is_obb || fill_type == FillType::Solid {
+            return params;
+        }
+        let is_radial = fill_type == FillType::RadialGradient;
+        if is_radial {
+            [
+                rect.x() + params[0] * rect.width(),
+                rect.y() + params[1] * rect.height(),
+                params[2] * rect.width().max(rect.height()),
+                params[3],
+            ]
+        } else {
+            [
+                rect.x() + params[0] * rect.width(),
+                rect.y() + params[1] * rect.height(),
+                rect.x() + params[2] * rect.width(),
+                rect.y() + params[3] * rect.height(),
+            ]
+        }
+    }
+
     fn transform_gradient_params(&self, params: [f32; 4], is_radial: bool) -> [f32; 4] {
         if is_radial {
             // Radial gradient: (cx, cy, radius, 0)
@@ -1530,6 +1564,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
+        // Convert OBB (0..1) gradient coords to rect-local pixel coords
+        let gradient_params =
+            Self::obb_to_rect_coords(&brush, gradient_params, rect, fill_type);
+
         // Transform gradient params to screen space
         let is_radial = fill_type == FillType::RadialGradient;
         let transformed_gradient_params = if fill_type != FillType::Solid {
@@ -1637,6 +1675,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             border_widths[2] * scale_y, // bottom (vertical scale)
             border_widths[3] * scale_x, // left (horizontal scale)
         ];
+
+        // Convert OBB (0..1) gradient coords to rect-local pixel coords
+        let gradient_params =
+            Self::obb_to_rect_coords(&brush, gradient_params, rect, fill_type);
 
         // Transform gradient params to screen space
         let is_radial = fill_type == FillType::RadialGradient;
@@ -1782,6 +1824,16 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
+        // Convert OBB (0..1) gradient coords to circle bounding rect pixel coords
+        let circle_rect = Rect::new(
+            center.x - radius,
+            center.y - radius,
+            radius * 2.0,
+            radius * 2.0,
+        );
+        let gradient_params =
+            Self::obb_to_rect_coords(&brush, gradient_params, circle_rect, fill_type);
+
         // Transform gradient params to screen space
         let is_radial = fill_type == FillType::RadialGradient;
         let transformed_gradient_params = if fill_type != FillType::Solid {
@@ -1841,6 +1893,16 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
 
         let (color, _, gradient_params, fill_type) = self.brush_to_colors(&brush);
         let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+
+        // Convert OBB (0..1) gradient coords to circle bounding rect pixel coords
+        let circle_rect = Rect::new(
+            center.x - radius,
+            center.y - radius,
+            radius * 2.0,
+            radius * 2.0,
+        );
+        let gradient_params =
+            Self::obb_to_rect_coords(&brush, gradient_params, circle_rect, fill_type);
 
         // Transform gradient params to screen space
         let is_radial = fill_type == FillType::RadialGradient;
