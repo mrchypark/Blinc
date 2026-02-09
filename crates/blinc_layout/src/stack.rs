@@ -856,6 +856,26 @@ impl Stack {
         self
     }
 
+    /// Register a pinch handler (trackpad/touch zoom gesture)
+    pub fn on_pinch<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = self
+            .inner
+            .on_event(blinc_core::events::event_types::PINCH, handler);
+        self
+    }
+
+    /// Register a handler for an arbitrary event type.
+    pub fn on_event<F>(mut self, event_type: blinc_core::events::EventType, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.inner = self.inner.on_event(event_type, handler);
+        self
+    }
+
     /// Register a hover enter handler
     pub fn on_hover_enter<F>(mut self, handler: F) -> Self
     where
