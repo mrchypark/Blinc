@@ -238,6 +238,20 @@ where
                 }
             }
 
+            // Trackpad pinch-to-zoom gesture (macOS/iOS)
+            WinitWindowEvent::PinchGesture { delta, phase, .. } => {
+                // winit provides a magnification delta. Convert to ratio scale delta:
+                // 0.0 -> 1.0 (no change), 0.1 -> 1.1 (zoom in), -0.1 -> 0.9 (zoom out).
+                // Clamp to avoid negative/zero scales on weird driver values.
+                let scale = (1.0_f32 + delta as f32).clamp(0.01, 100.0);
+
+                // Only emit updates while the gesture is active.
+                if matches!(phase, winit::event::TouchPhase::Started | winit::event::TouchPhase::Moved)
+                {
+                    self.handle_event(Event::Input(input::pinch_event(scale)));
+                }
+            }
+
             WinitWindowEvent::Touch(touch) => {
                 let input_event = input::convert_touch_event(&touch);
                 self.handle_event(Event::Input(input_event));

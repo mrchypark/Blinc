@@ -220,3 +220,10 @@ pub fn scroll_event(delta_x: f32, delta_y: f32, phase: TouchPhase) -> InputEvent
 pub fn scroll_end_event() -> InputEvent {
     InputEvent::ScrollEnd
 }
+
+/// Convert trackpad/touchpad magnify (pinch) to blinc InputEvent.
+///
+/// `scale` is a ratio delta per update (1.0 = no change).
+pub fn pinch_event(scale: f32) -> InputEvent {
+    InputEvent::Pinch { scale }
+}
