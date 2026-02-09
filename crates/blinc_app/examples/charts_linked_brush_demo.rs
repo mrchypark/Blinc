@@ -107,4 +107,3 @@ fn make_series(n: usize, amp: f32) -> anyhow::Result<TimeSeriesF32> {
 
     TimeSeriesF32::new(x, y)
 }
-
