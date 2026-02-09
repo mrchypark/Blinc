@@ -1736,7 +1736,22 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
 
         let half_width = (stroke.width * 0.5).max(0.0);
-        let (clip_bounds, _clip_radius, _clip_type) = self.get_clip_data();
+        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+
+        // The compact line segment shader currently supports rectangular clipping only.
+        // If we have rounded rect clips or non-rect clip types, fall back to path
+        // tessellation so we preserve correct masking (e.g., rounded containers).
+        let has_rounded = clip_type == ClipType::Rect && clip_radius.iter().any(|&r| r > 0.0);
+        let needs_fallback =
+            has_rounded || matches!(clip_type, ClipType::Circle | ClipType::Ellipse);
+        if needs_fallback {
+            let mut path = Path::new().move_to(points[0].x, points[0].y);
+            for &p in &points[1..] {
+                path = path.line_to(p.x, p.y);
+            }
+            self.stroke_path(&path, stroke, Brush::Solid(color));
+            return;
+        }
 
         if std::env::var_os("BLINC_DEBUG_POLYLINE").is_some() {
             let n = DEBUG_POLYLINE_LOGS.fetch_add(1, Ordering::Relaxed);

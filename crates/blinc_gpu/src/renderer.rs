@@ -3345,6 +3345,18 @@ impl GpuRenderer {
                 self.layer_texture_cache.release(effected);
             }
         }
+
+        // Layer effects currently operate on primitive index ranges only.
+        // Compact line segments are stored in separate buffers (no order indices),
+        // so they would otherwise disappear in scenes that take the layer-effects path.
+        //
+        // Render them last as an overlay so they remain visible.
+        if !batch.line_segments.is_empty() {
+            self.render_line_segments_overlay(target, &batch.line_segments);
+        }
+        if !batch.foreground_line_segments.is_empty() {
+            self.render_line_segments_overlay(target, &batch.foreground_line_segments);
+        }
     }
 
     /// Render primitives excluding those in the given set

@@ -2580,10 +2580,10 @@ impl RenderContext {
                     let mut out = Vec::new();
                     let mut i = 0usize;
                     while i < segs.len() {
-                        let z = segs[i].params[1].max(0.0) as u32;
+                        let z = segs[i].z_layer();
                         let start = i;
                         i += 1;
-                        while i < segs.len() && (segs[i].params[1].max(0.0) as u32) == z {
+                        while i < segs.len() && segs[i].z_layer() == z {
                             i += 1;
                         }
                         out.push((z, start, i));

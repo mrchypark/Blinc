@@ -157,6 +157,10 @@ impl GpuLineSegment {
         self.color = [r, g, b, a];
         self
     }
+
+    pub fn z_layer(&self) -> u32 {
+        self.params[1].max(0.0) as u32
+    }
 }
 
 /// A GPU primitive ready for rendering (matches shader `Primitive` struct)

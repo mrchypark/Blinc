@@ -42,7 +42,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         .unwrap_or(160);
 
     let series = make_many_series(series_n, points_n);
-    let mut model = MultiLineChartModel::new(series);
+    let mut model =
+        MultiLineChartModel::new(series).expect("failed to create multi-line chart model");
     // "5-minute grid" feel in demo units: treat dx > 1.6 as a missing-sample gap.
     model.set_gap_dx(1.6);
     let handle = MultiLineChartHandle::new(model);
