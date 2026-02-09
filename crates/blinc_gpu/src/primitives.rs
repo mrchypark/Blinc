@@ -1255,7 +1255,7 @@ pub struct PrimitiveBatch {
     pub viewports_3d: Vec<Viewport3D>,
     /// GPU particle viewports to render
     pub particle_viewports: Vec<ParticleViewport3D>,
-    /// Auxiliary data buffer (vec4<f32> array) for variable-length per-primitive data.
+    /// Auxiliary data buffer (`vec4<f32>` array) for variable-length per-primitive data.
     /// Used for 3D group shape descriptors and polygon clip vertices.
     pub aux_data: Vec<[f32; 4]>,
 }
