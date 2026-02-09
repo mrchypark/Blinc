@@ -246,8 +246,10 @@ where
                 let scale = (1.0_f32 + delta as f32).clamp(0.01, 100.0);
 
                 // Only emit updates while the gesture is active.
-                if matches!(phase, winit::event::TouchPhase::Started | winit::event::TouchPhase::Moved)
-                {
+                if matches!(
+                    phase,
+                    winit::event::TouchPhase::Started | winit::event::TouchPhase::Moved
+                ) {
                     self.handle_event(Event::Input(input::pinch_event(scale)));
                 }
             }

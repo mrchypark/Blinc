@@ -87,7 +87,9 @@ fn make_many_series(series_n: usize, points_n: usize) -> Vec<TimeSeriesF32> {
 
     for si in 0..series_n {
         // Deterministic pseudo-random seed.
-        let mut seed = (si as u32).wrapping_mul(0x9E37_79B9).wrapping_add(0x7F4A_7C15);
+        let mut seed = (si as u32)
+            .wrapping_mul(0x9E37_79B9)
+            .wrapping_add(0x7F4A_7C15);
 
         let mut x = Vec::with_capacity(points_n);
         let mut y = Vec::with_capacity(points_n);
@@ -142,4 +144,3 @@ fn xorshift32(mut x: u32) -> u32 {
     x ^= x << 5;
     x
 }
-
