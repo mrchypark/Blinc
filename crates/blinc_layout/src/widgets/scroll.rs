@@ -1618,7 +1618,7 @@ impl Scroll {
             // Set items_start, justify_start, and content_start to ensure child starts
             // at top-left edge (not centered/stretched) on all alignment axes.
             inner: Div::new()
-                .overflow_scroll()
+                .overflow_scroll_style_only()
                 .items_start()
                 .justify_start()
                 .content_start(),
@@ -1636,7 +1636,7 @@ impl Scroll {
 
         Self {
             inner: Div::new()
-                .overflow_scroll()
+                .overflow_scroll_style_only()
                 .items_start()
                 .justify_start()
                 .content_start(),
@@ -1653,7 +1653,7 @@ impl Scroll {
 
         Self {
             inner: Div::new()
-                .overflow_scroll()
+                .overflow_scroll_style_only()
                 .items_start()
                 .justify_start()
                 .content_start(),
@@ -1665,7 +1665,10 @@ impl Scroll {
     }
 
     /// Create internal event handlers that update physics state
-    fn create_internal_handlers(physics: SharedScrollPhysics) -> EventHandlers {
+    ///
+    /// This is public so that other containers (e.g., Div with `overflow: scroll`)
+    /// can reuse the same scroll handler infrastructure.
+    pub fn create_internal_handlers(physics: SharedScrollPhysics) -> EventHandlers {
         let mut handlers = EventHandlers::new();
 
         // Internal handler that applies scroll delta to physics and shows scrollbar

@@ -236,8 +236,12 @@ pub struct ElementStyle {
     /// Uniform gap between children in pixels
     pub gap: Option<f32>,
 
-    /// Overflow behavior
+    /// Overflow behavior (shorthand, sets both axes)
     pub overflow: Option<StyleOverflow>,
+    /// Overflow behavior for X-axis only
+    pub overflow_x: Option<StyleOverflow>,
+    /// Overflow behavior for Y-axis only
+    pub overflow_y: Option<StyleOverflow>,
 
     /// Border width in pixels
     pub border_width: Option<f32>,
@@ -936,6 +940,8 @@ impl ElementStyle {
             margin: other.margin.or(self.margin),
             gap: other.gap.or(self.gap),
             overflow: other.overflow.or(self.overflow),
+            overflow_x: other.overflow_x.or(self.overflow_x),
+            overflow_y: other.overflow_y.or(self.overflow_y),
             border_width: other.border_width.or(self.border_width),
             border_color: other.border_color.or(self.border_color),
             position: other.position.or(self.position),
@@ -980,6 +986,8 @@ impl ElementStyle {
             || self.margin.is_some()
             || self.gap.is_some()
             || self.overflow.is_some()
+            || self.overflow_x.is_some()
+            || self.overflow_y.is_some()
             || self.border_width.is_some()
             || self.border_color.is_some()
             || self.position.is_some()

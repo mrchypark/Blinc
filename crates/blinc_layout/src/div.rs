@@ -411,6 +411,8 @@ pub struct Div {
     pub(crate) sticky_top: Option<f32>,
     /// CSS z-index for stacking order
     pub(crate) z_index: i32,
+    /// Scroll physics for overflow:scroll containers
+    pub(crate) scroll_physics: Option<crate::scroll::SharedScrollPhysics>,
     /// Layout animation configuration for FLIP-style bounds animation
     pub(crate) layout_animation: Option<crate::layout_animation::LayoutAnimationConfig>,
     /// Visual animation configuration (new FLIP-style system, read-only layout)
@@ -467,6 +469,7 @@ impl Div {
             is_sticky: false,
             sticky_top: None,
             z_index: 0,
+            scroll_physics: None,
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
@@ -514,6 +517,7 @@ impl Div {
             is_sticky: false,
             sticky_top: None,
             z_index: 0,
+            scroll_physics: None,
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
@@ -1029,6 +1033,32 @@ impl Div {
             };
             self.style.overflow.x = val;
             self.style.overflow.y = val;
+            if overflow == StyleOverflow::Scroll {
+                self.ensure_scroll_physics(crate::scroll::ScrollDirection::Both);
+            }
+        }
+        // Per-axis overflow
+        if let Some(ox) = style.overflow_x {
+            let val = match ox {
+                StyleOverflow::Visible => Overflow::Visible,
+                StyleOverflow::Clip => Overflow::Clip,
+                StyleOverflow::Scroll => Overflow::Scroll,
+            };
+            self.style.overflow.x = val;
+            if ox == StyleOverflow::Scroll {
+                self.ensure_scroll_physics(crate::scroll::ScrollDirection::Horizontal);
+            }
+        }
+        if let Some(oy) = style.overflow_y {
+            let val = match oy {
+                StyleOverflow::Visible => Overflow::Visible,
+                StyleOverflow::Clip => Overflow::Clip,
+                StyleOverflow::Scroll => Overflow::Scroll,
+            };
+            self.style.overflow.y = val;
+            if oy == StyleOverflow::Scroll {
+                self.ensure_scroll_physics(crate::scroll::ScrollDirection::Vertical);
+            }
         }
 
         // Layout: border
@@ -2160,10 +2190,21 @@ impl Div {
         self
     }
 
-    /// Set overflow to scroll (enable scrolling)
+    /// Set overflow to scroll (enable scrolling with full physics)
     ///
-    /// Note: For custom scroll behavior with spring physics, use the `scroll()` element instead.
+    /// Creates a scroll container with momentum scrolling, bounce, and scrollbar.
+    /// This is equivalent to using the `scroll()` widget but configured via the builder API.
     pub fn overflow_scroll(mut self) -> Self {
+        self.style.overflow.x = Overflow::Scroll;
+        self.style.overflow.y = Overflow::Scroll;
+        self.ensure_scroll_physics(crate::scroll::ScrollDirection::Both);
+        self
+    }
+
+    /// Set overflow to scroll (taffy style only, no physics)
+    ///
+    /// Used internally by the `Scroll` widget which manages its own physics.
+    pub(crate) fn overflow_scroll_style_only(mut self) -> Self {
         self.style.overflow.x = Overflow::Scroll;
         self.style.overflow.y = Overflow::Scroll;
         self
@@ -2172,13 +2213,53 @@ impl Div {
     /// Set horizontal overflow only (X-axis)
     pub fn overflow_x(mut self, overflow: Overflow) -> Self {
         self.style.overflow.x = overflow;
+        if overflow == Overflow::Scroll {
+            self.ensure_scroll_physics(crate::scroll::ScrollDirection::Horizontal);
+        }
         self
     }
 
     /// Set vertical overflow only (Y-axis)
     pub fn overflow_y(mut self, overflow: Overflow) -> Self {
         self.style.overflow.y = overflow;
+        if overflow == Overflow::Scroll {
+            self.ensure_scroll_physics(crate::scroll::ScrollDirection::Vertical);
+        }
         self
+    }
+
+    /// Set overflow to scroll on X-axis only
+    pub fn overflow_x_scroll(mut self) -> Self {
+        self.style.overflow.x = Overflow::Scroll;
+        self.style.overflow.y = Overflow::Clip;
+        self.ensure_scroll_physics(crate::scroll::ScrollDirection::Horizontal);
+        self
+    }
+
+    /// Set overflow to scroll on Y-axis only
+    pub fn overflow_y_scroll(mut self) -> Self {
+        self.style.overflow.x = Overflow::Clip;
+        self.style.overflow.y = Overflow::Scroll;
+        self.ensure_scroll_physics(crate::scroll::ScrollDirection::Vertical);
+        self
+    }
+
+    /// Ensure scroll physics are created for this div
+    fn ensure_scroll_physics(&mut self, direction: crate::scroll::ScrollDirection) {
+        if self.scroll_physics.is_none() {
+            let config = crate::scroll::ScrollConfig {
+                direction,
+                ..Default::default()
+            };
+            let physics = std::sync::Arc::new(std::sync::Mutex::new(
+                crate::scroll::ScrollPhysics::new(config),
+            ));
+            let handlers =
+                crate::scroll::Scroll::create_internal_handlers(std::sync::Arc::clone(&physics));
+            // Merge scroll handlers into existing event handlers
+            self.event_handlers.merge(handlers);
+            self.scroll_physics = Some(physics);
+        }
     }
 
     // =========================================================================
@@ -3685,6 +3766,10 @@ impl ElementBuilder for Div {
 
     fn visual_animation_config(&self) -> Option<crate::visual_animation::VisualAnimationConfig> {
         self.visual_animation.clone()
+    }
+
+    fn scroll_physics(&self) -> Option<crate::scroll::SharedScrollPhysics> {
+        self.scroll_physics.clone()
     }
 }
 

@@ -293,6 +293,16 @@ fn main() -> Result<()> {
             }
 
             /* Fixed & Sticky positioning — using inline styles for now */
+
+            /* --- CSS overflow:scroll demo --- */
+            #css-scroll-container {
+                overflow: scroll;
+                height: 200px;
+                width: 300px;
+                background: #0f172a;
+                border-radius: 8px;
+            }
+
             /* --- CSS clip-path demos --- */
             #clip-circle {
                 background: #3b82f6;
@@ -1798,6 +1808,52 @@ fn css_position_section() -> impl ElementBuilder {
                                             .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
                                             .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0)),
                                         ),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("CSS overflow: scroll"))
+                        .child(
+                            div()
+                                .id("css-scroll-container")
+                                .child(
+                                    div().h(500.0).p(5.0).flex_col().gap(5.0).w_full()
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0)),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("builder overflow_scroll()"))
+                        .child(
+                            div()
+                                .overflow_scroll()
+                                .w(300.0)
+                                .h(200.0)
+                                .bg(Color::from_hex(0x0f172a))
+                                .rounded(8.0)
+                                .child(
+                                    div().h(500.0).p(5.0).flex_col().gap(5.0).w_full()
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0)),
                                 ),
                         ),
                 ),

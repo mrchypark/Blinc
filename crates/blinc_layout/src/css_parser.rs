@@ -2248,6 +2248,18 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
             "scroll" | "auto" => style.overflow = Some(StyleOverflow::Scroll),
             _ => {}
         },
+        "overflow-x" => match value.trim() {
+            "hidden" | "clip" => style.overflow_x = Some(StyleOverflow::Clip),
+            "visible" => style.overflow_x = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow_x = Some(StyleOverflow::Scroll),
+            _ => {}
+        },
+        "overflow-y" => match value.trim() {
+            "hidden" | "clip" => style.overflow_y = Some(StyleOverflow::Clip),
+            "visible" => style.overflow_y = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow_y = Some(StyleOverflow::Scroll),
+            _ => {}
+        },
         "border-width" => {
             if let Some(px) = parse_css_px(value) {
                 style.border_width = Some(px);
@@ -2694,6 +2706,18 @@ fn apply_property_with_errors(
             "hidden" | "clip" => style.overflow = Some(StyleOverflow::Clip),
             "visible" => style.overflow = Some(StyleOverflow::Visible),
             "scroll" | "auto" => style.overflow = Some(StyleOverflow::Scroll),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "overflow-x" => match value.trim() {
+            "hidden" | "clip" => style.overflow_x = Some(StyleOverflow::Clip),
+            "visible" => style.overflow_x = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow_x = Some(StyleOverflow::Scroll),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "overflow-y" => match value.trim() {
+            "hidden" | "clip" => style.overflow_y = Some(StyleOverflow::Clip),
+            "visible" => style.overflow_y = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow_y = Some(StyleOverflow::Scroll),
             _ => errors.push(ParseError::invalid_value(name, value, line, column)),
         },
         "border-width" => {

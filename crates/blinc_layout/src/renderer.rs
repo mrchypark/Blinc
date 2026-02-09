@@ -4371,6 +4371,25 @@ impl RenderTree {
         if let Some(z) = style.z_index {
             props.z_index = z;
         }
+        // Overflow → clips_content (Clip or Scroll means clip children)
+        if let Some(overflow) = style.overflow {
+            use crate::element_style::StyleOverflow;
+            if matches!(overflow, StyleOverflow::Clip | StyleOverflow::Scroll) {
+                props.clips_content = true;
+            }
+        }
+        if let Some(ox) = style.overflow_x {
+            use crate::element_style::StyleOverflow;
+            if matches!(ox, StyleOverflow::Clip | StyleOverflow::Scroll) {
+                props.clips_content = true;
+            }
+        }
+        if let Some(oy) = style.overflow_y {
+            use crate::element_style::StyleOverflow;
+            if matches!(oy, StyleOverflow::Clip | StyleOverflow::Scroll) {
+                props.clips_content = true;
+            }
+        }
     }
 
     /// Resolve a CSS `ClipPath` into a concrete `ClipShape` given element bounds.
@@ -4630,7 +4649,7 @@ impl RenderTree {
                 };
             }
 
-            // Overflow
+            // Overflow (shorthand sets both axes)
             if let Some(overflow) = es.overflow {
                 let val = match overflow {
                     StyleOverflow::Visible => Overflow::Visible,
@@ -4639,6 +4658,21 @@ impl RenderTree {
                 };
                 style.overflow.x = val;
                 style.overflow.y = val;
+            }
+            // Per-axis overflow overrides
+            if let Some(ox) = es.overflow_x {
+                style.overflow.x = match ox {
+                    StyleOverflow::Visible => Overflow::Visible,
+                    StyleOverflow::Clip => Overflow::Clip,
+                    StyleOverflow::Scroll => Overflow::Scroll,
+                };
+            }
+            if let Some(oy) = es.overflow_y {
+                style.overflow.y = match oy {
+                    StyleOverflow::Visible => Overflow::Visible,
+                    StyleOverflow::Clip => Overflow::Clip,
+                    StyleOverflow::Scroll => Overflow::Scroll,
+                };
             }
 
             // Position
@@ -4671,6 +4705,64 @@ impl RenderTree {
             }
 
             self.layout_tree.set_style(node_id, style);
+        }
+
+        // Auto-create scroll physics for any nodes with overflow: scroll
+        self.auto_create_css_scroll_physics();
+    }
+
+    /// Auto-create scroll physics for nodes with `overflow: scroll` set via CSS.
+    ///
+    /// Scans all layout nodes and creates scroll physics + event handlers
+    /// for any node that has `overflow: scroll` on either axis but doesn't
+    /// already have scroll physics registered (e.g., from the `scroll()` widget
+    /// or the `overflow_scroll()` Div builder).
+    pub fn auto_create_css_scroll_physics(&mut self) {
+        use crate::scroll::{Scroll, ScrollConfig, ScrollDirection, ScrollPhysics};
+
+        // Collect nodes that need scroll physics
+        let all_ids = self.element_registry.all_ids();
+        let mut needs_physics: Vec<(LayoutNodeId, ScrollDirection)> = Vec::new();
+
+        for id in &all_ids {
+            let Some(node_id) = self.element_registry.get(id) else {
+                continue;
+            };
+            // Skip if already has scroll physics (from Scroll widget or Div builder)
+            if self.scroll_physics.contains_key(&node_id) {
+                continue;
+            }
+            let Some(style) = self.layout_tree.get_style(node_id) else {
+                continue;
+            };
+            let scroll_x = matches!(style.overflow.x, Overflow::Scroll);
+            let scroll_y = matches!(style.overflow.y, Overflow::Scroll);
+            if !scroll_x && !scroll_y {
+                continue;
+            }
+            let direction = match (scroll_x, scroll_y) {
+                (true, true) => ScrollDirection::Both,
+                (true, false) => ScrollDirection::Horizontal,
+                (false, true) => ScrollDirection::Vertical,
+                _ => unreachable!(),
+            };
+            needs_physics.push((node_id, direction));
+        }
+
+        // Create physics and register handlers
+        for (node_id, direction) in needs_physics {
+            let config = ScrollConfig {
+                direction,
+                ..Default::default()
+            };
+            let physics = Arc::new(Mutex::new(ScrollPhysics::new(config)));
+            // Set animation scheduler for bounce springs
+            if let Some(scheduler) = self.animations.upgrade() {
+                physics.lock().unwrap().set_scheduler(&scheduler);
+            }
+            let handlers = Scroll::create_internal_handlers(Arc::clone(&physics));
+            self.scroll_physics.insert(node_id, physics);
+            self.handler_registry.register(node_id, handlers);
         }
     }
 
