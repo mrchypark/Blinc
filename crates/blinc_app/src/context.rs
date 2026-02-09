@@ -2592,6 +2592,7 @@ impl RenderContext {
                 }
 
                 let line_ranges = line_ranges_by_z(&batch.line_segments);
+                let max_line_z = line_ranges.last().map(|r| r.0).unwrap_or(0);
                 let mut line_range_i = 0usize;
 
                 // First pass: render z_layer=0 primitives with clear
@@ -2632,6 +2633,8 @@ impl RenderContext {
                 }
 
                 // Render subsequent layers interleaved (primitives and images)
+                // Include line segment z-layers so line-only higher layers aren't skipped.
+                let max_layer = max_layer.max(max_line_z);
                 for z in 1..=max_layer {
                     // Render primitives for this layer
                     let layer_primitives = batch.primitives_for_layer(z);
