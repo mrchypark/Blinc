@@ -5268,6 +5268,7 @@ impl RenderTree {
                         ElementState::Active => pressed,
                         ElementState::Focus => focused,
                         ElementState::Disabled => false, // TODO: track disabled state
+                        ElementState::Checked => false,  // checked state managed by widget callbacks
                     };
                     if !matches {
                         return false;
@@ -8317,12 +8318,11 @@ impl RenderTree {
             }
 
             // Draw borders
-            // Individual border sides take precedence over uniform border
-            // Also check uniform border_width for .border(width, color) API
-            let has_border =
-                render_node.props.border_sides.has_any() || render_node.props.border_width > 0.0;
-            if has_border {
+            // Per-side borders take precedence; uniform border via stroke_rect for SDF rendering
+            if render_node.props.border_sides.has_any() {
                 let sides = &render_node.props.border_sides;
+                let uniform_width = render_node.props.border_width;
+                let uniform_color = render_node.props.border_color.unwrap_or(Color::TRANSPARENT);
 
                 // Helper to apply motion opacity (only when not using opacity layer)
                 let apply_motion = |color: Color| -> Color {
@@ -8342,68 +8342,76 @@ impl RenderTree {
                     ctx.push_clip(ClipShape::rounded_rect(rect, radius));
                 }
 
-                // Left border
-                if let Some(ref border) = sides.left {
-                    if border.is_visible() {
-                        let border_rect = Rect::new(0.0, 0.0, border.width, rect.height());
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(border.color)),
-                        );
-                    }
-                }
+                // Resolve per-side borders, falling back to uniform border
+                let left_border = sides
+                    .left
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
+                let right_border = sides
+                    .right
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
+                let top_border = sides
+                    .top
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
+                let bottom_border = sides
+                    .bottom
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
 
-                // Right border
-                if let Some(ref border) = sides.right {
-                    if border.is_visible() {
-                        let border_rect = Rect::new(
-                            rect.width() - border.width,
-                            0.0,
-                            border.width,
-                            rect.height(),
-                        );
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(border.color)),
-                        );
-                    }
+                if left_border.0 > 0.0 {
+                    let border_rect = Rect::new(0.0, 0.0, left_border.0, rect.height());
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(apply_motion(left_border.1)),
+                    );
                 }
-
-                // Top border
-                if let Some(ref border) = sides.top {
-                    if border.is_visible() {
-                        let border_rect = Rect::new(0.0, 0.0, rect.width(), border.width);
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(border.color)),
-                        );
-                    }
+                if right_border.0 > 0.0 {
+                    let border_rect = Rect::new(
+                        rect.width() - right_border.0,
+                        0.0,
+                        right_border.0,
+                        rect.height(),
+                    );
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(apply_motion(right_border.1)),
+                    );
                 }
-
-                // Bottom border
-                if let Some(ref border) = sides.bottom {
-                    if border.is_visible() {
-                        let border_rect = Rect::new(
-                            0.0,
-                            rect.height() - border.width,
-                            rect.width(),
-                            border.width,
-                        );
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(border.color)),
-                        );
-                    }
+                if top_border.0 > 0.0 {
+                    let border_rect = Rect::new(0.0, 0.0, rect.width(), top_border.0);
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(apply_motion(top_border.1)),
+                    );
+                }
+                if bottom_border.0 > 0.0 {
+                    let border_rect = Rect::new(
+                        0.0,
+                        rect.height() - bottom_border.0,
+                        rect.width(),
+                        bottom_border.0,
+                    );
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(apply_motion(bottom_border.1)),
+                    );
                 }
 
                 if has_radius {
                     ctx.pop_clip();
                 }
             } else if render_node.props.border_width > 0.0 {
+                // Uniform border — use stroke_rect for proper SDF-based rounded corners
                 if let Some(ref border_color) = render_node.props.border_color {
                     let stroke = Stroke::new(render_node.props.border_width);
                     // When using opacity layer, draw at full opacity (layer handles it)

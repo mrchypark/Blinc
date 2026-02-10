@@ -124,6 +124,7 @@ impl BlincTheme {
                 text_inverse: Color::WHITE,
                 text_link: latte::BLUE,
                 border: latte::SURFACE0,
+                border_secondary: latte::OVERLAY0, // Visible solid gray for form controls
                 border_hover: latte::SURFACE1,
                 border_focus: latte::BLUE,
                 border_error: latte::RED,
@@ -176,6 +177,7 @@ impl BlincTheme {
                 text_inverse: mocha::CRUST,
                 text_link: mocha::BLUE,
                 border: mocha::SURFACE1,
+                border_secondary: mocha::OVERLAY0, // Visible solid gray for form controls
                 border_hover: mocha::SURFACE2,
                 border_focus: mocha::BLUE,
                 border_error: mocha::RED,

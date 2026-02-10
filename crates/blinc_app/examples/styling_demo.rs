@@ -12,6 +12,7 @@
 
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
+use blinc_layout::widgets::radio_group;
 use blinc_core::{Color, Shadow, Transform};
 use blinc_layout::css;
 use blinc_layout::css_parser::Stylesheet;
@@ -1053,6 +1054,71 @@ fn main() -> Result<()> {
                 color: #64748b;
             }
 
+            /* Checkbox CSS styling */
+            #demo-checkbox {
+                border-color: #475569;
+                border-radius: 4px;
+                accent-color: #3b82f6;
+            }
+            #demo-checkbox:hover {
+                border-color: #3b82f6;
+            }
+            #demo-checkbox:checked {
+                background: #3b82f6;
+                border-color: #3b82f6;
+            }
+
+            #accent-checkbox {
+                border-color: #eab308;
+                accent-color: #eab308;
+            }
+            #accent-checkbox:hover {
+                border-color: #facc15;
+            }
+            #accent-checkbox:checked {
+                background: #eab308;
+                border-color: #eab308;
+            }
+
+            #disabled-checkbox {
+                opacity: 0.5;
+            }
+
+            /* Radio CSS styling */
+            #theme-radio-light {
+                border-color: #475569;
+                accent-color: #3b82f6;
+            }
+            #theme-radio-light:hover {
+                border-color: #3b82f6;
+            }
+            #theme-radio-light:checked {
+                accent-color: #3b82f6;
+                border-color: #3b82f6;
+            }
+            #theme-radio-dark {
+                border-color: #475569;
+                accent-color: #3b82f6;
+            }
+            #theme-radio-dark:hover {
+                border-color: #3b82f6;
+            }
+            #theme-radio-dark:checked {
+                accent-color: #3b82f6;
+                border-color: #3b82f6;
+            }
+            #theme-radio-system {
+                border-color: #475569;
+                accent-color: #3b82f6;
+            }
+            #theme-radio-system:hover {
+                border-color: #3b82f6;
+            }
+            #theme-radio-system:checked {
+                accent-color: #3b82f6;
+                border-color: #3b82f6;
+            }
+
             "#,
             );
             css_loaded = true;
@@ -1107,6 +1173,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(outline_section())
                     // Form Input CSS Styling (Phase 6)
                     .child(form_input_section())
+                    // Checkbox & Radio CSS Styling
+                    .child(form_controls_section(ctx))
                     // CSS Stylesheet integration
                     .child(css_stylesheet_section())
                     .child(css_hover_section())
@@ -2818,6 +2886,104 @@ fn form_input_section() -> impl ElementBuilder {
                                 .id("demo-textarea")
                                 .w(400.0)
                                 .h(120.0),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// CHECKBOX & RADIO CSS STYLING SECTION
+// ============================================================================
+
+fn form_controls_section(ctx: &WindowedContext) -> impl ElementBuilder {
+    let cb_state = ctx.use_state_keyed("demo_checkbox", || false);
+    let cb_accent_state = ctx.use_state_keyed("accent_checkbox", || true);
+    let cb_disabled_state = ctx.use_state_keyed("disabled_checkbox", || false);
+
+    let radio_state = ctx.use_state_keyed("theme_radio", || "light".to_string());
+
+    section_container()
+        .child(section_title("Checkbox & Radio CSS Styling"))
+        .child(section_description(
+            "Checkbox and Radio widgets styled via CSS selectors. Supports :hover, :checked, :disabled, and accent-color.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(24.0)
+                // Checkbox demos
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(12.0)
+                        .child(code_label("#demo-checkbox { accent-color: #3b82f6; } :hover { border-color: #3b82f6; } :checked { background: #3b82f6; }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(32.0)
+                                .items_center()
+                                .child(
+                                    checkbox(&cb_state)
+                                        .id("demo-checkbox")
+                                        .label("Accept terms"),
+                                )
+                                .child(
+                                    text("Hover / click to see :hover and :checked CSS")
+                                        .size(12.0)
+                                        .color(Color::rgba(0.5, 0.5, 0.5, 1.0)),
+                                ),
+                        ),
+                )
+                // Accent checkbox
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(12.0)
+                        .child(code_label("#accent-checkbox { accent-color: #eab308; } :checked { background: #eab308; }"))
+                        .child(
+                            checkbox(&cb_accent_state)
+                                .id("accent-checkbox")
+                                .label("Amber accent checkbox (pre-checked)"),
+                        ),
+                )
+                // Disabled checkbox
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(12.0)
+                        .child(code_label("#disabled-checkbox { opacity: 0.5; } + .disabled(true)"))
+                        .child(
+                            checkbox(&cb_disabled_state)
+                                .id("disabled-checkbox")
+                                .disabled(true)
+                                .label("Disabled checkbox"),
+                        ),
+                )
+                // Radio demos
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(12.0)
+                        .child(code_label("#theme-radio-*:checked { accent-color: #3b82f6; } :hover { border-color: #3b82f6; }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(32.0)
+                                .items_center()
+                                .child(
+                                    radio_group(&radio_state)
+                                        .id("theme-radio")
+                                        .label("Theme")
+                                        .horizontal()
+                                        .option("light", "Light")
+                                        .option("dark", "Dark")
+                                        .option("system", "System"),
+                                )
+                                .child(
+                                    text("Hover / click to see :hover and :checked CSS on radio")
+                                        .size(12.0)
+                                        .color(Color::rgba(0.5, 0.5, 0.5, 1.0)),
+                                ),
                         ),
                 ),
         )

@@ -278,7 +278,7 @@ impl Default for TextAreaConfig {
             bg_color: theme.color(ColorToken::InputBg),
             hover_bg_color: theme.color(ColorToken::InputBgHover),
             focused_bg_color: theme.color(ColorToken::InputBgFocus),
-            border_color: theme.color(ColorToken::Border),
+            border_color: theme.color(ColorToken::BorderSecondary),
             hover_border_color: theme.color(ColorToken::BorderHover),
             focused_border_color: theme.color(ColorToken::BorderFocus),
             border_width: 1.5,

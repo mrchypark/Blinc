@@ -338,6 +338,8 @@ pub struct ElementStyle {
     pub selection_color: Option<Color>,
     /// Placeholder text color (applied via ::placeholder pseudo-element)
     pub placeholder_color: Option<Color>,
+    /// Accent color for form controls (checkmarks, radio dots)
+    pub accent_color: Option<Color>,
 
     /// CSS position (static, relative, absolute)
     pub position: Option<StylePosition>,
@@ -1073,6 +1075,7 @@ impl ElementStyle {
             caret_color: other.caret_color.or(self.caret_color),
             selection_color: other.selection_color.or(self.selection_color),
             placeholder_color: other.placeholder_color.or(self.placeholder_color),
+            accent_color: other.accent_color.or(self.accent_color),
             position: other.position.or(self.position),
             top: other.top.or(self.top),
             right: other.right.or(self.right),

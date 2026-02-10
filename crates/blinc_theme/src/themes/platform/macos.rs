@@ -52,6 +52,7 @@ impl MacOSTheme {
                 text_link: Color::from_hex(0x007AFF),
                 // Borders
                 border: Color::rgba(0.0, 0.0, 0.0, 0.1),
+                border_secondary: Color::from_hex(0xC7C7CC), // Apple SystemGray4 — form controls
                 border_hover: Color::rgba(0.0, 0.0, 0.0, 0.15),
                 border_focus: Color::from_hex(0x007AFF),
                 border_error: Color::from_hex(0xFF3B30),
@@ -124,6 +125,7 @@ impl MacOSTheme {
                 text_link: Color::from_hex(0x0A84FF),
                 // Borders
                 border: Color::rgba(1.0, 1.0, 1.0, 0.1),
+                border_secondary: Color::from_hex(0x636366), // Apple SystemGray3 dark — form controls
                 border_hover: Color::rgba(1.0, 1.0, 1.0, 0.15),
                 border_focus: Color::from_hex(0x0A84FF),
                 border_error: Color::from_hex(0xFF453A),

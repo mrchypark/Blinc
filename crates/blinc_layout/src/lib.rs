@@ -266,7 +266,6 @@ pub mod prelude {
         // Checkbox widget - ready-to-use
         checkbox,
         checkbox_labeled,
-        checkbox_state,
         // Cursor blink timing (for use by app layer)
         elapsed_ms,
         has_focused_text_input,
@@ -274,6 +273,8 @@ pub mod prelude {
         text_area,
         text_area_state,
         text_area_state_with_placeholder,
+        // Radio group widget - ready-to-use
+        radio_group,
         // Text input widget - ready-to-use
         text_input,
         text_input_state,
@@ -283,10 +284,12 @@ pub mod prelude {
         ButtonVisualState,
         Checkbox,
         CheckboxConfig,
-        CheckboxState,
         InputConstraints,
         InputType,
-        SharedCheckboxState,
+        RadioGroup,
+        RadioGroupBuilder,
+        RadioGroupConfig,
+        RadioLayout,
         SharedTextAreaState,
         SharedTextInputState,
         TextArea,

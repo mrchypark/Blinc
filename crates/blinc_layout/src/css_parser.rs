@@ -460,6 +460,8 @@ pub enum ElementState {
     Focus,
     /// :disabled pseudo-class
     Disabled,
+    /// :checked pseudo-class (checkboxes, radios)
+    Checked,
 }
 
 impl ElementState {
@@ -470,6 +472,7 @@ impl ElementState {
             "active" => Some(ElementState::Active),
             "focus" => Some(ElementState::Focus),
             "disabled" => Some(ElementState::Disabled),
+            "checked" => Some(ElementState::Checked),
             _ => None,
         }
     }
@@ -482,6 +485,7 @@ impl std::fmt::Display for ElementState {
             ElementState::Active => write!(f, "active"),
             ElementState::Focus => write!(f, "focus"),
             ElementState::Disabled => write!(f, "disabled"),
+            ElementState::Checked => write!(f, "checked"),
         }
     }
 }
@@ -1471,6 +1475,7 @@ impl Stylesheet {
             ElementState::Active,
             ElementState::Focus,
             ElementState::Disabled,
+            ElementState::Checked,
         ] {
             let key = format!("{}:{}", id, state);
             if let Some(style) = self.styles.get(&key) {
@@ -3252,6 +3257,11 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.selection_color = Some(color);
             }
         }
+        "accent-color" => {
+            if let Some(color) = parse_color(value) {
+                style.accent_color = Some(color);
+            }
+        }
         "placeholder-color" => {
             if let Some(color) = parse_color(value) {
                 style.placeholder_color = Some(color);
@@ -3883,6 +3893,13 @@ fn apply_property_with_errors(
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
+        "accent-color" => {
+            if let Some(color) = parse_color(value) {
+                style.accent_color = Some(color);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
         "placeholder-color" => {
             if let Some(color) = parse_color(value) {
                 style.placeholder_color = Some(color);
@@ -4014,6 +4031,7 @@ fn parse_theme_color<'a, E: NomParseError<&'a str>>(input: &'a str) -> IResult<&
         "text-link" => ColorToken::TextLink,
         // Border colors
         "border" => ColorToken::Border,
+        "border-secondary" => ColorToken::BorderSecondary,
         "border-hover" => ColorToken::BorderHover,
         "border-focus" => ColorToken::BorderFocus,
         "border-error" => ColorToken::BorderError,

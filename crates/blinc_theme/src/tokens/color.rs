@@ -38,6 +38,7 @@ pub enum ColorToken {
 
     // Border colors
     Border,
+    BorderSecondary,
     BorderHover,
     BorderFocus,
     BorderError,
@@ -97,6 +98,7 @@ pub struct ColorTokens {
 
     // Border colors
     pub border: Color,
+    pub border_secondary: Color,
     pub border_hover: Color,
     pub border_focus: Color,
     pub border_error: Color,
@@ -148,6 +150,7 @@ impl ColorTokens {
             ColorToken::TextInverse => self.text_inverse,
             ColorToken::TextLink => self.text_link,
             ColorToken::Border => self.border,
+            ColorToken::BorderSecondary => self.border_secondary,
             ColorToken::BorderHover => self.border_hover,
             ColorToken::BorderFocus => self.border_focus,
             ColorToken::BorderError => self.border_error,
@@ -191,6 +194,7 @@ impl ColorTokens {
             text_inverse: Color::lerp(&from.text_inverse, &to.text_inverse, t),
             text_link: Color::lerp(&from.text_link, &to.text_link, t),
             border: Color::lerp(&from.border, &to.border, t),
+            border_secondary: Color::lerp(&from.border_secondary, &to.border_secondary, t),
             border_hover: Color::lerp(&from.border_hover, &to.border_hover, t),
             border_focus: Color::lerp(&from.border_focus, &to.border_focus, t),
             border_error: Color::lerp(&from.border_error, &to.border_error, t),
@@ -236,6 +240,7 @@ impl Default for ColorTokens {
             text_inverse: Color::WHITE,
             text_link: Color::from_hex(0x1E66F5),
             border: Color::from_hex(0xCCD0DA),
+            border_secondary: Color::from_hex(0xBCC0CC),
             border_hover: Color::from_hex(0xBCC0CC),
             border_focus: Color::from_hex(0x1E66F5),
             border_error: Color::from_hex(0xD20F39),
