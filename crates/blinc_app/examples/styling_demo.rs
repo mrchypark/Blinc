@@ -921,6 +921,60 @@ fn main() -> Result<()> {
                 animation: font-pulse 2000ms ease-in-out infinite;
             }
 
+            /* --- Outline demos (Phase 5) --- */
+
+            /* Static outline */
+            #outline-static {
+                background: #3b82f6;
+                border-radius: 12px;
+                outline: 3px solid #f59e0b;
+            }
+
+            /* Outline with offset */
+            #outline-offset {
+                background: #22c55e;
+                border-radius: 12px;
+                outline: 2px solid #ef4444;
+                outline-offset: 6px;
+            }
+
+            /* Outline transition on hover */
+            #outline-hover {
+                background: #a855f7;
+                border-radius: 12px;
+                outline: 0px solid rgba(168, 85, 247, 0);
+                outline-offset: 0px;
+                transition: all 400ms ease;
+            }
+            #outline-hover:hover {
+                outline: 3px solid #c084fc;
+                outline-offset: 4px;
+            }
+
+            /* Outline color transition */
+            #outline-color-hover {
+                background: #1e293b;
+                border-radius: 12px;
+                outline: 3px solid #64748b;
+                transition: outline-color 400ms ease;
+            }
+            #outline-color-hover:hover {
+                outline-color: #f43f5e;
+            }
+
+            /* @keyframes outline animation */
+            @keyframes outline-pulse {
+                0% { outline-width: 1px; outline-color: rgba(59, 130, 246, 0.3); outline-offset: 0px; }
+                50% { outline-width: 4px; outline-color: rgba(59, 130, 246, 1.0); outline-offset: 6px; }
+                100% { outline-width: 1px; outline-color: rgba(59, 130, 246, 0.3); outline-offset: 0px; }
+            }
+            #outline-anim {
+                background: #0f172a;
+                border-radius: 12px;
+                outline: 1px solid rgba(59, 130, 246, 0.3);
+                animation: outline-pulse 2500ms ease-in-out infinite;
+            }
+
             "#,
             );
             css_loaded = true;
@@ -971,6 +1025,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(gradient_animation_section())
                     // Text shadow (Phase 7)
                     .child(text_shadow_section())
+                    // Outline (Phase 5)
+                    .child(outline_section())
                     // CSS Stylesheet integration
                     .child(css_stylesheet_section())
                     .child(css_hover_section())
@@ -2482,6 +2538,110 @@ fn text_shadow_section() -> impl ElementBuilder {
                                         .weight(FontWeight::Bold)
                                         .color(Color::WHITE),
                                 ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// OUTLINE SECTION (Phase 5)
+// ============================================================================
+
+fn outline_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Outline Properties"))
+        .child(section_description(
+            "CSS outline with width, color, and offset. Outlines don't affect layout. Supports transitions and @keyframes.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .gap(24.0)
+                .flex_wrap()
+                .items_center()
+                // 1. Static outline
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("outline: 3px solid #f59e0b"))
+                        .child(
+                            div()
+                                .id("outline-static")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Static").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. Outline with offset
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("outline-offset: 6px"))
+                        .child(
+                            div()
+                                .id("outline-offset")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Offset").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. Outline transition on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("outline + offset on :hover"))
+                        .child(
+                            div()
+                                .id("outline-hover")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover me").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 4. Outline color transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("outline-color transition"))
+                        .child(
+                            div()
+                                .id("outline-color-hover")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Color hover").size(12.0).color(Color::WHITE)),
+                        ),
+                )
+                // 5. @keyframes outline animation
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes outline-pulse"))
+                        .child(
+                            div()
+                                .id("outline-anim")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Animated").size(14.0).color(Color::WHITE)),
                         ),
                 ),
         )
