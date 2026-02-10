@@ -46,8 +46,7 @@ struct GalleryModels {
 
 impl GalleryModels {
     fn new(line_n: usize) -> Self {
-        // IMPORTANT: This initializer runs while WindowedContext holds its internal
-        // reactive graph lock. Do not call ctx.use_* or State::get/try_get here.
+        // Keep this initializer pure and deterministic (no context access).
         let line_series = make_series(line_n).expect("failed to create series (x must be sorted)");
 
         let line = LineChartHandle::new(LineChartModel::new(line_series.clone()));
