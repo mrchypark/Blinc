@@ -32,6 +32,57 @@ const ITEMS: &[(&str, &str)] = &[
     ("Geo", "Placeholder"),
 ];
 
+#[derive(Clone)]
+struct GalleryModels {
+    line: LineChartHandle,
+    multi: MultiLineChartHandle,
+    area: AreaChartHandle,
+    bar: BarChartHandle,
+    hist: HistogramChartHandle,
+    scatter: ScatterChartHandle,
+    candle: CandlestickChartHandle,
+    heat: HeatmapChartHandle,
+}
+
+impl GalleryModels {
+    fn new(line_n: usize) -> Self {
+        // IMPORTANT: This initializer runs while WindowedContext holds its internal
+        // reactive graph lock. Do not call ctx.use_* or State::get/try_get here.
+        let line_series = make_series(line_n).expect("failed to create series (x must be sorted)");
+
+        let line = LineChartHandle::new(LineChartModel::new(line_series.clone()));
+        let area = AreaChartHandle::new(AreaChartModel::new(line_series.clone()));
+        let scatter = ScatterChartHandle::new(ScatterChartModel::new(line_series.clone()));
+
+        let multi = MultiLineChartHandle::new(
+            MultiLineChartModel::new(make_multi_series(64, 240))
+                .expect("multiline requires series"),
+        );
+        let bar = BarChartHandle::new(
+            BarChartModel::new(make_bar_series(3, 3_000)).expect("bar requires series"),
+        );
+        let hist =
+            HistogramChartHandle::new(HistogramChartModel::new(make_hist_values(100_000)).unwrap());
+        let candle = CandlestickChartHandle::new(CandlestickChartModel::new(
+            CandleSeries::new(make_candles(120_000)).expect("candles must be sorted"),
+        ));
+        let heat = HeatmapChartHandle::new(
+            HeatmapChartModel::new(320, 160, make_heat_values(320, 160)).expect("valid heatmap"),
+        );
+
+        Self {
+            line,
+            multi,
+            area,
+            bar,
+            hist,
+            scatter,
+            candle,
+            heat,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -58,49 +109,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
 
     let selected = ctx.use_state_keyed("charts_gallery_selected", || 0usize);
 
-    // Persist heavy models/handles so selection changes don't regenerate data.
-    let line_series = ctx.use_state_keyed("charts_gallery_line_series", || {
-        make_series(line_n).expect("failed to create series (x must be sorted)")
-    });
-    let line_handle = ctx.use_state_keyed("charts_gallery_line", || {
-        LineChartHandle::new(LineChartModel::new(
-            line_series.try_get().expect("line series exists"),
-        ))
-    });
-    let area_handle = ctx.use_state_keyed("charts_gallery_area", || {
-        AreaChartHandle::new(AreaChartModel::new(
-            line_series.try_get().expect("line series exists"),
-        ))
-    });
-    let scatter_handle = ctx.use_state_keyed("charts_gallery_scatter", || {
-        ScatterChartHandle::new(ScatterChartModel::new(
-            line_series.try_get().expect("line series exists"),
-        ))
-    });
-    let multi_handle = ctx.use_state_keyed("charts_gallery_multiline", || {
-        MultiLineChartHandle::new(
-            MultiLineChartModel::new(make_multi_series(64, 240))
-                .expect("multiline requires series"),
-        )
-    });
-    let bar_handle = ctx.use_state_keyed("charts_gallery_bar", || {
-        BarChartHandle::new(
-            BarChartModel::new(make_bar_series(3, 3_000)).expect("bar requires series"),
-        )
-    });
-    let hist_handle = ctx.use_state_keyed("charts_gallery_hist", || {
-        HistogramChartHandle::new(HistogramChartModel::new(make_hist_values(100_000)).unwrap())
-    });
-    let candle_handle = ctx.use_state_keyed("charts_gallery_candle", || {
-        CandlestickChartHandle::new(CandlestickChartModel::new(
-            CandleSeries::new(make_candles(120_000)).expect("candles must be sorted"),
-        ))
-    });
-    let heat_handle = ctx.use_state_keyed("charts_gallery_heat", || {
-        HeatmapChartHandle::new(
-            HeatmapChartModel::new(320, 160, make_heat_values(320, 160)).expect("valid heatmap"),
-        )
-    });
+    let models = ctx.use_state_keyed("charts_gallery_models", || GalleryModels::new(line_n));
 
     let header = div()
         .flex_row()
@@ -188,20 +197,14 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         let selected_for_main = selected.clone();
         let selected_signal = selected.signal_id();
 
-        let line_handle = line_handle.try_get().expect("line handle exists");
-        let area_handle = area_handle.try_get().expect("area handle exists");
-        let scatter_handle = scatter_handle.try_get().expect("scatter handle exists");
-        let multi_handle = multi_handle.try_get().expect("multiline handle exists");
-        let bar_handle = bar_handle.try_get().expect("bar handle exists");
-        let hist_handle = hist_handle.try_get().expect("hist handle exists");
-        let candle_handle = candle_handle.try_get().expect("candle handle exists");
-        let heat_handle = heat_handle.try_get().expect("heat handle exists");
+        let models = models.clone();
 
         stateful::<NoState>()
             .deps([selected_signal])
             .on_state(move |_ctx| {
                 let idx = selected_for_main.get();
                 let (title, desc) = ITEMS.get(idx).copied().unwrap_or(("Unknown", ""));
+                let m = models.try_get().expect("models exist");
 
                 div()
                     .flex_1()
@@ -235,15 +238,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             .overflow_clip()
                             .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
                             .child_box(chart_for(
-                                idx,
-                                line_handle.clone(),
-                                multi_handle.clone(),
-                                area_handle.clone(),
-                                bar_handle.clone(),
-                                hist_handle.clone(),
-                                scatter_handle.clone(),
-                                candle_handle.clone(),
-                                heat_handle.clone(),
+                                idx, m.line, m.multi, m.area, m.bar, m.hist, m.scatter, m.candle,
+                                m.heat,
                             )),
                     )
             })
