@@ -2229,6 +2229,7 @@ fn backdrop_filter_section() -> impl ElementBuilder {
                                     div()
                                         .w(140.0)
                                         .h(80.0)
+                                        .rounded(12.0)
                                         .bg(Color::rgba(0.2, 0.6, 1.0, 0.3))
                                         .child(
                                             div()
@@ -2256,6 +2257,7 @@ fn backdrop_filter_section() -> impl ElementBuilder {
                                     div()
                                         .w(140.0)
                                         .h(80.0)
+                                        .rounded(12.0)
                                         .bg(Color::rgba(1.0, 0.4, 0.2, 0.4))
                                         .child(
                                             div()
@@ -2266,9 +2268,7 @@ fn backdrop_filter_section() -> impl ElementBuilder {
                                                 .justify_center()
                                                 .items_center()
                                                 .child(
-                                                    text("Hover Me")
-                                                        .size(12.0)
-                                                        .color(Color::WHITE),
+                                                    text("Hover Me").size(12.0).color(Color::WHITE),
                                                 ),
                                         ),
                                 ),
@@ -2283,6 +2283,7 @@ fn backdrop_filter_section() -> impl ElementBuilder {
                                     div()
                                         .w(140.0)
                                         .h(80.0)
+                                        .rounded(12.0)
                                         .bg(Color::rgba(0.4, 0.9, 0.3, 0.4))
                                         .child(
                                             div()
@@ -2310,6 +2311,7 @@ fn backdrop_filter_section() -> impl ElementBuilder {
                                     div()
                                         .w(140.0)
                                         .h(80.0)
+                                        .rounded(12.0)
                                         .bg(Color::rgba(0.8, 0.3, 0.9, 0.4))
                                         .child(
                                             div()
@@ -2320,9 +2322,7 @@ fn backdrop_filter_section() -> impl ElementBuilder {
                                                 .justify_center()
                                                 .items_center()
                                                 .child(
-                                                    text("Animated")
-                                                        .size(12.0)
-                                                        .color(Color::WHITE),
+                                                    text("Animated").size(12.0).color(Color::WHITE),
                                                 ),
                                         ),
                                 ),

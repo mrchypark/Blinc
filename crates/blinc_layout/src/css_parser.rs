@@ -4655,7 +4655,18 @@ fn parse_backdrop_filter_functions(value: &str) -> Option<GlassMaterial> {
         return None;
     }
 
-    let mut glass = GlassMaterial::new().with_simple(true);
+    // Defaults: subtle white tint (makes glass visually distinct from backdrop),
+    // no border artifacts, simple frosted glass mode.
+    let mut glass = GlassMaterial {
+        blur: 0.0,
+        tint: blinc_core::Color::rgba(1.0, 1.0, 1.0, 0.1),
+        saturation: 1.0,
+        brightness: 1.0,
+        noise: 0.0,
+        border_thickness: 0.0,
+        shadow: None,
+        simple: true,
+    };
     let mut found_any = false;
 
     while !remaining.is_empty() {
@@ -4731,7 +4742,11 @@ fn parse_backdrop_filter_functions(value: &str) -> Option<GlassMaterial> {
         }
     }
 
-    if found_any { Some(glass) } else { None }
+    if found_any {
+        Some(glass)
+    } else {
+        None
+    }
 }
 
 fn parse_css_filter(value: &str) -> Option<crate::element_style::CssFilter> {

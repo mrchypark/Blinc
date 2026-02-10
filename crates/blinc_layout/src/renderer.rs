@@ -6672,7 +6672,16 @@ impl RenderTree {
         if has_backdrop {
             let existing = match &props.material {
                 Some(Material::Glass(g)) => g.clone(),
-                _ => GlassMaterial::new().with_simple(true),
+                _ => GlassMaterial {
+                    blur: 0.0,
+                    tint: blinc_core::Color::rgba(1.0, 1.0, 1.0, 0.1),
+                    saturation: 1.0,
+                    brightness: 1.0,
+                    noise: 0.0,
+                    border_thickness: 0.0,
+                    shadow: None,
+                    simple: true,
+                },
             };
             let mut glass = existing;
             if let Some(b) = anim_props.backdrop_blur {

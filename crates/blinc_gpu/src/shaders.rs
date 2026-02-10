@@ -1779,36 +1779,35 @@ fn calculate_glass_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>) -> f32 {
     return clamp(d + 0.5, 0.0, 1.0);
 }
 
-// High quality blur using spiral sampling pattern
-// More samples and better distribution to eliminate checkered artifacts
+// High quality blur using golden-angle spiral sampling
+// CSS spec: blur(Npx) means standard deviation = N pixels
 fn blur_backdrop(uv: vec2<f32>, blur_radius: f32) -> vec4<f32> {
     if blur_radius < 0.5 {
         return textureSample(backdrop_texture, backdrop_sampler, uv);
     }
 
     let texel_size = 1.0 / uniforms.viewport_size;
-    let sigma = blur_radius * 0.5;
+    let sigma = blur_radius; // CSS spec: blur radius IS the standard deviation
 
     // Start with center sample (highest weight)
     var color = textureSample(backdrop_texture, backdrop_sampler, uv);
     var total_weight = 1.0;
 
-    // Golden angle spiral for optimal sample distribution
-    // This eliminates checkered patterns by avoiding regular grids
-    let golden_angle = 2.39996323; // radians (137.5 degrees)
+    let golden_angle = 2.39996323; // 137.5 degrees in radians
 
-    // More samples for smoother blur - 5 rings with 12 samples each = 60 samples
-    let num_rings = 5;
+    // Sample out to 2.5 sigma for proper Gaussian coverage
+    let sample_extent = blur_radius * 2.5;
+
+    // 6 rings with 12 samples each = 72 samples, linear spacing
+    let num_rings = 6;
     let samples_per_ring = 12;
 
     for (var ring = 1; ring <= num_rings; ring++) {
-        // Non-linear ring spacing - more samples near center
         let ring_t = f32(ring) / f32(num_rings);
-        let ring_radius = blur_radius * ring_t * ring_t; // Quadratic falloff
+        let ring_radius = sample_extent * ring_t; // Linear spacing
         let ring_offset = ring_radius * texel_size;
 
         for (var i = 0; i < samples_per_ring; i++) {
-            // Golden angle rotation + ring offset for spiral pattern
             let angle = f32(i) * (6.283185 / f32(samples_per_ring)) + f32(ring) * golden_angle;
             let offset = vec2<f32>(cos(angle), sin(angle)) * ring_offset;
 
@@ -1824,13 +1823,10 @@ fn blur_backdrop(uv: vec2<f32>, blur_radius: f32) -> vec4<f32> {
 }
 
 // High quality blur with clip bounds for scroll containers
-// Samples are clamped to the clip region to prevent blur bleeding
+// CSS spec: blur(Npx) means standard deviation = N pixels
 fn blur_backdrop_clipped(uv: vec2<f32>, blur_radius: f32, clip_bounds: vec4<f32>) -> vec4<f32> {
-    // Convert clip bounds from (x, y, width, height) to (min_x, min_y, max_x, max_y) in UV space
     let clip_min = clip_bounds.xy / uniforms.viewport_size;
     let clip_max = (clip_bounds.xy + clip_bounds.zw) / uniforms.viewport_size;
-
-    // Check if clipping is active (default bounds are very large)
     let has_clip = clip_bounds.x > -5000.0;
 
     if blur_radius < 0.5 {
@@ -1839,37 +1835,33 @@ fn blur_backdrop_clipped(uv: vec2<f32>, blur_radius: f32, clip_bounds: vec4<f32>
     }
 
     let texel_size = 1.0 / uniforms.viewport_size;
-    let sigma = blur_radius * 0.5;
+    let sigma = blur_radius; // CSS spec: blur radius IS the standard deviation
 
     // Start with center sample (highest weight)
     let center_uv = select(uv, clamp(uv, clip_min, clip_max), has_clip);
     var color = textureSample(backdrop_texture, backdrop_sampler, center_uv);
     var total_weight = 1.0;
 
-    // Golden angle spiral for optimal sample distribution
-    let golden_angle = 2.39996323; // radians (137.5 degrees)
+    let golden_angle = 2.39996323; // 137.5 degrees in radians
 
-    // More samples for smoother blur - 5 rings with 12 samples each = 60 samples
-    let num_rings = 5;
+    // Sample out to 2.5 sigma for proper Gaussian coverage
+    let sample_extent = blur_radius * 2.5;
+
+    // 6 rings with 12 samples each = 72 samples, linear spacing
+    let num_rings = 6;
     let samples_per_ring = 12;
 
     for (var ring = 1; ring <= num_rings; ring++) {
-        // Non-linear ring spacing - more samples near center
         let ring_t = f32(ring) / f32(num_rings);
-        let ring_radius = blur_radius * ring_t * ring_t; // Quadratic falloff
+        let ring_radius = sample_extent * ring_t; // Linear spacing
         let ring_offset = ring_radius * texel_size;
 
         for (var i = 0; i < samples_per_ring; i++) {
-            // Golden angle rotation + ring offset for spiral pattern
             let angle = f32(i) * (6.283185 / f32(samples_per_ring)) + f32(ring) * golden_angle;
             let offset = vec2<f32>(cos(angle), sin(angle)) * ring_offset;
 
             var sample_pos = uv + offset;
-
-            // Clamp sample position to clip bounds if clipping is active
-            if has_clip {
-                sample_pos = clamp(sample_pos, clip_min, clip_max);
-            }
+            sample_pos = select(sample_pos, clamp(sample_pos, clip_min, clip_max), has_clip);
 
             let weight = gaussian_weight(ring_radius, sigma);
             color += textureSample(backdrop_texture, backdrop_sampler, sample_pos) * weight;
@@ -2328,34 +2320,60 @@ fn adjust_saturation(color: vec3<f32>, saturation: f32) -> vec3<f32> {
     return mix(vec3<f32>(luminance), color, saturation);
 }
 
-// Simple box blur - sample backdrop at offset positions
+// Gaussian weight function
+fn gaussian_weight(x: f32, sigma: f32) -> f32 {
+    return exp(-(x * x) / (2.0 * sigma * sigma));
+}
+
+// High quality blur using golden-angle spiral sampling
+// CSS spec: blur(Npx) means standard deviation = N pixels
 fn blur_backdrop(uv: vec2<f32>, radius: f32, clip_bounds: vec4<f32>) -> vec4<f32> {
-    let tex_size = vec2<f32>(textureDimensions(backdrop_texture));
-    let pixel_size = 1.0 / tex_size;
+    if radius < 0.5 {
+        return textureSample(backdrop_texture, backdrop_sampler, uv);
+    }
 
-    // Use 5x5 box blur for simplicity
-    let r = max(1.0, radius * 0.5);
-    var sum = vec4<f32>(0.0);
-    var weight = 0.0;
+    let texel_size = 1.0 / uniforms.viewport_size;
+    let sigma = radius; // CSS spec: blur radius IS the standard deviation
 
+    // Clip bounds in UV space
     let clip_min = clip_bounds.xy / uniforms.viewport_size;
     let clip_max = (clip_bounds.xy + clip_bounds.zw) / uniforms.viewport_size;
+    let has_clip = clip_bounds.x > -5000.0;
 
-    for (var y = -2.0; y <= 2.0; y += 1.0) {
-        for (var x = -2.0; x <= 2.0; x += 1.0) {
-            let offset = vec2<f32>(x, y) * pixel_size * r;
-            var sample_uv = uv + offset;
+    // Start with center sample (highest weight)
+    let center_uv = select(uv, clamp(uv, clip_min, clip_max), has_clip);
+    var color = textureSample(backdrop_texture, backdrop_sampler, center_uv);
+    var total_weight = 1.0;
 
-            // Clamp to clip bounds
-            sample_uv = clamp(sample_uv, clip_min, clip_max);
+    // Golden angle spiral for smooth sample distribution
+    let golden_angle = 2.39996323; // 137.5 degrees in radians
 
-            let w = 1.0;
-            sum += textureSample(backdrop_texture, backdrop_sampler, sample_uv) * w;
-            weight += w;
+    // Sample out to 2.5 sigma for proper Gaussian coverage (captures ~99% of kernel)
+    let sample_extent = radius * 2.5;
+
+    // 6 rings with 12 samples each = 72 samples, linear spacing
+    let num_rings = 6;
+    let samples_per_ring = 12;
+
+    for (var ring = 1; ring <= num_rings; ring++) {
+        let ring_t = f32(ring) / f32(num_rings);
+        let ring_radius = sample_extent * ring_t; // Linear spacing for uniform coverage
+        let ring_offset = ring_radius * texel_size;
+
+        for (var i = 0; i < samples_per_ring; i++) {
+            let angle = f32(i) * (6.283185 / f32(samples_per_ring)) + f32(ring) * golden_angle;
+            let offset = vec2<f32>(cos(angle), sin(angle)) * ring_offset;
+
+            var sample_pos = uv + offset;
+            sample_pos = select(sample_pos, clamp(sample_pos, clip_min, clip_max), has_clip);
+
+            let weight = gaussian_weight(ring_radius, sigma);
+            color += textureSample(backdrop_texture, backdrop_sampler, sample_pos) * weight;
+            total_weight += weight;
         }
     }
 
-    return sum / weight;
+    return color / total_weight;
 }
 
 // Noise function for frosted texture
