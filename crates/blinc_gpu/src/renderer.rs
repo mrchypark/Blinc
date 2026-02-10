@@ -3643,8 +3643,8 @@ impl GpuRenderer {
                 unsafe { (&*active.atlas_view_ptr, &*active.color_atlas_view_ptr) }
             } else {
                 (
-                    &self.placeholder_glyph_atlas_view,
-                    &self.placeholder_color_glyph_atlas_view,
+                    &self._placeholder_glyph_atlas_view,
+                    &self._placeholder_color_glyph_atlas_view,
                 )
             };
 
