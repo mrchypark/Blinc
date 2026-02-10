@@ -154,7 +154,9 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
             )
             .child(div().h(1.0).bg(Color::rgba(1.0, 1.0, 1.0, 0.06)))
             .child({
-                let mut list = div().flex_1().overflow_y_scroll().flex_col().gap(6.0);
+                // In a flex column, allow the scroll container to shrink below its content size.
+                // (Similar to CSS `min-height: 0` for scrollables inside flex.)
+                let mut list = div().flex_col().gap(6.0);
                 for (i, (title, _desc)) in ITEMS.iter().enumerate() {
                     let title = *title;
                     let selected_for_state = selected_for_list.clone();
@@ -195,7 +197,12 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             }),
                     );
                 }
-                list
+                div()
+                    .flex_1()
+                    .min_h(0.0)
+                    .w_full()
+                    .overflow_y_scroll()
+                    .child(list)
             })
     };
 

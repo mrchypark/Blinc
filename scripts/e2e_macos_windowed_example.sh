@@ -25,6 +25,12 @@ if ! command -v hs >/dev/null 2>&1; then
   exit 2
 fi
 
+if ! hs -c 'print("hs_ok")' >/dev/null 2>&1; then
+  echo "error: Hammerspoon IPC is not available." >&2
+  echo "Fix: add 'require(\"hs.ipc\")' to ~/.hammerspoon/init.lua and reload Hammerspoon once." >&2
+  exit 2
+fi
+
 export BLINC_CHARTS_N="${BLINC_CHARTS_N:-5000}"
 
 log_file="${TMPDIR:-/tmp}/blinc-e2e-${example}.log"

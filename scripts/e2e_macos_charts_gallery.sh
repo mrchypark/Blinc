@@ -10,6 +10,7 @@ set -euo pipefail
 # - Line chart actually contains a blue-ish line (not just the grid)
 # - Heatmap renders without panicking and shows non-grid colors
 # - App behaves under a smaller window (responsive layout path)
+# - Sidebar list can be wheel-scrolled when the window is short (discoverability)
 #
 # Output artifacts:
 # - /tmp/blinc-e2e-<case>-<WxH>.png
@@ -17,6 +18,12 @@ set -euo pipefail
 
 if ! command -v hs >/dev/null 2>&1; then
   echo "error: missing 'hs' (Hammerspoon CLI). Install Hammerspoon and enable hs.ipc." >&2
+  exit 2
+fi
+
+if ! hs -c 'print("hs_ok")' >/dev/null 2>&1; then
+  echo "error: Hammerspoon IPC is not available." >&2
+  echo "Fix: add 'require(\"hs.ipc\")' to ~/.hammerspoon/init.lua and reload Hammerspoon once." >&2
   exit 2
 fi
 
@@ -102,18 +109,17 @@ run_case() {
 
     hs.timer.usleep(800000) -- let one frame render after resize
 
-    -- Snapshot just the window region.
     local frame = win:frame()
-    local img = screen:snapshot(frame)
-    if img == nil then
-      io.stderr:write('error: snapshot failed\n')
-      os.exit(1)
+    local function snapshot()
+      local img = screen:snapshot(frame)
+      if img == nil then
+        io.stderr:write('error: snapshot failed\n')
+        os.exit(1)
+      end
+      return img
     end
 
-    if not img:saveToFile(out_png) then
-      io.stderr:write('error: failed to save png: ' .. out_png .. '\n')
-      os.exit(1)
-    end
+    local img = snapshot()
 
     local sz = img:size()
     local iw = sz.w or 0
@@ -125,6 +131,75 @@ run_case() {
     local x1 = math.floor(iw * 0.96)
     local y0 = math.floor(ih * 0.22)
     local y1 = math.floor(ih * 0.92)
+
+    if case_name == 'sidebar_scroll' then
+      if narrow then
+        io.stderr:write('error: sidebar_scroll case expects wide layout\n')
+        os.exit(1)
+      end
+
+      -- Sample points in the left sidebar list region.
+      local sx0 = math.floor(iw * 0.04)
+      local sx1 = math.floor(iw * 0.30)
+      local sy0 = math.floor(ih * 0.22)
+      local sy1 = math.floor(ih * 0.92)
+      local step_x = math.max(6, math.floor((sx1 - sx0) / 26))
+      local step_y = math.max(6, math.floor((sy1 - sy0) / 20))
+
+      local function sample_colors(image)
+        local colors = {}
+        for y = sy0, sy1, step_y do
+          for x = sx0, sx1, step_x do
+            local c = image:colorAt(hs.geometry.point(x, y))
+            table.insert(colors, c)
+          end
+        end
+        return colors
+      end
+
+      local before = img
+      local before_samples = sample_colors(before)
+
+      -- Put the mouse over the sidebar list, then scroll down.
+      hs.mouse.absolutePosition(hs.geometry.point(frame.x + frame.w * 0.15, frame.y + frame.h * 0.65))
+      hs.timer.usleep(200000)
+      for _ = 1, 14 do
+        hs.eventtap.event.newScrollEvent({0, -140}, {}, 'pixel'):post()
+        hs.timer.usleep(50000)
+      end
+      hs.timer.usleep(700000) -- let inertial scroll settle / render
+
+      img = snapshot()
+      local after_samples = sample_colors(img)
+
+      local changed = 0
+      local total = math.min(#before_samples, #after_samples)
+      for i = 1, total do
+        local a = before_samples[i]
+        local b = after_samples[i]
+        if a ~= nil and b ~= nil then
+          local dr = math.abs((a.red or 0) - (b.red or 0))
+          local dg = math.abs((a.green or 0) - (b.green or 0))
+          local db = math.abs((a.blue or 0) - (b.blue or 0))
+          if (dr + dg + db) > 0.08 then
+            changed = changed + 1
+          end
+        end
+      end
+
+      if not img:saveToFile(out_png) then
+        io.stderr:write('error: failed to save png: ' .. out_png .. '\n')
+        os.exit(1)
+      end
+
+      if changed < 20 then
+        io.stderr:write(string.format('error: expected sidebar scroll to change pixels, changed=%d total=%d png=%s\\n', changed, total, out_png))
+        os.exit(1)
+      end
+
+      print(string.format('ok: case=%s size=%dx%d changed=%d png=%s', case_name, w, h, changed, out_png))
+      os.exit(0)
+    end
 
     local function is_blueish(c)
       if c == nil then return false end
@@ -162,6 +237,11 @@ run_case() {
       end
     end
 
+    if not img:saveToFile(out_png) then
+      io.stderr:write('error: failed to save png: ' .. out_png .. '\\n')
+      os.exit(1)
+    end
+
     if case_name == 'line' or case_name == 'multi' then
       if blue < 6 then
         io.stderr:write(string.format('error: expected blue-ish line pixels, got=%d (total=%d) png=%s\n', blue, total, out_png))
@@ -186,5 +266,6 @@ run_case "line" 0 "640x520"
 run_case "multi" 1 "1200x840"
 run_case "heatmap" 7 "1200x840"
 run_case "heatmap" 7 "640x520"
+run_case "sidebar_scroll" 0 "1200x420"
 
 echo "ok: charts gallery e2e finished"

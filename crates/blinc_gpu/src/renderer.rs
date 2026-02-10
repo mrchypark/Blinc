@@ -3348,6 +3348,8 @@ impl GpuRenderer {
         // Update path buffers if we have background path geometry.
         let has_paths = has_path_geometry(&batch.paths);
         let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
+        let has_foreground_primitives = !batch.foreground_primitives.is_empty();
+        let has_foreground_lines = !batch.foreground_line_segments.is_empty();
         if has_paths {
             self.update_path_buffers(&batch.paths);
         }
@@ -3403,12 +3405,28 @@ impl GpuRenderer {
             }
         }
 
-        // Foreground paths (rendered after the main pass; required for `set_foreground_layer(true)`).
-        if has_foreground_paths {
-            self.update_path_buffers(&batch.foreground_paths);
+        // Foreground layer (rendered after the main pass; required for `set_foreground_layer(true)`).
+        //
+        // Note: this is distinct from RenderContext's background/foreground batches. Within a
+        // single PrimitiveBatch, `foreground_*` entries must render *after* the main content.
+        if has_foreground_primitives || has_foreground_lines || has_foreground_paths {
+            // Reuse the same buffers: background has already been drawn.
+            let fg_prim_count = if has_foreground_primitives {
+                self.write_primitives_safe(&batch.foreground_primitives)
+            } else {
+                0
+            };
+            let fg_line_count = if has_foreground_lines {
+                self.write_line_segments_safe(&batch.foreground_line_segments)
+            } else {
+                0
+            };
+            if has_foreground_paths {
+                self.update_path_buffers(&batch.foreground_paths);
+            }
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc Foreground Path Pass"),
+                label: Some("Blinc Foreground Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
@@ -3422,12 +3440,26 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.pipelines.path);
-            self.draw_path_batch(
-                &mut render_pass,
-                &batch.foreground_paths,
-                &self.bind_groups.path,
-            );
+            if fg_prim_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.sdf);
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                render_pass.draw(0..6, 0..fg_prim_count as u32);
+            }
+
+            if fg_line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..fg_line_count as u32);
+            }
+
+            if has_foreground_paths {
+                render_pass.set_pipeline(&self.pipelines.path);
+                self.draw_path_batch(
+                    &mut render_pass,
+                    &batch.foreground_paths,
+                    &self.bind_groups.path,
+                );
+            }
         }
 
         // Submit commands
@@ -4814,6 +4846,8 @@ impl GpuRenderer {
         if has_paths {
             self.update_path_buffers(&batch.paths);
         }
+        let has_foreground_primitives = !batch.foreground_primitives.is_empty();
+        let has_foreground_lines = !batch.foreground_line_segments.is_empty();
 
         // Create command encoder
         let mut encoder = self
@@ -4860,12 +4894,24 @@ impl GpuRenderer {
             }
         }
 
-        // Foreground paths (rendered after the main overlay pass).
-        if has_foreground_paths {
-            self.update_path_buffers(&batch.foreground_paths);
+        // Foreground overlay pass (`set_foreground_layer(true)` inside this overlay batch).
+        if has_foreground_primitives || has_foreground_lines || has_foreground_paths {
+            let fg_prim_count = if has_foreground_primitives {
+                self.write_primitives_safe(&batch.foreground_primitives)
+            } else {
+                0
+            };
+            let fg_line_count = if has_foreground_lines {
+                self.write_line_segments_safe(&batch.foreground_line_segments)
+            } else {
+                0
+            };
+            if has_foreground_paths {
+                self.update_path_buffers(&batch.foreground_paths);
+            }
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc Foreground Path Overlay Pass"),
+                label: Some("Blinc Foreground Overlay Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
@@ -4879,12 +4925,26 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.pipelines.path_overlay);
-            self.draw_path_batch(
-                &mut render_pass,
-                &batch.foreground_paths,
-                &self.bind_groups.path,
-            );
+            if fg_line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..fg_line_count as u32);
+            }
+
+            if fg_prim_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.sdf_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                render_pass.draw(0..6, 0..fg_prim_count as u32);
+            }
+
+            if has_foreground_paths {
+                render_pass.set_pipeline(&self.pipelines.path_overlay);
+                self.draw_path_batch(
+                    &mut render_pass,
+                    &batch.foreground_paths,
+                    &self.bind_groups.path,
+                );
+            }
         }
 
         // Submit commands
@@ -5000,6 +5060,8 @@ impl GpuRenderer {
         if has_paths {
             self.update_path_buffers(&batch.paths);
         }
+        let has_foreground_primitives = !batch.foreground_primitives.is_empty();
+        let has_foreground_lines = !batch.foreground_line_segments.is_empty();
 
         // Create command encoder
         let mut encoder = self
@@ -5046,12 +5108,24 @@ impl GpuRenderer {
             }
         }
 
-        // Foreground paths (rendered after the main overlay pass).
-        if has_foreground_paths {
-            self.update_path_buffers(&batch.foreground_paths);
+        // Foreground overlay pass (`set_foreground_layer(true)` inside this overlay batch).
+        if has_foreground_primitives || has_foreground_lines || has_foreground_paths {
+            let fg_prim_count = if has_foreground_primitives {
+                self.write_primitives_safe(&batch.foreground_primitives)
+            } else {
+                0
+            };
+            let fg_line_count = if has_foreground_lines {
+                self.write_line_segments_safe(&batch.foreground_line_segments)
+            } else {
+                0
+            };
+            if has_foreground_paths {
+                self.update_path_buffers(&batch.foreground_paths);
+            }
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc Foreground Path Overlay Simple Pass"),
+                label: Some("Blinc Foreground Overlay Simple Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
@@ -5065,12 +5139,26 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.pipelines.path_overlay);
-            self.draw_path_batch(
-                &mut render_pass,
-                &batch.foreground_paths,
-                &self.bind_groups.path,
-            );
+            if fg_line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..fg_line_count as u32);
+            }
+
+            if fg_prim_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.sdf_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                render_pass.draw(0..6, 0..fg_prim_count as u32);
+            }
+
+            if has_foreground_paths {
+                render_pass.set_pipeline(&self.pipelines.path_overlay);
+                self.draw_path_batch(
+                    &mut render_pass,
+                    &batch.foreground_paths,
+                    &self.bind_groups.path,
+                );
+            }
         }
 
         // Submit commands
@@ -5598,10 +5686,18 @@ impl GpuRenderer {
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
+        // Foreground primitives (set_foreground_layer) should land on top of the MSAA composite.
+        if !batch.foreground_primitives.is_empty() {
+            self.render_primitives_overlay(target, &batch.foreground_primitives);
+        }
+
         // Render compact line segments after the MSAA composite.
         // (Lines are geometry and typically look acceptable without MSAA here.)
         if !batch.line_segments.is_empty() {
             self.render_line_segments_overlay(target, &batch.line_segments);
+        }
+        if !batch.foreground_line_segments.is_empty() {
+            self.render_line_segments_overlay(target, &batch.foreground_line_segments);
         }
     }
 

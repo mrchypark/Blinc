@@ -6,6 +6,7 @@
 use crate::app::BlincConfig;
 use crate::prelude::*;
 use blinc_core::{Brush, DrawContext, Point, Rect, Stroke};
+use blinc_gpu::GpuPaintContext;
 use image::{ImageBuffer, Rgba, RgbaImage};
 use std::path::Path;
 
@@ -312,6 +313,174 @@ fn test_tessellated_path_stroke_is_visible() {
 }
 
 #[test]
+fn test_foreground_tessellated_path_stroke_is_visible() {
+    require_gpu!(app);
+
+    let ui = div()
+        .w(240.0)
+        .h(180.0)
+        .rounded(16.0)
+        .overflow_clip()
+        .bg(Color::rgba(0.08, 0.09, 0.11, 1.0))
+        .child(
+            canvas(|ctx: &mut dyn DrawContext, bounds| {
+                // Force foreground-path codepath.
+                ctx.set_foreground_layer(true);
+
+                let pts = [
+                    Point::new(20.0, bounds.height - 20.0),
+                    Point::new(bounds.width - 20.0, 20.0),
+                ];
+                ctx.stroke_polyline(
+                    &pts,
+                    &Stroke::new(3.0),
+                    Brush::Solid(Color::rgba(0.35, 0.65, 1.0, 1.0)),
+                );
+
+                ctx.set_foreground_layer(false);
+            })
+            .w_full()
+            .h_full(),
+        );
+
+    // Optional artifact for local debugging.
+    if std::env::var_os("BLINC_TEST_WRITE_ARTIFACTS").is_some() {
+        render_to_png(&mut app, "debug_foreground_canvas_polyline", &ui, 240, 180);
+    }
+
+    if std::env::var_os("BLINC_DEBUG_TEST").is_some() {
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(240.0, 180.0);
+        let mut ctx = GpuPaintContext::new(240.0, 180.0);
+        tree.render_to_layer(&mut ctx, RenderLayer::Background);
+        let batch = ctx.take_batch();
+        println!(
+            "debug batch: prims={} lines={} paths(v/i)={}/{} fg_paths(v/i)={}/{}",
+            batch.primitives.len(),
+            batch.line_segments.len(),
+            batch.paths.vertices.len(),
+            batch.paths.indices.len(),
+            batch.foreground_paths.vertices.len(),
+            batch.foreground_paths.indices.len()
+        );
+        println!(
+            "debug fg_paths flags: use_grad={} use_img={} use_glass={} image_uv={:?} glass_params={:?} glass_tint={:?}",
+            batch.foreground_paths.use_gradient_texture,
+            batch.foreground_paths.use_image_texture,
+            batch.foreground_paths.use_glass_effect,
+            batch.foreground_paths.image_uv_bounds,
+            batch.foreground_paths.glass_params,
+            batch.foreground_paths.glass_tint,
+        );
+        if let Some(d) = batch.foreground_paths.draws.first() {
+            println!(
+                "debug fg_paths draw0: start={} count={} clip_bounds={:?} clip_radius={:?} clip_type={}",
+                d.index_start, d.index_count, d.clip_bounds, d.clip_radius, d.clip_type
+            );
+        }
+        if let Some(v) = batch.foreground_paths.vertices.first() {
+            println!(
+                "debug fg_path vertex0: pos={:?} color={:?} end_color={:?} grad_type={}",
+                v.position, v.color, v.end_color, v.gradient_type
+            );
+        }
+    }
+
+    let img = render_to_image(&mut app, &ui, 240, 180);
+
+    let mut blueish = 0usize;
+    let mut max_r = 0u8;
+    let mut max_g = 0u8;
+    let mut max_b = 0u8;
+    let mut b_hi = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        max_r = max_r.max(r);
+        max_g = max_g.max(g);
+        max_b = max_b.max(b);
+        if a > 32 && b > 120 {
+            b_hi += 1;
+        }
+        // NOTE: render target is sRGB, so linear colors are gamma-encoded in the readback.
+        // Use conservative thresholds that tolerate AA and gamma.
+        if a > 32 && b > 160 && g > 150 && r < 200 {
+            blueish += 1;
+        }
+    }
+
+    if std::env::var_os("BLINC_DEBUG_TEST").is_some() {
+        println!(
+            "debug pixels: max_r={} max_g={} max_b={} b_hi={} blueish={}",
+            max_r, max_g, max_b, b_hi, blueish
+        );
+    }
+
+    assert!(
+        blueish > 50,
+        "expected foreground tessellated stroke to produce visible blue pixels; blueish={blueish}"
+    );
+}
+
+#[test]
+fn test_foreground_tessellated_path_stroke_is_visible_no_msaa() {
+    // Isolate the non-MSAA render path (render_with_clear + foreground paths).
+    let mut config = BlincConfig::default();
+    config.sample_count = 1;
+    let mut app = BlincApp::with_config(config).expect("gpu init");
+
+    let ui = div()
+        .w(240.0)
+        .h(180.0)
+        .rounded(16.0)
+        .overflow_clip()
+        .bg(Color::rgba(0.08, 0.09, 0.11, 1.0))
+        .child(
+            canvas(|ctx: &mut dyn DrawContext, bounds| {
+                ctx.set_foreground_layer(true);
+
+                let pts = [
+                    Point::new(20.0, bounds.height - 20.0),
+                    Point::new(bounds.width - 20.0, 20.0),
+                ];
+                ctx.stroke_polyline(
+                    &pts,
+                    &Stroke::new(3.0),
+                    Brush::Solid(Color::rgba(0.35, 0.65, 1.0, 1.0)),
+                );
+
+                ctx.set_foreground_layer(false);
+            })
+            .w_full()
+            .h_full(),
+        );
+
+    if std::env::var_os("BLINC_TEST_WRITE_ARTIFACTS").is_some() {
+        render_to_png(
+            &mut app,
+            "debug_foreground_canvas_polyline_no_msaa",
+            &ui,
+            240,
+            180,
+        );
+    }
+
+    let img = render_to_image(&mut app, &ui, 240, 180);
+
+    let mut blueish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && b > 160 && g > 150 && r < 200 {
+            blueish += 1;
+        }
+    }
+
+    assert!(
+        blueish > 50,
+        "expected foreground tessellated stroke (no MSAA) to produce visible blue pixels; blueish={blueish}"
+    );
+}
+
+#[test]
 fn test_compact_polyline_is_visible() {
     require_gpu!(app);
 
@@ -368,6 +537,73 @@ fn test_compact_polyline_is_visible() {
     assert!(
         blueish > 50,
         "expected compact polyline to produce visible blue pixels; blueish={blueish}"
+    );
+}
+
+#[test]
+fn test_foreground_compact_polyline_is_visible() {
+    require_gpu!(app);
+
+    // No rounded clip: should take the compact line-segment path, but recorded to
+    // `foreground_line_segments` via `set_foreground_layer(true)`.
+    let ui = div()
+        .w(240.0)
+        .h(180.0)
+        .bg(Color::rgba(0.08, 0.09, 0.11, 1.0))
+        .child(
+            canvas(|ctx: &mut dyn DrawContext, bounds| {
+                // Sanity check: SDF primitives should render in the same canvas.
+                ctx.fill_rect(
+                    Rect::new(8.0, 8.0, 16.0, 16.0),
+                    0.0.into(),
+                    Brush::Solid(Color::rgba(0.95, 0.2, 0.2, 1.0)),
+                );
+
+                ctx.set_foreground_layer(true);
+                let pts = [
+                    Point::new(20.0, bounds.height - 20.0),
+                    Point::new(bounds.width - 20.0, 20.0),
+                ];
+                ctx.stroke_polyline(
+                    &pts,
+                    &Stroke::new(3.0),
+                    Brush::Solid(Color::rgba(0.35, 0.65, 1.0, 1.0)),
+                );
+                ctx.set_foreground_layer(false);
+            })
+            .w_full()
+            .h_full(),
+        );
+
+    if std::env::var_os("BLINC_TEST_WRITE_ARTIFACTS").is_some() {
+        render_to_png(&mut app, "debug_foreground_compact_polyline", &ui, 240, 180);
+    }
+
+    let img = render_to_image(&mut app, &ui, 240, 180);
+
+    // Confirm the red square exists (catch any readback/format issues early).
+    let mut reddish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && r > 200 && g < 160 && b < 160 {
+            reddish += 1;
+        }
+    }
+    assert!(
+        reddish > 50,
+        "expected red sanity pixels; reddish={reddish}"
+    );
+
+    let mut blueish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && b > 160 && g > 150 && r < 200 {
+            blueish += 1;
+        }
+    }
+    assert!(
+        blueish > 50,
+        "expected foreground compact polyline to produce visible blue pixels; blueish={blueish}"
     );
 }
 
