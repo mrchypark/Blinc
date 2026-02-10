@@ -4,8 +4,8 @@
 //! rendered via the DrawContext API.
 
 use blinc_core::{
-    Brush, Color, CornerRadius, DynFloat, DynValue, LayerEffect, Rect, Shadow, Transform,
-    ValueContext,
+    BlurQuality, Brush, ClipPath, Color, CornerRadius, DynFloat, DynValue, LayerEffect, Rect,
+    Shadow, Transform, ValueContext,
 };
 use taffy::Layout;
 
@@ -953,6 +953,12 @@ pub struct RenderProps {
     pub border_width: f32,
     /// Per-side borders (takes precedence over uniform border if set)
     pub border_sides: BorderSides,
+    /// Outline color (None = no outline)
+    pub outline_color: Option<Color>,
+    /// Outline width in pixels
+    pub outline_width: f32,
+    /// Outline offset in pixels (gap between border and outline)
+    pub outline_offset: f32,
     /// Which layer this element renders in
     pub layer: RenderLayer,
     /// Material applied to this element (glass, metallic, etc.)
@@ -991,6 +997,26 @@ pub struct RenderProps {
     /// When true, this element will not capture clicks/hovers - only its children can.
     /// Used by Stack layers to allow clicks to pass through to siblings.
     pub pointer_events_none: bool,
+    /// Whether this element has `position: fixed` behavior.
+    /// Fixed elements are immune to scroll transforms from ancestor scroll containers.
+    pub is_fixed: bool,
+    /// Whether this element has `position: sticky` behavior.
+    /// Sticky elements clamp their position when scrolling past thresholds.
+    pub is_sticky: bool,
+    /// Sticky scroll-lock threshold from top (in pixels).
+    pub sticky_top: Option<f32>,
+    /// Sticky scroll-lock threshold from bottom (in pixels).
+    pub sticky_bottom: Option<f32>,
+    /// CSS z-index for controlling render order within a layer
+    pub z_index: i32,
+    /// Text foreground color override (when set, overrides TextData.color during rendering)
+    pub text_color: Option<[f32; 4]>,
+    /// Font size override (when set, overrides TextData.font_size during rendering)
+    pub font_size: Option<f32>,
+    /// Text shadow (offset, blur, color)
+    pub text_shadow: Option<Shadow>,
+    /// Transform origin as percentages [x%, y%] (default 50%, 50% = center)
+    pub transform_origin: Option<[f32; 2]>,
     /// Layer effects applied to this element (blur, drop shadow, glow, color matrix)
     /// Effects are applied during layer composition when the element is rendered
     pub layer_effects: Vec<LayerEffect>,
@@ -1019,6 +1045,10 @@ pub struct RenderProps {
     pub op_3d: Option<f32>,
     /// Blend radius for smooth boolean operations (in pixels)
     pub blend_3d: Option<f32>,
+    /// CSS clip-path shape function
+    pub clip_path: Option<ClipPath>,
+    /// CSS filter functions (grayscale, invert, sepia, brightness, contrast, saturate, hue-rotate)
+    pub filter: Option<crate::element_style::CssFilter>,
     /// DEPRECATED: Whether the motion should start exiting
     ///
     /// This field is deprecated. Motion exit is now triggered explicitly via
@@ -1043,6 +1073,9 @@ impl Default for RenderProps {
             border_color: None,
             border_width: 0.0,
             border_sides: BorderSides::default(),
+            outline_color: None,
+            outline_width: 0.0,
+            outline_offset: 0.0,
             layer: RenderLayer::default(),
             material: None,
             node_id: None,
@@ -1058,6 +1091,10 @@ impl Default for RenderProps {
             is_stack_layer: false,
             cursor: None,
             pointer_events_none: false,
+            is_fixed: false,
+            is_sticky: false,
+            sticky_top: None,
+            sticky_bottom: None,
             layer_effects: Vec::new(),
             rotate_x: None,
             rotate_y: None,
@@ -1071,7 +1108,14 @@ impl Default for RenderProps {
             translate_z: None,
             op_3d: None,
             blend_3d: None,
+            clip_path: None,
+            filter: None,
             motion_is_exiting: false,
+            z_index: 0,
+            text_color: None,
+            font_size: None,
+            text_shadow: None,
+            transform_origin: None,
         }
     }
 }

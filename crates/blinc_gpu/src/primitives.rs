@@ -59,6 +59,8 @@ pub enum ClipType {
     Circle = 2,
     /// Elliptical clip
     Ellipse = 3,
+    /// Polygon clip (winding number test via aux_data vertices)
+    Polygon = 4,
 }
 
 /// Image upload operations recorded during painting
@@ -181,8 +183,10 @@ impl GpuLineSegment {
 /// - perspective: `vec4<f32>`     (16 bytes) - (sin_rx, cos_rx, perspective_d, shape_3d_type)
 /// - sdf_3d: `vec4<f32>`          (16 bytes) - (depth, ambient, specular_power, translate_z)
 /// - light: `vec4<f32>`           (16 bytes) - (dir_x, dir_y, dir_z, intensity)
+/// - filter_a: `vec4<f32>`        (16 bytes) - (grayscale, invert, sepia, hue_rotate_rad)
+/// - filter_b: `vec4<f32>`        (16 bytes) - (brightness, contrast, saturate, 0)
 /// - type_info: `vec4<u32>`       (16 bytes) - (primitive_type, fill_type, clip_type, z_layer)
-///   Total: 256 bytes
+///   Total: 304 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuPrimitive {
@@ -210,6 +214,11 @@ pub struct GpuPrimitive {
     pub gradient_params: [f32; 4],
     /// Rotation (sin_rz, cos_rz, sin_ry, cos_ry) - pre-computed for GPU efficiency
     pub rotation: [f32; 4],
+    /// Local 2x2 affine transform (a, b, c, d) - normalized (DPI-scale removed).
+    /// Maps from local rect space to screen space. Used by the fragment shader
+    /// to apply inverse transform (supports rotation, scale, AND skew).
+    /// Identity = [1, 0, 0, 1].
+    pub local_affine: [f32; 4],
     /// Perspective (sin_rx, cos_rx, perspective_d, shape_3d_type)
     /// shape_3d_type: 0=none, 1=box, 2=sphere, 3=cylinder, 4=torus, 5=capsule, 6=group
     pub perspective: [f32; 4],
@@ -217,6 +226,10 @@ pub struct GpuPrimitive {
     pub sdf_3d: [f32; 4],
     /// Light params (dir_x, dir_y, dir_z, intensity)
     pub light: [f32; 4],
+    /// CSS filter A (grayscale, invert, sepia, hue_rotate_rad)
+    pub filter_a: [f32; 4],
+    /// CSS filter B (brightness, contrast, saturate, 0)
+    pub filter_b: [f32; 4],
     /// Type info (primitive_type, fill_type, clip_type, z_layer)
     pub type_info: [u32; 4],
 }
@@ -239,13 +252,18 @@ impl Default for GpuPrimitive {
             gradient_params: [0.0, 0.0, 1.0, 0.0],
             // No rotation: sin_rz=0, cos_rz=1, sin_ry=0, cos_ry=1
             rotation: [0.0, 1.0, 0.0, 1.0],
+            // Identity local affine: a=1, b=0, c=0, d=1
+            local_affine: [1.0, 0.0, 0.0, 1.0],
             // No perspective: sin_rx=0, cos_rx=1, persp_d=0, shape=none
             perspective: [0.0, 1.0, 0.0, 0.0],
             // No 3D: depth=0, ambient=0.3, specular=32, unused=0
             sdf_3d: [0.0, 0.3, 32.0, 0.0],
             // Default light: top direction, intensity 0.8
             light: [0.0, -1.0, 0.5, 0.8],
-            type_info: [0; 4], // clip_type defaults to None (0)
+            // Default filter: identity (no effect)
+            filter_a: [0.0, 0.0, 0.0, 0.0], // grayscale=0, invert=0, sepia=0, hue_rotate=0
+            filter_b: [1.0, 1.0, 1.0, 0.0], // brightness=1, contrast=1, saturate=1, unused=0
+            type_info: [0; 4],              // clip_type defaults to None (0)
         }
     }
 }
@@ -488,9 +506,12 @@ impl GpuPrimitive {
             clip_radius: [0.0; 4],
             gradient_params: glyph.uv_bounds,
             rotation: [0.0, 1.0, 0.0, 1.0],
+            local_affine: [1.0, 0.0, 0.0, 1.0],
             perspective: [0.0, 1.0, 0.0, 0.0],
             sdf_3d: [0.0, 0.3, 32.0, 0.0],
             light: [0.0, -1.0, 0.5, 0.8],
+            filter_a: [0.0, 0.0, 0.0, 0.0],
+            filter_b: [1.0, 1.0, 1.0, 0.0],
             type_info: [
                 PrimitiveType::Text as u32,
                 is_color_flag,
@@ -526,9 +547,12 @@ impl GpuPrimitive {
             clip_radius: [0.0; 4],
             gradient_params: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
             rotation: [0.0, 1.0, 0.0, 1.0],
+            local_affine: [1.0, 0.0, 0.0, 1.0],
             perspective: [0.0, 1.0, 0.0, 0.0],
             sdf_3d: [0.0, 0.3, 32.0, 0.0],
             light: [0.0, -1.0, 0.5, 0.8],
+            filter_a: [0.0, 0.0, 0.0, 0.0],
+            filter_b: [1.0, 1.0, 1.0, 0.0],
             type_info: [PrimitiveType::Text as u32, 0, ClipType::None as u32, 0],
         }
     }
@@ -1355,6 +1379,9 @@ pub struct PrimitiveBatch {
     pub viewports_3d: Vec<Viewport3D>,
     /// GPU particle viewports to render
     pub particle_viewports: Vec<ParticleViewport3D>,
+    /// Auxiliary data buffer (`vec4<f32>` array) for variable-length per-primitive data.
+    /// Used for 3D group shape descriptors and polygon clip vertices.
+    pub aux_data: Vec<[f32; 4]>,
 }
 
 impl PrimitiveBatch {
@@ -1374,6 +1401,7 @@ impl PrimitiveBatch {
             layer_commands: Vec::new(),
             viewports_3d: Vec::new(),
             particle_viewports: Vec::new(),
+            aux_data: Vec::new(),
         }
     }
 
@@ -1392,6 +1420,7 @@ impl PrimitiveBatch {
         self.layer_commands.clear();
         self.viewports_3d.clear();
         self.particle_viewports.clear();
+        self.aux_data.clear();
     }
 
     /// Push a 3D viewport for SDF raymarching
@@ -1837,6 +1866,10 @@ impl PrimitiveBatch {
         // Merge 3D viewports
         self.viewports_3d.extend(other.viewports_3d);
         self.particle_viewports.extend(other.particle_viewports);
+
+        // Merge aux_data (offsets in primitives already point to correct positions
+        // because aux_data offsets are absolute within a batch — callers must rebind)
+        self.aux_data.extend(other.aux_data);
     }
 }
 

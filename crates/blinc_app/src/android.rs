@@ -939,22 +939,34 @@ impl AndroidApp {
             {
                 let current_time = blinc_layout::prelude::elapsed_ms();
                 if let Some(ref mut tree) = render_tree {
-                    // Tick CSS animations
+                    // Tick CSS animations synchronously to stay in phase with rendering
                     let dt_ms = if last_frame_time_ms > 0 {
                         (current_time - last_frame_time_ms) as f32
                     } else {
                         16.0
                     };
-                    let css_animating = tree.tick_css_animations(dt_ms);
-                    if css_animating {
-                        tree.apply_all_css_animation_props();
-                        needs_redraw = true;
-                        needs_redraw_next_frame = true;
+                    {
+                        let store = tree.css_anim_store();
+                        let mut s = store.lock().unwrap();
+                        s.tick(dt_ms);
                     }
+                    let css_active = tree.css_has_active() || !tree.css_transitions_empty();
+
                     // Apply CSS state styles (:hover, :active, :focus)
+                    // This also detects property changes and starts new transitions
                     if let Some(ref windowed_ctx) = ctx {
                         if tree.stylesheet().is_some() {
                             tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
+                        }
+                    }
+                    if css_active || !tree.css_transitions_empty() {
+                        tree.apply_all_css_animation_props();
+                        tree.apply_all_css_transition_props();
+                        needs_redraw = true;
+                        needs_redraw_next_frame = true;
+                        // Apply animated layout properties and recompute layout if needed
+                        if tree.apply_animated_layout_props() {
+                            tree.compute_layout(ctx.width, ctx.height);
                         }
                     }
                 }

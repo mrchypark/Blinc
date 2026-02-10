@@ -19,7 +19,7 @@ use std::sync::{
 };
 
 use blinc_core::{
-    BlurQuality, BlurStyle, Brush, Color, CornerRadius, LayerEffect, Shadow, Transform,
+    BlurQuality, BlurStyle, Brush, ClipPath, Color, CornerRadius, LayerEffect, Shadow, Transform,
 };
 use blinc_theme::ThemeState;
 use taffy::prelude::*;
@@ -388,6 +388,8 @@ pub struct Div {
     pub(crate) event_handlers: crate::event_handler::EventHandlers,
     /// Element ID for selector API queries
     pub(crate) element_id: Option<String>,
+    /// CSS class names for selector matching
+    pub(crate) classes: Vec<String>,
     // 3D transform properties (stored separately to flow through to render_props)
     pub(crate) rotate_x: Option<f32>,
     pub(crate) rotate_y: Option<f32>,
@@ -401,6 +403,18 @@ pub struct Div {
     pub(crate) translate_z: Option<f32>,
     pub(crate) op_3d: Option<f32>,
     pub(crate) blend_3d: Option<f32>,
+    /// CSS clip-path shape function
+    pub(crate) clip_path: Option<ClipPath>,
+    /// Fixed positioning (stays in place when ancestors scroll)
+    pub(crate) is_fixed: bool,
+    /// Sticky positioning (sticks when scrolled past threshold)
+    pub(crate) is_sticky: bool,
+    /// Sticky top threshold
+    pub(crate) sticky_top: Option<f32>,
+    /// CSS z-index for stacking order
+    pub(crate) z_index: i32,
+    /// Scroll physics for overflow:scroll containers
+    pub(crate) scroll_physics: Option<crate::scroll::SharedScrollPhysics>,
     /// Layout animation configuration for FLIP-style bounds animation
     pub(crate) layout_animation: Option<crate::layout_animation::LayoutAnimationConfig>,
     /// Visual animation configuration (new FLIP-style system, read-only layout)
@@ -440,6 +454,7 @@ impl Div {
             is_stack_layer: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
+            classes: Vec::new(),
             rotate_x: None,
             rotate_y: None,
             perspective_3d: None,
@@ -452,6 +467,12 @@ impl Div {
             translate_z: None,
             op_3d: None,
             blend_3d: None,
+            clip_path: None,
+            is_fixed: false,
+            is_sticky: false,
+            sticky_top: None,
+            z_index: 0,
+            scroll_physics: None,
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
@@ -482,6 +503,7 @@ impl Div {
             is_stack_layer: false,
             event_handlers: crate::event_handler::EventHandlers::new(),
             element_id: None,
+            classes: Vec::new(),
             rotate_x: None,
             rotate_y: None,
             perspective_3d: None,
@@ -494,6 +516,12 @@ impl Div {
             translate_z: None,
             op_3d: None,
             blend_3d: None,
+            clip_path: None,
+            is_fixed: false,
+            is_sticky: false,
+            sticky_top: None,
+            z_index: 0,
+            scroll_physics: None,
             layout_animation: None,
             visual_animation: None,
             stateful_context_key: None,
@@ -519,6 +547,20 @@ impl Div {
     /// Get the element ID if set
     pub fn element_id(&self) -> Option<&str> {
         self.element_id.as_deref()
+    }
+
+    /// Add a CSS class name for selector matching
+    ///
+    /// Classes can be used with `.class` selectors in stylesheets.
+    /// Multiple classes can be added by chaining `.class()` calls.
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.classes.push(name.into());
+        self
+    }
+
+    /// Get the element's class list
+    pub fn classes(&self) -> &[String] {
+        &self.classes
     }
 
     /// Set the stateful context key for automatic key derivation
@@ -1009,6 +1051,32 @@ impl Div {
             };
             self.style.overflow.x = val;
             self.style.overflow.y = val;
+            if overflow == StyleOverflow::Scroll {
+                self.ensure_scroll_physics(crate::scroll::ScrollDirection::Both);
+            }
+        }
+        // Per-axis overflow
+        if let Some(ox) = style.overflow_x {
+            let val = match ox {
+                StyleOverflow::Visible => Overflow::Visible,
+                StyleOverflow::Clip => Overflow::Clip,
+                StyleOverflow::Scroll => Overflow::Scroll,
+            };
+            self.style.overflow.x = val;
+            if ox == StyleOverflow::Scroll {
+                self.ensure_scroll_physics(crate::scroll::ScrollDirection::Horizontal);
+            }
+        }
+        if let Some(oy) = style.overflow_y {
+            let val = match oy {
+                StyleOverflow::Visible => Overflow::Visible,
+                StyleOverflow::Clip => Overflow::Clip,
+                StyleOverflow::Scroll => Overflow::Scroll,
+            };
+            self.style.overflow.y = val;
+            if oy == StyleOverflow::Scroll {
+                self.ensure_scroll_physics(crate::scroll::ScrollDirection::Vertical);
+            }
         }
 
         // Layout: border
@@ -1055,6 +1123,9 @@ impl Div {
         }
         if let Some(v) = style.blend_3d {
             self.blend_3d = Some(v);
+        }
+        if let Some(ref cp) = style.clip_path {
+            self.clip_path = Some(cp.clone());
         }
     }
 
@@ -1165,6 +1236,9 @@ impl Div {
         }
         if other.blend_3d.is_some() {
             self.blend_3d = other.blend_3d;
+        }
+        if other.clip_path.is_some() {
+            self.clip_path = other.clip_path;
         }
 
         // Note: event_handlers are NOT merged - they're set on the base element
@@ -2060,6 +2134,23 @@ impl Div {
         self
     }
 
+    /// Set position to fixed (stays in place when ancestors scroll)
+    pub fn fixed(mut self) -> Self {
+        self.style.position = Position::Absolute;
+        self.is_fixed = true;
+        self.is_sticky = false;
+        self
+    }
+
+    /// Set position to sticky with a top threshold
+    pub fn sticky(mut self, top: f32) -> Self {
+        self.style.position = Position::Relative;
+        self.is_sticky = true;
+        self.is_fixed = false;
+        self.sticky_top = Some(top);
+        self
+    }
+
     /// Set inset (position from all edges)
     pub fn inset(mut self, px: f32) -> Self {
         let val = LengthPercentageAuto::Length(px);
@@ -2117,10 +2208,21 @@ impl Div {
         self
     }
 
-    /// Set overflow to scroll (enable scrolling)
+    /// Set overflow to scroll (enable scrolling with full physics)
     ///
-    /// Note: For custom scroll behavior with spring physics, use the `scroll()` element instead.
+    /// Creates a scroll container with momentum scrolling, bounce, and scrollbar.
+    /// This is equivalent to using the `scroll()` widget but configured via the builder API.
     pub fn overflow_scroll(mut self) -> Self {
+        self.style.overflow.x = Overflow::Scroll;
+        self.style.overflow.y = Overflow::Scroll;
+        self.ensure_scroll_physics(crate::scroll::ScrollDirection::Both);
+        self
+    }
+
+    /// Set overflow to scroll (taffy style only, no physics)
+    ///
+    /// Used internally by the `Scroll` widget which manages its own physics.
+    pub(crate) fn overflow_scroll_style_only(mut self) -> Self {
         self.style.overflow.x = Overflow::Scroll;
         self.style.overflow.y = Overflow::Scroll;
         self
@@ -2129,13 +2231,53 @@ impl Div {
     /// Set horizontal overflow only (X-axis)
     pub fn overflow_x(mut self, overflow: Overflow) -> Self {
         self.style.overflow.x = overflow;
+        if overflow == Overflow::Scroll {
+            self.ensure_scroll_physics(crate::scroll::ScrollDirection::Horizontal);
+        }
         self
     }
 
     /// Set vertical overflow only (Y-axis)
     pub fn overflow_y(mut self, overflow: Overflow) -> Self {
         self.style.overflow.y = overflow;
+        if overflow == Overflow::Scroll {
+            self.ensure_scroll_physics(crate::scroll::ScrollDirection::Vertical);
+        }
         self
+    }
+
+    /// Set overflow to scroll on X-axis only
+    pub fn overflow_x_scroll(mut self) -> Self {
+        self.style.overflow.x = Overflow::Scroll;
+        self.style.overflow.y = Overflow::Clip;
+        self.ensure_scroll_physics(crate::scroll::ScrollDirection::Horizontal);
+        self
+    }
+
+    /// Set overflow to scroll on Y-axis only
+    pub fn overflow_y_scroll(mut self) -> Self {
+        self.style.overflow.x = Overflow::Clip;
+        self.style.overflow.y = Overflow::Scroll;
+        self.ensure_scroll_physics(crate::scroll::ScrollDirection::Vertical);
+        self
+    }
+
+    /// Ensure scroll physics are created for this div
+    fn ensure_scroll_physics(&mut self, direction: crate::scroll::ScrollDirection) {
+        if self.scroll_physics.is_none() {
+            let config = crate::scroll::ScrollConfig {
+                direction,
+                ..Default::default()
+            };
+            let physics = std::sync::Arc::new(std::sync::Mutex::new(
+                crate::scroll::ScrollPhysics::new(config),
+            ));
+            let handlers =
+                crate::scroll::Scroll::create_internal_handlers(std::sync::Arc::clone(&physics));
+            // Merge scroll handlers into existing event handlers
+            self.event_handlers.merge(handlers);
+            self.scroll_physics = Some(physics);
+        }
     }
 
     // =========================================================================
@@ -2813,6 +2955,12 @@ impl Div {
     /// render above other content.
     pub fn stack_layer(mut self) -> Self {
         self.is_stack_layer = true;
+        self
+    }
+
+    /// Set CSS z-index for stacking order (higher values render on top)
+    pub fn z_index(mut self, z: i32) -> Self {
+        self.z_index = z;
         self
     }
 
@@ -3513,6 +3661,11 @@ pub trait ElementBuilder {
         None
     }
 
+    /// Get the element's CSS class list for selector matching
+    fn element_classes(&self) -> &[String] {
+        &[]
+    }
+
     /// Get the bound ScrollRef for programmatic scroll control
     ///
     /// Only scroll containers return a ScrollRef. This is used by the renderer
@@ -3601,6 +3754,11 @@ impl ElementBuilder for Div {
             translate_z: self.translate_z,
             op_3d: self.op_3d,
             blend_3d: self.blend_3d,
+            clip_path: self.clip_path.clone(),
+            is_fixed: self.is_fixed,
+            is_sticky: self.is_sticky,
+            sticky_top: self.sticky_top,
+            z_index: self.z_index,
             ..Default::default()
         }
     }
@@ -3625,12 +3783,20 @@ impl ElementBuilder for Div {
         self.element_id.as_deref()
     }
 
+    fn element_classes(&self) -> &[String] {
+        &self.classes
+    }
+
     fn layout_animation_config(&self) -> Option<crate::layout_animation::LayoutAnimationConfig> {
         self.layout_animation.clone()
     }
 
     fn visual_animation_config(&self) -> Option<crate::visual_animation::VisualAnimationConfig> {
         self.visual_animation.clone()
+    }
+
+    fn scroll_physics(&self) -> Option<crate::scroll::SharedScrollPhysics> {
+        self.scroll_physics.clone()
     }
 }
 

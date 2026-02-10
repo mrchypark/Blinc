@@ -27,10 +27,68 @@
 //!     .pressed(ElementStyle::new().bg(Color::DARK_BLUE).scale(0.98));
 //! ```
 
-use blinc_core::{Brush, Color, CornerRadius, Shadow, Transform};
+use blinc_core::{Brush, ClipPath, Color, CornerRadius, Shadow, Transform};
+
+/// CSS filter functions applied to an element
+///
+/// Each field corresponds to a CSS filter function.
+/// Default/identity values: grayscale=0, invert=0, sepia=0, hue_rotate=0,
+/// brightness=1, contrast=1, saturate=1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CssFilter {
+    /// Grayscale amount (0.0 = none, 1.0 = full grayscale)
+    pub grayscale: f32,
+    /// Invert amount (0.0 = none, 1.0 = fully inverted)
+    pub invert: f32,
+    /// Sepia amount (0.0 = none, 1.0 = full sepia)
+    pub sepia: f32,
+    /// Hue rotation in degrees
+    pub hue_rotate: f32,
+    /// Brightness multiplier (1.0 = normal)
+    pub brightness: f32,
+    /// Contrast multiplier (1.0 = normal)
+    pub contrast: f32,
+    /// Saturation multiplier (1.0 = normal)
+    pub saturate: f32,
+    /// Blur radius in pixels (0.0 = no blur)
+    pub blur: f32,
+    /// Drop shadow (offset, blur, color) — rendered as LayerEffect
+    pub drop_shadow: Option<Shadow>,
+}
+
+impl Default for CssFilter {
+    fn default() -> Self {
+        Self {
+            grayscale: 0.0,
+            invert: 0.0,
+            sepia: 0.0,
+            hue_rotate: 0.0,
+            brightness: 1.0,
+            contrast: 1.0,
+            saturate: 1.0,
+            blur: 0.0,
+            drop_shadow: None,
+        }
+    }
+}
+
+impl CssFilter {
+    /// Returns true if all filter values are at identity (no effect)
+    pub fn is_identity(&self) -> bool {
+        self.grayscale == 0.0
+            && self.invert == 0.0
+            && self.sepia == 0.0
+            && self.hue_rotate == 0.0
+            && self.brightness == 1.0
+            && self.contrast == 1.0
+            && self.saturate == 1.0
+            && self.blur == 0.0
+            && self.drop_shadow.is_none()
+    }
+}
 use blinc_theme::ThemeState;
 
-use crate::css_parser::CssAnimation;
+use crate::css_parser::{CssAnimation, CssTransitionSet};
 use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, WoodMaterial};
 
 // ============================================================================
@@ -124,6 +182,16 @@ pub enum StyleOverflow {
     Scroll,
 }
 
+/// CSS position property
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StylePosition {
+    Static,
+    Relative,
+    Absolute,
+    Fixed,
+    Sticky,
+}
+
 /// Visual style properties for an element
 ///
 /// All properties are optional - when merging styles, only set properties
@@ -148,8 +216,22 @@ pub struct ElementStyle {
     pub render_layer: Option<RenderLayer>,
     /// Opacity (0.0 = transparent, 1.0 = opaque)
     pub opacity: Option<f32>,
+    /// Text foreground color
+    pub text_color: Option<blinc_core::Color>,
+    /// Font size in pixels
+    pub font_size: Option<f32>,
+    /// Text shadow (offset, blur, color)
+    pub text_shadow: Option<Shadow>,
+    /// Skew X angle in degrees
+    pub skew_x: Option<f32>,
+    /// Skew Y angle in degrees
+    pub skew_y: Option<f32>,
+    /// Transform origin as percentages [x%, y%] (default 50%, 50% = center)
+    pub transform_origin: Option<[f32; 2]>,
     /// CSS animation configuration (animation: name duration timing delay iteration-count direction fill-mode)
     pub animation: Option<CssAnimation>,
+    /// CSS transition configuration (transition: property duration timing delay)
+    pub transition: Option<CssTransitionSet>,
 
     // =========================================================================
     // 3D Transform Properties
@@ -178,6 +260,14 @@ pub struct ElementStyle {
     pub op_3d: Option<String>,
     /// Blend radius for smooth boolean operations (in pixels)
     pub blend_3d: Option<f32>,
+
+    // =========================================================================
+    // Clip-Path Property
+    // =========================================================================
+    /// CSS clip-path shape function
+    pub clip_path: Option<ClipPath>,
+    /// CSS filter functions (grayscale, invert, sepia, brightness, contrast, saturate, hue-rotate)
+    pub filter: Option<CssFilter>,
 
     // =========================================================================
     // Layout Properties
@@ -220,13 +310,37 @@ pub struct ElementStyle {
     /// Uniform gap between children in pixels
     pub gap: Option<f32>,
 
-    /// Overflow behavior
+    /// Overflow behavior (shorthand, sets both axes)
     pub overflow: Option<StyleOverflow>,
+    /// Overflow behavior for X-axis only
+    pub overflow_x: Option<StyleOverflow>,
+    /// Overflow behavior for Y-axis only
+    pub overflow_y: Option<StyleOverflow>,
 
     /// Border width in pixels
     pub border_width: Option<f32>,
     /// Border color
     pub border_color: Option<Color>,
+
+    /// Outline width in pixels
+    pub outline_width: Option<f32>,
+    /// Outline color
+    pub outline_color: Option<Color>,
+    /// Outline offset in pixels (gap between border and outline)
+    pub outline_offset: Option<f32>,
+
+    /// CSS position (static, relative, absolute)
+    pub position: Option<StylePosition>,
+    /// Top inset in pixels (for positioned elements)
+    pub top: Option<f32>,
+    /// Right inset in pixels (for positioned elements)
+    pub right: Option<f32>,
+    /// Bottom inset in pixels (for positioned elements)
+    pub bottom: Option<f32>,
+    /// Left inset in pixels (for positioned elements)
+    pub left: Option<f32>,
+    /// CSS z-index for controlling render order
+    pub z_index: Option<i32>,
 }
 
 impl ElementStyle {
@@ -474,6 +588,16 @@ impl ElementStyle {
     /// Set blend radius for smooth boolean operations
     pub fn blend_3d_px(mut self, px: f32) -> Self {
         self.blend_3d = Some(px);
+        self
+    }
+
+    // =========================================================================
+    // Clip-Path
+    // =========================================================================
+
+    /// Set CSS clip-path shape function
+    pub fn clip_path(mut self, path: ClipPath) -> Self {
+        self.clip_path = Some(path);
         self
     }
 
@@ -845,6 +969,29 @@ impl ElementStyle {
     }
 
     // =========================================================================
+    // Layout: Outline
+    // =========================================================================
+
+    /// Set outline width and color
+    pub fn outline(mut self, width: f32, color: Color) -> Self {
+        self.outline_width = Some(width);
+        self.outline_color = Some(color);
+        self
+    }
+
+    /// Set outline width only
+    pub fn outline_w(mut self, width: f32) -> Self {
+        self.outline_width = Some(width);
+        self
+    }
+
+    /// Set outline offset (gap between border and outline)
+    pub fn outline_offset(mut self, offset: f32) -> Self {
+        self.outline_offset = Some(offset);
+        self
+    }
+
+    // =========================================================================
     // Merging
     // =========================================================================
 
@@ -862,7 +1009,14 @@ impl ElementStyle {
             material: other.material.clone().or_else(|| self.material.clone()),
             render_layer: other.render_layer.or(self.render_layer),
             opacity: other.opacity.or(self.opacity),
+            text_color: other.text_color.or(self.text_color),
+            font_size: other.font_size.or(self.font_size),
+            text_shadow: other.text_shadow.or(self.text_shadow),
+            skew_x: other.skew_x.or(self.skew_x),
+            skew_y: other.skew_y.or(self.skew_y),
+            transform_origin: other.transform_origin.or(self.transform_origin),
             animation: other.animation.clone().or_else(|| self.animation.clone()),
+            transition: other.transition.clone().or_else(|| self.transition.clone()),
             // 3D
             rotate_x: other.rotate_x.or(self.rotate_x),
             rotate_y: other.rotate_y.or(self.rotate_y),
@@ -876,6 +1030,9 @@ impl ElementStyle {
             translate_z: other.translate_z.or(self.translate_z),
             op_3d: other.op_3d.clone().or_else(|| self.op_3d.clone()),
             blend_3d: other.blend_3d.or(self.blend_3d),
+            // Clip-path
+            clip_path: other.clip_path.clone().or_else(|| self.clip_path.clone()),
+            filter: other.filter.or(self.filter),
             // Layout
             width: other.width.or(self.width),
             height: other.height.or(self.height),
@@ -895,8 +1052,19 @@ impl ElementStyle {
             margin: other.margin.or(self.margin),
             gap: other.gap.or(self.gap),
             overflow: other.overflow.or(self.overflow),
+            overflow_x: other.overflow_x.or(self.overflow_x),
+            overflow_y: other.overflow_y.or(self.overflow_y),
             border_width: other.border_width.or(self.border_width),
             border_color: other.border_color.or(self.border_color),
+            outline_width: other.outline_width.or(self.outline_width),
+            outline_color: other.outline_color.or(self.outline_color),
+            outline_offset: other.outline_offset.or(self.outline_offset),
+            position: other.position.or(self.position),
+            top: other.top.or(self.top),
+            right: other.right.or(self.right),
+            bottom: other.bottom.or(self.bottom),
+            left: other.left.or(self.left),
+            z_index: other.z_index.or(self.z_index),
         }
     }
 
@@ -910,6 +1078,7 @@ impl ElementStyle {
             || self.render_layer.is_some()
             || self.opacity.is_some()
             || self.animation.is_some()
+            || self.z_index.is_some()
     }
 
     /// Check if any layout property is set
@@ -932,8 +1101,15 @@ impl ElementStyle {
             || self.margin.is_some()
             || self.gap.is_some()
             || self.overflow.is_some()
+            || self.overflow_x.is_some()
+            || self.overflow_y.is_some()
             || self.border_width.is_some()
             || self.border_color.is_some()
+            || self.position.is_some()
+            || self.top.is_some()
+            || self.right.is_some()
+            || self.bottom.is_some()
+            || self.left.is_some()
     }
 
     /// Check if no property is set
@@ -1280,6 +1456,17 @@ macro_rules! css_impl {
     };
     ($style:ident; 3d-blend: $value:expr) => {
         $style = $style.blend_3d_px($value);
+    };
+
+    // =========================================================================
+    // Clip-Path
+    // =========================================================================
+    ($style:ident; clip-path: $value:expr; $($rest:tt)*) => {
+        $style = $style.clip_path($value);
+        $crate::css_impl!($style; $($rest)*);
+    };
+    ($style:ident; clip-path: $value:expr) => {
+        $style = $style.clip_path($value);
     };
 
     // =========================================================================
@@ -1796,6 +1983,14 @@ macro_rules! style_impl {
     };
     ($style:ident; blend_3d: $value:expr $(, $($rest:tt)*)?) => {
         $style = $style.blend_3d_px($value);
+        $crate::style_impl!($style; $($($rest)*)?);
+    };
+
+    // =========================================================================
+    // Clip-Path
+    // =========================================================================
+    ($style:ident; clip_path: $value:expr $(, $($rest:tt)*)?) => {
+        $style = $style.clip_path($value);
         $crate::style_impl!($style; $($($rest)*)?);
     };
 

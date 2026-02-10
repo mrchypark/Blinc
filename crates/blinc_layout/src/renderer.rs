@@ -4,21 +4,24 @@
 //! and the DrawContext rendering API.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
 
 use blinc_animation::AnimationScheduler;
 use indexmap::IndexMap;
 
 use blinc_core::{
-    BlendMode, Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle, LayerConfig, Rect,
-    Shadow, Stroke, Transform,
+    BlendMode, BlurQuality, Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle,
+    LayerConfig, LayerEffect, Point, Rect, Shadow, Stroke, Transform, Vec2,
 };
 use taffy::prelude::*;
 use taffy::Overflow;
 
 use crate::canvas::CanvasData;
-use crate::css_parser::{ElementState, Stylesheet};
+use crate::css_parser::{
+    Combinator, ComplexSelector, CompoundSelector, ElementState, SelectorPart, StructuralPseudo,
+    Stylesheet,
+};
 use crate::diff::{render_props_eq, ChangeCategory, DivHash};
 use crate::div::{ElementBuilder, ElementTypeId};
 use crate::element::{ElementBounds, GlassMaterial, Material, RenderLayer, RenderProps};
@@ -392,6 +395,9 @@ pub struct RenderTree {
     /// Base styles for elements (before state modifiers)
     /// Used to restore original styles when state changes
     base_styles: HashMap<LayoutNodeId, RenderProps>,
+    /// Base taffy layout styles for elements (before state modifiers)
+    /// Used to restore original layout when state changes affect layout properties
+    base_taffy_styles: HashMap<LayoutNodeId, taffy::Style>,
     /// Layout animation configs for nodes (from element builders)
     /// Maps node_id to the LayoutAnimationConfig specifying which properties to animate
     layout_animation_configs: HashMap<LayoutNodeId, LayoutAnimationConfig>,
@@ -430,11 +436,19 @@ pub struct RenderTree {
     animated_render_bounds: HashMap<LayoutNodeId, AnimatedRenderBounds>,
 
     // ========================================================================
-    // CSS Keyframe Animation System
+    // CSS Animation/Transition System (shared with AnimationScheduler thread)
     // ========================================================================
-    /// Active CSS keyframe animations (from stylesheet `animation:` property)
-    /// Maps node_id to the running animation with all keyframes preserved
-    css_animations: HashMap<LayoutNodeId, crate::render_state::ActiveCssAnimation>,
+    /// Shared CSS animation/transition store
+    ///
+    /// Wrapped in `Arc<Mutex<>>` so the AnimationScheduler's background thread
+    /// can tick animations at 120fps while the main thread reads/writes.
+    css_anim_store: Arc<Mutex<crate::render_state::CssAnimationStore>>,
+    /// Nodes that currently have hover-triggered CSS animations
+    hover_css_animations: HashSet<LayoutNodeId>,
+
+    /// Nodes that were affected by complex selector state rules (e.g. .class:hover)
+    /// Used to reset render props when the state rule no longer matches
+    complex_state_affected: HashSet<LayoutNodeId>,
 }
 
 /// Result of an incremental update attempt
@@ -481,6 +495,7 @@ impl RenderTree {
             on_ready_callbacks: HashMap::new(),
             stylesheet: None,
             base_styles: HashMap::new(),
+            base_taffy_styles: HashMap::new(),
             layout_animation_configs: HashMap::new(),
             layout_animations: HashMap::new(),
             previous_bounds: HashMap::new(),
@@ -493,8 +508,10 @@ impl RenderTree {
             visual_animations: HashMap::new(),
             previous_visual_bounds: HashMap::new(),
             animated_render_bounds: HashMap::new(),
-            // CSS keyframe animation system
-            css_animations: HashMap::new(),
+            // CSS animation/transition system (shared with scheduler thread)
+            css_anim_store: Arc::new(Mutex::new(crate::render_state::CssAnimationStore::new())),
+            hover_css_animations: HashSet::new(),
+            complex_state_affected: HashSet::new(),
         }
     }
 
@@ -507,6 +524,25 @@ impl RenderTree {
                 physics.lock().unwrap().set_scheduler(&scheduler_arc);
             }
         }
+    }
+
+    /// Get the shared CSS animation store
+    ///
+    /// Used to register a tick callback on the AnimationScheduler so the
+    /// background thread can tick CSS animations/transitions at 120fps.
+    pub fn css_anim_store(&self) -> Arc<Mutex<crate::render_state::CssAnimationStore>> {
+        Arc::clone(&self.css_anim_store)
+    }
+
+    /// Set the shared CSS animation store (to reuse across tree rebuilds)
+    ///
+    /// Call this after tree creation to share the store with the scheduler's
+    /// tick callback. The store persists across tree rebuilds.
+    pub fn set_css_anim_store(
+        &mut self,
+        store: Arc<Mutex<crate::render_state::CssAnimationStore>>,
+    ) {
+        self.css_anim_store = store;
     }
 
     /// Set a shared external element registry
@@ -1188,6 +1224,13 @@ impl RenderTree {
             self.element_registry.register(id, node_id);
         }
 
+        // Register CSS classes for complex selector matching
+        let classes = element.element_classes();
+        if !classes.is_empty() {
+            self.element_registry
+                .register_classes(node_id, classes.to_vec());
+        }
+
         // Bind ScrollRef if present (for scroll containers)
         if let Some(scroll_ref) = element.bound_scroll_ref() {
             self.register_scroll_ref(node_id, scroll_ref);
@@ -1197,12 +1240,6 @@ impl RenderTree {
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
 
-        // Debug: see what's happening with children
-        // eprintln!(
-        //     "collect_render_props<E>: node={:?}, type_id={:?}, layout_children={}, builder_children={}",
-        //     node_id, element.element_type_id(), child_node_ids.len(), child_builders.len()
-        // );
-
         // Log mismatch to help debug stateful/motion issues (in collect_render_props)
         if child_node_ids.len() != child_builders.len() && !child_node_ids.is_empty() {
             tracing::warn!(
@@ -1211,8 +1248,17 @@ impl RenderTree {
             );
         }
 
+        let total_children = child_node_ids.len();
+
         // Match children by index (they were built in order)
-        for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
+        for (index, (child_builder, &child_node_id)) in
+            child_builders.iter().zip(child_node_ids.iter()).enumerate()
+        {
+            // Register parent-child relationship and child index
+            self.element_registry
+                .register_parent(child_node_id, node_id);
+            self.element_registry
+                .register_child_index(child_node_id, index, total_children);
             self.collect_render_props_boxed(child_builder.as_ref(), child_node_id);
         }
     }
@@ -1401,6 +1447,13 @@ impl RenderTree {
             self.element_registry.register(id, node_id);
         }
 
+        // Register CSS classes for complex selector matching
+        let classes = element.element_classes();
+        if !classes.is_empty() {
+            self.element_registry
+                .register_classes(node_id, classes.to_vec());
+        }
+
         // Bind ScrollRef if present (for scroll containers)
         if let Some(scroll_ref) = element.bound_scroll_ref() {
             self.register_scroll_ref(node_id, scroll_ref);
@@ -1419,6 +1472,8 @@ impl RenderTree {
                 child_builders.len()
             );
         }
+
+        let total_children = child_node_ids.len();
 
         // Check if this is a Motion container
         let is_motion = element.element_type_id() == ElementTypeId::Motion;
@@ -1459,6 +1514,12 @@ impl RenderTree {
         for (index, (child_builder, &child_node_id)) in
             child_builders.iter().zip(child_node_ids.iter()).enumerate()
         {
+            // Register parent-child relationship and child index
+            self.element_registry
+                .register_parent(child_node_id, node_id);
+            self.element_registry
+                .register_child_index(child_node_id, index, total_children);
+
             // If parent is Motion, propagate motion animation to child
             if is_motion {
                 if let Some(motion_config) = element.motion_animation_for_child(index) {
@@ -1679,6 +1740,13 @@ impl RenderTree {
             self.element_registry.register(id, node_id);
         }
 
+        // Register CSS classes for complex selector matching
+        let classes = element.element_classes();
+        if !classes.is_empty() {
+            self.element_registry
+                .register_classes(node_id, classes.to_vec());
+        }
+
         // Bind ScrollRef if present (for scroll containers)
         if let Some(scroll_ref) = element.bound_scroll_ref() {
             self.register_scroll_ref(node_id, scroll_ref);
@@ -1687,8 +1755,15 @@ impl RenderTree {
         // Recursively process children (without motion - motion only applies to direct children)
         let child_node_ids = self.layout_tree.children(node_id);
         let child_builders = element.children_builders();
+        let total_children = child_node_ids.len();
 
-        for (child_builder, &child_node_id) in child_builders.iter().zip(child_node_ids.iter()) {
+        for (index, (child_builder, &child_node_id)) in
+            child_builders.iter().zip(child_node_ids.iter()).enumerate()
+        {
+            self.element_registry
+                .register_parent(child_node_id, node_id);
+            self.element_registry
+                .register_child_index(child_node_id, index, total_children);
             self.collect_render_props_boxed(child_builder.as_ref(), child_node_id);
         }
     }
@@ -3756,6 +3831,11 @@ impl RenderTree {
     /// Note: Returns rounded values to prevent subpixel jitter during scrolling.
     /// Fractional scroll offsets cause content to shift between pixel boundaries,
     /// resulting in wobbling text and lines.
+    /// Check if a node is a scroll container
+    pub fn is_scroll_container(&self, node_id: LayoutNodeId) -> bool {
+        self.scroll_physics.contains_key(&node_id)
+    }
+
     pub fn get_scroll_offset(&self, node_id: LayoutNodeId) -> (f32, f32) {
         // Check scroll physics first (has direction-aware scroll from element)
         let (x, y) = if let Some(physics) = self.scroll_physics.get(&node_id) {
@@ -4225,11 +4305,31 @@ impl RenderTree {
                 self.base_styles.insert(node_id, render_node.props.clone());
             }
         }
+        // Get or store base taffy style for layout transition support
+        if !self.base_taffy_styles.contains_key(&node_id) {
+            if let Some(style) = self.layout_tree.get_style(node_id) {
+                self.base_taffy_styles.insert(node_id, style);
+            }
+        }
 
         // Start with base style
         let base_props = match self.base_styles.get(&node_id) {
             Some(props) => props.clone(),
             None => return false,
+        };
+
+        // Check if this element has transitions defined
+        let transition_set = stylesheet
+            .get(&element_id)
+            .and_then(|s| s.transition.clone());
+
+        // Snapshot before-props for transition detection (visual + layout).
+        // Uses snapshot_before_keyframe_properties to avoid QR decomposition
+        // drift on transform fields when an active transition exists.
+        let before_kp = if transition_set.is_some() {
+            self.snapshot_before_keyframe_properties(node_id)
+        } else {
+            None
         };
 
         // Apply state-specific styles in order of precedence
@@ -4242,9 +4342,20 @@ impl RenderTree {
         // Reset to base style first
         render_node.props = base_props;
 
+        // Reset taffy style to base before applying state layout overrides
+        if let Some(base_taffy) = self.base_taffy_styles.get(&node_id) {
+            self.layout_tree.set_style(node_id, base_taffy.clone());
+        }
+
         // Apply base stylesheet style (if any)
         if let Some(base_style) = stylesheet.get(&element_id) {
             Self::apply_element_style_to_props(&mut render_node.props, base_style);
+            if base_style.has_layout_props() {
+                if let Some(mut taffy_style) = self.layout_tree.get_style(node_id) {
+                    Self::apply_element_style_to_taffy(&mut taffy_style, base_style);
+                    self.layout_tree.set_style(node_id, taffy_style);
+                }
+            }
             applied = true;
         }
 
@@ -4252,6 +4363,12 @@ impl RenderTree {
         if hovered {
             if let Some(hover_style) = stylesheet.get_with_state(&element_id, ElementState::Hover) {
                 Self::apply_element_style_to_props(&mut render_node.props, hover_style);
+                if hover_style.has_layout_props() {
+                    if let Some(mut taffy_style) = self.layout_tree.get_style(node_id) {
+                        Self::apply_element_style_to_taffy(&mut taffy_style, hover_style);
+                        self.layout_tree.set_style(node_id, taffy_style);
+                    }
+                }
                 applied = true;
             }
         }
@@ -4261,6 +4378,12 @@ impl RenderTree {
             if let Some(active_style) = stylesheet.get_with_state(&element_id, ElementState::Active)
             {
                 Self::apply_element_style_to_props(&mut render_node.props, active_style);
+                if active_style.has_layout_props() {
+                    if let Some(mut taffy_style) = self.layout_tree.get_style(node_id) {
+                        Self::apply_element_style_to_taffy(&mut taffy_style, active_style);
+                        self.layout_tree.set_style(node_id, taffy_style);
+                    }
+                }
                 applied = true;
             }
         }
@@ -4269,7 +4392,20 @@ impl RenderTree {
         if focused {
             if let Some(focus_style) = stylesheet.get_with_state(&element_id, ElementState::Focus) {
                 Self::apply_element_style_to_props(&mut render_node.props, focus_style);
+                if focus_style.has_layout_props() {
+                    if let Some(mut taffy_style) = self.layout_tree.get_style(node_id) {
+                        Self::apply_element_style_to_taffy(&mut taffy_style, focus_style);
+                        self.layout_tree.set_style(node_id, taffy_style);
+                    }
+                }
                 applied = true;
+            }
+        }
+
+        // Detect and start transitions for changed properties (visual + layout)
+        if let (Some(before_kp), Some(transition_set)) = (before_kp, transition_set) {
+            if let Some(after_kp) = self.snapshot_keyframe_properties(node_id) {
+                self.detect_and_start_transitions(node_id, &before_kp, &after_kp, &transition_set);
             }
         }
 
@@ -4339,6 +4475,469 @@ impl RenderTree {
         if let Some(v) = style.blend_3d {
             props.blend_3d = Some(v);
         }
+        if let Some(ref cp) = style.clip_path {
+            props.clip_path = Some(cp.clone());
+        }
+        if let Some(filter) = style.filter {
+            props.filter = Some(filter);
+            // Convert blur filter to LayerEffect for GPU processing
+            if filter.blur > 0.0 {
+                // Remove any existing blur effect before adding updated one
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::Blur { .. }));
+                props.layer_effects.push(LayerEffect::Blur {
+                    radius: filter.blur,
+                    quality: BlurQuality::Medium,
+                });
+            } else {
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::Blur { .. }));
+            }
+            // Convert drop-shadow filter to LayerEffect
+            if let Some(ds) = &filter.drop_shadow {
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::DropShadow { .. }));
+                props.layer_effects.push(LayerEffect::DropShadow {
+                    offset_x: ds.offset_x,
+                    offset_y: ds.offset_y,
+                    blur: ds.blur,
+                    spread: ds.spread,
+                    color: ds.color,
+                });
+            } else {
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::DropShadow { .. }));
+            }
+        }
+        // Text color
+        if let Some(c) = &style.text_color {
+            props.text_color = Some([c.r, c.g, c.b, c.a]);
+        }
+        // Text shadow
+        if let Some(ts) = &style.text_shadow {
+            props.text_shadow = Some(*ts);
+        }
+        // Font size
+        if let Some(fs) = style.font_size {
+            props.font_size = Some(fs);
+        }
+        // Transform origin
+        if let Some(to) = style.transform_origin {
+            props.transform_origin = Some(to);
+        }
+        // Outline
+        if let Some(ow) = style.outline_width {
+            props.outline_width = ow;
+        }
+        if let Some(ref oc) = style.outline_color {
+            props.outline_color = Some(*oc);
+        }
+        if let Some(offset) = style.outline_offset {
+            props.outline_offset = offset;
+        }
+        // Skew (composed into existing transform as Affine2D)
+        if style.skew_x.is_some() || style.skew_y.is_some() {
+            use blinc_core::Affine2D;
+            let mut skew_affine = Affine2D::IDENTITY;
+            if let Some(sx) = style.skew_x {
+                skew_affine = skew_affine.then(&Affine2D::skew_x(sx.to_radians()));
+            }
+            if let Some(sy) = style.skew_y {
+                skew_affine = skew_affine.then(&Affine2D::skew_y(sy.to_radians()));
+            }
+            // Compose with existing transform or set new
+            if let Some(blinc_core::Transform::Affine2D(existing)) = &props.transform {
+                props.transform =
+                    Some(blinc_core::Transform::Affine2D(existing.then(&skew_affine)));
+            } else {
+                props.transform = Some(blinc_core::Transform::Affine2D(skew_affine));
+            }
+        }
+        // Position flags (fixed/sticky are rendering concerns, not layout)
+        if let Some(pos) = style.position {
+            use crate::element_style::StylePosition;
+            match pos {
+                StylePosition::Fixed => {
+                    props.is_fixed = true;
+                    props.is_sticky = false;
+                }
+                StylePosition::Sticky => {
+                    props.is_fixed = false;
+                    props.is_sticky = true;
+                    props.sticky_top = style.top;
+                    props.sticky_bottom = style.bottom;
+                }
+                _ => {
+                    props.is_fixed = false;
+                    props.is_sticky = false;
+                }
+            }
+        }
+        // Numeric z-index for stacking order
+        if let Some(z) = style.z_index {
+            props.z_index = z;
+        }
+        // Overflow → clips_content (Clip or Scroll means clip children)
+        if let Some(overflow) = style.overflow {
+            use crate::element_style::StyleOverflow;
+            if matches!(overflow, StyleOverflow::Clip | StyleOverflow::Scroll) {
+                props.clips_content = true;
+            }
+        }
+        if let Some(ox) = style.overflow_x {
+            use crate::element_style::StyleOverflow;
+            if matches!(ox, StyleOverflow::Clip | StyleOverflow::Scroll) {
+                props.clips_content = true;
+            }
+        }
+        if let Some(oy) = style.overflow_y {
+            use crate::element_style::StyleOverflow;
+            if matches!(oy, StyleOverflow::Clip | StyleOverflow::Scroll) {
+                props.clips_content = true;
+            }
+        }
+    }
+
+    /// Apply layout properties from an ElementStyle to a taffy Style.
+    ///
+    /// This mirrors `apply_element_style_to_props` but for layout properties
+    /// that live in the taffy layout system rather than RenderProps.
+    fn apply_element_style_to_taffy(
+        taffy_style: &mut taffy::Style,
+        es: &crate::element_style::ElementStyle,
+    ) {
+        use taffy::prelude::*;
+
+        if let Some(w) = es.width {
+            taffy_style.size.width = Dimension::Length(w);
+        }
+        if let Some(h) = es.height {
+            taffy_style.size.height = Dimension::Length(h);
+        }
+        if let Some(v) = es.min_width {
+            taffy_style.min_size.width = Dimension::Length(v);
+        }
+        if let Some(v) = es.max_width {
+            taffy_style.max_size.width = Dimension::Length(v);
+        }
+        if let Some(v) = es.min_height {
+            taffy_style.min_size.height = Dimension::Length(v);
+        }
+        if let Some(v) = es.max_height {
+            taffy_style.max_size.height = Dimension::Length(v);
+        }
+        if let Some(ref p) = es.padding {
+            taffy_style.padding = taffy::geometry::Rect {
+                top: LengthPercentage::Length(p.top),
+                right: LengthPercentage::Length(p.right),
+                bottom: LengthPercentage::Length(p.bottom),
+                left: LengthPercentage::Length(p.left),
+            };
+        }
+        if let Some(ref m) = es.margin {
+            taffy_style.margin = taffy::geometry::Rect {
+                top: LengthPercentageAuto::Length(m.top),
+                right: LengthPercentageAuto::Length(m.right),
+                bottom: LengthPercentageAuto::Length(m.bottom),
+                left: LengthPercentageAuto::Length(m.left),
+            };
+        }
+        if let Some(g) = es.gap {
+            taffy_style.gap = taffy::geometry::Size {
+                width: LengthPercentage::Length(g),
+                height: LengthPercentage::Length(g),
+            };
+        }
+        if let Some(v) = es.flex_grow {
+            taffy_style.flex_grow = v;
+        }
+        if let Some(v) = es.flex_shrink {
+            taffy_style.flex_shrink = v;
+        }
+        if let Some(v) = es.top {
+            taffy_style.inset.top = LengthPercentageAuto::Length(v);
+        }
+        if let Some(v) = es.right {
+            taffy_style.inset.right = LengthPercentageAuto::Length(v);
+        }
+        if let Some(v) = es.bottom {
+            taffy_style.inset.bottom = LengthPercentageAuto::Length(v);
+        }
+        if let Some(v) = es.left {
+            taffy_style.inset.left = LengthPercentageAuto::Length(v);
+        }
+    }
+
+    /// Snapshot all animatable properties (visual + layout) for a node.
+    ///
+    /// Combines visual properties from RenderProps with layout properties
+    /// from the taffy Style to create a complete KeyframeProperties snapshot
+    /// suitable for transition detection.
+    fn snapshot_keyframe_properties(
+        &self,
+        node_id: LayoutNodeId,
+    ) -> Option<blinc_animation::KeyframeProperties> {
+        let render_node = self.render_nodes.get(&node_id)?;
+        let mut kp = Self::render_props_to_keyframe_properties(&render_node.props);
+
+        // Also extract layout properties from taffy style
+        if let Some(style) = self.layout_tree.get_style(node_id) {
+            if let taffy::Dimension::Length(w) = style.size.width {
+                kp.width = Some(w);
+            }
+            if let taffy::Dimension::Length(h) = style.size.height {
+                kp.height = Some(h);
+            }
+            // Extract padding
+            let pt = Self::taffy_lp_to_f32(&style.padding.top);
+            let pr = Self::taffy_lp_to_f32(&style.padding.right);
+            let pb = Self::taffy_lp_to_f32(&style.padding.bottom);
+            let pl = Self::taffy_lp_to_f32(&style.padding.left);
+            if pt.is_some() || pr.is_some() || pb.is_some() || pl.is_some() {
+                kp.padding = Some([
+                    pt.unwrap_or(0.0),
+                    pr.unwrap_or(0.0),
+                    pb.unwrap_or(0.0),
+                    pl.unwrap_or(0.0),
+                ]);
+            }
+            // Extract margin
+            let mt = Self::taffy_lpa_to_f32(&style.margin.top);
+            let mr = Self::taffy_lpa_to_f32(&style.margin.right);
+            let mb = Self::taffy_lpa_to_f32(&style.margin.bottom);
+            let ml = Self::taffy_lpa_to_f32(&style.margin.left);
+            if mt.is_some() || mr.is_some() || mb.is_some() || ml.is_some() {
+                kp.margin = Some([
+                    mt.unwrap_or(0.0),
+                    mr.unwrap_or(0.0),
+                    mb.unwrap_or(0.0),
+                    ml.unwrap_or(0.0),
+                ]);
+            }
+            // Extract gap
+            if let taffy::LengthPercentage::Length(g) = style.gap.width {
+                kp.gap = Some(g);
+            }
+            // Extract min/max constraints
+            if let taffy::Dimension::Length(v) = style.min_size.width {
+                kp.min_width = Some(v);
+            }
+            if let taffy::Dimension::Length(v) = style.max_size.width {
+                kp.max_width = Some(v);
+            }
+            if let taffy::Dimension::Length(v) = style.min_size.height {
+                kp.min_height = Some(v);
+            }
+            if let taffy::Dimension::Length(v) = style.max_size.height {
+                kp.max_height = Some(v);
+            }
+            // Extract flex grow/shrink
+            if style.flex_grow != 0.0 {
+                kp.flex_grow = Some(style.flex_grow);
+            }
+            if style.flex_shrink != 1.0 {
+                kp.flex_shrink = Some(style.flex_shrink);
+            }
+            // Extract inset (top/right/bottom/left)
+            if let Some(v) = Self::taffy_lpa_to_f32(&style.inset.top) {
+                kp.inset_top = Some(v);
+            }
+            if let Some(v) = Self::taffy_lpa_to_f32(&style.inset.right) {
+                kp.inset_right = Some(v);
+            }
+            if let Some(v) = Self::taffy_lpa_to_f32(&style.inset.bottom) {
+                kp.inset_bottom = Some(v);
+            }
+            if let Some(v) = Self::taffy_lpa_to_f32(&style.inset.left) {
+                kp.inset_left = Some(v);
+            }
+        }
+
+        Some(kp)
+    }
+
+    /// Snapshot keyframe properties for transition "before" state.
+    ///
+    /// When an active transition exists, overlays the transition's current
+    /// interpolated values for transform fields. This avoids QR decomposition
+    /// drift: the affine→decompose roundtrip introduces tiny floating-point
+    /// errors that would cause spurious property changes and defeat the
+    /// same-target guard in `detect_and_start_transitions`.
+    fn snapshot_before_keyframe_properties(
+        &self,
+        node_id: LayoutNodeId,
+    ) -> Option<blinc_animation::KeyframeProperties> {
+        self.snapshot_keyframe_properties(node_id).map(|mut kp| {
+            let store = self.css_anim_store.lock().unwrap();
+            if let Some(active) = store.transitions.get(&node_id) {
+                let cp = &active.current_properties;
+                if cp.rotate.is_some() {
+                    kp.rotate = cp.rotate;
+                }
+                if cp.scale_x.is_some() {
+                    kp.scale_x = cp.scale_x;
+                }
+                if cp.scale_y.is_some() {
+                    kp.scale_y = cp.scale_y;
+                }
+                if cp.translate_x.is_some() {
+                    kp.translate_x = cp.translate_x;
+                }
+                if cp.translate_y.is_some() {
+                    kp.translate_y = cp.translate_y;
+                }
+                if cp.skew_x.is_some() {
+                    kp.skew_x = cp.skew_x;
+                }
+                if cp.skew_y.is_some() {
+                    kp.skew_y = cp.skew_y;
+                }
+                if cp.transform_origin.is_some() {
+                    kp.transform_origin = cp.transform_origin;
+                }
+                // Overlay gradient fields from active transition to avoid
+                // snapshot mismatch (render props may lag 1 frame behind)
+                if cp.gradient_start_color.is_some() {
+                    kp.gradient_start_color = cp.gradient_start_color;
+                }
+                if cp.gradient_end_color.is_some() {
+                    kp.gradient_end_color = cp.gradient_end_color;
+                }
+                if cp.gradient_angle.is_some() {
+                    kp.gradient_angle = cp.gradient_angle;
+                }
+                if cp.background_color.is_some() {
+                    kp.background_color = cp.background_color;
+                }
+            }
+            kp
+        })
+    }
+
+    fn taffy_lp_to_f32(lp: &taffy::LengthPercentage) -> Option<f32> {
+        match lp {
+            taffy::LengthPercentage::Length(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    fn taffy_lpa_to_f32(lpa: &taffy::LengthPercentageAuto) -> Option<f32> {
+        match lpa {
+            taffy::LengthPercentageAuto::Length(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Resolve a CSS `ClipPath` into a concrete `ClipShape` given element bounds.
+    ///
+    /// For simple shapes (circle, ellipse, inset, rect, xywh), this produces a
+    /// ClipShape that the existing GPU clip infrastructure handles directly.
+    /// For polygon and path, returns a polygon-based ClipShape (handled in Phase 6).
+    fn resolve_clip_path(
+        clip_path: &blinc_core::ClipPath,
+        bounds: &crate::element::ElementBounds,
+    ) -> Option<ClipShape> {
+        use blinc_core::{ClipLength, ClipPath};
+
+        let w = bounds.width;
+        let h = bounds.height;
+
+        match clip_path {
+            ClipPath::Circle { radius, center } => {
+                let cx = center.0.resolve(w);
+                let cy = center.1.resolve(h);
+                let r = radius
+                    .map(|r| r.resolve(w.min(h)))
+                    .unwrap_or_else(|| w.min(h) * 0.5);
+                Some(ClipShape::circle(Point::new(cx, cy), r))
+            }
+            ClipPath::Ellipse { rx, ry, center } => {
+                let cx = center.0.resolve(w);
+                let cy = center.1.resolve(h);
+                let rx_val = rx.map(|r| r.resolve(w)).unwrap_or(w * 0.5);
+                let ry_val = ry.map(|r| r.resolve(h)).unwrap_or(h * 0.5);
+                Some(ClipShape::ellipse(
+                    Point::new(cx, cy),
+                    Vec2::new(rx_val, ry_val),
+                ))
+            }
+            ClipPath::Inset {
+                top,
+                right,
+                bottom,
+                left,
+                round,
+            } => {
+                let t = top.resolve(h);
+                let r = right.resolve(w);
+                let b = bottom.resolve(h);
+                let l = left.resolve(w);
+                let rect = Rect::new(l, t, w - l - r, h - t - b);
+                if let Some(radius) = round {
+                    Some(ClipShape::rounded_rect(rect, *radius))
+                } else {
+                    Some(ClipShape::rect(rect))
+                }
+            }
+            ClipPath::Rect {
+                top,
+                right,
+                bottom,
+                left,
+                round,
+            } => {
+                // CSS rect() uses absolute edge positions
+                let t = top.resolve(h);
+                let r = right.resolve(w);
+                let b = bottom.resolve(h);
+                let l = left.resolve(w);
+                let rect = Rect::new(l, t, r - l, b - t);
+                if let Some(radius) = round {
+                    Some(ClipShape::rounded_rect(rect, *radius))
+                } else {
+                    Some(ClipShape::rect(rect))
+                }
+            }
+            ClipPath::Xywh {
+                x,
+                y,
+                w: cw,
+                h: ch,
+                round,
+            } => {
+                let rx = x.resolve(w);
+                let ry = y.resolve(h);
+                let rw = cw.resolve(w);
+                let rh = ch.resolve(h);
+                let rect = Rect::new(rx, ry, rw, rh);
+                if let Some(radius) = round {
+                    Some(ClipShape::rounded_rect(rect, *radius))
+                } else {
+                    Some(ClipShape::rect(rect))
+                }
+            }
+            ClipPath::Polygon { points } => {
+                let resolved: Vec<Point> = points
+                    .iter()
+                    .map(|(px, py)| Point::new(px.resolve(w), py.resolve(h)))
+                    .collect();
+                if resolved.len() < 3 {
+                    return None;
+                }
+                Some(ClipShape::Polygon(resolved))
+            }
+            ClipPath::Path { vertices } => {
+                if vertices.len() < 3 {
+                    return None;
+                }
+                let points: Vec<Point> = vertices.iter().map(|(x, y)| Point::new(*x, *y)).collect();
+                Some(ClipShape::Polygon(points))
+            }
+        }
     }
 
     /// Apply layout properties from the stylesheet to taffy nodes
@@ -4350,6 +4949,7 @@ impl RenderTree {
     pub fn apply_stylesheet_layout_overrides(&mut self) {
         use crate::element_style::{
             SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify, StyleOverflow,
+            StylePosition,
         };
 
         let stylesheet = match &self.stylesheet {
@@ -4489,7 +5089,7 @@ impl RenderTree {
                 };
             }
 
-            // Overflow
+            // Overflow (shorthand sets both axes)
             if let Some(overflow) = es.overflow {
                 let val = match overflow {
                     StyleOverflow::Visible => Overflow::Visible,
@@ -4499,8 +5099,110 @@ impl RenderTree {
                 style.overflow.x = val;
                 style.overflow.y = val;
             }
+            // Per-axis overflow overrides
+            if let Some(ox) = es.overflow_x {
+                style.overflow.x = match ox {
+                    StyleOverflow::Visible => Overflow::Visible,
+                    StyleOverflow::Clip => Overflow::Clip,
+                    StyleOverflow::Scroll => Overflow::Scroll,
+                };
+            }
+            if let Some(oy) = es.overflow_y {
+                style.overflow.y = match oy {
+                    StyleOverflow::Visible => Overflow::Visible,
+                    StyleOverflow::Clip => Overflow::Clip,
+                    StyleOverflow::Scroll => Overflow::Scroll,
+                };
+            }
+
+            // Position
+            if let Some(pos) = es.position {
+                style.position = match pos {
+                    StylePosition::Static | StylePosition::Relative | StylePosition::Sticky => {
+                        taffy::Position::Relative
+                    }
+                    StylePosition::Absolute | StylePosition::Fixed => taffy::Position::Absolute,
+                };
+            }
+
+            // Inset (top, right, bottom, left)
+            // For sticky elements, inset values are scroll-lock thresholds, not layout offsets.
+            // They go into RenderProps instead (via apply_element_style_to_props).
+            let is_sticky = es.position == Some(StylePosition::Sticky);
+            if !is_sticky {
+                if let Some(top) = es.top {
+                    style.inset.top = LengthPercentageAuto::Length(top);
+                }
+                if let Some(right) = es.right {
+                    style.inset.right = LengthPercentageAuto::Length(right);
+                }
+                if let Some(bottom) = es.bottom {
+                    style.inset.bottom = LengthPercentageAuto::Length(bottom);
+                }
+                if let Some(left) = es.left {
+                    style.inset.left = LengthPercentageAuto::Length(left);
+                }
+            }
 
             self.layout_tree.set_style(node_id, style);
+        }
+
+        // Auto-create scroll physics for any nodes with overflow: scroll
+        self.auto_create_css_scroll_physics();
+    }
+
+    /// Auto-create scroll physics for nodes with `overflow: scroll` set via CSS.
+    ///
+    /// Scans all layout nodes and creates scroll physics + event handlers
+    /// for any node that has `overflow: scroll` on either axis but doesn't
+    /// already have scroll physics registered (e.g., from the `scroll()` widget
+    /// or the `overflow_scroll()` Div builder).
+    pub fn auto_create_css_scroll_physics(&mut self) {
+        use crate::scroll::{Scroll, ScrollConfig, ScrollDirection, ScrollPhysics};
+
+        // Collect nodes that need scroll physics
+        let all_ids = self.element_registry.all_ids();
+        let mut needs_physics: Vec<(LayoutNodeId, ScrollDirection)> = Vec::new();
+
+        for id in &all_ids {
+            let Some(node_id) = self.element_registry.get(id) else {
+                continue;
+            };
+            // Skip if already has scroll physics (from Scroll widget or Div builder)
+            if self.scroll_physics.contains_key(&node_id) {
+                continue;
+            }
+            let Some(style) = self.layout_tree.get_style(node_id) else {
+                continue;
+            };
+            let scroll_x = matches!(style.overflow.x, Overflow::Scroll);
+            let scroll_y = matches!(style.overflow.y, Overflow::Scroll);
+            if !scroll_x && !scroll_y {
+                continue;
+            }
+            let direction = match (scroll_x, scroll_y) {
+                (true, true) => ScrollDirection::Both,
+                (true, false) => ScrollDirection::Horizontal,
+                (false, true) => ScrollDirection::Vertical,
+                _ => unreachable!(),
+            };
+            needs_physics.push((node_id, direction));
+        }
+
+        // Create physics and register handlers
+        for (node_id, direction) in needs_physics {
+            let config = ScrollConfig {
+                direction,
+                ..Default::default()
+            };
+            let physics = Arc::new(Mutex::new(ScrollPhysics::new(config)));
+            // Set animation scheduler for bounce springs
+            if let Some(scheduler) = self.animations.upgrade() {
+                physics.lock().unwrap().set_scheduler(&scheduler);
+            }
+            let handlers = Scroll::create_internal_handlers(Arc::clone(&physics));
+            self.scroll_physics.insert(node_id, physics);
+            self.handler_registry.register(node_id, handlers);
         }
     }
 
@@ -4519,11 +5221,512 @@ impl RenderTree {
             None => return false,
         };
 
-        // Check if any state styles exist
-        stylesheet.contains_with_state(&element_id, ElementState::Hover)
+        // Check if any simple state styles exist
+        if stylesheet.contains_with_state(&element_id, ElementState::Hover)
             || stylesheet.contains_with_state(&element_id, ElementState::Active)
             || stylesheet.contains_with_state(&element_id, ElementState::Focus)
             || stylesheet.contains_with_state(&element_id, ElementState::Disabled)
+        {
+            return true;
+        }
+
+        // Check if any complex rules with state exist that could affect this node
+        stylesheet.has_complex_state_rules()
+    }
+
+    // =========================================================================
+    // Complex Selector Matching Engine
+    // =========================================================================
+
+    /// Check if a compound selector matches a given node
+    fn compound_matches(
+        &self,
+        compound: &CompoundSelector,
+        node_id: LayoutNodeId,
+        hovered: bool,
+        pressed: bool,
+        focused: bool,
+    ) -> bool {
+        for part in &compound.parts {
+            match part {
+                SelectorPart::Id(id) => {
+                    let node_id_str = self.element_registry.get_id(node_id);
+                    if node_id_str.as_deref() != Some(id.as_str()) {
+                        return false;
+                    }
+                }
+                SelectorPart::Class(class) => {
+                    if !self.element_registry.has_class(node_id, class) {
+                        return false;
+                    }
+                }
+                SelectorPart::State(state) => {
+                    let matches = match state {
+                        ElementState::Hover => hovered,
+                        ElementState::Active => pressed,
+                        ElementState::Focus => focused,
+                        ElementState::Disabled => false, // TODO: track disabled state
+                    };
+                    if !matches {
+                        return false;
+                    }
+                }
+                SelectorPart::Universal => {
+                    // Universal selector matches everything — continue
+                }
+                SelectorPart::Not(inner_compound) => {
+                    // :not(selector) — matches if the inner compound does NOT match
+                    if self.compound_matches(inner_compound, node_id, hovered, pressed, focused) {
+                        return false;
+                    }
+                }
+                SelectorPart::Is(selectors) => {
+                    // :is(sel1, sel2, ...) — matches if ANY inner selector matches
+                    let any_match = selectors
+                        .iter()
+                        .any(|s| self.compound_matches(s, node_id, hovered, pressed, focused));
+                    if !any_match {
+                        return false;
+                    }
+                }
+                SelectorPart::PseudoClass(pseudo) => {
+                    let matches = match pseudo {
+                        StructuralPseudo::FirstChild => {
+                            self.element_registry.get_child_index(node_id) == Some(0)
+                        }
+                        StructuralPseudo::LastChild => {
+                            let index = self.element_registry.get_child_index(node_id);
+                            let count = self.element_registry.get_sibling_count(node_id);
+                            match (index, count) {
+                                (Some(i), Some(c)) if c > 0 => i == c - 1,
+                                _ => false,
+                            }
+                        }
+                        StructuralPseudo::NthChild(n) => {
+                            // nth-child is 1-based in CSS
+                            self.element_registry.get_child_index(node_id)
+                                == Some(n.saturating_sub(1))
+                        }
+                        StructuralPseudo::NthLastChild(n) => {
+                            // nth-last-child is 1-based from the end
+                            let index = self.element_registry.get_child_index(node_id);
+                            let count = self.element_registry.get_sibling_count(node_id);
+                            match (index, count) {
+                                (Some(i), Some(c)) if c > 0 => i == c - n,
+                                _ => false,
+                            }
+                        }
+                        StructuralPseudo::OnlyChild => {
+                            self.element_registry.get_sibling_count(node_id) == Some(1)
+                        }
+                        StructuralPseudo::Empty => !self.element_registry.has_children(node_id),
+                        StructuralPseudo::Root => self.element_registry.is_root(node_id),
+                        // *-of-type: In Blinc all elements are Div, so equivalent to *-child
+                        StructuralPseudo::FirstOfType => {
+                            self.element_registry.get_child_index(node_id) == Some(0)
+                        }
+                        StructuralPseudo::LastOfType => {
+                            let index = self.element_registry.get_child_index(node_id);
+                            let count = self.element_registry.get_sibling_count(node_id);
+                            match (index, count) {
+                                (Some(i), Some(c)) if c > 0 => i == c - 1,
+                                _ => false,
+                            }
+                        }
+                        StructuralPseudo::NthOfType(n) => {
+                            self.element_registry.get_child_index(node_id)
+                                == Some(n.saturating_sub(1))
+                        }
+                        StructuralPseudo::NthLastOfType(n) => {
+                            let index = self.element_registry.get_child_index(node_id);
+                            let count = self.element_registry.get_sibling_count(node_id);
+                            match (index, count) {
+                                (Some(i), Some(c)) if c > 0 => i == c - n,
+                                _ => false,
+                            }
+                        }
+                        StructuralPseudo::OnlyOfType => {
+                            self.element_registry.get_sibling_count(node_id) == Some(1)
+                        }
+                    };
+                    if !matches {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Check if a complex selector matches a given target node
+    ///
+    /// Walks the selector chain right-to-left (target element first),
+    /// checking combinators against the ancestor chain.
+    fn complex_selector_matches(
+        &self,
+        selector: &ComplexSelector,
+        target_node: LayoutNodeId,
+        hovered_nodes: &std::collections::HashSet<LayoutNodeId>,
+        pressed_nodes: &std::collections::HashSet<LayoutNodeId>,
+        focused_node: Option<LayoutNodeId>,
+    ) -> bool {
+        if selector.segments.is_empty() {
+            return false;
+        }
+
+        // Start from the rightmost segment (the target)
+        let segments = &selector.segments;
+        let (target_compound, _) = &segments[segments.len() - 1];
+
+        // Check target node against the rightmost compound
+        let target_hovered = hovered_nodes.contains(&target_node);
+        let target_pressed = pressed_nodes.contains(&target_node);
+        let target_focused = focused_node == Some(target_node);
+
+        if !self.compound_matches(
+            target_compound,
+            target_node,
+            target_hovered,
+            target_pressed,
+            target_focused,
+        ) {
+            return false;
+        }
+
+        // Walk backwards through remaining segments (ancestors)
+        if segments.len() == 1 {
+            return true; // Simple selector, already matched
+        }
+
+        let mut current_node = target_node;
+
+        // Walk from right-to-left through the selector segments (skip the last which is the target)
+        for i in (0..segments.len() - 1).rev() {
+            let (compound, combinator) = &segments[i];
+            let combinator = combinator.unwrap_or(Combinator::Descendant);
+
+            match combinator {
+                Combinator::Child => {
+                    // Must match the immediate parent
+                    let parent = match self.element_registry.get_parent(current_node) {
+                        Some(p) => p,
+                        None => return false,
+                    };
+                    let parent_hovered = hovered_nodes.contains(&parent);
+                    let parent_pressed = pressed_nodes.contains(&parent);
+                    let parent_focused = focused_node == Some(parent);
+
+                    if !self.compound_matches(
+                        compound,
+                        parent,
+                        parent_hovered,
+                        parent_pressed,
+                        parent_focused,
+                    ) {
+                        return false;
+                    }
+                    current_node = parent;
+                }
+                Combinator::Descendant => {
+                    // Walk up ancestors until a match is found
+                    let ancestors = self.element_registry.ancestors(current_node);
+                    let mut found = false;
+                    for ancestor in &ancestors {
+                        let anc_hovered = hovered_nodes.contains(ancestor);
+                        let anc_pressed = pressed_nodes.contains(ancestor);
+                        let anc_focused = focused_node == Some(*ancestor);
+
+                        if self.compound_matches(
+                            compound,
+                            *ancestor,
+                            anc_hovered,
+                            anc_pressed,
+                            anc_focused,
+                        ) {
+                            current_node = *ancestor;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return false;
+                    }
+                }
+                Combinator::AdjacentSibling => {
+                    // Must match the immediately preceding sibling
+                    let prev_sibling =
+                        match self.element_registry.get_previous_sibling(current_node) {
+                            Some(s) => s,
+                            None => return false,
+                        };
+                    let sib_hovered = hovered_nodes.contains(&prev_sibling);
+                    let sib_pressed = pressed_nodes.contains(&prev_sibling);
+                    let sib_focused = focused_node == Some(prev_sibling);
+
+                    if !self.compound_matches(
+                        compound,
+                        prev_sibling,
+                        sib_hovered,
+                        sib_pressed,
+                        sib_focused,
+                    ) {
+                        return false;
+                    }
+                    current_node = prev_sibling;
+                }
+                Combinator::GeneralSibling => {
+                    // Walk preceding siblings until a match is found
+                    let preceding = self.element_registry.get_preceding_siblings(current_node);
+                    let mut found = false;
+                    for sibling in preceding.iter().rev() {
+                        let sib_hovered = hovered_nodes.contains(sibling);
+                        let sib_pressed = pressed_nodes.contains(sibling);
+                        let sib_focused = focused_node == Some(*sibling);
+
+                        if self.compound_matches(
+                            compound,
+                            *sibling,
+                            sib_hovered,
+                            sib_pressed,
+                            sib_focused,
+                        ) {
+                            current_node = *sibling;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Apply complex selector rules that match the current state
+    ///
+    /// Returns true if any styles were applied.
+    fn apply_complex_selector_styles(&mut self, router: &crate::event_router::EventRouter) -> bool {
+        let stylesheet = match &self.stylesheet {
+            Some(s) => s.clone(),
+            None => return false,
+        };
+
+        let complex_rules = stylesheet.complex_rules();
+        if complex_rules.is_empty() {
+            return false;
+        }
+
+        // Collect current interaction state into sets for efficient lookup
+        let hovered_nodes: std::collections::HashSet<LayoutNodeId> =
+            router.hovered_nodes().collect();
+        let pressed_nodes: std::collections::HashSet<LayoutNodeId> =
+            router.pressed_target().into_iter().collect();
+        let focused_node: Option<LayoutNodeId> = {
+            // Check all registered nodes for focus
+            let mut focused = None;
+            for id in self.element_registry.all_ids() {
+                if let Some(nid) = self.element_registry.get(&id) {
+                    if router.is_focused(nid) {
+                        focused = Some(nid);
+                        break;
+                    }
+                }
+            }
+            focused
+        };
+
+        // Collect ALL render node IDs (not just those with IDs — .class selectors can match any node)
+        let all_node_ids: Vec<LayoutNodeId> = self.render_nodes.keys().copied().collect();
+
+        // Reset previously state-affected nodes to their base props so that
+        // styles from rules that no longer match (e.g. :hover ended) are removed
+        let prev_affected: HashSet<LayoutNodeId> = std::mem::take(&mut self.complex_state_affected);
+
+        // Snapshot BEFORE the reset for prev_affected nodes — captures the actual
+        // visual state (e.g. hover values after a transition completed).  This way
+        // when the same hover state is re-applied, before == after → no spurious
+        // re-transition.
+        let mut pre_reset_snapshots: HashMap<LayoutNodeId, blinc_animation::KeyframeProperties> =
+            HashMap::new();
+        for &node_id in &prev_affected {
+            if let Some(kp) = self.snapshot_before_keyframe_properties(node_id) {
+                pre_reset_snapshots.insert(node_id, kp);
+            }
+        }
+
+        for &node_id in &prev_affected {
+            if let Some(base) = self.base_styles.get(&node_id) {
+                if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                    render_node.props = base.clone();
+                }
+            }
+        }
+
+        // Re-apply all base (non-state) complex rules first for reset nodes
+        // so that base class styles are always present
+        for (selector, style) in complex_rules {
+            if !selector.has_state() {
+                for &node_id in &prev_affected {
+                    if self.complex_selector_matches(
+                        selector,
+                        node_id,
+                        &hovered_nodes,
+                        &pressed_nodes,
+                        focused_node,
+                    ) {
+                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                            Self::apply_element_style_to_props(&mut render_node.props, style);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut any_applied = false;
+
+        for (selector, style) in complex_rules {
+            // Only state-dependent rules need the full treatment here;
+            // base rules for non-previously-affected nodes are handled below
+            let is_state_rule = selector.has_state();
+
+            for &node_id in &all_node_ids {
+                // For base rules on nodes that were just reset above, skip (already applied)
+                if !is_state_rule && prev_affected.contains(&node_id) {
+                    continue;
+                }
+
+                if self.complex_selector_matches(
+                    selector,
+                    node_id,
+                    &hovered_nodes,
+                    &pressed_nodes,
+                    focused_node,
+                ) {
+                    // Save base styles for nodes affected by state rules (for future reset)
+                    if is_state_rule {
+                        if !self.base_styles.contains_key(&node_id) {
+                            if let Some(render_node) = self.render_nodes.get(&node_id) {
+                                self.base_styles.insert(node_id, render_node.props.clone());
+                            }
+                        }
+                        self.complex_state_affected.insert(node_id);
+                    }
+
+                    // Check for transition support — look in both ID-based and class-based rules
+                    let transition_set = {
+                        // First try by element ID
+                        let by_id = self.element_registry.get_id(node_id).and_then(|eid| {
+                            stylesheet.get(&eid).and_then(|s| s.transition.clone())
+                        });
+                        // If not found, check if any matching base complex rule has a transition
+                        by_id.or_else(|| {
+                            complex_rules.iter().find_map(|(sel, sty)| {
+                                if !sel.has_state()
+                                    && self.complex_selector_matches(
+                                        sel,
+                                        node_id,
+                                        &hovered_nodes,
+                                        &pressed_nodes,
+                                        focused_node,
+                                    )
+                                {
+                                    sty.transition.clone()
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                    };
+
+                    // Snapshot for transition detection (visual + layout)
+                    // For prev_affected nodes, use the pre-reset snapshot so that
+                    // "still hovering after transition completed" sees before==after
+                    let before_kp = if transition_set.is_some() {
+                        pre_reset_snapshots
+                            .get(&node_id)
+                            .cloned()
+                            .or_else(|| self.snapshot_before_keyframe_properties(node_id))
+                    } else {
+                        None
+                    };
+
+                    if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                        Self::apply_element_style_to_props(&mut render_node.props, style);
+                        any_applied = true;
+                    }
+                    // Apply layout changes from complex selector styles
+                    if style.has_layout_props() {
+                        if let Some(mut taffy_style) = self.layout_tree.get_style(node_id) {
+                            Self::apply_element_style_to_taffy(&mut taffy_style, style);
+                            self.layout_tree.set_style(node_id, taffy_style);
+                        }
+                    }
+
+                    // Detect transitions (visual + layout)
+                    if let (Some(before_kp), Some(transition_set)) = (before_kp, transition_set) {
+                        if let Some(after_kp) = self.snapshot_keyframe_properties(node_id) {
+                            self.detect_and_start_transitions(
+                                node_id,
+                                &before_kp,
+                                &after_kp,
+                                &transition_set,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Detect reverse transitions for nodes that WERE state-affected but
+        // are no longer matched (e.g. mouse left a :hover element).  These nodes
+        // were reset to base above but the transition detection inside the main
+        // loop only runs for *matching* rules, so we handle the leave case here.
+        for &node_id in &prev_affected {
+            if self.complex_state_affected.contains(&node_id) {
+                continue; // still matched — already handled above
+            }
+            // Look up transition set for this node
+            let transition_set = {
+                let by_id = self
+                    .element_registry
+                    .get_id(node_id)
+                    .and_then(|eid| stylesheet.get(&eid).and_then(|s| s.transition.clone()));
+                by_id.or_else(|| {
+                    complex_rules.iter().find_map(|(sel, sty)| {
+                        if !sel.has_state()
+                            && self.complex_selector_matches(
+                                sel,
+                                node_id,
+                                &hovered_nodes,
+                                &pressed_nodes,
+                                focused_node,
+                            )
+                        {
+                            sty.transition.clone()
+                        } else {
+                            None
+                        }
+                    })
+                })
+            };
+            if let Some(transition_set) = transition_set {
+                if let Some(before_kp) = pre_reset_snapshots.get(&node_id) {
+                    if let Some(after_kp) = self.snapshot_keyframe_properties(node_id) {
+                        self.detect_and_start_transitions(
+                            node_id,
+                            before_kp,
+                            &after_kp,
+                            &transition_set,
+                        );
+                    }
+                }
+            }
+        }
+
+        any_applied
     }
 
     // =========================================================================
@@ -4554,7 +5757,7 @@ impl RenderTree {
 
         // Resolve the full keyframe animation
         if let Some(animation) = stylesheet.resolve_keyframe_animation(&element_id) {
-            self.css_animations.insert(
+            self.css_anim_store.lock().unwrap().animations.insert(
                 node_id,
                 crate::render_state::ActiveCssAnimation::new(animation),
             );
@@ -4587,7 +5790,7 @@ impl RenderTree {
         if let Some(animation) =
             stylesheet.resolve_keyframe_animation_with_state(&element_id, state)
         {
-            self.css_animations.insert(
+            self.css_anim_store.lock().unwrap().animations.insert(
                 node_id,
                 crate::render_state::ActiveCssAnimation::new(animation),
             );
@@ -4597,37 +5800,12 @@ impl RenderTree {
         false
     }
 
-    /// Tick all active CSS animations
-    ///
-    /// Call this once per frame with the delta time in milliseconds.
-    /// Returns true if any animations are still playing.
-    pub fn tick_css_animations(&mut self, dt_ms: f32) -> bool {
-        let mut any_playing = false;
-        let mut completed = Vec::new();
-
-        for (node_id, active_anim) in &mut self.css_animations {
-            if active_anim.tick(dt_ms) {
-                any_playing = true;
-            } else {
-                completed.push(*node_id);
-            }
-        }
-
-        // Remove completed animations (respecting fill_mode is handled by ActiveCssAnimation)
-        for node_id in completed {
-            // Keep the animation if fill_mode is Forwards or Both (to hold final values)
-            // For now, we keep all completed animations for their final values
-            // A future optimization could check fill_mode and remove None/Backwards
-        }
-
-        any_playing
-    }
-
     /// Apply current CSS animation values to a node's render props
     ///
     /// Call this during rendering to apply animated values.
     pub fn apply_css_animation_to_props(&self, node_id: LayoutNodeId, props: &mut RenderProps) {
-        if let Some(active_anim) = self.css_animations.get(&node_id) {
+        let store = self.css_anim_store.lock().unwrap();
+        if let Some(active_anim) = store.animations.get(&node_id) {
             let anim_props = &active_anim.current_properties;
 
             // Apply animated opacity
@@ -4680,15 +5858,19 @@ impl RenderTree {
     pub fn get_css_animation_properties(
         &self,
         node_id: LayoutNodeId,
-    ) -> Option<&blinc_animation::KeyframeProperties> {
-        self.css_animations
+    ) -> Option<blinc_animation::KeyframeProperties> {
+        let store = self.css_anim_store.lock().unwrap();
+        store
+            .animations
             .get(&node_id)
-            .map(|a| &a.current_properties)
+            .map(|a| a.current_properties.clone())
     }
 
     /// Check if a node has an active CSS animation
     pub fn has_css_animation(&self, node_id: LayoutNodeId) -> bool {
-        self.css_animations
+        let store = self.css_anim_store.lock().unwrap();
+        store
+            .animations
             .get(&node_id)
             .map(|a| a.is_playing)
             .unwrap_or(false)
@@ -4696,12 +5878,22 @@ impl RenderTree {
 
     /// Stop CSS animation for a node
     pub fn stop_css_animation(&mut self, node_id: LayoutNodeId) {
-        self.css_animations.remove(&node_id);
+        self.css_anim_store
+            .lock()
+            .unwrap()
+            .animations
+            .remove(&node_id);
     }
 
     /// Check if there are no active CSS animations
     pub fn css_animations_empty(&self) -> bool {
-        self.css_animations.is_empty()
+        self.css_anim_store.lock().unwrap().animations.is_empty()
+    }
+
+    /// Check if the CSS animation store has any active work (animations or transitions)
+    pub fn css_has_active(&self) -> bool {
+        let store = self.css_anim_store.lock().unwrap();
+        store.has_active_animations() || store.has_active_transitions()
     }
 
     /// Start CSS animations for all registered elements that have animations defined
@@ -4721,8 +5913,14 @@ impl RenderTree {
             .collect();
 
         for (element_id, node_id) in &registered_ids {
-            // Skip if already has an active animation
-            if self.css_animations.contains_key(node_id) {
+            // Skip if already has an active animation (lock briefly, release before calling start)
+            let already_has = self
+                .css_anim_store
+                .lock()
+                .unwrap()
+                .animations
+                .contains_key(node_id);
+            if already_has {
                 continue;
             }
             let started = self.start_css_animation_for_element(*node_id);
@@ -4739,17 +5937,374 @@ impl RenderTree {
     /// Apply all active CSS animation values to their respective render props
     ///
     /// This mutates render props in-place with current animation values (opacity, transform).
-    /// Should be called each frame after `tick_css_animations()`.
+    /// The background thread ticks animations; this reads the latest values and applies them.
     pub fn apply_all_css_animation_props(&mut self) {
-        let node_ids: Vec<LayoutNodeId> = self.css_animations.keys().copied().collect();
-        for node_id in node_ids {
+        // Collect animation data under the lock, then release before modifying render_nodes
+        let anim_data: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = {
+            let store = self.css_anim_store.lock().unwrap();
+            store
+                .animations
+                .iter()
+                .map(|(nid, a)| (*nid, a.current_properties.clone()))
+                .collect()
+        };
+        for (node_id, anim_props) in anim_data {
             if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
-                // Clone animation data to avoid double borrow
-                if let Some(active_anim) = self.css_animations.get(&node_id) {
-                    let anim_props = active_anim.current_properties.clone();
-                    Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
+                Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
+            }
+        }
+    }
+
+    /// Apply animated layout properties from CSS animations/transitions to taffy styles
+    ///
+    /// Returns true if any layout properties were modified (requiring layout recomputation).
+    pub fn apply_animated_layout_props(&mut self) -> bool {
+        use taffy::prelude::*;
+        let mut needs_layout = false;
+
+        // Collect all nodes with active animations or transitions that have layout properties
+        let anim_nodes: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = {
+            let store = self.css_anim_store.lock().unwrap();
+            store
+                .animations
+                .iter()
+                .map(|(nid, anim)| (*nid, anim.current_properties.clone()))
+                .chain(
+                    store
+                        .transitions
+                        .iter()
+                        .map(|(nid, anim)| (*nid, anim.current_properties.clone())),
+                )
+                .collect()
+        };
+
+        for (node_id, anim_props) in anim_nodes {
+            let has_layout_props = anim_props.width.is_some()
+                || anim_props.height.is_some()
+                || anim_props.padding.is_some()
+                || anim_props.margin.is_some()
+                || anim_props.gap.is_some()
+                || anim_props.min_width.is_some()
+                || anim_props.max_width.is_some()
+                || anim_props.min_height.is_some()
+                || anim_props.max_height.is_some()
+                || anim_props.flex_grow.is_some()
+                || anim_props.flex_shrink.is_some()
+                || anim_props.inset_top.is_some()
+                || anim_props.inset_right.is_some()
+                || anim_props.inset_bottom.is_some()
+                || anim_props.inset_left.is_some();
+
+            if !has_layout_props {
+                continue;
+            }
+
+            if let Some(mut style) = self.layout_tree.get_style(node_id) {
+                let mut changed = false;
+
+                if let Some(w) = anim_props.width {
+                    style.size.width = Dimension::Length(w);
+                    changed = true;
+                }
+                if let Some(h) = anim_props.height {
+                    style.size.height = Dimension::Length(h);
+                    changed = true;
+                }
+                if let Some(v) = anim_props.min_width {
+                    style.min_size.width = Dimension::Length(v);
+                    changed = true;
+                }
+                if let Some(v) = anim_props.max_width {
+                    style.max_size.width = Dimension::Length(v);
+                    changed = true;
+                }
+                if let Some(v) = anim_props.min_height {
+                    style.min_size.height = Dimension::Length(v);
+                    changed = true;
+                }
+                if let Some(v) = anim_props.max_height {
+                    style.max_size.height = Dimension::Length(v);
+                    changed = true;
+                }
+                if let Some([top, right, bottom, left]) = anim_props.padding {
+                    style.padding = taffy::geometry::Rect {
+                        top: LengthPercentage::Length(top),
+                        right: LengthPercentage::Length(right),
+                        bottom: LengthPercentage::Length(bottom),
+                        left: LengthPercentage::Length(left),
+                    };
+                    changed = true;
+                }
+                if let Some([top, right, bottom, left]) = anim_props.margin {
+                    style.margin = taffy::geometry::Rect {
+                        top: LengthPercentageAuto::Length(top),
+                        right: LengthPercentageAuto::Length(right),
+                        bottom: LengthPercentageAuto::Length(bottom),
+                        left: LengthPercentageAuto::Length(left),
+                    };
+                    changed = true;
+                }
+                if let Some(g) = anim_props.gap {
+                    style.gap = taffy::geometry::Size {
+                        width: LengthPercentage::Length(g),
+                        height: LengthPercentage::Length(g),
+                    };
+                    changed = true;
+                }
+                if let Some(v) = anim_props.flex_grow {
+                    style.flex_grow = v;
+                    changed = true;
+                }
+                if let Some(v) = anim_props.flex_shrink {
+                    style.flex_shrink = v;
+                    changed = true;
+                }
+                if anim_props.inset_top.is_some()
+                    || anim_props.inset_right.is_some()
+                    || anim_props.inset_bottom.is_some()
+                    || anim_props.inset_left.is_some()
+                {
+                    if let Some(v) = anim_props.inset_top {
+                        style.inset.top = LengthPercentageAuto::Length(v);
+                    }
+                    if let Some(v) = anim_props.inset_right {
+                        style.inset.right = LengthPercentageAuto::Length(v);
+                    }
+                    if let Some(v) = anim_props.inset_bottom {
+                        style.inset.bottom = LengthPercentageAuto::Length(v);
+                    }
+                    if let Some(v) = anim_props.inset_left {
+                        style.inset.left = LengthPercentageAuto::Length(v);
+                    }
+                    changed = true;
+                }
+
+                if changed {
+                    self.layout_tree.set_style(node_id, style);
+                    needs_layout = true;
                 }
             }
+        }
+
+        needs_layout
+    }
+
+    // =========================================================================
+    // CSS Transition Methods
+    // =========================================================================
+
+    /// Detect property changes and start transitions where applicable
+    ///
+    /// Compares before/after keyframe properties, finds changed properties that
+    /// have a matching `transition:` spec, and creates a 2-keyframe animation
+    /// for each transitioning property group.
+    fn detect_and_start_transitions(
+        &mut self,
+        node_id: LayoutNodeId,
+        before: &blinc_animation::KeyframeProperties,
+        after: &blinc_animation::KeyframeProperties,
+        transition_set: &crate::css_parser::CssTransitionSet,
+    ) {
+        use blinc_animation::{
+            FillMode, KeyframeProperties, MultiKeyframe, MultiKeyframeAnimation,
+        };
+
+        // Lock the shared store for the duration of this method
+        let mut store = self.css_anim_store.lock().unwrap();
+
+        // Build "from" properties: only include fields that differ AND have a transition spec
+        let mut from = KeyframeProperties::default();
+        let mut to = KeyframeProperties::default();
+        let mut has_any = false;
+        let mut duration_ms: u32 = 300;
+        let mut delay_ms: u32 = 0;
+        let mut easing = blinc_animation::Easing::EaseInOut;
+
+        // Helper macro: check if a property changed and is covered by transition
+        macro_rules! check_transition {
+            ($field:ident, $prop_name:expr) => {
+                if before.$field != after.$field {
+                    if let Some(t) = transition_set.get($prop_name) {
+                        // If a transition is already active, use current interpolated value as "from"
+                        let from_val = if let Some(active) = store.transitions.get(&node_id) {
+                            if active.current_properties.$field.is_some() {
+                                active.current_properties.$field.clone()
+                            } else {
+                                before.$field.clone()
+                            }
+                        } else {
+                            before.$field.clone()
+                        };
+                        from.$field = from_val;
+                        to.$field = after.$field.clone();
+                        duration_ms = t.duration_ms;
+                        delay_ms = t.delay_ms;
+                        easing = t.timing.to_easing();
+                        has_any = true;
+                    }
+                }
+            };
+            // Variant with an identity default — used for filter properties where
+            // None means "use default" (e.g. brightness=1.0) rather than "not set"
+            ($field:ident, $prop_name:expr, default $def:expr) => {
+                if before.$field != after.$field {
+                    if let Some(t) = transition_set.get($prop_name) {
+                        let from_val = if let Some(active) = store.transitions.get(&node_id) {
+                            if active.current_properties.$field.is_some() {
+                                active.current_properties.$field.clone()
+                            } else {
+                                Some(before.$field.unwrap_or($def))
+                            }
+                        } else {
+                            Some(before.$field.unwrap_or($def))
+                        };
+                        from.$field = from_val;
+                        to.$field = Some(after.$field.unwrap_or($def));
+                        duration_ms = t.duration_ms;
+                        delay_ms = t.delay_ms;
+                        easing = t.timing.to_easing();
+                        has_any = true;
+                    }
+                }
+            };
+        }
+
+        check_transition!(opacity, "opacity");
+        check_transition!(background_color, "background");
+        check_transition!(gradient_start_color, "background");
+        check_transition!(gradient_end_color, "background");
+        check_transition!(gradient_angle, "background");
+        check_transition!(text_color, "color");
+        check_transition!(text_shadow_params, "text-shadow");
+        check_transition!(text_shadow_color, "text-shadow");
+        check_transition!(font_size, "font-size");
+        check_transition!(border_color, "border-color");
+        check_transition!(border_width, "border-width");
+        check_transition!(outline_color, "outline-color");
+        check_transition!(outline_width, "outline-width");
+        check_transition!(outline_offset, "outline-offset");
+        check_transition!(corner_radius, "border-radius");
+        check_transition!(shadow_params, "box-shadow");
+        check_transition!(shadow_color, "box-shadow");
+        check_transition!(clip_inset, "clip-path");
+        check_transition!(clip_circle_radius, "clip-path");
+        check_transition!(clip_ellipse_radii, "clip-path");
+        check_transition!(translate_x, "transform", default 0.0);
+        check_transition!(translate_y, "transform", default 0.0);
+        check_transition!(scale_x, "transform", default 1.0);
+        check_transition!(scale_y, "transform", default 1.0);
+        check_transition!(rotate, "transform", default 0.0);
+        check_transition!(rotate_x, "rotate-x", default 0.0);
+        check_transition!(rotate_y, "rotate-y", default 0.0);
+        check_transition!(perspective, "perspective");
+        check_transition!(depth, "depth");
+        check_transition!(translate_z, "translate-z", default 0.0);
+        check_transition!(light_intensity, "light-intensity");
+        check_transition!(ambient, "ambient");
+        check_transition!(specular, "specular");
+        check_transition!(light_direction, "light-direction");
+        check_transition!(filter_grayscale, "filter", default 0.0);
+        check_transition!(filter_invert, "filter", default 0.0);
+        check_transition!(filter_sepia, "filter", default 0.0);
+        check_transition!(filter_brightness, "filter", default 1.0);
+        check_transition!(filter_contrast, "filter", default 1.0);
+        check_transition!(filter_saturate, "filter", default 1.0);
+        check_transition!(filter_hue_rotate, "filter", default 0.0);
+        check_transition!(filter_blur, "filter", default 0.0);
+
+        // Layout properties (require layout recomputation when transitioning)
+        check_transition!(width, "width");
+        check_transition!(height, "height");
+        check_transition!(padding, "padding");
+        check_transition!(margin, "margin");
+        check_transition!(gap, "gap");
+        check_transition!(min_width, "min-width");
+        check_transition!(max_width, "max-width");
+        check_transition!(min_height, "min-height");
+        check_transition!(max_height, "max-height");
+        check_transition!(flex_grow, "flex-grow");
+        check_transition!(flex_shrink, "flex-shrink");
+        check_transition!(inset_top, "top");
+        check_transition!(inset_right, "right");
+        check_transition!(inset_bottom, "bottom");
+        check_transition!(inset_left, "left");
+        check_transition!(z_index, "z-index");
+        check_transition!(skew_x, "transform", default 0.0);
+        check_transition!(skew_y, "transform", default 0.0);
+        check_transition!(transform_origin, "transform-origin");
+
+        if has_any && duration_ms > 0 {
+            // If a transition already exists heading to the same target, let it continue
+            // rather than restarting with a fresh duration each frame
+            if let Some(existing) = store.transitions.get(&node_id) {
+                if let Some(last_kf) = existing.animation.last_keyframe() {
+                    if last_kf.properties == to {
+                        return; // Same target — let existing transition finish
+                    }
+                }
+            }
+            let anim = MultiKeyframeAnimation::new(duration_ms)
+                .keyframe(0.0, from, easing)
+                .keyframe(1.0, to, easing)
+                .delay(delay_ms)
+                .fill_mode(FillMode::Forwards);
+            store
+                .transitions
+                .insert(node_id, crate::render_state::ActiveCssAnimation::new(anim));
+        }
+    }
+
+    /// Apply all active CSS transition values to their respective render props
+    ///
+    /// The background thread ticks transitions; this reads the latest values and applies them.
+    pub fn apply_all_css_transition_props(&mut self) {
+        // Collect transition data under the lock, then release before modifying render_nodes
+        let trans_data: Vec<(LayoutNodeId, blinc_animation::KeyframeProperties)> = {
+            let store = self.css_anim_store.lock().unwrap();
+            store
+                .transitions
+                .iter()
+                .map(|(nid, a)| (*nid, a.current_properties.clone()))
+                .collect()
+        };
+        for (node_id, anim_props) in trans_data {
+            if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
+            }
+        }
+    }
+
+    /// Check if there are no active CSS transitions
+    pub fn css_transitions_empty(&self) -> bool {
+        self.css_anim_store.lock().unwrap().transitions.is_empty()
+    }
+
+    /// Rebuild gradient stops, interpolating the first and last stop colors
+    /// while preserving the positions of any intermediate stops.
+    fn rebuild_two_stop_gradient(
+        existing_stops: &[blinc_core::GradientStop],
+        start_color: blinc_core::Color,
+        end_color: blinc_core::Color,
+    ) -> Vec<blinc_core::GradientStop> {
+        if existing_stops.len() <= 2 {
+            vec![
+                blinc_core::GradientStop::new(0.0, start_color),
+                blinc_core::GradientStop::new(1.0, end_color),
+            ]
+        } else {
+            // Keep intermediate stops but lerp their colors proportionally
+            let mut new_stops = Vec::with_capacity(existing_stops.len());
+            for stop in existing_stops {
+                let t = stop.offset;
+                let c = blinc_core::Color::rgba(
+                    start_color.r + (end_color.r - start_color.r) * t,
+                    start_color.g + (end_color.g - start_color.g) * t,
+                    start_color.b + (end_color.b - start_color.b) * t,
+                    start_color.a + (end_color.a - start_color.a) * t,
+                );
+                new_stops.push(blinc_core::GradientStop::new(stop.offset, c));
+            }
+            new_stops
         }
     }
 
@@ -4766,7 +6321,9 @@ impl RenderTree {
             || anim_props.translate_y.is_some()
             || anim_props.scale_x.is_some()
             || anim_props.scale_y.is_some()
-            || anim_props.rotate.is_some();
+            || anim_props.rotate.is_some()
+            || anim_props.skew_x.is_some()
+            || anim_props.skew_y.is_some();
 
         if has_transform {
             use blinc_core::{Affine2D, Transform};
@@ -4783,6 +6340,14 @@ impl RenderTree {
 
             if let Some(rotate) = anim_props.rotate {
                 affine = affine.then(&Affine2D::rotation(rotate.to_radians()));
+            }
+
+            // Skew
+            if let Some(skx) = anim_props.skew_x {
+                affine = affine.then(&Affine2D::skew_x(skx.to_radians()));
+            }
+            if let Some(sky) = anim_props.skew_y {
+                affine = affine.then(&Affine2D::skew_y(sky.to_radians()));
             }
 
             if let (Some(tx), Some(ty)) = (anim_props.translate_x, anim_props.translate_y) {
@@ -4815,6 +6380,487 @@ impl RenderTree {
         if let Some(b) = anim_props.blend_3d {
             props.blend_3d = Some(b);
         }
+
+        // Clip-path animation
+        if let Some(inset) = &anim_props.clip_inset {
+            use blinc_core::{ClipLength, ClipPath};
+            props.clip_path = Some(ClipPath::Inset {
+                top: ClipLength::Percent(inset[0]),
+                right: ClipLength::Percent(inset[1]),
+                bottom: ClipLength::Percent(inset[2]),
+                left: ClipLength::Percent(inset[3]),
+                round: None,
+            });
+        }
+        if let Some(r) = anim_props.clip_circle_radius {
+            use blinc_core::{ClipLength, ClipPath};
+            props.clip_path = Some(ClipPath::Circle {
+                radius: Some(ClipLength::Percent(r)),
+                center: (ClipLength::Percent(50.0), ClipLength::Percent(50.0)),
+            });
+        }
+        if let Some(radii) = &anim_props.clip_ellipse_radii {
+            use blinc_core::{ClipLength, ClipPath};
+            props.clip_path = Some(ClipPath::Ellipse {
+                rx: Some(ClipLength::Percent(radii[0])),
+                ry: Some(ClipLength::Percent(radii[1])),
+                center: (ClipLength::Percent(50.0), ClipLength::Percent(50.0)),
+            });
+        }
+
+        // Background color (solid)
+        if let Some([r, g, b, a]) = anim_props.background_color {
+            props.background = Some(blinc_core::Brush::Solid(blinc_core::Color::rgba(
+                r, g, b, a,
+            )));
+        }
+
+        // Gradient color stops animation
+        if anim_props.gradient_start_color.is_some() || anim_props.gradient_end_color.is_some() {
+            // Derive fallback colors from existing gradient stops to avoid
+            // flashing to black/white when only one color is in the transition
+            let (existing_start, existing_end) = match &props.background {
+                Some(blinc_core::Brush::Gradient(g)) => {
+                    let stops = g.stops();
+                    let s = stops
+                        .first()
+                        .map(|s| [s.color.r, s.color.g, s.color.b, s.color.a]);
+                    let e = stops
+                        .last()
+                        .map(|s| [s.color.r, s.color.g, s.color.b, s.color.a]);
+                    (
+                        s.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                        e.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                    )
+                }
+                _ => ([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]),
+            };
+            let start_color = anim_props.gradient_start_color.unwrap_or(existing_start);
+            let end_color = anim_props.gradient_end_color.unwrap_or(existing_end);
+            let sc = blinc_core::Color::rgba(
+                start_color[0],
+                start_color[1],
+                start_color[2],
+                start_color[3],
+            );
+            let ec =
+                blinc_core::Color::rgba(end_color[0], end_color[1], end_color[2], end_color[3]);
+
+            // Reconstruct gradient preserving the existing type if possible
+            match &props.background {
+                Some(blinc_core::Brush::Gradient(existing)) => {
+                    let new_gradient = match existing {
+                        blinc_core::Gradient::Linear {
+                            start,
+                            end,
+                            stops,
+                            space,
+                            spread,
+                        } => {
+                            let (start_pt, end_pt) = if let Some(angle) = anim_props.gradient_angle
+                            {
+                                crate::css_parser::angle_to_gradient_points(angle)
+                            } else {
+                                (*start, *end)
+                            };
+                            let new_stops = Self::rebuild_two_stop_gradient(stops, sc, ec);
+                            blinc_core::Gradient::Linear {
+                                start: start_pt,
+                                end: end_pt,
+                                stops: new_stops,
+                                space: *space,
+                                spread: *spread,
+                            }
+                        }
+                        blinc_core::Gradient::Radial {
+                            center,
+                            radius,
+                            focal,
+                            stops,
+                            space,
+                            spread,
+                        } => {
+                            let new_stops = Self::rebuild_two_stop_gradient(stops, sc, ec);
+                            blinc_core::Gradient::Radial {
+                                center: *center,
+                                radius: *radius,
+                                focal: *focal,
+                                stops: new_stops,
+                                space: *space,
+                                spread: *spread,
+                            }
+                        }
+                        blinc_core::Gradient::Conic {
+                            center,
+                            start_angle,
+                            stops,
+                            space,
+                        } => {
+                            let new_stops = Self::rebuild_two_stop_gradient(stops, sc, ec);
+                            blinc_core::Gradient::Conic {
+                                center: *center,
+                                start_angle: *start_angle,
+                                stops: new_stops,
+                                space: *space,
+                            }
+                        }
+                    };
+                    props.background = Some(blinc_core::Brush::Gradient(new_gradient));
+                }
+                _ => {
+                    // No existing gradient — create a linear from the animated angle
+                    let angle = anim_props.gradient_angle.unwrap_or(180.0);
+                    let (start_pt, end_pt) = crate::css_parser::angle_to_gradient_points(angle);
+                    props.background =
+                        Some(blinc_core::Brush::Gradient(blinc_core::Gradient::Linear {
+                            start: start_pt,
+                            end: end_pt,
+                            stops: vec![
+                                blinc_core::GradientStop::new(0.0, sc),
+                                blinc_core::GradientStop::new(1.0, ec),
+                            ],
+                            space: blinc_core::GradientSpace::ObjectBoundingBox,
+                            spread: blinc_core::GradientSpread::Pad,
+                        }));
+                }
+            }
+        }
+
+        // Text color
+        if let Some(tc) = anim_props.text_color {
+            props.text_color = Some(tc);
+        }
+
+        // Text shadow
+        if let Some([ox, oy, blur, spread]) = anim_props.text_shadow_params {
+            let color = anim_props
+                .text_shadow_color
+                .map(|[r, g, b, a]| blinc_core::Color::rgba(r, g, b, a))
+                .or_else(|| props.text_shadow.as_ref().map(|s| s.color))
+                .unwrap_or(blinc_core::Color::rgba(0.0, 0.0, 0.0, 0.5));
+            props.text_shadow = Some(Shadow {
+                offset_x: ox,
+                offset_y: oy,
+                blur,
+                spread,
+                color,
+            });
+        } else if let Some([r, g, b, a]) = anim_props.text_shadow_color {
+            if let Some(ts) = &mut props.text_shadow {
+                ts.color = blinc_core::Color::rgba(r, g, b, a);
+            }
+        }
+
+        // Font size
+        if let Some(fs) = anim_props.font_size {
+            props.font_size = Some(fs);
+        }
+
+        // Corner radius
+        if let Some([tl, tr, br, bl]) = anim_props.corner_radius {
+            props.border_radius = blinc_core::CornerRadius {
+                top_left: tl,
+                top_right: tr,
+                bottom_right: br,
+                bottom_left: bl,
+            };
+        }
+
+        // Border
+        if let Some(bw) = anim_props.border_width {
+            props.border_width = bw;
+        }
+        if let Some([r, g, b, a]) = anim_props.border_color {
+            props.border_color = Some(blinc_core::Color::rgba(r, g, b, a));
+        }
+
+        // Outline
+        if let Some(ow) = anim_props.outline_width {
+            props.outline_width = ow;
+        }
+        if let Some([r, g, b, a]) = anim_props.outline_color {
+            props.outline_color = Some(blinc_core::Color::rgba(r, g, b, a));
+        }
+        if let Some(offset) = anim_props.outline_offset {
+            props.outline_offset = offset;
+        }
+
+        // Shadow
+        if let Some([ox, oy, blur, spread]) = anim_props.shadow_params {
+            let color = if let Some([r, g, b, a]) = anim_props.shadow_color {
+                blinc_core::Color::rgba(r, g, b, a)
+            } else if let Some(ref existing) = props.shadow {
+                existing.color
+            } else {
+                blinc_core::Color::rgba(0.0, 0.0, 0.0, 0.5)
+            };
+            props.shadow = Some(blinc_core::Shadow {
+                offset_x: ox,
+                offset_y: oy,
+                blur,
+                spread,
+                color,
+            });
+        } else if let Some([r, g, b, a]) = anim_props.shadow_color {
+            if let Some(ref mut shadow) = props.shadow {
+                shadow.color = blinc_core::Color::rgba(r, g, b, a);
+            }
+        }
+
+        // 3D lighting
+        if let Some(li) = anim_props.light_intensity {
+            props.light_intensity = Some(li);
+        }
+        if let Some(a) = anim_props.ambient {
+            props.ambient = Some(a);
+        }
+        if let Some(s) = anim_props.specular {
+            props.specular = Some(s);
+        }
+        if let Some(ld) = anim_props.light_direction {
+            props.light_direction = Some(ld);
+        }
+
+        // CSS filter properties
+        let has_filter = anim_props.filter_grayscale.is_some()
+            || anim_props.filter_invert.is_some()
+            || anim_props.filter_sepia.is_some()
+            || anim_props.filter_brightness.is_some()
+            || anim_props.filter_contrast.is_some()
+            || anim_props.filter_saturate.is_some()
+            || anim_props.filter_hue_rotate.is_some()
+            || anim_props.filter_blur.is_some();
+        if has_filter {
+            let existing = props.filter.unwrap_or_default();
+            let blur = anim_props.filter_blur.unwrap_or(existing.blur);
+            props.filter = Some(crate::element_style::CssFilter {
+                grayscale: anim_props.filter_grayscale.unwrap_or(existing.grayscale),
+                invert: anim_props.filter_invert.unwrap_or(existing.invert),
+                sepia: anim_props.filter_sepia.unwrap_or(existing.sepia),
+                hue_rotate: anim_props.filter_hue_rotate.unwrap_or(existing.hue_rotate),
+                brightness: anim_props.filter_brightness.unwrap_or(existing.brightness),
+                contrast: anim_props.filter_contrast.unwrap_or(existing.contrast),
+                saturate: anim_props.filter_saturate.unwrap_or(existing.saturate),
+                blur,
+                drop_shadow: existing.drop_shadow,
+            });
+            // Update LayerEffect for blur
+            if blur > 0.0 {
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::Blur { .. }));
+                props.layer_effects.push(LayerEffect::Blur {
+                    radius: blur,
+                    quality: BlurQuality::Medium,
+                });
+            } else {
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::Blur { .. }));
+            }
+        }
+
+        // z-index (round from f32 to i32)
+        if let Some(z) = anim_props.z_index {
+            props.z_index = z.round() as i32;
+        }
+
+        // Transform origin
+        if let Some(to) = anim_props.transform_origin {
+            props.transform_origin = Some(to);
+        }
+    }
+
+    /// Extract animatable properties from RenderProps into KeyframeProperties
+    ///
+    /// This is the reverse of `apply_keyframe_props_to_render()` — used to snapshot
+    /// the current visual state before/after a state change for transition detection.
+    fn render_props_to_keyframe_properties(
+        props: &RenderProps,
+    ) -> blinc_animation::KeyframeProperties {
+        use blinc_animation::KeyframeProperties;
+
+        let mut kp = KeyframeProperties {
+            opacity: Some(props.opacity),
+            ..Default::default()
+        };
+
+        // Extract transform components via QR decomposition
+        // Decomposes the 2x2 portion [a,c; b,d] into scale, rotation, and skew.
+        if let Some(blinc_core::Transform::Affine2D(affine)) = &props.transform {
+            let [a, b, c, d, tx, ty] = affine.elements;
+            kp.translate_x = Some(tx);
+            kp.translate_y = Some(ty);
+
+            // QR decomposition of the 2x2 matrix:
+            // Step 1: scale_x = length of first column
+            let scale_x = (a * a + b * b).sqrt().max(1e-6);
+            // Step 2: rotation from normalized first column
+            let rotation = b.atan2(a);
+            kp.rotate = Some(rotation.to_degrees());
+            // Step 3: XY shear = dot(normalized_col0, col1)
+            let skew_xy = (a * c + b * d) / (scale_x * scale_x);
+            // Step 4: scale_y = det / scale_x (preserves sign)
+            let det = a * d - b * c;
+            let scale_y = det / scale_x;
+
+            kp.scale_x = Some(scale_x);
+            kp.scale_y = Some(scale_y);
+
+            // Only set skew if non-trivial
+            if skew_xy.abs() > 0.0001 {
+                kp.skew_x = Some(skew_xy.atan().to_degrees());
+            }
+        } else {
+            kp.translate_x = Some(0.0);
+            kp.translate_y = Some(0.0);
+            kp.scale_x = Some(1.0);
+            kp.scale_y = Some(1.0);
+            kp.rotate = Some(0.0);
+        }
+
+        // 3D
+        kp.rotate_x = props.rotate_x;
+        kp.rotate_y = props.rotate_y;
+        kp.perspective = props.perspective;
+        kp.depth = props.depth;
+        kp.translate_z = props.translate_z;
+        kp.blend_3d = props.blend_3d;
+
+        // Clip-path
+        match &props.clip_path {
+            Some(blinc_core::ClipPath::Inset {
+                top,
+                right,
+                bottom,
+                left,
+                ..
+            }) => {
+                kp.clip_inset = Some([
+                    Self::clip_length_to_percent(top),
+                    Self::clip_length_to_percent(right),
+                    Self::clip_length_to_percent(bottom),
+                    Self::clip_length_to_percent(left),
+                ]);
+            }
+            Some(blinc_core::ClipPath::Circle {
+                radius: Some(r), ..
+            }) => {
+                kp.clip_circle_radius = Some(Self::clip_length_to_percent(r));
+            }
+            Some(blinc_core::ClipPath::Ellipse {
+                rx: Some(rx),
+                ry: Some(ry),
+                ..
+            }) => {
+                kp.clip_ellipse_radii = Some([
+                    Self::clip_length_to_percent(rx),
+                    Self::clip_length_to_percent(ry),
+                ]);
+            }
+            _ => {}
+        }
+
+        // Background color (solid or gradient)
+        match &props.background {
+            Some(blinc_core::Brush::Solid(c)) => {
+                kp.background_color = Some([c.r, c.g, c.b, c.a]);
+            }
+            Some(blinc_core::Brush::Gradient(gradient)) => {
+                let stops = gradient.stops();
+                if let Some(first) = stops.first() {
+                    kp.gradient_start_color =
+                        Some([first.color.r, first.color.g, first.color.b, first.color.a]);
+                }
+                if let Some(last) = stops.last() {
+                    kp.gradient_end_color =
+                        Some([last.color.r, last.color.g, last.color.b, last.color.a]);
+                }
+                if let blinc_core::Gradient::Linear { start, end, .. } = gradient {
+                    kp.gradient_angle =
+                        Some(crate::css_parser::gradient_points_to_angle(*start, *end));
+                }
+            }
+            _ => {}
+        }
+
+        // Text color
+        if let Some(tc) = &props.text_color {
+            kp.text_color = Some(*tc);
+        }
+
+        // Text shadow
+        if let Some(ts) = &props.text_shadow {
+            kp.text_shadow_params = Some([ts.offset_x, ts.offset_y, ts.blur, ts.spread]);
+            kp.text_shadow_color = Some([ts.color.r, ts.color.g, ts.color.b, ts.color.a]);
+        }
+
+        // Font size
+        kp.font_size = props.font_size;
+
+        // Corner radius
+        let cr = &props.border_radius;
+        kp.corner_radius = Some([cr.top_left, cr.top_right, cr.bottom_right, cr.bottom_left]);
+
+        // Border
+        kp.border_width = Some(props.border_width);
+        if let Some(bc) = &props.border_color {
+            kp.border_color = Some([bc.r, bc.g, bc.b, bc.a]);
+        }
+
+        // Outline
+        kp.outline_width = Some(props.outline_width);
+        if let Some(oc) = &props.outline_color {
+            kp.outline_color = Some([oc.r, oc.g, oc.b, oc.a]);
+        }
+        kp.outline_offset = Some(props.outline_offset);
+
+        // Shadow
+        if let Some(shadow) = &props.shadow {
+            kp.shadow_params = Some([shadow.offset_x, shadow.offset_y, shadow.blur, shadow.spread]);
+            kp.shadow_color = Some([
+                shadow.color.r,
+                shadow.color.g,
+                shadow.color.b,
+                shadow.color.a,
+            ]);
+        }
+
+        // 3D lighting
+        kp.light_intensity = props.light_intensity;
+        kp.ambient = props.ambient;
+        kp.specular = props.specular;
+        kp.light_direction = props.light_direction;
+
+        // CSS filter properties
+        if let Some(f) = &props.filter {
+            kp.filter_grayscale = Some(f.grayscale);
+            kp.filter_invert = Some(f.invert);
+            kp.filter_sepia = Some(f.sepia);
+            kp.filter_brightness = Some(f.brightness);
+            kp.filter_contrast = Some(f.contrast);
+            kp.filter_saturate = Some(f.saturate);
+            kp.filter_hue_rotate = Some(f.hue_rotate);
+            kp.filter_blur = Some(f.blur);
+        }
+
+        // z-index (as f32 for smooth interpolation)
+        if props.z_index != 0 {
+            kp.z_index = Some(props.z_index as f32);
+        }
+
+        // Transform origin
+        kp.transform_origin = props.transform_origin;
+
+        kp
+    }
+
+    /// Helper: convert ClipLength to percent value
+    fn clip_length_to_percent(len: &blinc_core::ClipLength) -> f32 {
+        match len {
+            blinc_core::ClipLength::Percent(p) => *p,
+            blinc_core::ClipLength::Px(px) => *px,
+        }
     }
 
     /// Apply base stylesheet styles to all registered elements
@@ -4838,10 +6884,37 @@ impl RenderTree {
             .filter_map(|id| self.element_registry.get(&id).map(|node_id| (id, node_id)))
             .collect();
 
-        for (element_id, node_id) in registered_ids {
-            if let Some(base_style) = stylesheet.get(&element_id) {
-                if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+        for (element_id, node_id) in &registered_ids {
+            if let Some(base_style) = stylesheet.get(element_id) {
+                if let Some(render_node) = self.render_nodes.get_mut(node_id) {
                     Self::apply_element_style_to_props(&mut render_node.props, base_style);
+                }
+            }
+        }
+
+        // Apply complex base rules (non-state selectors like .class, structural pseudos)
+        // Must iterate ALL render nodes (not just those with IDs) since .class selectors
+        // can match elements without explicit IDs.
+        let complex_rules = stylesheet.complex_rules();
+        if !complex_rules.is_empty() {
+            let all_node_ids: Vec<LayoutNodeId> = self.render_nodes.keys().copied().collect();
+
+            // For base styles, no interaction state is active
+            let empty_set = std::collections::HashSet::new();
+
+            for (selector, style) in complex_rules {
+                // Skip selectors that require state — they'll be applied in apply_stylesheet_state_styles
+                if selector.has_state() {
+                    continue;
+                }
+                for &node_id in &all_node_ids {
+                    if self
+                        .complex_selector_matches(selector, node_id, &empty_set, &empty_set, None)
+                    {
+                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                            Self::apply_element_style_to_props(&mut render_node.props, style);
+                        }
+                    }
                 }
             }
         }
@@ -4900,6 +6973,41 @@ impl RenderTree {
                     focused
                 );
             }
+
+            // Trigger/stop hover CSS animations
+            let stylesheet = self.stylesheet.as_ref().unwrap();
+            if hovered && !self.hover_css_animations.contains(&node_id) {
+                let has_hover_anim = stylesheet
+                    .get_with_state(&element_id, ElementState::Hover)
+                    .and_then(|s| s.animation.as_ref())
+                    .is_some();
+                if has_hover_anim {
+                    self.start_css_animation_for_state(node_id, ElementState::Hover);
+                    self.hover_css_animations.insert(node_id);
+                    any_applied = true;
+                }
+            } else if !hovered && self.hover_css_animations.remove(&node_id) {
+                // Hover left — remove hover animation if no base animation exists
+                let base_has_anim = stylesheet
+                    .get(&element_id)
+                    .and_then(|s| s.animation.as_ref())
+                    .is_some();
+                if base_has_anim {
+                    self.start_css_animation_for_element(node_id);
+                } else {
+                    self.css_anim_store
+                        .lock()
+                        .unwrap()
+                        .animations
+                        .remove(&node_id);
+                }
+                any_applied = true;
+            }
+        }
+
+        // Apply complex selector rules (class selectors, descendant/child combinators, etc.)
+        if self.apply_complex_selector_styles(router) {
+            any_applied = true;
         }
 
         any_applied
@@ -5107,7 +7215,7 @@ impl RenderTree {
             self.motion_bindings.len()
         );
         if let Some(root) = self.root {
-            self.render_node(ctx, root, (0.0, 0.0));
+            self.render_node(ctx, root, (0.0, 0.0), (0.0, 0.0));
         }
     }
 
@@ -5117,6 +7225,7 @@ impl RenderTree {
         ctx: &mut dyn DrawContext,
         node: LayoutNodeId,
         parent_offset: (f32, f32),
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -5373,6 +7482,35 @@ impl RenderTree {
             }
         }
 
+        // Draw outline outside the border (CSS outlines don't affect layout)
+        if render_node.props.outline_width > 0.0 {
+            if let Some(ref outline_color) = render_node.props.outline_color {
+                let ow = render_node.props.outline_width;
+                let offset = render_node.props.outline_offset;
+                let expand = offset + ow / 2.0;
+                let outline_rect = Rect::new(
+                    -expand,
+                    -expand,
+                    bounds.width + expand * 2.0,
+                    bounds.height + expand * 2.0,
+                );
+                // Expand corner radius to follow the outline curve
+                let outline_radius = CornerRadius {
+                    top_left: (radius.top_left + expand).max(0.0),
+                    top_right: (radius.top_right + expand).max(0.0),
+                    bottom_right: (radius.bottom_right + expand).max(0.0),
+                    bottom_left: (radius.bottom_left + expand).max(0.0),
+                };
+                let stroke = Stroke::new(ow);
+                ctx.stroke_rect(
+                    outline_rect,
+                    outline_radius,
+                    &stroke,
+                    Brush::Solid(*outline_color),
+                );
+            }
+        }
+
         // Push clip if this element clips its children (e.g., scroll containers)
         // Clip to content area (inset by border width so children don't render over border)
         // This matches CSS overflow:hidden behavior which clips to the padding box
@@ -5436,8 +7574,54 @@ impl RenderTree {
         }
 
         // Render children (relative to this node's transform + scroll offset)
+        // Reset cumulative scroll when entering a scroll container.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
         for child_id in self.layout_tree.children(node) {
-            self.render_node(ctx, child_id, (0.0, 0.0));
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let has_counter = child_is_fixed
+                && (new_cumulative.0.abs() > 0.001 || new_cumulative.1.abs() > 0.001);
+            if has_counter {
+                ctx.push_transform(Transform::translate(-new_cumulative.0, -new_cumulative.1));
+            }
+
+            // Sticky: compute corrective offset when element would scroll past threshold
+            let mut has_sticky_correction = false;
+            if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.get_render_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            ctx.push_transform(Transform::translate(0.0, correction));
+                            has_sticky_correction = true;
+                        }
+                    }
+                }
+            }
+
+            let child_cum = if child_is_fixed {
+                (0.0, 0.0)
+            } else {
+                new_cumulative
+            };
+            self.render_node(ctx, child_id, (0.0, 0.0), child_cum);
+            if has_sticky_correction {
+                ctx.pop_transform();
+            }
+            if has_counter {
+                ctx.pop_transform();
+            }
         }
 
         // Pop scroll transform if we pushed one
@@ -5518,16 +7702,40 @@ impl RenderTree {
         if let Some(root) = self.root {
             // Pass 1: Background (excludes children of glass elements)
             ctx.set_foreground_layer(false);
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Background, false, false);
+            self.render_layer(
+                ctx,
+                root,
+                (0.0, 0.0),
+                RenderLayer::Background,
+                false,
+                false,
+                (0.0, 0.0),
+            );
 
             // Pass 2: Glass - these render as Brush::Glass which becomes glass primitives
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Glass, false, false);
+            self.render_layer(
+                ctx,
+                root,
+                (0.0, 0.0),
+                RenderLayer::Glass,
+                false,
+                false,
+                (0.0, 0.0),
+            );
 
             // Pass 3: Foreground (includes children of glass elements, rendered after glass)
             // This pass ordering is an invariant for canvas image command replay:
             // background image draws must be recorded before foreground image draws.
             ctx.set_foreground_layer(true);
-            self.render_layer(ctx, root, (0.0, 0.0), RenderLayer::Foreground, false, false);
+            self.render_layer(
+                ctx,
+                root,
+                (0.0, 0.0),
+                RenderLayer::Foreground,
+                false,
+                false,
+                (0.0, 0.0),
+            );
             ctx.set_foreground_layer(false);
         }
     }
@@ -5560,6 +7768,7 @@ impl RenderTree {
                 false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
+                (0.0, 0.0),
             );
 
             // Pass 2: Glass (primitives go to glass batch)
@@ -5572,6 +7781,7 @@ impl RenderTree {
                 false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
+                (0.0, 0.0),
             );
 
             // Pass 3: Foreground (primitives go to foreground batch, rendered after glass)
@@ -5587,6 +7797,7 @@ impl RenderTree {
                 false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
+                (0.0, 0.0),
             );
             ctx.set_foreground_layer(false);
 
@@ -5615,6 +7826,7 @@ impl RenderTree {
         inside_foreground: bool,
         render_state: &crate::render_state::RenderState,
         inherited_opacity: f32,
+        cumulative_scroll: (f32, f32),
     ) {
         // Debug: uncomment to trace all nodes
         // eprintln!("render_layer_with_motion: visiting node {:?}, target_layer={:?}", node, target_layer);
@@ -5735,11 +7947,19 @@ impl RenderTree {
         // Apply element-specific transform if present
         let has_element_transform = render_node.props.transform.is_some();
         if let Some(ref transform) = render_node.props.transform {
-            let center_x = bounds.width / 2.0;
-            let center_y = bounds.height / 2.0;
-            ctx.push_transform(Transform::translate(center_x, center_y));
+            // Use transform-origin if set, otherwise default to center
+            let (origin_x, origin_y) =
+                if let Some([ox_pct, oy_pct]) = render_node.props.transform_origin {
+                    (
+                        bounds.width * ox_pct / 100.0,
+                        bounds.height * oy_pct / 100.0,
+                    )
+                } else {
+                    (bounds.width / 2.0, bounds.height / 2.0)
+                };
+            ctx.push_transform(Transform::translate(origin_x, origin_y));
             ctx.push_transform(transform.clone());
-            ctx.push_transform(Transform::translate(-center_x, -center_y));
+            ctx.push_transform(Transform::translate(-origin_x, -origin_y));
         }
 
         // Determine if this node is a glass element
@@ -5756,6 +7976,14 @@ impl RenderTree {
         if is_stack_layer {
             let current_z = ctx.z_layer();
             ctx.set_z_layer(current_z + 1);
+        }
+
+        // Apply CSS z-index to z_layer for stacking order
+        // Save current z_layer so we can restore it after this subtree
+        let saved_z_layer = ctx.z_layer();
+        let has_z_index = render_node.props.z_index > 0;
+        if has_z_index {
+            ctx.set_z_layer(render_node.props.z_index as u32);
         }
 
         // Determine effective layer:
@@ -5780,6 +8008,32 @@ impl RenderTree {
         let has_opacity_layer = node_motion_opacity < 1.0 || has_layer_effects;
         let should_push_layer = has_opacity_layer && effective_layer == target_layer;
         if should_push_layer {
+            // Scale layer effect radii by DPI factor (CSS px → physical px)
+            let scaled_effects: Vec<LayerEffect> = render_node
+                .props
+                .layer_effects
+                .iter()
+                .map(|e| match e {
+                    LayerEffect::Blur { radius, quality } => LayerEffect::Blur {
+                        radius: radius * self.scale_factor,
+                        quality: *quality,
+                    },
+                    LayerEffect::DropShadow {
+                        offset_x,
+                        offset_y,
+                        blur,
+                        spread,
+                        color,
+                    } => LayerEffect::DropShadow {
+                        offset_x: offset_x * self.scale_factor,
+                        offset_y: offset_y * self.scale_factor,
+                        blur: blur * self.scale_factor,
+                        spread: spread * self.scale_factor,
+                        color: *color,
+                    },
+                    other => other.clone(),
+                })
+                .collect();
             ctx.push_layer(LayerConfig {
                 id: None,
                 position: Some(blinc_core::Point::new(bounds.x, bounds.y)),
@@ -5787,7 +8041,7 @@ impl RenderTree {
                 blend_mode: BlendMode::Normal,
                 opacity: node_motion_opacity,
                 depth: false,
-                effects: render_node.props.layer_effects.clone(),
+                effects: scaled_effects,
             });
         }
 
@@ -5834,6 +8088,16 @@ impl RenderTree {
             ctx.push_clip(clip_shape);
         }
 
+        // Push clip-path if set on this element
+        let has_clip_path = render_node.props.clip_path.is_some();
+        if has_clip_path {
+            if let Some(cs) =
+                Self::resolve_clip_path(render_node.props.clip_path.as_ref().unwrap(), &bounds)
+            {
+                ctx.push_clip(cs);
+            }
+        }
+
         // Render if this node matches target layer
         // Debug: see what layers we're checking
         let is_canvas = matches!(&render_node.element_type, ElementType::Canvas(_));
@@ -5852,7 +8116,8 @@ impl RenderTree {
             || render_node.props.rotate_y.is_some()
             || render_node.props.perspective.is_some()
             || render_node.props.depth.unwrap_or(0.0) > 0.0
-            || render_node.props.translate_z.is_some();
+            || render_node.props.translate_z.is_some()
+            || render_node.props.shape_3d.is_some();
 
         if has_3d {
             let rx = render_node.props.rotate_x.unwrap_or(0.0).to_radians();
@@ -5860,7 +8125,8 @@ impl RenderTree {
             let d = render_node.props.perspective.unwrap_or(800.0);
             ctx.set_3d_transform(rx, ry, d);
 
-            if render_node.props.depth.unwrap_or(0.0) > 0.0 {
+            let is_3d_group = render_node.props.shape_3d == Some(6.0);
+            if render_node.props.depth.unwrap_or(0.0) > 0.0 || is_3d_group {
                 ctx.set_3d_shape(
                     render_node.props.shape_3d.unwrap_or(1.0),
                     render_node.props.depth.unwrap_or(0.0),
@@ -5878,6 +8144,93 @@ impl RenderTree {
 
             if let Some(tz) = render_node.props.translate_z {
                 ctx.set_3d_translate_z(tz);
+            }
+        }
+
+        // CSS filter setup
+        let has_filter = render_node.props.filter.is_some();
+        if let Some(f) = &render_node.props.filter {
+            if !f.is_identity() {
+                ctx.set_css_filter(
+                    f.grayscale,
+                    f.invert,
+                    f.sepia,
+                    f.hue_rotate,
+                    f.brightness,
+                    f.contrast,
+                    f.saturate,
+                );
+            }
+        }
+
+        // 3D Group composition: collect child shapes into compound SDF
+        // MUST happen before fill_rect so the primitive gets the group shape descriptors.
+        let is_3d_group = render_node.props.shape_3d == Some(6.0);
+        let mut group_3d_children: Vec<LayoutNodeId> = Vec::new();
+
+        if is_3d_group {
+            let mut raw_descs: Vec<[f32; 16]> = Vec::new();
+            let group_cx = bounds.x + bounds.width * 0.5;
+            let group_cy = bounds.y + bounds.height * 0.5;
+
+            for child_id in self.layout_tree.children(node) {
+                if let Some(child_node) = self.render_nodes.get(&child_id) {
+                    if let Some(child_shape) = child_node.props.shape_3d {
+                        if child_shape > 0.0 && child_shape < 6.0 {
+                            group_3d_children.push(child_id);
+                            let child_bounds = self.get_render_bounds(child_id, (0.0, 0.0));
+                            if let Some(cb) = child_bounds {
+                                let ox = cb.x + cb.width * 0.5 - group_cx;
+                                let oy = cb.y + cb.height * 0.5 - group_cy;
+                                let oz = child_node.props.translate_z.unwrap_or(0.0);
+                                let cr = child_node
+                                    .props
+                                    .border_radius
+                                    .top_left
+                                    .min(child_node.props.depth.unwrap_or(20.0) * 0.5);
+                                let child_depth = child_node.props.depth.unwrap_or(20.0);
+                                let half_w = cb.width * 0.5;
+                                let half_h = cb.height * 0.5;
+                                let half_d = child_depth * 0.5;
+                                let op_type = child_node.props.op_3d.unwrap_or(0.0);
+                                let blend = child_node.props.blend_3d.unwrap_or(0.0);
+
+                                // Get child color for per-shape coloring
+                                let color = if let Some(blinc_core::Brush::Solid(c)) =
+                                    &child_node.props.background
+                                {
+                                    [c.r, c.g, c.b, c.a]
+                                } else {
+                                    [0.8, 0.8, 0.8, 1.0]
+                                };
+
+                                // Pack as [offset(4), params(4), half_ext(4), color(4)]
+                                raw_descs.push([
+                                    ox,
+                                    oy,
+                                    oz,
+                                    cr,
+                                    child_shape,
+                                    child_depth,
+                                    op_type,
+                                    blend,
+                                    half_w,
+                                    half_h,
+                                    half_d,
+                                    0.0,
+                                    color[0],
+                                    color[1],
+                                    color[2],
+                                    color[3],
+                                ]);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !raw_descs.is_empty() {
+                ctx.set_3d_group_raw(&raw_descs);
             }
         }
 
@@ -5908,6 +8261,10 @@ impl RenderTree {
                         bg.clone()
                     };
                     ctx.fill_rect(rect, radius, brush);
+                } else if is_3d_group {
+                    // 3D group elements need a primitive even without a background —
+                    // the shader renders the compound SDF from child shape descriptors.
+                    ctx.fill_rect(rect, radius, Brush::Solid(Color::TRANSPARENT));
                 }
             }
 
@@ -6013,6 +8370,36 @@ impl RenderTree {
                 }
             }
 
+            // Draw outline outside the border
+            if render_node.props.outline_width > 0.0 {
+                if let Some(ref outline_color) = render_node.props.outline_color {
+                    let ow = render_node.props.outline_width;
+                    let offset = render_node.props.outline_offset;
+                    let expand = offset + ow / 2.0;
+                    let outline_rect = Rect::new(
+                        -expand,
+                        -expand,
+                        bounds.width + expand * 2.0,
+                        bounds.height + expand * 2.0,
+                    );
+                    let outline_radius = CornerRadius {
+                        top_left: (radius.top_left + expand).max(0.0),
+                        top_right: (radius.top_right + expand).max(0.0),
+                        bottom_right: (radius.bottom_right + expand).max(0.0),
+                        bottom_left: (radius.bottom_left + expand).max(0.0),
+                    };
+                    let stroke = Stroke::new(ow);
+                    let brush = if !has_opacity_layer && motion_opacity < 1.0 {
+                        let mut color = *outline_color;
+                        color.a *= motion_opacity;
+                        Brush::Solid(color)
+                    } else {
+                        Brush::Solid(*outline_color)
+                    };
+                    ctx.stroke_rect(outline_rect, outline_radius, &stroke, brush);
+                }
+            }
+
             // Handle canvas elements
             // Push clip to ensure canvas content respects parent bounds (e.g., scroll containers)
             if let ElementType::Canvas(canvas_data) = &render_node.element_type {
@@ -6103,81 +8490,62 @@ impl RenderTree {
             motion_opacity
         };
 
-        // 3D Group composition: collect child shapes into compound SDF
-        let is_3d_group = render_node.props.shape_3d == Some(6.0);
-        let mut group_3d_children: Vec<LayoutNodeId> = Vec::new();
-
-        if is_3d_group {
-            let mut raw_descs: Vec<[f32; 16]> = Vec::new();
-            let group_cx = bounds.x + bounds.width * 0.5;
-            let group_cy = bounds.y + bounds.height * 0.5;
-
-            for child_id in self.layout_tree.children(node) {
-                if let Some(child_node) = self.render_nodes.get(&child_id) {
-                    if let Some(child_shape) = child_node.props.shape_3d {
-                        if child_shape > 0.0 && child_shape < 6.0 {
-                            group_3d_children.push(child_id);
-                            let child_bounds = self.get_render_bounds(child_id, (0.0, 0.0));
-                            if let Some(cb) = child_bounds {
-                                let ox = cb.x + cb.width * 0.5 - group_cx;
-                                let oy = cb.y + cb.height * 0.5 - group_cy;
-                                let oz = child_node.props.translate_z.unwrap_or(0.0);
-                                let cr = child_node
-                                    .props
-                                    .border_radius
-                                    .top_left
-                                    .min(child_node.props.depth.unwrap_or(20.0) * 0.5);
-                                let child_depth = child_node.props.depth.unwrap_or(20.0);
-                                let half_w = cb.width * 0.5;
-                                let half_h = cb.height * 0.5;
-                                let half_d = child_depth * 0.5;
-                                let op_type = child_node.props.op_3d.unwrap_or(0.0);
-                                let blend = child_node.props.blend_3d.unwrap_or(0.0);
-
-                                // Get child color for per-shape coloring
-                                let color = if let Some(blinc_core::Brush::Solid(c)) =
-                                    &child_node.props.background
-                                {
-                                    [c.r, c.g, c.b, c.a]
-                                } else {
-                                    [0.8, 0.8, 0.8, 1.0]
-                                };
-
-                                // Pack as [offset(4), params(4), half_ext(4), color(4)]
-                                raw_descs.push([
-                                    ox,
-                                    oy,
-                                    oz,
-                                    cr,
-                                    child_shape,
-                                    child_depth,
-                                    op_type,
-                                    blend,
-                                    half_w,
-                                    half_h,
-                                    half_d,
-                                    0.0,
-                                    color[0],
-                                    color[1],
-                                    color[2],
-                                    color[3],
-                                ]);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if !raw_descs.is_empty() {
-                ctx.set_3d_group_raw(&raw_descs);
-            }
-        }
+        // Compute new cumulative scroll for children
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
 
         for child_id in self.layout_tree.children(node) {
             // Skip 3D children of a group node — they're composed into the group SDF
             if is_3d_group && group_3d_children.contains(&child_id) {
                 continue;
             }
+
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            // Fixed: push counter-scroll to cancel ALL accumulated scroll
+            let has_fixed_counter = child_is_fixed
+                && (new_cumulative_scroll.0.abs() > 0.001 || new_cumulative_scroll.1.abs() > 0.001);
+            if has_fixed_counter {
+                ctx.push_transform(Transform::translate(
+                    -new_cumulative_scroll.0,
+                    -new_cumulative_scroll.1,
+                ));
+            }
+
+            // Sticky: compute corrective offset when element would scroll past threshold
+            let mut has_sticky_correction = false;
+            if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.get_render_bounds(child_id, (0.0, 0.0)) {
+                        // cb.y = element's layout y relative to parent
+                        // new_cumulative_scroll.1 = total scroll from ALL ancestors
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            ctx.push_transform(Transform::translate(0.0, correction));
+                            has_sticky_correction = true;
+                        }
+                    }
+                }
+            }
+
+            let child_cumulative = if child_is_fixed {
+                (0.0, 0.0) // Fixed cancels all accumulated scroll
+            } else {
+                new_cumulative_scroll
+            };
+
             self.render_layer_with_motion(
                 ctx,
                 child_id,
@@ -6187,7 +8555,17 @@ impl RenderTree {
                 children_inside_foreground,
                 render_state,
                 child_inherited_opacity,
+                child_cumulative,
             );
+
+            // Pop sticky correction
+            if has_sticky_correction {
+                ctx.pop_transform();
+            }
+            // Pop fixed counter-scroll
+            if has_fixed_counter {
+                ctx.pop_transform();
+            }
         }
 
         // Pop children inset clip
@@ -6216,6 +8594,11 @@ impl RenderTree {
 
         // Pop clip
         if clips_content {
+            ctx.pop_clip();
+        }
+
+        // Pop clip-path
+        if has_clip_path {
             ctx.pop_clip();
         }
 
@@ -6273,6 +8656,16 @@ impl RenderTree {
             ctx.clear_3d();
         }
 
+        // Clear CSS filter transient state
+        if has_filter {
+            ctx.clear_css_filter();
+        }
+
+        // Restore z_layer after this subtree
+        if has_z_index {
+            ctx.set_z_layer(saved_z_layer);
+        }
+
         // Pop position transform
         ctx.pop_transform();
     }
@@ -6302,6 +8695,7 @@ impl RenderTree {
                 RenderLayer::Background,
                 false,
                 false,
+                (0.0, 0.0),
             );
 
             // Pass 2: Glass - render as Brush::Glass
@@ -6312,6 +8706,7 @@ impl RenderTree {
                 RenderLayer::Glass,
                 false,
                 false,
+                (0.0, 0.0),
             );
 
             // Pass 3: Foreground (includes children of glass elements)
@@ -6322,6 +8717,7 @@ impl RenderTree {
                 RenderLayer::Foreground,
                 false,
                 false,
+                (0.0, 0.0),
             );
         }
     }
@@ -6341,7 +8737,15 @@ impl RenderTree {
                 ctx.push_transform(Transform::scale(self.scale_factor, self.scale_factor));
             }
 
-            self.render_layer(ctx, root, (0.0, 0.0), target_layer, false, false);
+            self.render_layer(
+                ctx,
+                root,
+                (0.0, 0.0),
+                target_layer,
+                false,
+                false,
+                (0.0, 0.0),
+            );
 
             // Pop the DPI scale transform
             if has_scale {
@@ -6357,6 +8761,7 @@ impl RenderTree {
     ///
     /// The `inside_foreground` flag tracks whether we're descending through a foreground element.
     /// Children of foreground elements are also rendered in the foreground pass.
+    #[allow(clippy::too_many_arguments)]
     fn render_layer(
         &self,
         ctx: &mut dyn DrawContext,
@@ -6365,6 +8770,7 @@ impl RenderTree {
         target_layer: RenderLayer,
         inside_glass: bool,
         inside_foreground: bool,
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -6592,6 +8998,34 @@ impl RenderTree {
                 }
             }
 
+            // Draw outline outside the border
+            if render_node.props.outline_width > 0.0 {
+                if let Some(ref outline_color) = render_node.props.outline_color {
+                    let ow = render_node.props.outline_width;
+                    let offset = render_node.props.outline_offset;
+                    let expand = offset + ow / 2.0;
+                    let outline_rect = Rect::new(
+                        -expand,
+                        -expand,
+                        bounds.width + expand * 2.0,
+                        bounds.height + expand * 2.0,
+                    );
+                    let outline_radius = CornerRadius {
+                        top_left: (radius.top_left + expand).max(0.0),
+                        top_right: (radius.top_right + expand).max(0.0),
+                        bottom_right: (radius.bottom_right + expand).max(0.0),
+                        bottom_left: (radius.bottom_left + expand).max(0.0),
+                    };
+                    let stroke = Stroke::new(ow);
+                    ctx.stroke_rect(
+                        outline_rect,
+                        outline_radius,
+                        &stroke,
+                        Brush::Solid(*outline_color),
+                    );
+                }
+            }
+
             // Handle canvas element rendering
             // Push clip to ensure canvas content respects parent bounds (e.g., scroll containers)
             if let ElementType::Canvas(canvas_data) = &render_node.element_type {
@@ -6622,7 +9056,47 @@ impl RenderTree {
         }
 
         // Traverse children (they inherit our transform and layer inheritance)
+        // Reset cumulative scroll when entering a scroll container.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
         for child_id in self.layout_tree.children(node) {
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let has_counter = child_is_fixed
+                && (new_cumulative.0.abs() > 0.001 || new_cumulative.1.abs() > 0.001);
+            if has_counter {
+                ctx.push_transform(Transform::translate(-new_cumulative.0, -new_cumulative.1));
+            }
+
+            // Sticky: compute corrective offset when element would scroll past threshold
+            let mut has_sticky_correction = false;
+            if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.get_render_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            ctx.push_transform(Transform::translate(0.0, correction));
+                            has_sticky_correction = true;
+                        }
+                    }
+                }
+            }
+
+            let child_cum = if child_is_fixed {
+                (0.0, 0.0)
+            } else {
+                new_cumulative
+            };
             self.render_layer(
                 ctx,
                 child_id,
@@ -6630,7 +9104,14 @@ impl RenderTree {
                 target_layer,
                 children_inside_glass,
                 children_inside_foreground,
+                child_cum,
             );
+            if has_sticky_correction {
+                ctx.pop_transform();
+            }
+            if has_counter {
+                ctx.pop_transform();
+            }
         }
 
         // Pop scroll transform if we pushed one
@@ -6741,13 +9222,21 @@ impl RenderTree {
                     (0.0, 0.0),
                     RenderLayer::Background,
                     false,
+                    (0.0, 0.0),
                 );
             }
 
             // Pass 2: Glass elements (to background context)
             {
                 let ctx = renderer.background();
-                self.render_layer_with_content(ctx, root, (0.0, 0.0), RenderLayer::Glass, false);
+                self.render_layer_with_content(
+                    ctx,
+                    root,
+                    (0.0, 0.0),
+                    RenderLayer::Glass,
+                    false,
+                    (0.0, 0.0),
+                );
             }
 
             // Pass 3: Foreground elements (including glass children)
@@ -6759,6 +9248,7 @@ impl RenderTree {
                     (0.0, 0.0),
                     RenderLayer::Foreground,
                     false,
+                    (0.0, 0.0),
                 );
             }
 
@@ -6778,6 +9268,7 @@ impl RenderTree {
         parent_offset: (f32, f32),
         target_layer: RenderLayer,
         inside_glass: bool,
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -6953,6 +9444,34 @@ impl RenderTree {
                             ctx.stroke_rect(rect, radius, &stroke, Brush::Solid(*border_color));
                         }
                     }
+
+                    // Draw outline
+                    if render_node.props.outline_width > 0.0 {
+                        if let Some(ref outline_color) = render_node.props.outline_color {
+                            let ow = render_node.props.outline_width;
+                            let offset = render_node.props.outline_offset;
+                            let expand = offset + ow / 2.0;
+                            let outline_rect = Rect::new(
+                                -expand,
+                                -expand,
+                                bounds.width + expand * 2.0,
+                                bounds.height + expand * 2.0,
+                            );
+                            let outline_radius = CornerRadius {
+                                top_left: (radius.top_left + expand).max(0.0),
+                                top_right: (radius.top_right + expand).max(0.0),
+                                bottom_right: (radius.bottom_right + expand).max(0.0),
+                                bottom_left: (radius.bottom_left + expand).max(0.0),
+                            };
+                            let stroke = Stroke::new(ow);
+                            ctx.stroke_rect(
+                                outline_rect,
+                                outline_radius,
+                                &stroke,
+                                Brush::Solid(*outline_color),
+                            );
+                        }
+                    }
                 }
                 ElementType::Canvas(canvas_data) => {
                     // Canvas element: invoke the render callback with DrawContext
@@ -6986,15 +9505,73 @@ impl RenderTree {
             ctx.push_transform(Transform::translate(scroll_offset.0, scroll_offset.1));
         }
 
+        // Update cumulative scroll for children
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
+
         // Traverse children
         for child_id in self.layout_tree.children(node) {
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            // Fixed: push counter-scroll to cancel ALL accumulated scroll
+            let has_fixed_counter = child_is_fixed
+                && (new_cumulative_scroll.0.abs() > 0.001 || new_cumulative_scroll.1.abs() > 0.001);
+            if has_fixed_counter {
+                ctx.push_transform(Transform::translate(
+                    -new_cumulative_scroll.0,
+                    -new_cumulative_scroll.1,
+                ));
+            }
+
+            // Sticky: compute corrective offset when element would scroll past threshold
+            let mut has_sticky_correction = false;
+            if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.layout_tree.get_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            ctx.push_transform(Transform::translate(0.0, correction));
+                            has_sticky_correction = true;
+                        }
+                    }
+                }
+            }
+
+            let child_cumulative = if child_is_fixed {
+                (0.0, 0.0)
+            } else {
+                new_cumulative_scroll
+            };
+
             self.render_layer_with_content(
                 ctx,
                 child_id,
                 (0.0, 0.0),
                 target_layer,
                 children_inside_glass,
+                child_cumulative,
             );
+
+            // Pop sticky correction
+            if has_sticky_correction {
+                ctx.pop_transform();
+            }
+            // Pop fixed counter-scroll
+            if has_fixed_counter {
+                ctx.pop_transform();
+            }
         }
 
         // Pop scroll transform if we pushed one
@@ -7020,7 +9597,7 @@ impl RenderTree {
     /// Render all text elements via the LayoutRenderer
     fn render_text_elements<R: LayoutRenderer>(&self, renderer: &mut R) {
         if let Some(root) = self.root {
-            self.render_text_recursive(renderer, root, (0.0, 0.0), false, false);
+            self.render_text_recursive(renderer, root, (0.0, 0.0), false, false, (0.0, 0.0));
         }
     }
 
@@ -7032,6 +9609,7 @@ impl RenderTree {
         parent_offset: (f32, f32),
         inside_glass: bool,
         inside_foreground: bool,
+        cumulative_scroll: (f32, f32),
     ) {
         // Use get_render_bounds to get animated bounds if layout animation is active
         // This ensures text respects layout animations (FLIP-style bounds animation)
@@ -7058,6 +9636,11 @@ impl RenderTree {
             let abs_x = parent_offset.0 + bounds.x;
             let abs_y = parent_offset.1 + bounds.y;
 
+            // Use animated/overridden text color and font size if available
+            let color = render_node.props.text_color.unwrap_or(text_data.color);
+            let font_size = render_node.props.font_size.unwrap_or(text_data.font_size);
+
+            // Render normal text
             if to_foreground {
                 renderer.render_text_foreground(
                     &text_data.content,
@@ -7065,8 +9648,8 @@ impl RenderTree {
                     abs_y,
                     bounds.width,
                     bounds.height,
-                    text_data.font_size,
-                    text_data.color,
+                    font_size,
+                    color,
                     text_data.align,
                     text_data.weight,
                 );
@@ -7077,8 +9660,8 @@ impl RenderTree {
                     abs_y,
                     bounds.width,
                     bounds.height,
-                    text_data.font_size,
-                    text_data.color,
+                    font_size,
+                    color,
                     text_data.align,
                     text_data.weight,
                 );
@@ -7105,13 +9688,54 @@ impl RenderTree {
             parent_offset.0 + bounds.x + scroll_offset.0 + motion_offset.0,
             parent_offset.1 + bounds.y + scroll_offset.1 + motion_offset.1,
         );
+
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
+
         for child_id in self.layout_tree.children(node) {
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let mut child_offset = new_offset;
+            let child_cumulative;
+
+            if child_is_fixed {
+                // Cancel all accumulated scroll from the offset
+                child_offset.0 -= new_cumulative_scroll.0;
+                child_offset.1 -= new_cumulative_scroll.1;
+                child_cumulative = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.layout_tree.get_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            child_offset.1 += correction;
+                        }
+                    }
+                }
+                child_cumulative = new_cumulative_scroll;
+            } else {
+                child_cumulative = new_cumulative_scroll;
+            }
+
             self.render_text_recursive(
                 renderer,
                 child_id,
-                new_offset,
+                child_offset,
                 children_inside_glass,
                 children_inside_foreground,
+                child_cumulative,
             );
         }
     }
@@ -7119,7 +9743,7 @@ impl RenderTree {
     /// Render all SVG elements via the LayoutRenderer
     fn render_svg_elements<R: LayoutRenderer>(&self, renderer: &mut R) {
         if let Some(root) = self.root {
-            self.render_svg_recursive(renderer, root, (0.0, 0.0), false, false);
+            self.render_svg_recursive(renderer, root, (0.0, 0.0), false, false, (0.0, 0.0));
         }
     }
 
@@ -7131,6 +9755,7 @@ impl RenderTree {
         parent_offset: (f32, f32),
         inside_glass: bool,
         inside_foreground: bool,
+        cumulative_scroll: (f32, f32),
     ) {
         // Use get_render_bounds to get animated bounds if layout animation is active
         // This ensures SVG respects layout animations (FLIP-style bounds animation)
@@ -7197,13 +9822,53 @@ impl RenderTree {
             parent_offset.0 + bounds.x + scroll_offset.0 + motion_offset.0,
             parent_offset.1 + bounds.y + scroll_offset.1 + motion_offset.1,
         );
+
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
+
         for child_id in self.layout_tree.children(node) {
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let mut child_offset = new_offset;
+            let child_cumulative;
+
+            if child_is_fixed {
+                child_offset.0 -= new_cumulative_scroll.0;
+                child_offset.1 -= new_cumulative_scroll.1;
+                child_cumulative = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.layout_tree.get_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            child_offset.1 += correction;
+                        }
+                    }
+                }
+                child_cumulative = new_cumulative_scroll;
+            } else {
+                child_cumulative = new_cumulative_scroll;
+            }
+
             self.render_svg_recursive(
                 renderer,
                 child_id,
-                new_offset,
+                child_offset,
                 children_inside_glass,
                 children_inside_foreground,
+                child_cumulative,
             );
         }
     }
@@ -7275,7 +9940,7 @@ impl RenderTree {
     pub fn text_elements(&self) -> Vec<(TextData, ElementBounds)> {
         let mut result = Vec::new();
         if let Some(root) = self.root {
-            self.collect_text_elements(root, (0.0, 0.0), &mut result);
+            self.collect_text_elements(root, (0.0, 0.0), &mut result, (0.0, 0.0));
         }
         result
     }
@@ -7285,6 +9950,7 @@ impl RenderTree {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         result: &mut Vec<(TextData, ElementBounds)>,
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -7308,8 +9974,45 @@ impl RenderTree {
             parent_offset.0 + bounds.x + scroll_offset.0,
             parent_offset.1 + bounds.y + scroll_offset.1,
         );
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
         for child_id in self.layout_tree.children(node) {
-            self.collect_text_elements(child_id, new_offset, result);
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let mut child_offset = new_offset;
+            let child_cumulative;
+
+            if child_is_fixed {
+                child_offset.0 -= new_cumulative_scroll.0;
+                child_offset.1 -= new_cumulative_scroll.1;
+                child_cumulative = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.layout_tree.get_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            child_offset.1 += correction;
+                        }
+                    }
+                }
+                child_cumulative = new_cumulative_scroll;
+            } else {
+                child_cumulative = new_cumulative_scroll;
+            }
+
+            self.collect_text_elements(child_id, child_offset, result, child_cumulative);
         }
     }
 
@@ -7327,7 +10030,7 @@ impl RenderTree {
     pub fn svg_elements(&self) -> Vec<(SvgData, ElementBounds)> {
         let mut result = Vec::new();
         if let Some(root) = self.root {
-            self.collect_svg_elements(root, (0.0, 0.0), &mut result);
+            self.collect_svg_elements(root, (0.0, 0.0), &mut result, (0.0, 0.0));
         }
         result
     }
@@ -7337,6 +10040,7 @@ impl RenderTree {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         result: &mut Vec<(SvgData, ElementBounds)>,
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
             return;
@@ -7360,8 +10064,45 @@ impl RenderTree {
             parent_offset.0 + bounds.x + scroll_offset.0,
             parent_offset.1 + bounds.y + scroll_offset.1,
         );
+        // Reset cumulative scroll when entering a scroll container.
+        // Sticky/fixed positioning is relative to the nearest scroll ancestor, not all ancestors.
+        let is_scroll_container = self.scroll_physics.contains_key(&node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
         for child_id in self.layout_tree.children(node) {
-            self.collect_svg_elements(child_id, new_offset, result);
+            let child_render = self.render_nodes.get(&child_id);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let mut child_offset = new_offset;
+            let child_cumulative;
+
+            if child_is_fixed {
+                child_offset.0 -= new_cumulative_scroll.0;
+                child_offset.1 -= new_cumulative_scroll.1;
+                child_cumulative = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = self.layout_tree.get_bounds(child_id, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            child_offset.1 += correction;
+                        }
+                    }
+                }
+                child_cumulative = new_cumulative_scroll;
+            } else {
+                child_cumulative = new_cumulative_scroll;
+            }
+
+            self.collect_svg_elements(child_id, child_offset, result, child_cumulative);
         }
     }
 }

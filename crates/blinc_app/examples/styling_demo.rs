@@ -25,7 +25,7 @@ fn main() -> Result<()> {
         .init();
 
     let config = WindowConfig {
-        title: "Blinc Unified Styling API Demo".to_string(),
+        title: "Blinc Styling API Demo".to_string(),
         width: 1000,
         height: 800,
         resizable: true,
@@ -183,6 +183,705 @@ fn main() -> Result<()> {
                 background: radial-gradient(circle, #ffaa00, #ff4400);
             }
 
+            /* --- 3D Group Composition --- */
+
+            /* Box with cylinder hole — cylinder cuts a round tunnel through the box */
+            #group-subtract {
+                shape-3d: group;
+                perspective: 800px;
+                rotate-x: 25deg;
+                rotate-y: 35deg;
+            }
+            #group-subtract-base {
+                shape-3d: box;
+                depth: 140px;
+                background: #3b82f6;
+            }
+            #group-subtract-hole {
+                shape-3d: cylinder;
+                depth: 200px;
+                3d-op: subtract;
+                background: #ef4444;
+            }
+
+            /* Smooth blob union — two spheres merging with smooth blend */
+            #group-smooth-union {
+                shape-3d: group;
+                perspective: 800px;
+                rotate-x: 15deg;
+                rotate-y: -25deg;
+            }
+            #group-smooth-union-a {
+                shape-3d: sphere;
+                depth: 130px;
+                background: #22c55e;
+            }
+            #group-smooth-union-b {
+                shape-3d: sphere;
+                depth: 130px;
+                3d-op: smooth-union;
+                3d-blend: 30px;
+                background: #22c55e;
+            }
+
+            /* Rounded intersection — box ∩ sphere gives pillow shape */
+            #group-intersect {
+                shape-3d: group;
+                perspective: 800px;
+                rotate-x: 20deg;
+                rotate-y: 30deg;
+            }
+            #group-intersect-box {
+                shape-3d: box;
+                depth: 160px;
+                background: #a855f7;
+            }
+            #group-intersect-sphere {
+                shape-3d: sphere;
+                depth: 200px;
+                3d-op: intersect;
+                background: #9333ea;
+            }
+
+            /* Smooth scoop — sphere scooped from box with smooth blend */
+            #group-smooth-subtract {
+                shape-3d: group;
+                perspective: 800px;
+                rotate-x: 25deg;
+                rotate-y: -20deg;
+            }
+            #group-smooth-subtract-base {
+                shape-3d: box;
+                depth: 140px;
+                background: #f97316;
+            }
+            #group-smooth-subtract-scoop {
+                shape-3d: sphere;
+                depth: 160px;
+                3d-op: smooth-subtract;
+                3d-blend: 20px;
+                background: #ea580c;
+            }
+
+            /* --- CSS position demos --- */
+            #pos-container {
+                position: relative;
+                width: 300px;
+                height: 200px;
+                background: #1e293b;
+            }
+            #pos-static-child {
+                width: 100px;
+                height: 40px;
+                background: #3b82f6;
+            }
+            #pos-floating {
+                position: absolute;
+                top: 12px;
+                right: 12px;
+                width: 80px;
+                height: 80px;
+                background: #ef4444;
+            }
+            #pos-bottom-bar {
+                position: absolute;
+                bottom: 0px;
+                left: 0px;
+                right: 0px;
+                height: 32px;
+                background: #22c55e;
+            }
+
+            /* Fixed & Sticky positioning — using inline styles for now */
+
+            /* --- CSS overflow:scroll demo --- */
+            #css-scroll-container {
+                overflow: scroll;
+                height: 200px;
+                width: 300px;
+                background: #0f172a;
+                border-radius: 8px;
+            }
+
+            /* --- CSS clip-path demos --- */
+            #clip-circle {
+                background: #3b82f6;
+                clip-path: circle(50% at 50% 50%);
+            }
+            #clip-ellipse {
+                background: #22c55e;
+                clip-path: ellipse(50% 35% at 50% 50%);
+            }
+            #clip-inset {
+                background: #a855f7;
+                clip-path: inset(10% 10% 10% 10% round 12px);
+            }
+            #clip-polygon-hex {
+                background: #f97316;
+                clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+            }
+            #clip-polygon-star {
+                background: #ec4899;
+                clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+            }
+            #clip-polygon-arrow {
+                background: #ef4444;
+                clip-path: polygon(40% 0%, 40% 40%, 0% 40%, 50% 100%, 100% 40%, 60% 40%, 60% 0%);
+            }
+
+            @keyframes clip-reveal-center {
+                from { clip-path: inset(50% 50% 50% 50%); }
+                to { clip-path: inset(0% 0% 0% 0%); }
+            }
+            #clip-over-center {
+                position: absolute;
+                top: 0px;
+                left: 0px;
+                width: 200px;
+                height: 150px;
+                background: #3b82f6;
+                border-radius: 12px;
+                clip-path: inset(50% 50% 50% 50%);
+            }
+            #clip-over-center:hover {
+                animation: clip-reveal-center 400ms ease-out forwards;
+                clip-path: inset(0% 0% 0% 0%);
+            }
+
+            @keyframes clip-reveal-top {
+                from { clip-path: inset(100% 0% 0% 0%); }
+                to { clip-path: inset(0% 0% 0% 0%); }
+            }
+            #clip-over-top {
+                position: absolute;
+                top: 0px;
+                left: 0px;
+                width: 200px;
+                height: 150px;
+                background: #22c55e;
+                border-radius: 12px;
+                clip-path: inset(100% 0% 0% 0%);
+            }
+            #clip-over-top:hover {
+                animation: clip-reveal-top 400ms ease-out forwards;
+                clip-path: inset(0% 0% 0% 0%);
+            }
+
+            @keyframes clip-reveal-left {
+                from { clip-path: inset(0% 100% 0% 0%); }
+                to { clip-path: inset(0% 0% 0% 0%); }
+            }
+            #clip-over-left {
+                position: absolute;
+                top: 0px;
+                left: 0px;
+                width: 200px;
+                height: 150px;
+                background: #a855f7;
+                border-radius: 12px;
+                clip-path: inset(0% 100% 0% 0%);
+            }
+            #clip-over-left:hover {
+                animation: clip-reveal-left 400ms ease-out forwards;
+                clip-path: inset(0% 0% 0% 0%);
+            }
+
+            /* --- CSS Selector Hierarchy demos --- */
+
+            /* Class selector: .card applies to all elements with class="card" */
+            .card {
+                background: #1e3a5f;
+                border-radius: 12px;
+                transition: all 300ms ease;
+            }
+            .card:hover {
+                background: #3b82f6;
+                border-radius: 24px;
+                box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+            }
+
+            /* Child combinator: #parent > .child */
+            #selector-parent > .child-item {
+                background: #374151;
+                border-radius: 8px;
+            }
+            #selector-parent:hover > .child-item {
+                background: #6366f1;
+            }
+
+            /* Structural pseudo-classes */
+            .list-item:first-child {
+                background: #22c55e;
+                border-radius: 8px 8px 0 0;
+            }
+            .list-item:last-child {
+                background: #ef4444;
+                border-radius: 0 0 8px 8px;
+            }
+
+            /* Filter + transition demo */
+            .filter-card {
+                border-radius: 12px;
+                transition: all 400ms ease;
+            }
+            .filter-card:hover {
+                filter: brightness(1.8) saturate(2.0) contrast(1.3);
+            }
+
+            /* --- Advanced Selector demos --- */
+
+            /* Adjacent sibling combinator: .trigger:hover + .target */
+            .sib-trigger {
+                background: #475569;
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+            .sib-trigger:hover + .sib-target {
+                background: #f59e0b;
+                border-radius: 16px;
+            }
+            .sib-target {
+                background: #64748b;
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+
+            /* General sibling combinator: .gs-trigger:hover ~ .gs-item */
+            .gs-trigger {
+                background: #7c3aed;
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+            .gs-trigger:hover ~ .gs-item {
+                background: #a78bfa;
+                border-radius: 16px;
+            }
+            .gs-item {
+                background: #4c1d95;
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+
+            /* :not() pseudo-class */
+            .not-demo {
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+            .not-demo:not(:first-child) {
+                background: #0891b2;
+            }
+            .not-demo:first-child {
+                background: #f43f5e;
+            }
+
+            /* :empty pseudo-class */
+            .empty-demo {
+                border-radius: 8px;
+                border-width: 2px;
+                border-color: #94a3b8;
+            }
+            .empty-demo:empty {
+                background: #22d3ee;
+                border-color: #22d3ee;
+            }
+
+            /* Universal selector: * inside #universal-parent */
+            #universal-parent > * {
+                background: #059669;
+                border-radius: 8px;
+            }
+            #universal-parent > *:hover {
+                background: #10b981;
+                box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+            }
+
+            /* :is() pseudo-class: matches any of the listed selectors */
+            .is-card {
+                background: #374151;
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+            :is(.is-primary, .is-accent):hover {
+                background: #3b82f6;
+                box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+            }
+
+            /* :where() pseudo-class (same as :is but zero specificity) */
+            :where(.is-secondary):hover {
+                background: #8b5cf6;
+                box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+            }
+
+            /* :first-of-type / :last-of-type */
+            .type-item {
+                background: #374151;
+                border-radius: 8px;
+            }
+            .type-item:first-of-type {
+                background: #059669;
+            }
+            .type-item:last-of-type {
+                background: #dc2626;
+            }
+
+            /* :nth-of-type */
+            .nth-type-item {
+                background: #374151;
+                border-radius: 8px;
+            }
+            .nth-type-item:nth-of-type(2) {
+                background: #d97706;
+            }
+            .nth-type-item:only-of-type {
+                background: #7c3aed;
+            }
+
+            /* --- Gradient Animation demos --- */
+
+            /* Gradient transition on hover */
+            #grad-hover {
+                background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+                border-radius: 12px;
+                transition: all 500ms ease;
+            }
+            #grad-hover:hover {
+                background: linear-gradient(135deg, #f59e0b, #ef4444);
+            }
+
+            /* Gradient angle transition */
+            #grad-angle {
+                background: linear-gradient(0deg, #06b6d4, #8b5cf6);
+                border-radius: 12px;
+                transition: all 800ms ease;
+            }
+            #grad-angle:hover {
+                background: linear-gradient(180deg, #06b6d4, #8b5cf6);
+            }
+
+            /* Gradient keyframe animation */
+            @keyframes gradient-cycle {
+                0% { background: linear-gradient(90deg, #ef4444, #f97316); }
+                33% { background: linear-gradient(90deg, #22c55e, #06b6d4); }
+                66% { background: linear-gradient(90deg, #8b5cf6, #ec4899); }
+                100% { background: linear-gradient(90deg, #ef4444, #f97316); }
+            }
+            #grad-anim {
+                border-radius: 12px;
+                animation: gradient-cycle 4000ms linear infinite;
+            }
+
+            /* --- Text Shadow demos --- */
+
+            #text-shadow-basic {
+                text-shadow: 3px 3px 0px rgba(255, 68, 68, 1.0);
+            }
+            #text-shadow-glow {
+                text-shadow: 2px 2px 0px rgba(34, 197, 94, 0.9);
+            }
+            #text-shadow-hover {
+                text-shadow: 0px 0px 0px rgba(239, 68, 68, 0);
+                transition: all 500ms ease;
+            }
+            #text-shadow-hover:hover {
+                text-shadow: 3px 3px 0px rgba(239, 68, 68, 1.0);
+            }
+
+            /* --- Filter blur & drop-shadow demos --- */
+
+            /* Static blur */
+            #filter-blur-static {
+                background: #3b82f6;
+                border-radius: 12px;
+                filter: blur(4px);
+            }
+
+            /* Blur transition on hover */
+            #filter-blur-hover {
+                background: #22c55e;
+                border-radius: 12px;
+                filter: blur(0px);
+                transition: filter 400ms ease;
+            }
+            #filter-blur-hover:hover {
+                filter: blur(8px);
+            }
+
+            /* Drop-shadow */
+            #filter-drop-shadow {
+                background: #a855f7;
+                border-radius: 12px;
+                filter: drop-shadow(4px 4px 8px rgba(0, 0, 0, 0.5));
+            }
+
+            /* Combined blur + color filter */
+            #filter-blur-combo {
+                background: #f97316;
+                border-radius: 12px;
+                filter: blur(6px) brightness(1.3);
+                transition: filter 500ms ease;
+            }
+            #filter-blur-combo:hover {
+                filter: blur(0px) brightness(1.0);
+            }
+
+            /* Blur keyframe animation */
+            @keyframes blur-pulse {
+                0% { filter: blur(0px); }
+                50% { filter: blur(6px); }
+                100% { filter: blur(0px); }
+            }
+            #filter-blur-anim {
+                background: #ec4899;
+                border-radius: 12px;
+                animation: blur-pulse 3000ms ease-in-out infinite;
+            }
+
+            /* --- Layout Property Animation demos --- */
+
+            /* Width transition on hover */
+            #layout-width {
+                background: #3b82f6;
+                border-radius: 8px;
+                width: 120px;
+                height: 60px;
+                transition: width 400ms ease;
+            }
+            #layout-width:hover {
+                width: 280px;
+            }
+
+            /* Height transition on hover */
+            #layout-height {
+                background: #22c55e;
+                border-radius: 8px;
+                width: 120px;
+                height: 60px;
+                transition: height 400ms ease;
+            }
+            #layout-height:hover {
+                height: 120px;
+            }
+
+            /* Padding transition on hover */
+            #layout-padding {
+                background: #a855f7;
+                border-radius: 8px;
+                padding: 8px;
+                transition: padding 300ms ease;
+            }
+            #layout-padding:hover {
+                padding: 24px;
+            }
+
+            /* Combined width + height via @keyframes */
+            @keyframes grow-shrink {
+                0% { width: 80px; height: 50px; }
+                50% { width: 200px; height: 100px; }
+                100% { width: 80px; height: 50px; }
+            }
+            #layout-anim {
+                background: #f97316;
+                border-radius: 12px;
+                animation: grow-shrink 3000ms ease-in-out infinite;
+            }
+
+            /* --- Phase 1: Constraint & Position Animation demos --- */
+
+            /* min-width transition */
+            #constraint-minw {
+                background: #6366f1;
+                border-radius: 8px;
+                width: 80px;
+                height: 60px;
+                min-width: 80px;
+                transition: min-width 400ms ease;
+            }
+            #constraint-minw:hover {
+                min-width: 200px;
+            }
+
+            /* max-width transition */
+            #constraint-maxw {
+                background: #8b5cf6;
+                border-radius: 8px;
+                width: 300px;
+                height: 60px;
+                max-width: 300px;
+                transition: max-width 400ms ease;
+            }
+            #constraint-maxw:hover {
+                max-width: 120px;
+            }
+
+            /* top/left position animation */
+            #pos-anim-container {
+                position: relative;
+                width: 280px;
+                height: 140px;
+                background: #1e293b;
+                border-radius: 8px;
+            }
+            #pos-anim-dot {
+                position: absolute;
+                top: 10px;
+                left: 10px;
+                width: 40px;
+                height: 40px;
+                background: #f43f5e;
+                border-radius: 20px;
+                transition: all 500ms ease;
+            }
+            #pos-anim-dot:hover {
+                top: 90px;
+                left: 228px;
+            }
+
+            /* flex-grow transition */
+            .flex-grow-item {
+                background: #0ea5e9;
+                border-radius: 6px;
+                height: 50px;
+                flex-grow: 1;
+                transition: flex-grow 400ms ease;
+            }
+            .flex-grow-item:hover {
+                flex-grow: 4;
+            }
+
+            /* @keyframes with min/max constraints */
+            @keyframes constraint-pulse {
+                0% { min-width: 60px; max-width: 60px; }
+                50% { min-width: 180px; max-width: 180px; }
+                100% { min-width: 60px; max-width: 60px; }
+            }
+            #constraint-anim {
+                background: #14b8a6;
+                border-radius: 8px;
+                height: 50px;
+                animation: constraint-pulse 2500ms ease-in-out infinite;
+            }
+
+            /* --- Phase 2: Text Color Animation demos --- */
+
+            /* Text color transition on hover */
+            #text-color-hover {
+                color: #94a3b8;
+                transition: color 400ms ease;
+            }
+            #text-color-hover:hover {
+                color: #3b82f6;
+            }
+
+            /* Text color + background combined transition */
+            #text-color-combo {
+                background: #1e293b;
+                border-radius: 8px;
+                transition: all 400ms ease;
+            }
+            #text-color-combo:hover {
+                background: #3b82f6;
+            }
+            #text-color-combo-label {
+                color: #94a3b8;
+                transition: color 400ms ease;
+            }
+            #text-color-combo-label:hover {
+                color: #ffffff;
+            }
+
+            /* @keyframes text color cycling */
+            @keyframes color-cycle {
+                0% { color: #ef4444; }
+                33% { color: #22c55e; }
+                66% { color: #3b82f6; }
+                100% { color: #ef4444; }
+            }
+            #text-color-anim {
+                animation: color-cycle 3000ms linear infinite;
+            }
+
+            /* --- Phase 3: Transform Extensions demos --- */
+
+            /* SkewX on hover */
+            #skew-x-demo {
+                background: #3b82f6;
+                border-radius: 8px;
+                transition: all 400ms ease;
+            }
+            #skew-x-demo:hover {
+                transform: skewX(-12deg);
+            }
+
+            /* SkewY on hover */
+            #skew-y-demo {
+                background: #22c55e;
+                border-radius: 8px;
+                transition: all 400ms ease;
+            }
+            #skew-y-demo:hover {
+                transform: skewY(12deg);
+            }
+
+            /* Transform-origin: top-left rotation */
+            #origin-tl-demo {
+                background: #a855f7;
+                border-radius: 8px;
+                transform-origin: left top;
+                transition: all 400ms ease;
+            }
+            #origin-tl-demo:hover {
+                transform: rotate(15deg);
+            }
+
+            /* Transform-origin: bottom-right rotation */
+            #origin-br-demo {
+                background: #f97316;
+                border-radius: 8px;
+                transform-origin: right bottom;
+                transition: all 400ms ease;
+            }
+            #origin-br-demo:hover {
+                transform: rotate(-15deg);
+            }
+
+            /* @keyframes skew wobble */
+            @keyframes skew-wobble {
+                0% { transform: skew(0deg, 0deg); }
+                25% { transform: skew(10deg, 5deg); }
+                50% { transform: skew(0deg, 0deg); }
+                75% { transform: skew(-10deg, -5deg); }
+                100% { transform: skew(0deg, 0deg); }
+            }
+            #skew-wobble-demo {
+                background: #ec4899;
+                border-radius: 8px;
+                animation: skew-wobble 2000ms ease-in-out infinite;
+            }
+
+            /* --- Phase 4: Font Size Animation demos --- */
+
+            /* Font size transition on hover */
+            #font-size-hover {
+                font-size: 14px;
+                color: #94a3b8;
+                transition: all 400ms ease;
+            }
+            #font-size-hover:hover {
+                font-size: 28px;
+                color: #3b82f6;
+            }
+
+            /* @keyframes font size pulsing */
+            @keyframes font-pulse {
+                0% { font-size: 14px; }
+                50% { font-size: 24px; }
+                100% { font-size: 14px; }
+            }
+            #font-size-anim {
+                color: #22c55e;
+                animation: font-pulse 2000ms ease-in-out infinite;
+            }
+
             "#,
             );
             css_loaded = true;
@@ -209,7 +908,29 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .p(theme.spacing().space_6)
                     .flex_col()
                     .gap(theme.spacing().space_8)
-                    // CSS Stylesheet integration (new!)
+                    // Layout property animation
+                    .child(layout_animation_section())
+                    // Constraint & position animation (Phase 1)
+                    .child(constraint_position_animation_section())
+                    // Text color animation (Phase 2)
+                    .child(text_color_animation_section())
+                    // Transform extensions (Phase 3)
+                    .child(transform_extensions_section())
+                    // Font size animation (Phase 4)
+                    .child(font_size_animation_section())
+                    // CSS Selector Hierarchy
+                    .child(selector_hierarchy_section())
+                    // Advanced selectors (+, ~, :not(), :empty, *)
+                    .child(advanced_selectors_section())
+                    // :is()/:where() and *-of-type selectors
+                    .child(is_where_of_type_section())
+                    // Filter blur & drop-shadow (Phase 8)
+                    .child(filter_blur_section())
+                    // Gradient animation (Phase 6)
+                    .child(gradient_animation_section())
+                    // Text shadow (Phase 7)
+                    .child(text_shadow_section())
+                    // CSS Stylesheet integration
                     .child(css_stylesheet_section())
                     .child(css_hover_section())
                     .child(css_animation_section())
@@ -232,6 +953,10 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(translate_z_section())
                     .child(uv_mapping_3d_section())
                     .child(animation_3d_section())
+                    .child(group_composition_section())
+                    .child(clip_path_section())
+                    .child(clip_path_animation_section())
+                    .child(css_position_section())
                     .child(api_comparison_section()),
             ),
         )
@@ -254,13 +979,13 @@ fn header() -> impl ElementBuilder {
         .justify_center()
         .gap(16.0)
         .child(
-            text("Unified Styling API")
+            text("Blinc Styling API")
                 .size(28.0)
                 .weight(FontWeight::Bold)
                 .color(text_primary),
         )
         .child(
-            text("Stylesheets | Hover | Animations | css! | style! | 3D SDF | Boolean Ops")
+            text("Stylesheets | Hover | Animations | css! | style! | 3D SDF | Groups | clip-path")
                 .size(14.0)
                 .color(text_secondary),
         )
@@ -304,6 +1029,1290 @@ fn section_description(desc: &str) -> impl ElementBuilder {
 
 fn code_label(label: &str) -> impl ElementBuilder {
     inline_code(label).size(12.0)
+}
+
+// ============================================================================
+// LAYOUT PROPERTY ANIMATION SECTION
+// ============================================================================
+
+fn layout_animation_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Layout Property Animation"))
+        .child(section_description(
+            "Animate width, height, and padding via CSS transitions and @keyframes. Layout is recomputed each frame.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. Width transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#layout-width { width: 120px; transition: width 400ms ease; } :hover { width: 280px; }"))
+                        .child(
+                            div()
+                                .id("layout-width")
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover to grow width").size(12.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. Height transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#layout-height { height: 60px; transition: height 400ms ease; } :hover { height: 120px; }"))
+                        .child(
+                            div()
+                                .id("layout-height")
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover to grow height").size(12.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. Padding transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#layout-padding { padding: 8px; transition: padding 300ms ease; } :hover { padding: 24px; }"))
+                        .child(
+                            div()
+                                .id("layout-padding")
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover to expand padding").size(12.0).color(Color::WHITE)),
+                        ),
+                )
+                // 4. @keyframes layout animation
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes grow-shrink { 0% { width: 80px; height: 50px; } 50% { width: 200px; height: 100px; } }"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(100.0)
+                                .child(
+                                    div()
+                                        .id("layout-anim")
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Animated").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// CONSTRAINT & POSITION ANIMATION SECTION (Phase 1 properties)
+// ============================================================================
+
+fn constraint_position_animation_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Constraint & Position Animation"))
+        .child(section_description(
+            "Animate min/max-width/height, top/left positioning, flex-grow, and z-index via CSS transitions and @keyframes.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. min-width transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#constraint-minw { min-width: 80px; transition: min-width 400ms; } :hover { min-width: 200px }"))
+                        .child(
+                            div()
+                                .id("constraint-minw")
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover: min-width grows").size(11.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. max-width transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#constraint-maxw { max-width: 300px; transition: max-width 400ms; } :hover { max-width: 120px }"))
+                        .child(
+                            div()
+                                .id("constraint-maxw")
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover: max-width shrinks").size(11.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. top/left position transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#pos-anim-dot { top: 10px; left: 10px; transition: all 500ms; } :hover { top: 90px; left: 228px }"))
+                        .child(
+                            div()
+                                .id("pos-anim-container")
+                                .child(
+                                    div()
+                                        .id("pos-anim-dot"),
+                                ),
+                        ),
+                )
+                // 4. flex-grow transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".flex-grow-item { flex-grow: 1; transition: flex-grow 400ms; } :hover { flex-grow: 4 }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(4.0)
+                                .w(400.0)
+                                .child(
+                                    div()
+                                        .class("flex-grow-item")
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("A").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("flex-grow-item")
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("B").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("flex-grow-item")
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("C").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 5. @keyframes constraint animation
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes constraint-pulse { 0% { min-width: 60px } 50% { min-width: 180px } }"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(50.0)
+                                .child(
+                                    div()
+                                        .id("constraint-anim")
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Pulsing").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// TEXT COLOR ANIMATION SECTION (Phase 2)
+// ============================================================================
+
+fn text_color_animation_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Text Color Animation"))
+        .child(section_description(
+            "CSS color property with transitions and @keyframes. Hover to see smooth text color transitions.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .gap(24.0)
+                .flex_wrap()
+                // 1. Text color transition on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("color: #94a3b8; transition: color 400ms ease"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(60.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Hover me!")
+                                        .id("text-color-hover")
+                                        .size(18.0)
+                                        .weight(FontWeight::Bold)
+                                        .color(Color::rgba(0.58, 0.64, 0.72, 1.0)),
+                                ),
+                        ),
+                )
+                // 2. Text + background combined transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("background + text color transition combined"))
+                        .child(
+                            div()
+                                .id("text-color-combo")
+                                .w(200.0)
+                                .h(60.0)
+                                .p(16.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Combo hover")
+                                        .id("text-color-combo-label")
+                                        .size(16.0)
+                                        .weight(FontWeight::SemiBold)
+                                        .color(Color::rgba(0.58, 0.64, 0.72, 1.0)),
+                                ),
+                        ),
+                )
+                // 3. @keyframes text color cycling
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes color-cycle { 0% red, 33% green, 66% blue }"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(60.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Color cycling")
+                                        .id("text-color-anim")
+                                        .size(18.0)
+                                        .weight(FontWeight::Bold)
+                                        .color(Color::rgba(0.94, 0.27, 0.27, 1.0)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// FONT SIZE ANIMATION SECTION (Phase 4)
+// ============================================================================
+
+fn font_size_animation_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Font Size Animation"))
+        .child(section_description(
+            "CSS font-size property with transitions and @keyframes. Hover to see smooth font size transitions.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .gap(24.0)
+                .flex_wrap()
+                .items_center()
+                // 1. Font size transition on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("font-size: 14px → 28px on hover"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Hover to grow")
+                                        .id("font-size-hover")
+                                        .size(14.0)
+                                        .color(Color::rgba(0.58, 0.64, 0.72, 1.0)),
+                                ),
+                        ),
+                )
+                // 2. @keyframes font size pulsing
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes font-pulse { 14px → 24px }"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Pulsing size")
+                                        .id("font-size-anim")
+                                        .size(14.0)
+                                        .color(Color::rgba(0.13, 0.77, 0.37, 1.0)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// TRANSFORM EXTENSIONS SECTION (Phase 3)
+// ============================================================================
+
+fn transform_extensions_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Transform Extensions"))
+        .child(section_description(
+            "CSS skewX/skewY and transform-origin support. Hover to see skew transitions and custom pivot points.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .gap(24.0)
+                .flex_wrap()
+                .items_center()
+                // 1. SkewX on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transform: skewX(-12deg)"))
+                        .child(
+                            div()
+                                .id("skew-x-demo")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("SkewX").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. SkewY on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transform: skewY(12deg)"))
+                        .child(
+                            div()
+                                .id("skew-y-demo")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("SkewY").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. Transform-origin: top-left
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transform-origin: left top"))
+                        .child(
+                            div()
+                                .id("origin-tl-demo")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Top-Left").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 4. Transform-origin: bottom-right
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transform-origin: right bottom"))
+                        .child(
+                            div()
+                                .id("origin-br-demo")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Bot-Right").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 5. @keyframes skew wobble
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes skew-wobble"))
+                        .child(
+                            div()
+                                .id("skew-wobble-demo")
+                                .w(120.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Wobble").size(14.0).color(Color::WHITE)),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// CSS SELECTOR HIERARCHY SECTION
+// ============================================================================
+
+fn selector_hierarchy_section() -> impl ElementBuilder {
+    let theme = ThemeState::get();
+    let text_color = theme.color(ColorToken::TextPrimary);
+
+    section_container()
+        .child(section_title("CSS Selector Hierarchy"))
+        .child(section_description(
+            "Class selectors (.class), child combinators (>), structural pseudo-classes (:first-child, :last-child), and transitions.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. Class selectors with transitions
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".card { transition: all 300ms ease; }  .card:hover { ... }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("card")
+                                        .w(100.0)
+                                        .h(80.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Card A").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("card")
+                                        .w(100.0)
+                                        .h(80.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Card B").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("card")
+                                        .w(100.0)
+                                        .h(80.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Card C").size(13.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 2. Child combinator: #parent:hover > .child-item
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#selector-parent:hover > .child-item { background: #6366f1 }"))
+                        .child(
+                            div()
+                                .id("selector-parent")
+                                .bg(Color::rgba(0.1, 0.1, 0.15, 1.0))
+                                .rounded(12.0)
+                                .p(12.0)
+                                .flex_row()
+                                .gap(8.0)
+                                .child(
+                                    div()
+                                        .class("child-item")
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("1").size(14.0).color(text_color)),
+                                )
+                                .child(
+                                    div()
+                                        .class("child-item")
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("2").size(14.0).color(text_color)),
+                                )
+                                .child(
+                                    div()
+                                        .class("child-item")
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("3").size(14.0).color(text_color)),
+                                ),
+                        ),
+                )
+                // 3. Structural pseudo-classes
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".list-item:first-child / :last-child"))
+                        .child(
+                            div()
+                                .id("pseudo-list")
+                                .flex_col()
+                                .w(200.0)
+                                .child(
+                                    div()
+                                        .class("list-item")
+                                        .h(40.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("First").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("list-item")
+                                        .h(40.0)
+                                        .bg(Color::rgba(0.3, 0.3, 0.35, 1.0))
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Middle").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("list-item")
+                                        .h(40.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Last").size(13.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 4. Filter + transition on class
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".filter-card:hover { filter: brightness(1.8) saturate(2.0) contrast(1.3) }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("filter-card")
+                                        .w(100.0)
+                                        .h(80.0)
+                                        .bg(Color::rgba(0.9, 0.2, 0.3, 1.0))
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Hover me").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("filter-card")
+                                        .w(100.0)
+                                        .h(80.0)
+                                        .bg(Color::rgba(0.2, 0.6, 0.9, 1.0))
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Hover me").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// ADVANCED SELECTORS SECTION (+, ~, :not(), :empty, *, :root)
+// ============================================================================
+
+fn advanced_selectors_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Advanced CSS Selectors"))
+        .child(section_description(
+            "Adjacent sibling (+), general sibling (~), :not(), :empty, and universal (*) selectors.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. Adjacent sibling combinator: hover trigger highlights next sibling
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".sib-trigger:hover + .sib-target { background: #f59e0b }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("sib-trigger")
+                                        .w(100.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Hover me").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("sib-target")
+                                        .w(100.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("I change!").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("sib-target")
+                                        .w(100.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Not me").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 2. General sibling combinator: hover trigger highlights all later siblings
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".gs-trigger:hover ~ .gs-item { background: #a78bfa }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("gs-trigger")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Hover").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("gs-item")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("A").size(14.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("gs-item")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("B").size(14.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("gs-item")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("C").size(14.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 3. :not() pseudo-class
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".not-demo:not(:first-child) { bg: #0891b2 }  :first-child { bg: #f43f5e }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("not-demo")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("1st").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("not-demo")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("2nd").size(13.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("not-demo")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("3rd").size(13.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 4. :empty pseudo-class
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(".empty-demo:empty { background: #22d3ee }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("empty-demo")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Has child").size(11.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("empty-demo")
+                                        .w(80.0)
+                                        .h(60.0),
+                                )
+                                .child(
+                                    div()
+                                        .class("empty-demo")
+                                        .w(80.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Has child").size(11.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 5. Universal selector: * matches any element
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#universal-parent > * { background: #059669 }"))
+                        .child(
+                            div()
+                                .id("universal-parent")
+                                .bg(Color::rgba(0.1, 0.1, 0.15, 1.0))
+                                .rounded(12.0)
+                                .p(12.0)
+                                .flex_row()
+                                .gap(8.0)
+                                .child(
+                                    div()
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("A").size(14.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("B").size(14.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .w(70.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("C").size(14.0).color(Color::WHITE)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// :is()/:where() AND *-of-type SELECTORS SECTION
+// ============================================================================
+
+fn is_where_of_type_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title(":is() / :where() / *-of-type"))
+        .child(section_description(
+            "Functional pseudo-classes :is(), :where() and structural *-of-type selectors.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. :is() — hover highlights primary or accent cards
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(
+                            ":is(.is-primary, .is-accent):hover { bg: blue }",
+                        ))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("is-card")
+                                        .class("is-primary")
+                                        .w(90.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Primary").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("is-card")
+                                        .class("is-secondary")
+                                        .w(90.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Secondary").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("is-card")
+                                        .class("is-accent")
+                                        .w(90.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Accent").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 2. :where() — secondary gets purple hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(4.0)
+                        .child(code_label(":where(.is-secondary):hover { bg: purple }")),
+                )
+                // 3. :first-of-type / :last-of-type
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(
+                            ":first-of-type { green }  :last-of-type { red }",
+                        ))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("First").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Middle").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Last").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 4. :nth-of-type(2) — highlights 2nd item
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(":nth-of-type(2) { orange }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("nth-type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("1st").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("nth-type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("2nd").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("nth-type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("3rd").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// FILTER BLUR & DROP-SHADOW SECTION (Phase 8)
+// ============================================================================
+
+fn filter_blur_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Filter: blur() & drop-shadow()"))
+        .child(section_description(
+            "CSS filter: blur(Npx) renders via Kawase multi-pass GPU blur. drop-shadow() adds offset shadow. Both support transitions and @keyframes.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. Static blur
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("filter: blur(4px)"))
+                        .child(
+                            div()
+                                .id("filter-blur-static")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Blurred").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. Blur transition on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("hover: blur(0px) → blur(8px)"))
+                        .child(
+                            div()
+                                .id("filter-blur-hover")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover me").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. Drop-shadow
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("filter: drop-shadow(4px 4px 8px rgba(0,0,0,0.5))"))
+                        .child(
+                            div()
+                                .id("filter-drop-shadow")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Drop Shadow").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 4. Combined blur + brightness
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("hover: blur(2px) brightness(1.2) → blur(0px) brightness(1.0)"))
+                        .child(
+                            div()
+                                .id("filter-blur-combo")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Combo filter").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 5. Blur keyframe animation
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes blur-pulse { 0%→0px 50%→6px 100%→0px }"))
+                        .child(
+                            div()
+                                .id("filter-blur-anim")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Pulsing blur").size(14.0).color(Color::WHITE)),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// GRADIENT ANIMATION SECTION (Phase 6)
+// ============================================================================
+
+fn gradient_animation_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Gradient Animation"))
+        .child(section_description(
+            "Gradient color stop and angle interpolation via transitions and @keyframes.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. Gradient hover transition (color change)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("transition: all 500ms ease — gradient colors"))
+                        .child(
+                            div()
+                                .id("grad-hover")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover me").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. Gradient angle transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(
+                            "transition: all 800ms ease — gradient angle 0deg → 180deg",
+                        ))
+                        .child(
+                            div()
+                                .id("grad-angle")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover me").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. Gradient keyframe animation
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(
+                            "@keyframes gradient-cycle { 0%..100% gradient colors }",
+                        ))
+                        .child(
+                            div()
+                                .id("grad-anim")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Cycling gradient").size(14.0).color(Color::WHITE)),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// TEXT SHADOW SECTION (Phase 7)
+// ============================================================================
+
+fn text_shadow_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Text Shadow"))
+        .child(section_description(
+            "CSS text-shadow property with offset, blur, and color. Supports transitions and @keyframes.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .gap(24.0)
+                .flex_wrap()
+                // 1. Basic drop shadow
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("text-shadow: 3px 3px 0px rgba(255, 68, 68, 1.0)"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(60.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Drop Shadow")
+                                        .id("text-shadow-basic")
+                                        .size(22.0)
+                                        .weight(FontWeight::Bold)
+                                        .color(Color::WHITE),
+                                ),
+                        ),
+                )
+                // 2. Green offset shadow
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("text-shadow: 2px 2px 0px rgba(34, 197, 94, 0.9)"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(60.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Green Shadow")
+                                        .id("text-shadow-glow")
+                                        .size(22.0)
+                                        .weight(FontWeight::Bold)
+                                        .color(Color::rgba(0.23, 0.51, 0.96, 1.0)),
+                                ),
+                        ),
+                )
+                // 3. Hover transition
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("text-shadow transition on :hover"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(60.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(
+                                    text("Hover me")
+                                        .id("text-shadow-hover")
+                                        .size(22.0)
+                                        .weight(FontWeight::Bold)
+                                        .color(Color::WHITE),
+                                ),
+                        ),
+                ),
+        )
 }
 
 // ============================================================================
@@ -1484,6 +3493,353 @@ fn animation_3d_section() -> impl ElementBuilder {
                         .gap(8.0)
                         .child(code_label("float-z (2s infinite)"))
                         .child(div().w(120.0).h(120.0).id("anim-float-3d")),
+                ),
+        )
+}
+
+// ============================================================================
+// 3D GROUP COMPOSITION SECTION
+// ============================================================================
+
+fn group_composition_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("3D Group Composition"))
+        .child(section_description(
+            "Compound 3D shapes via shape-3d: group. Children contribute to a single SDF with boolean operations.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                // Box with cylinder subtracted (drilled hole)
+                // Children use absolute positioning to overlap at same center
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("subtract (hole)"))
+                        .child(
+                            div()
+                                .relative()
+                                .w(200.0)
+                                .h(200.0)
+                                .id("group-subtract")
+                                .child(div().absolute().inset(0.0).id("group-subtract-base"))
+                                .child(div().absolute().inset(0.0).id("group-subtract-hole")),
+                        ),
+                )
+                // Smooth blob union (two spheres merging, offset to show blob)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("smooth-union (blob)"))
+                        .child(
+                            div()
+                                .relative()
+                                .w(200.0)
+                                .h(200.0)
+                                .id("group-smooth-union")
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(0.0)
+                                        .left(0.0)
+                                        .bottom(70.0)
+                                        .right(70.0)
+                                        .id("group-smooth-union-a"),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(70.0)
+                                        .left(70.0)
+                                        .bottom(0.0)
+                                        .right(0.0)
+                                        .id("group-smooth-union-b"),
+                                ),
+                        ),
+                )
+                // Rounded intersection (box ∩ sphere)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("intersect (rounded)"))
+                        .child(
+                            div()
+                                .relative()
+                                .w(200.0)
+                                .h(200.0)
+                                .id("group-intersect")
+                                .child(div().absolute().inset(0.0).id("group-intersect-box"))
+                                .child(div().absolute().inset(0.0).id("group-intersect-sphere")),
+                        ),
+                )
+                // Smooth scoop (box with sphere scooped out)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("smooth-subtract"))
+                        .child(
+                            div()
+                                .relative()
+                                .w(200.0)
+                                .h(200.0)
+                                .id("group-smooth-subtract")
+                                .child(div().absolute().inset(0.0).id("group-smooth-subtract-base"))
+                                .child(div().absolute().inset(0.0).id("group-smooth-subtract-scoop")),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// CSS POSITION SECTION
+// ============================================================================
+
+fn css_position_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("CSS Position"))
+        .child(section_description(
+            "position: relative | absolute | fixed | sticky with top, right, bottom, left inset properties.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("relative + absolute children"))
+                        .child(
+                            div()
+                                .id("pos-container")
+                                .child(div().id("pos-static-child"))
+                                .child(div().id("pos-floating"))
+                                .child(div().id("pos-bottom-bar")),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("sticky header + fixed button"))
+                        .child(
+                            scroll()
+                                .w(300.0)
+                                .h(300.0)
+                                .bg(Color::from_hex(0x0f172a))
+                                .rounded(8.0)
+                                .child(
+                                    div()
+                                    .w_full()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .sticky(0.0)
+                                                .h(36.0)
+                                                .w_full()
+                                                .z_index(10)
+                                                .bg(Color::from_hex(0x7c3aed)),
+                                        )
+                                        .child(
+                                            div()
+                                                .fixed()
+                                                .top(224.0)
+                                                .right(12.0)
+                                                .w(64.0)
+                                                .h(64.0)
+                                                .rounded(32.0)
+                                                .z_index(10)
+                                                .bg(Color::from_hex(0xef4444)),
+                                        )
+                                        .child(
+                                            div().p(5.0).flex_col().gap(5.0).w_full().child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                            .child(div().h(60.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0)),
+                                        ),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("CSS overflow: scroll"))
+                        .child(
+                            div()
+                                .id("css-scroll-container")
+                                .child(
+                                    div().h(500.0).p(5.0).flex_col().gap(5.0).w_full()
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0)),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("builder overflow_scroll()"))
+                        .child(
+                            div()
+                                .overflow_scroll()
+                                .w(300.0)
+                                .h(200.0)
+                                .bg(Color::from_hex(0x0f172a))
+                                .rounded(8.0)
+                                .child(
+                                    div().h(500.0).p(5.0).flex_col().gap(5.0).w_full()
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0))
+                                        .child(div().h(50.0).w_full().bg(Color::from_hex(0x1e293b)).rounded(4.0)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// CLIP-PATH SECTION
+// ============================================================================
+
+fn clip_path_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("CSS clip-path"))
+        .child(section_description(
+            "Clip elements to shapes: circle, ellipse, inset, polygon. Applied via clip-path CSS property.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("circle(50%)"))
+                        .child(div().w(120.0).h(120.0).id("clip-circle")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("ellipse(50% 35%)"))
+                        .child(div().w(120.0).h(120.0).id("clip-ellipse")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("inset(10% round 12)"))
+                        .child(div().w(120.0).h(120.0).id("clip-inset")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("polygon (hexagon)"))
+                        .child(div().w(120.0).h(120.0).id("clip-polygon-hex")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("polygon (star)"))
+                        .child(div().w(120.0).h(120.0).id("clip-polygon-star")),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("polygon (arrow)"))
+                        .child(div().w(120.0).h(120.0).id("clip-polygon-arrow")),
+                ),
+        )
+}
+
+// ============================================================================
+// ANIMATED CLIP-PATH SECTION (hover-triggered clip-path keyframe animations)
+// ============================================================================
+
+fn clip_path_animation_section() -> impl ElementBuilder {
+    let dark_blue = Color::from_hex(0x1e3a5f);
+    let dark_green = Color::from_hex(0x0f3d2a);
+    let dark_purple = Color::from_hex(0x3d1f5e);
+
+    section_container()
+        .child(section_title("Animated clip-path"))
+        .child(section_description(
+            "Hover to reveal content with animated clip-path transitions. A bright overlay clips over a dark base layer.",
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(24.0)
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("Center reveal"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(150.0)
+                                .relative()
+                                .child(div().absolute().top(0.0).left(0.0).w(200.0).h(150.0).bg(dark_blue).rounded(12.0))
+                                .child(div().id("clip-over-center")),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("Top-down"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(150.0)
+                                .relative()
+                                .child(div().absolute().top(0.0).left(0.0).w(200.0).h(150.0).bg(dark_green).rounded(12.0))
+                                .child(div().id("clip-over-top")),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("Left-to-right"))
+                        .child(
+                            div()
+                                .w(200.0)
+                                .h(150.0)
+                                .relative()
+                                .child(div().absolute().top(0.0).left(0.0).w(200.0).h(150.0).bg(dark_purple).rounded(12.0))
+                                .child(div().id("clip-over-left")),
+                        ),
                 ),
         )
 }
