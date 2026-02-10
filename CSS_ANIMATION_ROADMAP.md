@@ -178,14 +178,15 @@ Not currently parsed — need parser + animation support.
 
 ## Phase 9: Backdrop Filter Animation
 
-- [ ] `backdrop-filter` transition between states (e.g. `blur(0) → blur(20px)`)
+- [x] `backdrop-filter` transition between states (e.g. `blur(0) → blur(20px)`)
 
-Currently parsed as discrete materials (Glass, Chrome, etc.). Animating requires:
-1. Parameterize backdrop-filter with continuous values (blur radius, saturation, etc.)
-2. Multi-pass: capture background, apply filter, composite element on top
-3. Similar infrastructure to `filter: blur()`
+### Implementation
+1. Parse `backdrop-filter: blur(Npx) saturate(N) brightness(N)` with actual parameter extraction
+2. Add `backdrop_blur`, `backdrop_saturation`, `backdrop_brightness` to `KeyframeProperties`
+3. Wire through animation/transition pipeline (snapshot, lerp, apply, detect)
+4. During animation, modify `GlassMaterial` on `RenderProps` and set `RenderLayer::Glass`
 
-**Complexity**: Very High — overlaps with Phase 8 blur infrastructure.
+**Complexity**: Medium — reuses existing glass material pipeline, just wires continuous values through animation system.
 
 ---
 

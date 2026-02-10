@@ -636,6 +636,45 @@ fn main() -> Result<()> {
                 animation: blur-pulse 3000ms ease-in-out infinite;
             }
 
+            /* --- Backdrop-filter animation demos (Phase 9) --- */
+
+            /* Static backdrop blur */
+            #backdrop-static {
+                backdrop-filter: blur(12px);
+                border-radius: 12px;
+            }
+
+            /* Backdrop blur transition on hover */
+            #backdrop-hover {
+                backdrop-filter: blur(0px);
+                border-radius: 12px;
+                transition: backdrop-filter 400ms ease;
+            }
+            #backdrop-hover:hover {
+                backdrop-filter: blur(20px);
+            }
+
+            /* Backdrop blur + saturate transition */
+            #backdrop-combo {
+                backdrop-filter: blur(8px) saturate(1.0);
+                border-radius: 12px;
+                transition: backdrop-filter 500ms ease;
+            }
+            #backdrop-combo:hover {
+                backdrop-filter: blur(20px) saturate(1.8);
+            }
+
+            /* Backdrop blur keyframe animation */
+            @keyframes backdrop-pulse {
+                0% { backdrop-filter: blur(4px); }
+                50% { backdrop-filter: blur(24px); }
+                100% { backdrop-filter: blur(4px); }
+            }
+            #backdrop-anim {
+                border-radius: 12px;
+                animation: backdrop-pulse 3000ms ease-in-out infinite;
+            }
+
             /* --- Layout Property Animation demos --- */
 
             /* Width transition on hover */
@@ -926,6 +965,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(is_where_of_type_section())
                     // Filter blur & drop-shadow (Phase 8)
                     .child(filter_blur_section())
+                    // Backdrop-filter animation (Phase 9)
+                    .child(backdrop_filter_section())
                     // Gradient animation (Phase 6)
                     .child(gradient_animation_section())
                     // Text shadow (Phase 7)
@@ -2154,6 +2195,137 @@ fn filter_blur_section() -> impl ElementBuilder {
                                 .justify_center()
                                 .items_center()
                                 .child(text("Pulsing blur").size(14.0).color(Color::WHITE)),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// BACKDROP-FILTER ANIMATION SECTION (Phase 9)
+// ============================================================================
+
+fn backdrop_filter_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Backdrop-Filter Animation"))
+        .child(section_description(
+            "Animatable backdrop-filter: blur(), saturate(), brightness() on glass materials.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // Colorful background strip behind glass elements
+                .child(
+                    div()
+                        .flex_row()
+                        .gap(12.0)
+                        .child(
+                            // Static backdrop blur
+                            div()
+                                .flex_col()
+                                .gap(8.0)
+                                .child(code_label("backdrop-filter: blur(12px)"))
+                                .child(
+                                    div()
+                                        .w(140.0)
+                                        .h(80.0)
+                                        .bg(Color::rgba(0.2, 0.6, 1.0, 0.3))
+                                        .child(
+                                            div()
+                                                .id("backdrop-static")
+                                                .w(140.0)
+                                                .h(80.0)
+                                                .flex_col()
+                                                .justify_center()
+                                                .items_center()
+                                                .child(
+                                                    text("Static Blur")
+                                                        .size(12.0)
+                                                        .color(Color::WHITE),
+                                                ),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            // Hover → blur transition
+                            div()
+                                .flex_col()
+                                .gap(8.0)
+                                .child(code_label("hover: blur(0→20px)"))
+                                .child(
+                                    div()
+                                        .w(140.0)
+                                        .h(80.0)
+                                        .bg(Color::rgba(1.0, 0.4, 0.2, 0.4))
+                                        .child(
+                                            div()
+                                                .id("backdrop-hover")
+                                                .w(140.0)
+                                                .h(80.0)
+                                                .flex_col()
+                                                .justify_center()
+                                                .items_center()
+                                                .child(
+                                                    text("Hover Me")
+                                                        .size(12.0)
+                                                        .color(Color::WHITE),
+                                                ),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            // Combo: blur + saturate transition
+                            div()
+                                .flex_col()
+                                .gap(8.0)
+                                .child(code_label("hover: blur+saturate"))
+                                .child(
+                                    div()
+                                        .w(140.0)
+                                        .h(80.0)
+                                        .bg(Color::rgba(0.4, 0.9, 0.3, 0.4))
+                                        .child(
+                                            div()
+                                                .id("backdrop-combo")
+                                                .w(140.0)
+                                                .h(80.0)
+                                                .flex_col()
+                                                .justify_center()
+                                                .items_center()
+                                                .child(
+                                                    text("Hover Combo")
+                                                        .size(12.0)
+                                                        .color(Color::WHITE),
+                                                ),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            // Keyframe animation
+                            div()
+                                .flex_col()
+                                .gap(8.0)
+                                .child(code_label("@keyframes backdrop-pulse"))
+                                .child(
+                                    div()
+                                        .w(140.0)
+                                        .h(80.0)
+                                        .bg(Color::rgba(0.8, 0.3, 0.9, 0.4))
+                                        .child(
+                                            div()
+                                                .id("backdrop-anim")
+                                                .w(140.0)
+                                                .h(80.0)
+                                                .flex_col()
+                                                .justify_center()
+                                                .items_center()
+                                                .child(
+                                                    text("Animated")
+                                                        .size(12.0)
+                                                        .color(Color::WHITE),
+                                                ),
+                                        ),
+                                ),
                         ),
                 ),
         )

@@ -86,6 +86,14 @@ All notable changes to `blinc_layout` will be documented in this file.
 - Supports `N`, `N%`, `Ndeg`, `Npx` argument formats
 - Nested parenthesis handling in filter parser (e.g. `drop-shadow(4px 4px 8px rgba(0,0,0,0.5))`)
 
+#### Backdrop-Filter Animation
+
+- `backdrop-filter: blur(Npx)` now extracts actual blur radius (was ignoring value)
+- `backdrop-filter: blur(Npx) saturate(N) brightness(N)` multi-function parsing
+- Animatable `backdrop_blur`, `backdrop_saturation`, `backdrop_brightness` in `KeyframeProperties`
+- Transition support: `transition: backdrop-filter 400ms ease` with smooth interpolation
+- `@keyframes` support for backdrop-filter properties
+
 #### Selector Hierarchy
 
 - `.class` selectors via `Div::class("name")`

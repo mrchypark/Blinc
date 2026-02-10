@@ -987,6 +987,13 @@ impl CssKeyframes {
             props.filter_blur = Some(f.blur);
         }
 
+        // Backdrop filter (glass material)
+        if let Some(Material::Glass(glass)) = &style.material {
+            props.backdrop_blur = Some(glass.blur);
+            props.backdrop_saturation = Some(glass.saturation);
+            props.backdrop_brightness = Some(glass.brightness);
+        }
+
         // Layout properties
         if let Some(w) = style.width {
             props.width = Some(w);
@@ -2987,12 +2994,13 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 "wood" => {
                     style.material = Some(Material::Wood(WoodMaterial::new()));
                 }
-                _ if trimmed.starts_with("blur(") => {
-                    // backdrop-filter: blur(10px) → glass material
-                    style.material = Some(Material::Glass(GlassMaterial::new()));
-                    style.render_layer = Some(RenderLayer::Glass);
+                _ => {
+                    // Parse functional backdrop-filter values: blur(), saturate(), brightness()
+                    if let Some(glass) = parse_backdrop_filter_functions(&trimmed) {
+                        style.material = Some(Material::Glass(glass));
+                        style.render_layer = Some(RenderLayer::Glass);
+                    }
                 }
-                _ => {}
             }
         }
         "clip-path" => {
@@ -3565,12 +3573,13 @@ fn apply_property_with_errors(
                 "wood" => {
                     style.material = Some(Material::Wood(WoodMaterial::new()));
                 }
-                _ if trimmed.starts_with("blur(") => {
-                    style.material = Some(Material::Glass(GlassMaterial::new()));
-                    style.render_layer = Some(RenderLayer::Glass);
-                }
                 _ => {
-                    errors.push(ParseError::invalid_value(name, value, line, column));
+                    if let Some(glass) = parse_backdrop_filter_functions(&trimmed) {
+                        style.material = Some(Material::Glass(glass));
+                        style.render_layer = Some(RenderLayer::Glass);
+                    } else {
+                        errors.push(ParseError::invalid_value(name, value, line, column));
+                    }
                 }
             }
         }
@@ -4638,6 +4647,93 @@ fn parse_single_transition(value: &str) -> Option<CssTransition> {
 ///
 /// Supports: grayscale, invert, sepia, hue-rotate, brightness, contrast, saturate
 /// Values can be plain numbers, percentages, or degrees (for hue-rotate)
+/// Parse functional `backdrop-filter` values: `blur(Npx)`, `saturate(N)`, `brightness(N)`.
+/// Returns a `GlassMaterial` with `simple=true` and the extracted parameters.
+fn parse_backdrop_filter_functions(value: &str) -> Option<GlassMaterial> {
+    let mut remaining = value.trim();
+    if remaining.is_empty() {
+        return None;
+    }
+
+    let mut glass = GlassMaterial::new().with_simple(true);
+    let mut found_any = false;
+
+    while !remaining.is_empty() {
+        remaining = remaining.trim_start();
+        if remaining.is_empty() {
+            break;
+        }
+
+        let paren_pos = remaining.find('(')?;
+        let func_name = remaining[..paren_pos].trim();
+        let after_paren = &remaining[paren_pos + 1..];
+
+        // Find matching close paren (handles nested parens)
+        let close_pos = {
+            let mut depth = 0i32;
+            let mut found = None;
+            for (i, ch) in after_paren.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        if depth == 0 {
+                            found = Some(i);
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+            }
+            found
+        };
+
+        if let Some(close) = close_pos {
+            let arg_str = after_paren[..close].trim();
+            remaining = after_paren[close + 1..].trim_start();
+
+            match func_name.to_lowercase().as_str() {
+                "blur" => {
+                    if let Some(px) = parse_css_px(arg_str) {
+                        glass.blur = px;
+                        found_any = true;
+                    }
+                }
+                "saturate" => {
+                    if let Some(v) = arg_str
+                        .strip_suffix('%')
+                        .and_then(|s| s.trim().parse::<f32>().ok())
+                        .map(|p| p / 100.0)
+                        .or_else(|| arg_str.parse::<f32>().ok())
+                    {
+                        glass.saturation = v;
+                        found_any = true;
+                    }
+                }
+                "brightness" => {
+                    if let Some(v) = arg_str
+                        .strip_suffix('%')
+                        .and_then(|s| s.trim().parse::<f32>().ok())
+                        .map(|p| p / 100.0)
+                        .or_else(|| arg_str.parse::<f32>().ok())
+                    {
+                        glass.brightness = v;
+                        found_any = true;
+                    }
+                }
+                _ => {
+                    // Skip unknown functions
+                    continue;
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    if found_any { Some(glass) } else { None }
+}
+
 fn parse_css_filter(value: &str) -> Option<crate::element_style::CssFilter> {
     use crate::element_style::CssFilter;
 

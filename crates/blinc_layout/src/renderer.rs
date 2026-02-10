@@ -6212,6 +6212,11 @@ impl RenderTree {
         check_transition!(filter_hue_rotate, "filter", default 0.0);
         check_transition!(filter_blur, "filter", default 0.0);
 
+        // Backdrop filter
+        check_transition!(backdrop_blur, "backdrop-filter", default 0.0);
+        check_transition!(backdrop_saturation, "backdrop-filter", default 1.0);
+        check_transition!(backdrop_brightness, "backdrop-filter", default 1.0);
+
         // Layout properties (require layout recomputation when transitioning)
         check_transition!(width, "width");
         check_transition!(height, "height");
@@ -6660,6 +6665,29 @@ impl RenderTree {
             }
         }
 
+        // Backdrop filter (glass material)
+        let has_backdrop = anim_props.backdrop_blur.is_some()
+            || anim_props.backdrop_saturation.is_some()
+            || anim_props.backdrop_brightness.is_some();
+        if has_backdrop {
+            let existing = match &props.material {
+                Some(Material::Glass(g)) => g.clone(),
+                _ => GlassMaterial::new().with_simple(true),
+            };
+            let mut glass = existing;
+            if let Some(b) = anim_props.backdrop_blur {
+                glass.blur = b;
+            }
+            if let Some(s) = anim_props.backdrop_saturation {
+                glass.saturation = s;
+            }
+            if let Some(br) = anim_props.backdrop_brightness {
+                glass.brightness = br;
+            }
+            props.material = Some(Material::Glass(glass));
+            props.layer = RenderLayer::Glass;
+        }
+
         // z-index (round from f32 to i32)
         if let Some(z) = anim_props.z_index {
             props.z_index = z.round() as i32;
@@ -6842,6 +6870,13 @@ impl RenderTree {
             kp.filter_saturate = Some(f.saturate);
             kp.filter_hue_rotate = Some(f.hue_rotate);
             kp.filter_blur = Some(f.blur);
+        }
+
+        // Backdrop filter (glass material)
+        if let Some(Material::Glass(glass)) = &props.material {
+            kp.backdrop_blur = Some(glass.blur);
+            kp.backdrop_saturation = Some(glass.saturation);
+            kp.backdrop_brightness = Some(glass.brightness);
         }
 
         // z-index (as f32 for smooth interpolation)
