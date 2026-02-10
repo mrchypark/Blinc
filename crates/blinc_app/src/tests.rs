@@ -5,6 +5,7 @@
 
 use crate::app::BlincConfig;
 use crate::prelude::*;
+use blinc_core::{Brush, DrawContext, Point, Rect, Stroke};
 use image::{ImageBuffer, Rgba, RgbaImage};
 use std::path::Path;
 
@@ -66,15 +67,14 @@ fn padded_bytes_per_row(width: u32) -> u32 {
     ((unpadded + align - 1) / align) * align
 }
 
-/// Save a rendered texture to PNG
-fn save_to_png(
+/// Read back a rendered texture into an RGBA image (BGRA->RGBA conversion).
+fn read_to_rgba_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     width: u32,
     height: u32,
-    path: &Path,
-) {
+) -> RgbaImage {
     let bytes_per_row = padded_bytes_per_row(width);
     let buffer_size = (bytes_per_row * height) as u64;
 
@@ -149,6 +149,20 @@ fn save_to_png(
     drop(data);
     buffer.unmap();
 
+    img
+}
+
+/// Save a rendered texture to PNG
+fn save_to_png(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    path: &Path,
+) {
+    let img = read_to_rgba_image(device, queue, texture, width, height);
+
     // Ensure output directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -172,6 +186,19 @@ fn render_to_png(
     let path = Path::new(OUTPUT_DIR).join(format!("{}.png", name));
     save_to_png(app.device(), app.queue(), &texture, width, height, &path);
     println!("Saved: {:?}", path);
+}
+
+/// Render a UI element and return the rendered pixels (RGBA).
+fn render_to_image(
+    app: &mut BlincApp,
+    ui: &impl ElementBuilder,
+    width: u32,
+    height: u32,
+) -> RgbaImage {
+    let (texture, view) = create_test_texture(app.device(), width, height);
+    app.render(ui, &view, width as f32, height as f32)
+        .expect("Render failed");
+    read_to_rgba_image(app.device(), app.queue(), &texture, width, height)
 }
 
 #[test]
@@ -231,6 +258,115 @@ fn test_svg_icon() {
         .child(svg(svg_source).size(100.0, 100.0));
 
     render_to_png(&mut app, "svg_icon", &ui, 200, 200);
+}
+
+#[test]
+fn test_tessellated_path_stroke_is_visible() {
+    require_gpu!(app);
+
+    // Force the polyline to fall back to tessellated path rendering by using a rounded clip.
+    // This catches regressions where the path pipeline silently stops drawing.
+    let ui = div()
+        .w(240.0)
+        .h(180.0)
+        .rounded(16.0)
+        .overflow_clip()
+        .bg(Color::rgba(0.08, 0.09, 0.11, 1.0))
+        .child(
+            canvas(|ctx: &mut dyn DrawContext, bounds| {
+                // A diagonal line that should be clearly visible.
+                let pts = [
+                    Point::new(20.0, bounds.height - 20.0),
+                    Point::new(bounds.width - 20.0, 20.0),
+                ];
+                ctx.stroke_polyline(
+                    &pts,
+                    &Stroke::new(3.0),
+                    Brush::Solid(Color::rgba(0.35, 0.65, 1.0, 1.0)),
+                );
+            })
+            .w_full()
+            .h_full(),
+        );
+
+    let img = render_to_image(&mut app, &ui, 240, 180);
+
+    // Count "blue-ish" pixels. Thresholds are conservative to be robust to AA.
+    let mut blueish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && b > 160 && g > 150 && r < 180 {
+            blueish += 1;
+        }
+    }
+
+    assert!(
+        blueish > 50,
+        "expected tessellated stroke to produce visible blue pixels; blueish={blueish}"
+    );
+}
+
+#[test]
+fn test_compact_polyline_is_visible() {
+    require_gpu!(app);
+
+    // No rounded clip: should take the compact line-segment path.
+    let ui = div()
+        .w(240.0)
+        .h(180.0)
+        .bg(Color::rgba(0.08, 0.09, 0.11, 1.0))
+        .child(
+            canvas(|ctx: &mut dyn DrawContext, bounds| {
+                // Sanity check: SDF primitives should render in the same canvas.
+                ctx.fill_rect(
+                    Rect::new(8.0, 8.0, 16.0, 16.0),
+                    0.0.into(),
+                    Brush::Solid(Color::rgba(0.95, 0.2, 0.2, 1.0)),
+                );
+
+                let pts = [
+                    Point::new(20.0, bounds.height - 20.0),
+                    Point::new(bounds.width - 20.0, 20.0),
+                ];
+                ctx.stroke_polyline(
+                    &pts,
+                    &Stroke::new(3.0),
+                    Brush::Solid(Color::rgba(0.35, 0.65, 1.0, 1.0)),
+                );
+            })
+            .w_full()
+            .h_full(),
+        );
+
+    // Persist an artifact for local debugging when this test fails.
+    render_to_png(&mut app, "debug_canvas_polyline", &ui, 240, 180);
+
+    let img = render_to_image(&mut app, &ui, 240, 180);
+
+    // Confirm the red square exists (catch any readback/format issues early).
+    let mut reddish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && r > 200 && g < 160 && b < 160 {
+            reddish += 1;
+        }
+    }
+    assert!(
+        reddish > 50,
+        "expected red sanity pixels; reddish={reddish}"
+    );
+
+    let mut blueish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && b > 160 && g > 150 && r < 180 {
+            blueish += 1;
+        }
+    }
+    assert!(
+        blueish > 50,
+        "expected compact polyline to produce visible blue pixels; blueish={blueish}"
+    );
 }
 
 #[test]
