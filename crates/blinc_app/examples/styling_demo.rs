@@ -580,8 +580,8 @@ fn main() -> Result<()> {
                 text-shadow: 2px 2px 0px rgba(34, 197, 94, 0.9);
             }
             #text-shadow-hover {
-                text-shadow: 0px 0px 0px rgba(239, 68, 68, 0);
-                transition: all 500ms ease;
+                text-shadow: 2px 2px 0px rgba(0, 0, 0, 0.6);
+                transition: text-shadow 500ms ease;
             }
             #text-shadow-hover:hover {
                 text-shadow: 3px 3px 0px rgba(239, 68, 68, 1.0);
@@ -2671,7 +2671,7 @@ fn text_shadow_section() -> impl ElementBuilder {
                     div()
                         .flex_col()
                         .gap(8.0)
-                        .child(code_label("text-shadow transition on :hover"))
+                        .child(code_label("text-shadow: 2px 2px 0px (dark) → 3px 3px (red) on :hover"))
                         .child(
                             div()
                                 .w(200.0)
