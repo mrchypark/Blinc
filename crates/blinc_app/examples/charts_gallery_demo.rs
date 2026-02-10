@@ -6,6 +6,7 @@
 //! This demo is a living gallery: every chart candidate gets at least one section.
 //! Some sections are placeholders until their dedicated chart types land.
 
+use blinc_app::demos::charts_gallery::{layout_mode, parse_initial_selected, LayoutMode};
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_charts::prelude::*;
@@ -106,9 +107,15 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         .filter(|&v| v >= 2)
         .unwrap_or(200_000);
 
-    let selected = ctx.use_state_keyed("charts_gallery_selected", || 0usize);
+    let initial_selected = parse_initial_selected(
+        std::env::var("BLINC_GALLERY_SELECTED").ok().as_deref(),
+        ITEMS.len(),
+    );
+    let selected = ctx.use_state_keyed("charts_gallery_selected", move || initial_selected);
 
     let models = ctx.use_state_keyed("charts_gallery_models", || GalleryModels::new(line_n));
+
+    let layout = layout_mode(ctx.width, ctx.height);
 
     let header = div()
         .flex_row()
@@ -147,7 +154,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
             )
             .child(div().h(1.0).bg(Color::rgba(1.0, 1.0, 1.0, 0.06)))
             .child({
-                let mut list = div().flex_col().gap(6.0);
+                let mut list = div().flex_1().overflow_y_scroll().flex_col().gap(6.0);
                 for (i, (title, _desc)) in ITEMS.iter().enumerate() {
                     let title = *title;
                     let selected_for_state = selected_for_list.clone();
@@ -190,6 +197,64 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                 }
                 list
             })
+    };
+
+    let tabs = {
+        let selected_for_list = selected.clone();
+        let selected_signal = selected.signal_id();
+
+        let mut list = div()
+            .w_full()
+            .overflow_x_scroll()
+            .flex_row()
+            .gap(8.0)
+            .p(8.0)
+            .rounded(14.0)
+            .bg(Color::rgba(0.04, 0.05, 0.07, 1.0))
+            .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.06));
+
+        for (i, (title, _desc)) in ITEMS.iter().enumerate() {
+            let title = *title;
+            let selected_for_state = selected_for_list.clone();
+            let selected_for_click = selected_for_list.clone();
+
+            list = list.child(
+                stateful::<ButtonState>()
+                    .initial(ButtonState::Idle)
+                    .deps([selected_signal])
+                    .on_state(move |ctx| {
+                        let is_selected = selected_for_state.get() == i;
+                        let bg = if is_selected {
+                            Color::rgba(0.20, 0.35, 0.60, 0.55)
+                        } else {
+                            match ctx.state() {
+                                ButtonState::Idle => Color::rgba(1.0, 1.0, 1.0, 0.04),
+                                ButtonState::Hovered => Color::rgba(1.0, 1.0, 1.0, 0.07),
+                                ButtonState::Pressed => Color::rgba(1.0, 1.0, 1.0, 0.10),
+                                ButtonState::Disabled => Color::rgba(1.0, 1.0, 1.0, 0.02),
+                            }
+                        };
+                        let fg = if is_selected {
+                            Color::rgba(0.95, 0.96, 0.98, 1.0)
+                        } else {
+                            Color::rgba(0.85, 0.88, 0.92, 0.90)
+                        };
+                        div().px(10.0).py(8.0).rounded(999.0).bg(bg).child(
+                            text(title)
+                                .size(12.0)
+                                .weight(FontWeight::Medium)
+                                .color(fg)
+                                .no_wrap()
+                                .pointer_events_none(),
+                        )
+                    })
+                    .on_click(move |_| {
+                        selected_for_click.set(i);
+                    }),
+            );
+        }
+
+        list
     };
 
     let main = {
@@ -244,22 +309,26 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
             })
     };
 
-    div()
+    let root = div()
         .w(ctx.width)
         .h(ctx.height)
         .bg(Color::rgba(0.06, 0.07, 0.09, 1.0))
         .p(12.0)
         .flex_col()
         .gap(12.0)
-        .child(header)
-        .child(
+        .child(header);
+
+    match layout {
+        LayoutMode::Wide => root.child(
             div()
                 .flex_1()
                 .flex_row()
                 .gap(12.0)
                 .child(sidebar)
                 .child(main),
-        )
+        ),
+        LayoutMode::Narrow => root.child(tabs).child(div().flex_1().child(main)),
+    }
 }
 
 fn chart_for(
