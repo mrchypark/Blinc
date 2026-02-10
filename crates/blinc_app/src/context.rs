@@ -103,6 +103,11 @@ struct TextElement {
     strikethrough: bool,
     /// Whether text has underline decoration
     underline: bool,
+    /// Inherited CSS transform from ancestor elements (full 6-element affine in layout coords)
+    /// [a, b, c, d, tx, ty] where new_x = a*x + c*y + tx, new_y = b*x + d*y + ty
+    css_affine: Option<[f32; 6]>,
+    /// Text shadow (offset_x, offset_y, blur, color) from CSS text-shadow property
+    text_shadow: Option<blinc_core::Shadow>,
 }
 
 /// Image element data for rendering
@@ -261,7 +266,8 @@ impl RenderContext {
         tree.render_to_layer(&mut bg_ctx, RenderLayer::Glass);
 
         // Take the batch from bg_ctx before we can reuse text_ctx for fg_ctx
-        let bg_batch = bg_ctx.take_batch();
+        // (mutable so CSS-transformed text primitives can be added)
+        let mut bg_batch = bg_ctx.take_batch();
         if std::env::var_os("BLINC_DEBUG_BATCHES").is_some() {
             tracing::info!(
                 "bg_batch: prims={} fg_prims={} lines={} fg_lines={} glass={} glyphs={} paths(v/i)={}/{} fg_paths(v/i)={}/{}",
@@ -309,6 +315,7 @@ impl RenderContext {
 
         // Prepare text glyphs
         let mut all_glyphs = Vec::new();
+        let mut css_transformed_text_prims: Vec<GpuPrimitive> = Vec::new();
         for text in &texts {
             // Convert layout TextAlign to GPU TextAlignment
             let alignment = match text.align {
@@ -393,7 +400,30 @@ impl RenderContext {
                             glyph.clip_bounds = clip;
                         }
                     }
-                    all_glyphs.extend(glyphs);
+
+                    if let Some(affine) = text.css_affine {
+                        // CSS-transformed text: convert to SDF primitives with local_affine
+                        let [a, b, c, d, tx, ty] = affine;
+                        let tx_scaled = tx * scale_factor;
+                        let ty_scaled = ty * scale_factor;
+                        for glyph in &glyphs {
+                            let gc_x = glyph.bounds[0] + glyph.bounds[2] / 2.0;
+                            let gc_y = glyph.bounds[1] + glyph.bounds[3] / 2.0;
+                            let new_gc_x = a * gc_x + c * gc_y + tx_scaled;
+                            let new_gc_y = b * gc_x + d * gc_y + ty_scaled;
+                            let mut prim = GpuPrimitive::from_glyph(glyph);
+                            prim.bounds = [
+                                new_gc_x - glyph.bounds[2] / 2.0,
+                                new_gc_y - glyph.bounds[3] / 2.0,
+                                glyph.bounds[2],
+                                glyph.bounds[3],
+                            ];
+                            prim.local_affine = [a, b, c, d];
+                            css_transformed_text_prims.push(prim);
+                        }
+                    } else {
+                        all_glyphs.extend(glyphs);
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("Failed to prepare text '{}': {:?}", text.content, e);
@@ -411,6 +441,17 @@ impl RenderContext {
         // They will be rendered later via render_rasterized_svgs
 
         self.renderer.resize(width, height);
+
+        // If we have CSS-transformed text, push text prims into the background batch
+        // and bind the real glyph atlas to the SDF pipeline for ALL render paths.
+        if !css_transformed_text_prims.is_empty() {
+            if let (Some(atlas), Some(color_atlas)) =
+                (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
+            {
+                bg_batch.primitives.append(&mut css_transformed_text_prims);
+                self.renderer.set_glyph_atlas(atlas, color_atlas);
+            }
+        }
 
         let has_glass = bg_batch.glass_count() > 0;
 
@@ -736,19 +777,7 @@ impl RenderContext {
             return;
         }
 
-        if let (Some(atlas_view), Some(color_atlas_view)) =
-            (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
-        {
-            self.renderer.render_primitives_overlay_with_glyphs(
-                target,
-                primitives,
-                atlas_view,
-                color_atlas_view,
-            );
-        } else {
-            // Fallback to regular rendering if no text atlases available
-            self.renderer.render_primitives_overlay(target, primitives);
-        }
+        self.renderer.render_primitives_overlay(target, primitives);
     }
 
     /// Render text decorations for a specific z-layer
@@ -1576,6 +1605,7 @@ impl RenderContext {
                 &mut texts,
                 &mut svgs,
                 &mut images,
+                None, // No initial CSS transform
             );
         }
 
@@ -1607,6 +1637,9 @@ impl RenderContext {
         texts: &mut Vec<TextElement>,
         svgs: &mut Vec<SvgElement>,
         images: &mut Vec<ImageElement>,
+        // Accumulated CSS transform from ancestors as a 6-element affine [a,b,c,d,tx,ty]
+        // in layout coordinates. Maps pre-transform coords to post-transform visual coords.
+        inherited_css_affine: Option<[f32; 6]>,
     ) {
         use blinc_layout::Material;
 
@@ -1721,6 +1754,16 @@ impl RenderContext {
             *z_layer += 1;
         }
 
+        // Apply CSS z-index to z_layer for stacking order
+        let saved_z_layer = *z_layer;
+        let node_z_index = tree
+            .get_render_node(node)
+            .map(|n| n.props.z_index)
+            .unwrap_or(0);
+        if node_z_index > 0 {
+            *z_layer = node_z_index as u32;
+        }
+
         // Update clip bounds for children if this node clips (either via clips_content or layout animation)
         // When a node clips, we INTERSECT its bounds with any existing clip
         // This ensures nested clipping works correctly (inner clips can't expand outer clips)
@@ -1833,7 +1876,9 @@ impl RenderContext {
                             (final_x, final_y, base_width, base_height)
                         };
 
-                    let scaled_font_size = text_data.font_size * effective_motion_scale.1 * scale;
+                    // Use CSS-overridden font size if available (from stylesheet/animation/transition)
+                    let base_font_size = render_node.props.font_size.unwrap_or(text_data.font_size);
+                    let scaled_font_size = base_font_size * effective_motion_scale.1 * scale;
                     let scaled_measured_width =
                         text_data.measured_width * effective_motion_scale.0 * scale;
 
@@ -1880,7 +1925,7 @@ impl RenderContext {
                         width: scaled_width,
                         height: scaled_height,
                         font_size: scaled_font_size,
-                        color: text_data.color,
+                        color: render_node.props.text_color.unwrap_or(text_data.color),
                         align: text_data.align,
                         weight: text_data.weight,
                         italic: text_data.italic,
@@ -1894,6 +1939,8 @@ impl RenderContext {
                         ascender: text_data.ascender * effective_motion_scale.1 * scale,
                         strikethrough: text_data.strikethrough,
                         underline: text_data.underline,
+                        css_affine: inherited_css_affine,
+                        text_shadow: render_node.props.text_shadow,
                     });
                 }
                 ElementType::Svg(svg_data) => {
@@ -2024,7 +2071,10 @@ impl RenderContext {
                             (final_x, final_y, base_width, base_height)
                         };
 
-                    let scaled_font_size = styled_data.font_size * effective_motion_scale.1 * scale;
+                    // Use CSS-overridden font size if available (from stylesheet/animation/transition)
+                    let base_styled_font_size =
+                        render_node.props.font_size.unwrap_or(styled_data.font_size);
+                    let scaled_font_size = base_styled_font_size * effective_motion_scale.1 * scale;
                     let scaled_clip = current_clip
                         .map(|[cx, cy, cw, ch]| [cx * scale, cy * scale, cw * scale, ch * scale]);
 
@@ -2099,7 +2149,12 @@ impl RenderContext {
                             }
                         }
 
-                        let final_color = color.unwrap_or(styled_data.default_color);
+                        // CSS text_color override takes precedence over span colors
+                        let default_color = render_node
+                            .props
+                            .text_color
+                            .unwrap_or(styled_data.default_color);
+                        let final_color = color.unwrap_or(default_color);
                         segments.push((
                             seg_start,
                             seg_end,
@@ -2164,6 +2219,8 @@ impl RenderContext {
                             ascender: scaled_ascender * effective_motion_scale.1, // Scale ascender with motion
                             strikethrough,
                             underline,
+                            css_affine: inherited_css_affine,
+                            text_shadow: render_node.props.text_shadow,
                         });
 
                         x_offset += segment_width;
@@ -2186,6 +2243,58 @@ impl RenderContext {
             abs_x + scroll_offset.0 + static_motion_offset.0,
             abs_y + scroll_offset.1 + static_motion_offset.1,
         );
+
+        // Compute CSS affine for children: compose this node's CSS transform with inherited
+        let child_css_affine = if let Some(render_node) = tree.get_render_node(node) {
+            if let Some(blinc_core::Transform::Affine2D(affine)) = &render_node.props.transform {
+                let [a, b, c, d, _tx, _ty] = affine.elements;
+                // Check if transform is non-identity (rotation, skew, or scale)
+                let is_identity = (a - 1.0).abs() < 0.0001
+                    && b.abs() < 0.0001
+                    && c.abs() < 0.0001
+                    && (d - 1.0).abs() < 0.0001;
+                if !is_identity {
+                    // Compute transform center in absolute layout coords
+                    let (cx, cy) =
+                        if let Some([ox_pct, oy_pct]) = render_node.props.transform_origin {
+                            (
+                                abs_x + bounds.width * ox_pct / 100.0,
+                                abs_y + bounds.height * oy_pct / 100.0,
+                            )
+                        } else {
+                            (abs_x + bounds.width / 2.0, abs_y + bounds.height / 2.0)
+                        };
+                    // Build full 6-element affine: T(center) * M * T(-center)
+                    // new_x = a*x + c*y + cx*(1-a) - cy*c
+                    // new_y = b*x + d*y + cy*(1-d) - cx*b
+                    let this_affine =
+                        [a, b, c, d, cx * (1.0 - a) - cy * c, cy * (1.0 - d) - cx * b];
+                    match inherited_css_affine {
+                        Some(parent) => {
+                            // Compose: parent applied first, then this node's transform
+                            // Result = this_affine(parent(x))
+                            let [pa, pb, pc, pd, ptx, pty] = parent;
+                            Some([
+                                a * pa + c * pb,
+                                b * pa + d * pb,
+                                a * pc + c * pd,
+                                b * pc + d * pd,
+                                a * ptx + c * pty + this_affine[4],
+                                b * ptx + d * pty + this_affine[5],
+                            ])
+                        }
+                        None => Some(this_affine),
+                    }
+                } else {
+                    inherited_css_affine
+                }
+            } else {
+                inherited_css_affine
+            }
+        } else {
+            inherited_css_affine
+        };
+
         for child_id in tree.layout().children(node) {
             self.collect_elements_recursive(
                 tree,
@@ -2205,7 +2314,13 @@ impl RenderContext {
                 texts,
                 svgs,
                 images,
+                child_css_affine,
             );
+        }
+
+        // Restore z_layer after this subtree
+        if node_z_index > 0 {
+            *z_layer = saved_z_layer;
         }
     }
 
@@ -2282,8 +2397,8 @@ impl RenderContext {
         // Render with motion animations applied (all layers to same context)
         tree.render_with_motion(&mut ctx, render_state);
 
-        // Take the batch
-        let batch = ctx.take_batch();
+        // Take the batch (mutable so CSS-transformed text primitives can be added)
+        let mut batch = ctx.take_batch();
         if std::env::var_os("BLINC_DEBUG_BATCHES").is_some() {
             tracing::info!(
                 "motion_batch: prims={} fg_prims={} lines={} fg_lines={} glass={} glyphs={} max_z={}",
@@ -2308,6 +2423,7 @@ impl RenderContext {
         // Store (z_layer, glyphs) to enable interleaved rendering
         let mut glyphs_by_layer: std::collections::BTreeMap<u32, Vec<GpuGlyph>> =
             std::collections::BTreeMap::new();
+        let mut css_transformed_text_prims: Vec<GpuPrimitive> = Vec::new();
         for text in &texts {
             // Skip text that's completely outside its clip bounds (visibility culling)
             // This prevents loading emoji fonts for off-screen text in scroll containers
@@ -2387,6 +2503,66 @@ impl RenderContext {
                 None
             };
 
+            // Render text shadow first (behind text) if present
+            if let Some(shadow) = &text.text_shadow {
+                let shadow_color = [
+                    shadow.color.r,
+                    shadow.color.g,
+                    shadow.color.b,
+                    shadow.color.a * text.motion_opacity,
+                ];
+                let shadow_x = text.x + shadow.offset_x * scale_factor;
+                let shadow_y = y_pos + shadow.offset_y * scale_factor;
+                if let Ok(mut shadow_glyphs) = self.text_ctx.prepare_text_with_style(
+                    &text.content,
+                    shadow_x,
+                    shadow_y,
+                    text.font_size,
+                    shadow_color,
+                    anchor,
+                    alignment,
+                    wrap_width,
+                    needs_wrap,
+                    font_name,
+                    generic,
+                    font_weight,
+                    text.italic,
+                    layout_height,
+                ) {
+                    if let Some(clip) = text.clip_bounds {
+                        for glyph in &mut shadow_glyphs {
+                            glyph.clip_bounds = clip;
+                        }
+                    }
+                    if let Some(affine) = text.css_affine {
+                        let [a, b, c, d, tx, ty] = affine;
+                        let tx_scaled = tx * scale_factor;
+                        let ty_scaled = ty * scale_factor;
+                        for glyph in &shadow_glyphs {
+                            let gc_x = glyph.bounds[0] + glyph.bounds[2] / 2.0;
+                            let gc_y = glyph.bounds[1] + glyph.bounds[3] / 2.0;
+                            let new_gc_x = a * gc_x + c * gc_y + tx_scaled;
+                            let new_gc_y = b * gc_x + d * gc_y + ty_scaled;
+                            let mut prim = GpuPrimitive::from_glyph(glyph);
+                            prim.bounds = [
+                                new_gc_x - glyph.bounds[2] / 2.0,
+                                new_gc_y - glyph.bounds[3] / 2.0,
+                                glyph.bounds[2],
+                                glyph.bounds[3],
+                            ];
+                            prim.local_affine = [a, b, c, d];
+                            prim.set_z_layer(text.z_index);
+                            css_transformed_text_prims.push(prim);
+                        }
+                    } else {
+                        glyphs_by_layer
+                            .entry(text.z_index)
+                            .or_default()
+                            .extend(shadow_glyphs);
+                    }
+                }
+            }
+
             match self.text_ctx.prepare_text_with_style(
                 &text.content,
                 text.x,
@@ -2416,11 +2592,36 @@ impl RenderContext {
                             glyph.clip_bounds = clip;
                         }
                     }
-                    // Group glyphs by their z_layer
-                    glyphs_by_layer
-                        .entry(text.z_index)
-                        .or_default()
-                        .extend(glyphs);
+
+                    if let Some(affine) = text.css_affine {
+                        // CSS-transformed text: convert glyphs to SDF primitives with local_affine
+                        let [a, b, c, d, tx, ty] = affine;
+                        let tx_scaled = tx * scale_factor;
+                        let ty_scaled = ty * scale_factor;
+                        for glyph in &glyphs {
+                            // Transform glyph center through the affine
+                            let gc_x = glyph.bounds[0] + glyph.bounds[2] / 2.0;
+                            let gc_y = glyph.bounds[1] + glyph.bounds[3] / 2.0;
+                            let new_gc_x = a * gc_x + c * gc_y + tx_scaled;
+                            let new_gc_y = b * gc_x + d * gc_y + ty_scaled;
+                            let mut prim = GpuPrimitive::from_glyph(glyph);
+                            prim.bounds = [
+                                new_gc_x - glyph.bounds[2] / 2.0,
+                                new_gc_y - glyph.bounds[3] / 2.0,
+                                glyph.bounds[2],
+                                glyph.bounds[3],
+                            ];
+                            prim.local_affine = [a, b, c, d];
+                            prim.set_z_layer(text.z_index);
+                            css_transformed_text_prims.push(prim);
+                        }
+                    } else {
+                        // Normal text: add to glyph pipeline
+                        glyphs_by_layer
+                            .entry(text.z_index)
+                            .or_default()
+                            .extend(glyphs);
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -2433,15 +2634,27 @@ impl RenderContext {
         }
 
         tracing::trace!(
-            "render_tree_with_motion: {} texts, {} z-layers with glyphs",
+            "render_tree_with_motion: {} texts, {} z-layers with glyphs, {} css-transformed",
             texts.len(),
-            glyphs_by_layer.len()
+            glyphs_by_layer.len(),
+            css_transformed_text_prims.len()
         );
 
         // SVGs are rendered as rasterized images (not tessellated paths) for better anti-aliasing
         // They will be rendered later via render_rasterized_svgs
 
         self.renderer.resize(width, height);
+
+        // If we have CSS-transformed text, push text prims into the main batch
+        // and bind the real glyph atlas to the SDF pipeline for ALL render paths.
+        if !css_transformed_text_prims.is_empty() {
+            if let (Some(atlas), Some(color_atlas)) =
+                (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
+            {
+                batch.primitives.append(&mut css_transformed_text_prims);
+                self.renderer.set_glyph_atlas(atlas, color_atlas);
+            }
+        }
 
         let has_glass = batch.glass_count() > 0;
         let has_layer_effects_in_batch = batch.has_layer_effects();
@@ -2512,6 +2725,20 @@ impl RenderContext {
 
             self.render_images_ref(target, &bg_images);
             self.render_images_ref(target, &fg_images);
+
+            // Render z>0 primitives as overlays for z-index support
+            // The main batch rendered all primitives in tree order; z>0 elements
+            // need a second pass to appear on top of z=0 elements.
+            let max_z = batch.max_z_layer();
+            if max_z > 0 {
+                for z in 1..=max_z {
+                    let layer_primitives = batch.primitives_for_layer(z);
+                    if !layer_primitives.is_empty() {
+                        self.renderer
+                            .render_primitives_overlay(target, &layer_primitives);
+                    }
+                }
+            }
 
             // Collect all glyphs for glass path using scratch buffer to avoid allocation
             // (TODO: implement interleaved glass rendering)
@@ -2662,7 +2889,7 @@ impl RenderContext {
                     self.render_rasterized_svgs(target, &svgs, scale_factor);
                 }
 
-                // Render foreground primitives on top (for .foreground() elements)
+                // Render foreground primitives (e.g. borders on top)
                 if !batch.foreground_primitives.is_empty() {
                     self.renderer
                         .render_primitives_overlay(target, &batch.foreground_primitives);
@@ -2693,7 +2920,7 @@ impl RenderContext {
                     self.render_text_decorations_for_layer(target, &decorations_by_layer, z);
                 }
             } else {
-                // No z-layers, use original fast path
+                // Fast path: render full batch (handles layer effects like backdrop-filter)
                 self.renderer
                     .render_with_clear(target, &batch, [0.0, 0.0, 0.0, 1.0]);
 
@@ -2714,7 +2941,7 @@ impl RenderContext {
 
                 self.render_images(target, &images, width as f32, height as f32);
 
-                // Render foreground primitives on top of images (for .foreground() elements)
+                // Render foreground primitives (e.g. borders on top)
                 if !batch.foreground_primitives.is_empty() {
                     self.renderer
                         .render_primitives_overlay(target, &batch.foreground_primitives);
@@ -2732,6 +2959,20 @@ impl RenderContext {
                 // Render SVGs as rasterized images for high-quality anti-aliasing
                 if !svgs.is_empty() {
                     self.render_rasterized_svgs(target, &svgs, scale_factor);
+                }
+
+                // If we have z-layers (e.g. z-index elements) but also layer effects,
+                // render z>0 primitives as overlays on top of the main batch.
+                // The main batch rendered ALL primitives in tree order (including z>0),
+                // but z>0 elements need to appear on top of z=0 elements.
+                if max_layer > 0 {
+                    for z in 1..=max_layer {
+                        let layer_primitives = batch.primitives_for_layer(z);
+                        if !layer_primitives.is_empty() {
+                            self.renderer
+                                .render_primitives_overlay(target, &layer_primitives);
+                        }
+                    }
                 }
 
                 // Collect all glyphs for flat rendering
@@ -2784,6 +3025,8 @@ impl RenderContext {
         height: u32,
         target: &wgpu::TextureView,
     ) -> Result<()> {
+        let scale_factor = tree.scale_factor();
+
         // Create a single paint context for all layers with text rendering support
         let mut ctx =
             GpuPaintContext::with_text_context(width as f32, height as f32, &mut self.text_ctx);
@@ -2791,8 +3034,8 @@ impl RenderContext {
         // Render with motion animations applied (all layers to same context)
         tree.render_with_motion(&mut ctx, render_state);
 
-        // Take the batch
-        let batch = ctx.take_batch();
+        // Take the batch (mutable so CSS-transformed text primitives can be added)
+        let mut batch = ctx.take_batch();
 
         // Collect text, SVG, and image elements WITH motion state
         let (texts, svgs, images) =
@@ -2804,6 +3047,7 @@ impl RenderContext {
         // Prepare text glyphs with z_layer information
         let mut glyphs_by_layer: std::collections::BTreeMap<u32, Vec<GpuGlyph>> =
             std::collections::BTreeMap::new();
+        let mut css_transformed_text_prims: Vec<GpuPrimitive> = Vec::new();
         for text in &texts {
             let alignment = match text.align {
                 TextAlign::Left => TextAlignment::Left,
@@ -2874,10 +3118,35 @@ impl RenderContext {
                         glyph.clip_bounds = clip;
                     }
                 }
-                glyphs_by_layer
-                    .entry(text.z_index)
-                    .or_default()
-                    .extend(glyphs);
+
+                if let Some(affine) = text.css_affine {
+                    // CSS-transformed text: convert to SDF primitives with local_affine
+                    // Pushed into fg_batch.primitives to render in the main SDF pass
+                    let [a, b, c, d, tx, ty] = affine;
+                    let tx_scaled = tx * scale_factor;
+                    let ty_scaled = ty * scale_factor;
+                    for glyph in &glyphs {
+                        let gc_x = glyph.bounds[0] + glyph.bounds[2] / 2.0;
+                        let gc_y = glyph.bounds[1] + glyph.bounds[3] / 2.0;
+                        let new_gc_x = a * gc_x + c * gc_y + tx_scaled;
+                        let new_gc_y = b * gc_x + d * gc_y + ty_scaled;
+                        let mut prim = GpuPrimitive::from_glyph(glyph);
+                        prim.bounds = [
+                            new_gc_x - glyph.bounds[2] / 2.0,
+                            new_gc_y - glyph.bounds[3] / 2.0,
+                            glyph.bounds[2],
+                            glyph.bounds[3],
+                        ];
+                        prim.local_affine = [a, b, c, d];
+                        prim.set_z_layer(text.z_index);
+                        css_transformed_text_prims.push(prim);
+                    }
+                } else {
+                    glyphs_by_layer
+                        .entry(text.z_index)
+                        .or_default()
+                        .extend(glyphs);
+                }
             }
         }
 
@@ -2888,6 +3157,17 @@ impl RenderContext {
         let mut image_op_cursor = 0usize;
 
         Self::assert_canvas_image_phase_order(&batch.image_draws, &batch.foreground_image_draws);
+
+        // If we have CSS-transformed text, push text prims into the main batch
+        // and bind the real glyph atlas to the SDF pipeline.
+        if !css_transformed_text_prims.is_empty() {
+            if let (Some(atlas), Some(color_atlas)) =
+                (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
+            {
+                batch.primitives.append(&mut css_transformed_text_prims);
+                self.renderer.set_glyph_atlas(atlas, color_atlas);
+            }
+        }
 
         // For overlay rendering, we DON'T have glass effects (overlays are simple)
         // Render primitives without clearing (LoadOp::Load)
@@ -2939,7 +3219,7 @@ impl RenderContext {
         // Images render on top
         self.render_images(target, &images, width as f32, height as f32);
 
-        // Render foreground primitives on top of images (for .foreground() elements)
+        // Render foreground primitives (e.g. borders on top)
         if !batch.foreground_primitives.is_empty() {
             self.renderer
                 .render_primitives_overlay(target, &batch.foreground_primitives);

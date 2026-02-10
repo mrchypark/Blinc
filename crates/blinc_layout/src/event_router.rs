@@ -1077,6 +1077,7 @@ impl EventRouter {
             (0.0, 0.0),
             Vec::new(),
             std::collections::HashMap::new(),
+            (0.0, 0.0),
         )
     }
 
@@ -1095,6 +1096,7 @@ impl EventRouter {
                 Vec::new(),
                 std::collections::HashMap::new(),
                 &mut results,
+                (0.0, 0.0),
             );
         }
         results
@@ -1111,6 +1113,7 @@ impl EventRouter {
         parent_offset: (f32, f32),
         mut ancestors: Vec<LayoutNodeId>,
         mut ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
+        cumulative_scroll: (f32, f32),
     ) -> Option<HitTestResult> {
         let bounds = tree.layout().get_bounds(node, parent_offset)?;
 
@@ -1142,7 +1145,16 @@ impl EventRouter {
         // Children are rendered at bounds + scroll_offset, so we need to
         // include the scroll offset when hit testing children
         let scroll_offset = tree.get_scroll_offset(node);
-        let child_offset = (bounds.x + scroll_offset.0, bounds.y + scroll_offset.1);
+        let base_child_offset = (bounds.x + scroll_offset.0, bounds.y + scroll_offset.1);
+        let is_scroll_container = tree.is_scroll_container(node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
 
         // Check children in reverse order (last child is on top)
         let children = tree.layout().children(node);
@@ -1156,6 +1168,33 @@ impl EventRouter {
             children
         );
         for child in children.into_iter().rev() {
+            let child_render = tree.get_render_node(child);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let mut child_offset = base_child_offset;
+            let child_cumulative;
+
+            if child_is_fixed {
+                // Cancel all accumulated scroll for fixed elements
+                child_offset.0 -= new_cumulative_scroll.0;
+                child_offset.1 -= new_cumulative_scroll.1;
+                child_cumulative = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = tree.layout().get_bounds(child, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            child_offset.1 += correction;
+                        }
+                    }
+                }
+                child_cumulative = new_cumulative_scroll;
+            } else {
+                child_cumulative = new_cumulative_scroll;
+            }
+
             if let Some(result) = self.hit_test_node(
                 tree,
                 child,
@@ -1164,6 +1203,7 @@ impl EventRouter {
                 child_offset,
                 ancestors.clone(),
                 ancestor_bounds.clone(),
+                child_cumulative,
             ) {
                 return Some(result);
             }
@@ -1214,6 +1254,7 @@ impl EventRouter {
         mut ancestors: Vec<LayoutNodeId>,
         mut ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
         results: &mut Vec<HitTestResult>,
+        cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = tree.layout().get_bounds(node, parent_offset) else {
             return;
@@ -1259,12 +1300,47 @@ impl EventRouter {
         // Children are rendered at bounds + scroll_offset, so we need to
         // include the scroll offset when hit testing children
         let scroll_offset = tree.get_scroll_offset(node);
-        let child_offset = (bounds.x + scroll_offset.0, bounds.y + scroll_offset.1);
+        let base_child_offset = (bounds.x + scroll_offset.0, bounds.y + scroll_offset.1);
+        let is_scroll_container = tree.is_scroll_container(node);
+        let new_cumulative_scroll = if is_scroll_container {
+            (scroll_offset.0, scroll_offset.1)
+        } else {
+            (
+                cumulative_scroll.0 + scroll_offset.0,
+                cumulative_scroll.1 + scroll_offset.1,
+            )
+        };
 
         // Check children
         let children = tree.layout().children(node);
 
         for child in children {
+            let child_render = tree.get_render_node(child);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            let mut child_offset = base_child_offset;
+            let child_cumulative;
+
+            if child_is_fixed {
+                child_offset.0 -= new_cumulative_scroll.0;
+                child_offset.1 -= new_cumulative_scroll.1;
+                child_cumulative = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(cb) = tree.layout().get_bounds(child, (0.0, 0.0)) {
+                        let visual_y = cb.y + new_cumulative_scroll.1;
+                        if visual_y < threshold {
+                            let correction = threshold - visual_y;
+                            child_offset.1 += correction;
+                        }
+                    }
+                }
+                child_cumulative = new_cumulative_scroll;
+            } else {
+                child_cumulative = new_cumulative_scroll;
+            }
+
             self.hit_test_node_all(
                 tree,
                 child,
@@ -1274,6 +1350,7 @@ impl EventRouter {
                 ancestors.clone(),
                 ancestor_bounds.clone(),
                 results,
+                child_cumulative,
             );
         }
     }

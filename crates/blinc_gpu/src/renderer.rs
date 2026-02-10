@@ -260,14 +260,16 @@ struct Buffers {
     path_vertices: Option<wgpu::Buffer>,
     /// Index buffer for path geometry (dynamic, recreated as needed)
     path_indices: Option<wgpu::Buffer>,
-    /// Cached uniform buffer for blur effect
-    blur_uniforms: wgpu::Buffer,
+    /// Pre-allocated uniform buffers for multi-pass blur (one per pass, max 8)
+    blur_uniforms_pool: Vec<wgpu::Buffer>,
     /// Cached uniform buffer for drop shadow effect
     drop_shadow_uniforms: wgpu::Buffer,
     /// Cached uniform buffer for glow effect
     glow_uniforms: wgpu::Buffer,
     /// Cached uniform buffer for color matrix effect
     color_matrix_uniforms: wgpu::Buffer,
+    /// Storage buffer for auxiliary per-primitive data (group shapes, polygon clips)
+    aux_data: wgpu::Buffer,
 }
 
 /// Bind groups for shader resources
@@ -319,13 +321,17 @@ struct CachedTextResources {
     color_atlas_view_ptr: *const wgpu::TextureView,
 }
 
-/// Cached SDF bind group with glyph atlas textures (for unified text rendering)
-struct CachedSdfWithGlyphs {
-    /// Cached bind group with actual glyph atlas textures
-    bind_group: wgpu::BindGroup,
-    /// Pointer to grayscale atlas view when bind group was created (for invalidation)
+/// Active glyph atlas pointers for SDF bind group (set per-frame).
+///
+/// When CSS-transformed text is present, the real glyph atlas textures are bound
+/// into `self.bind_groups.sdf` instead of the placeholder textures. These pointers
+/// track the currently-bound atlas views so that `rebind_sdf_bind_group()` (called
+/// during aux buffer resize) can recreate the bind group with the real atlas.
+///
+/// SAFETY: Pointers are valid for the duration of a frame — they point to TextureViews
+/// owned by the text context, which outlives all render calls within a frame.
+struct ActiveGlyphAtlas {
     atlas_view_ptr: *const wgpu::TextureView,
-    /// Pointer to color atlas view when bind group was created (for invalidation)
     color_atlas_view_ptr: *const wgpu::TextureView,
 }
 
@@ -510,6 +516,7 @@ pub struct LayerTextureCache {
     pool_small: Vec<LayerTexture>, // <= 128
     pool_medium: Vec<LayerTexture>, // <= 256
     pool_large: Vec<LayerTexture>,  // <= 512
+    pool_xlarge: Vec<LayerTexture>, // > 512
     /// Texture format used for all layer textures
     format: wgpu::TextureFormat,
     /// Maximum textures per bucket
@@ -526,8 +533,9 @@ impl LayerTextureCache {
             pool_small: Vec::with_capacity(4),
             pool_medium: Vec::with_capacity(4),
             pool_large: Vec::with_capacity(4),
+            pool_xlarge: Vec::with_capacity(4),
             format,
-            max_per_bucket: 4, // 4 textures per bucket = 12 total max
+            max_per_bucket: 4,
             stats: TextureCacheStats::default(),
         }
     }
@@ -541,6 +549,26 @@ impl LayerTextureCache {
             0
         };
         color_bytes + depth_bytes
+    }
+
+    /// Get the appropriate pool for a bucket
+    fn get_pool(&self, bucket: TextureSizeBucket) -> &Vec<LayerTexture> {
+        match bucket {
+            TextureSizeBucket::Small => &self.pool_small,
+            TextureSizeBucket::Medium => &self.pool_medium,
+            TextureSizeBucket::Large => &self.pool_large,
+            TextureSizeBucket::XLarge => &self.pool_xlarge,
+        }
+    }
+
+    /// Get mutable pool for a bucket
+    fn get_pool_mut(&mut self, bucket: TextureSizeBucket) -> &mut Vec<LayerTexture> {
+        match bucket {
+            TextureSizeBucket::Small => &mut self.pool_small,
+            TextureSizeBucket::Medium => &mut self.pool_medium,
+            TextureSizeBucket::Large => &mut self.pool_large,
+            TextureSizeBucket::XLarge => &mut self.pool_xlarge,
+        }
     }
 
     /// Acquire a texture of at least the given size
@@ -566,37 +594,34 @@ impl LayerTextureCache {
         }
 
         // Try to find in primary bucket
-        let found_in_primary = match bucket {
-            TextureSizeBucket::Small => find_matching(&self.pool_small, size, with_depth),
-            TextureSizeBucket::Medium => find_matching(&self.pool_medium, size, with_depth),
-            TextureSizeBucket::Large => find_matching(&self.pool_large, size, with_depth),
-            TextureSizeBucket::XLarge => find_matching(&self.pool_large, size, with_depth),
+        let primary_pool = match bucket {
+            TextureSizeBucket::Small => &self.pool_small,
+            TextureSizeBucket::Medium => &self.pool_medium,
+            TextureSizeBucket::Large => &self.pool_large,
+            TextureSizeBucket::XLarge => &self.pool_xlarge,
         };
+        let found_in_primary = find_matching(primary_pool, size, with_depth);
 
         if let Some(index) = found_in_primary {
             self.stats.hits += 1;
             let texture = match bucket {
                 TextureSizeBucket::Small => self.pool_small.swap_remove(index),
                 TextureSizeBucket::Medium => self.pool_medium.swap_remove(index),
-                TextureSizeBucket::Large | TextureSizeBucket::XLarge => {
-                    self.pool_large.swap_remove(index)
-                }
+                TextureSizeBucket::Large => self.pool_large.swap_remove(index),
+                TextureSizeBucket::XLarge => self.pool_xlarge.swap_remove(index),
             };
             self.update_pool_stats();
             return texture;
         }
 
-        // Try larger buckets
+        // Try larger buckets as fallback
         let found_in_larger = match bucket {
-            TextureSizeBucket::Small => {
-                // Try medium first, then large
-                find_matching(&self.pool_medium, size, with_depth)
-                    .map(|i| (TextureSizeBucket::Medium, i))
-                    .or_else(|| {
-                        find_matching(&self.pool_large, size, with_depth)
-                            .map(|i| (TextureSizeBucket::Large, i))
-                    })
-            }
+            TextureSizeBucket::Small => find_matching(&self.pool_medium, size, with_depth)
+                .map(|i| (TextureSizeBucket::Medium, i))
+                .or_else(|| {
+                    find_matching(&self.pool_large, size, with_depth)
+                        .map(|i| (TextureSizeBucket::Large, i))
+                }),
             TextureSizeBucket::Medium => find_matching(&self.pool_large, size, with_depth)
                 .map(|i| (TextureSizeBucket::Large, i)),
             _ => None,
@@ -616,13 +641,15 @@ impl LayerTextureCache {
         // No suitable texture in pool, create a new one
         self.stats.misses += 1;
 
-        // Round up to bucket size for better future reuse
-        let rounded_size = if bucket != TextureSizeBucket::XLarge {
+        // Round up for better future reuse
+        let rounded_size = if bucket == TextureSizeBucket::XLarge {
+            // Round XLarge to 64px increments for better cache reuse
+            let w = size.0.div_ceil(64) * 64;
+            let h = size.1.div_ceil(64) * 64;
+            (w, h)
+        } else {
             let bucket_max = bucket.max_size();
             (size.0.max(bucket_max), size.1.max(bucket_max))
-        } else {
-            // For XLarge, use exact size (no rounding)
-            size
         };
 
         LayerTexture::new(device, rounded_size, self.format, with_depth)
@@ -635,16 +662,11 @@ impl LayerTextureCache {
         let bucket = TextureSizeBucket::from_size(texture.size);
         let max = self.max_per_bucket;
 
-        // Don't pool XLarge textures
-        if bucket == TextureSizeBucket::XLarge {
-            return;
-        }
-
         let pool = match bucket {
             TextureSizeBucket::Small => &mut self.pool_small,
             TextureSizeBucket::Medium => &mut self.pool_medium,
             TextureSizeBucket::Large => &mut self.pool_large,
-            TextureSizeBucket::XLarge => return, // Already handled above
+            TextureSizeBucket::XLarge => &mut self.pool_xlarge,
         };
 
         if pool.len() < max {
@@ -659,7 +681,12 @@ impl LayerTextureCache {
         let mut count = 0;
         let mut bytes = 0u64;
 
-        for pool in [&self.pool_small, &self.pool_medium, &self.pool_large] {
+        for pool in [
+            &self.pool_small,
+            &self.pool_medium,
+            &self.pool_large,
+            &self.pool_xlarge,
+        ] {
             for t in pool {
                 count += 1;
                 bytes += Self::estimate_texture_bytes(t.size, t.has_depth);
@@ -674,8 +701,7 @@ impl LayerTextureCache {
     ///
     /// Call this at frame start to evict any large textures that accumulated.
     pub fn evict_oversized(&mut self) {
-        // With bucketed pools, we don't need to do much here
-        // But we can trim pools that are over capacity
+        // Trim pools that are over capacity
         while self.pool_small.len() > self.max_per_bucket {
             self.pool_small.pop();
         }
@@ -684,6 +710,9 @@ impl LayerTextureCache {
         }
         while self.pool_large.len() > self.max_per_bucket {
             self.pool_large.pop();
+        }
+        while self.pool_xlarge.len() > self.max_per_bucket {
+            self.pool_xlarge.pop();
         }
         self.update_pool_stats();
     }
@@ -731,12 +760,16 @@ impl LayerTextureCache {
         self.pool_small.clear();
         self.pool_medium.clear();
         self.pool_large.clear();
+        self.pool_xlarge.clear();
         self.stats = TextureCacheStats::default();
     }
 
     /// Get the total number of textures in all pools
     pub fn pool_size(&self) -> usize {
-        self.pool_small.len() + self.pool_medium.len() + self.pool_large.len()
+        self.pool_small.len()
+            + self.pool_medium.len()
+            + self.pool_large.len()
+            + self.pool_xlarge.len()
     }
 
     /// Get the number of named textures
@@ -806,8 +839,8 @@ pub struct GpuRenderer {
     _placeholder_color_glyph_atlas_view: wgpu::TextureView,
     /// Sampler for glyph atlas textures
     glyph_sampler: wgpu::Sampler,
-    /// Cached SDF bind group with actual glyph atlas textures (for unified text rendering)
-    cached_sdf_with_glyphs: Option<CachedSdfWithGlyphs>,
+    /// Active glyph atlas pointers — when set, `self.bind_groups.sdf` uses real atlas
+    active_glyph_atlas: Option<ActiveGlyphAtlas>,
     /// Gradient texture cache for multi-stop gradient support on paths
     gradient_texture_cache: GradientTextureCache,
     /// Placeholder image texture (1x1 white) for path bind group when no image is used
@@ -1382,7 +1415,7 @@ impl GpuRenderer {
             _placeholder_glyph_atlas_view: placeholder_glyph_atlas_view,
             _placeholder_color_glyph_atlas_view: placeholder_color_glyph_atlas_view,
             glyph_sampler,
-            cached_sdf_with_glyphs: None,
+            active_glyph_atlas: None,
             gradient_texture_cache,
             _placeholder_path_image_view: placeholder_path_image_view,
             path_image_sampler,
@@ -1445,6 +1478,17 @@ impl GpuRenderer {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
+                    },
+                    count: None,
+                },
+                // Auxiliary data storage buffer (group shapes, polygon clips)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -2625,13 +2669,17 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
-        // Cached effect uniform buffers (avoid per-frame allocation)
-        let blur_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Blur Uniforms Buffer"),
-            size: std::mem::size_of::<BlurUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        // Pre-allocate 8 uniform buffers for multi-pass blur (one per pass)
+        let blur_uniforms_pool: Vec<wgpu::Buffer> = (0..8)
+            .map(|i| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("Blur Uniforms Pass {i}")),
+                    size: std::mem::size_of::<BlurUniforms>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
 
         let drop_shadow_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Drop Shadow Uniforms Buffer"),
@@ -2654,6 +2702,15 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
+        // Auxiliary data buffer for variable-length per-primitive data
+        // Initial size: 1 vec4 (minimum for valid binding, will be recreated if needed)
+        let aux_data = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Aux Data Buffer"),
+            size: 16, // 1 vec4<f32> minimum
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Buffers {
             uniforms,
             primitives,
@@ -2664,10 +2721,11 @@ impl GpuRenderer {
             path_uniforms,
             path_vertices: None,
             path_indices: None,
-            blur_uniforms,
+            blur_uniforms_pool,
             drop_shadow_uniforms,
             glow_uniforms,
             color_matrix_uniforms,
+            aux_data,
         }
     }
 
@@ -2709,6 +2767,11 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(color_glyph_atlas_view),
+                },
+                // Auxiliary data buffer (binding 5)
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: buffers.aux_data.as_entire_binding(),
                 },
             ],
         });
@@ -2989,6 +3052,43 @@ impl GpuRenderer {
         self.device.poll(wgpu::Maintain::Wait);
     }
 
+    /// Bind real glyph atlas textures into the default SDF bind group.
+    ///
+    /// Call once per frame before any rendering when CSS-transformed text is present.
+    /// This replaces the placeholder atlas with the real glyph atlas in
+    /// `self.bind_groups.sdf`, so ALL render paths automatically get the atlas
+    /// without needing to thread it through every method.
+    ///
+    /// Uses pointer comparison to avoid recreating the bind group when the atlas
+    /// hasn't changed between frames.
+    ///
+    /// SAFETY: The raw pointers stored in `active_glyph_atlas` must remain valid
+    /// for the duration of the frame. This is guaranteed because they point to
+    /// TextureViews owned by the text context, which outlives all render calls.
+    pub fn set_glyph_atlas(
+        &mut self,
+        atlas_view: &wgpu::TextureView,
+        color_atlas_view: &wgpu::TextureView,
+    ) {
+        let atlas_ptr = atlas_view as *const wgpu::TextureView;
+        let color_ptr = color_atlas_view as *const wgpu::TextureView;
+
+        let need_rebuild = match &self.active_glyph_atlas {
+            Some(active) => {
+                active.atlas_view_ptr != atlas_ptr || active.color_atlas_view_ptr != color_ptr
+            }
+            None => true,
+        };
+
+        if need_rebuild {
+            self.active_glyph_atlas = Some(ActiveGlyphAtlas {
+                atlas_view_ptr: atlas_ptr,
+                color_atlas_view_ptr: color_ptr,
+            });
+            self.rebind_sdf_bind_group();
+        }
+    }
+
     /// Render a batch of primitives to a texture view
     /// Render primitives with transparent background (default)
     pub fn render(&mut self, target: &wgpu::TextureView, batch: &PrimitiveBatch) {
@@ -3092,6 +3192,11 @@ impl GpuRenderer {
 
         // Update line segments buffer
         let line_count = self.write_line_segments_safe(&batch.line_segments);
+
+        // Update auxiliary data buffer (group shapes, polygon clips)
+        // This may call rebind_sdf_bind_group() if the buffer needs resizing.
+        // When active_glyph_atlas is set, rebind uses the real atlas automatically.
+        self.update_aux_data_buffer(batch);
 
         // Update path buffers if we have path geometry
         let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
@@ -3422,6 +3527,9 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
+        // Update auxiliary data buffer
+        self.update_aux_data_buffer(batch);
+
         // Update primitives buffer with filtered primitives
         if !included_primitives.is_empty() {
             self.queue.write_buffer(
@@ -3489,6 +3597,87 @@ impl GpuRenderer {
 
         // Submit commands
         self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Update auxiliary data buffer (for 3D group shapes, polygon clips, etc.)
+    ///
+    /// If the batch has aux_data, writes it to the GPU buffer, recreating the buffer
+    /// and rebinding if it's too small.
+    fn update_aux_data_buffer(&mut self, batch: &PrimitiveBatch) {
+        if batch.aux_data.is_empty() {
+            return;
+        }
+
+        let data_size = (batch.aux_data.len() * std::mem::size_of::<[f32; 4]>()) as u64;
+        let buffer_size = self.buffers.aux_data.size();
+
+        // Recreate buffer if too small
+        if data_size > buffer_size {
+            self.buffers.aux_data = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Aux Data Buffer"),
+                size: data_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            // Must recreate the SDF bind group since the buffer changed
+            self.rebind_sdf_bind_group();
+        }
+
+        self.queue.write_buffer(
+            &self.buffers.aux_data,
+            0,
+            bytemuck::cast_slice(&batch.aux_data),
+        );
+    }
+
+    /// Recreate the SDF bind group (needed when aux_data buffer is resized).
+    ///
+    /// Uses the real glyph atlas if `active_glyph_atlas` is set, otherwise
+    /// falls back to placeholder textures.
+    fn rebind_sdf_bind_group(&mut self) {
+        // SAFETY: When active_glyph_atlas is Some, the pointers are valid for the
+        // duration of the frame (they point to TextureViews owned by the text context).
+        let (atlas_view, color_atlas_view): (&wgpu::TextureView, &wgpu::TextureView) =
+            if let Some(active) = &self.active_glyph_atlas {
+                unsafe { (&*active.atlas_view_ptr, &*active.color_atlas_view_ptr) }
+            } else {
+                (
+                    &self._placeholder_glyph_atlas_view,
+                    &self._placeholder_color_glyph_atlas_view,
+                )
+            };
+
+        self.bind_groups.sdf = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("SDF Bind Group (rebound)"),
+            layout: &self.bind_group_layouts.sdf,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.buffers.uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.buffers.primitives.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(color_atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.buffers.aux_data.as_entire_binding(),
+                },
+            ],
+        });
     }
 
     /// Update path vertex and index buffers
@@ -3921,6 +4110,9 @@ impl GpuRenderer {
             _padding: [0.0; 2],
         };
 
+        // Update auxiliary data buffer
+        self.update_aux_data_buffer(batch);
+
         // Update primitives buffer
         self.write_primitives_safe(&batch.primitives);
         let bg_line_count = self.write_line_segments_safe(&batch.line_segments);
@@ -4269,6 +4461,9 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
+        // Update auxiliary data buffer
+        self.update_aux_data_buffer(batch);
+
         // Update primitives buffer
         if !batch.primitives.is_empty() {
             self.queue.write_buffer(
@@ -4518,6 +4713,8 @@ impl GpuRenderer {
     ///
     /// This is used for interleaved z-layer rendering where primitives need
     /// to be rendered per-layer to properly interleave with text.
+    /// Uses `self.bind_groups.sdf` which automatically includes the real glyph
+    /// atlas when `set_glyph_atlas()` was called at the start of the frame.
     pub fn render_primitives_overlay(
         &mut self,
         target: &wgpu::TextureView,
@@ -4694,12 +4891,8 @@ impl GpuRenderer {
     ///
     /// This method renders SDF primitives including text glyphs in a single pass.
     /// Text primitives (PrimitiveType::Text) sample from the provided glyph atlases.
-    ///
-    /// # Arguments
-    /// * `target` - The texture view to render to
-    /// * `primitives` - The SDF primitives including text glyph primitives
-    /// * `atlas_view` - The grayscale glyph atlas texture view
-    /// * `color_atlas_view` - The color (RGBA) glyph atlas texture view for emoji
+    /// Uses `set_glyph_atlas()` to bind the real atlas, then delegates to
+    /// `render_primitives_overlay()`.
     pub fn render_primitives_overlay_with_glyphs(
         &mut self,
         target: &wgpu::TextureView,
@@ -4707,104 +4900,8 @@ impl GpuRenderer {
         atlas_view: &wgpu::TextureView,
         color_atlas_view: &wgpu::TextureView,
     ) {
-        if primitives.is_empty() {
-            return;
-        }
-
-        // Update uniforms
-        let uniforms = Uniforms {
-            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
-            _padding: [0.0; 2],
-        };
-        self.queue
-            .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
-
-        // Update primitives buffer
-        self.queue.write_buffer(
-            &self.buffers.primitives,
-            0,
-            bytemuck::cast_slice(primitives),
-        );
-
-        // Check if we need to recreate the SDF bind group with actual glyph textures
-        let atlas_view_ptr = atlas_view as *const wgpu::TextureView;
-        let color_atlas_view_ptr = color_atlas_view as *const wgpu::TextureView;
-        let need_new_bind_group = match &self.cached_sdf_with_glyphs {
-            Some(cached) => {
-                cached.atlas_view_ptr != atlas_view_ptr
-                    || cached.color_atlas_view_ptr != color_atlas_view_ptr
-            }
-            None => true,
-        };
-
-        if need_new_bind_group {
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("SDF Bind Group with Glyphs"),
-                layout: &self.bind_group_layouts.sdf,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.buffers.uniforms.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.buffers.primitives.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(atlas_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(color_atlas_view),
-                    },
-                ],
-            });
-            self.cached_sdf_with_glyphs = Some(CachedSdfWithGlyphs {
-                bind_group,
-                atlas_view_ptr,
-                color_atlas_view_ptr,
-            });
-        }
-
-        let sdf_bind_group = &self.cached_sdf_with_glyphs.as_ref().unwrap().bind_group;
-
-        // Create command encoder
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Blinc Unified Primitives Encoder"),
-            });
-
-        // Begin render pass (load existing content)
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc Unified Primitives Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            // Render SDF primitives (including text glyphs)
-            render_pass.set_pipeline(&self.pipelines.sdf_overlay);
-            render_pass.set_bind_group(0, sdf_bind_group, &[]);
-            render_pass.draw(0..6, 0..primitives.len() as u32);
-        }
-
-        // Submit commands
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.set_glyph_atlas(atlas_view, color_atlas_view);
+        self.render_primitives_overlay(target, primitives);
     }
 
     /// Render overlay primitives with MSAA anti-aliasing
@@ -5891,85 +5988,10 @@ impl GpuRenderer {
     ///
     /// `blur_alpha`: if true, blurs both RGB and alpha (for soft shadow edges);
     ///               if false, preserves alpha while blurring RGB (for element blur)
-    pub fn apply_blur_pass(
-        &mut self,
-        input: &wgpu::TextureView,
-        output: &wgpu::TextureView,
-        size: (u32, u32),
-        radius: f32,
-        iteration: u32,
-        blur_alpha: bool,
-    ) {
-        let uniforms = BlurUniforms {
-            texel_size: [1.0 / size.0 as f32, 1.0 / size.1 as f32],
-            radius,
-            iteration,
-            blur_alpha: if blur_alpha { 1 } else { 0 },
-            _pad1: 0.0,
-            _pad2: 0.0,
-            _pad3: 0.0,
-        };
-
-        // Use cached buffer instead of creating per-pass
-        self.queue.write_buffer(
-            &self.buffers.blur_uniforms,
-            0,
-            bytemuck::bytes_of(&uniforms),
-        );
-
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Blur Effect Bind Group"),
-            layout: &self.bind_group_layouts.blur,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.buffers.blur_uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(input),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
-                },
-            ],
-        });
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Blur Pass Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blur Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: output,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(&self.pipelines.blur);
-            render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
-        }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-    }
-
-    /// Apply multi-pass Kawase blur
+    /// Apply multi-pass Kawase blur, batched into a single GPU submission.
     ///
-    /// Performs multiple blur passes for higher quality blur.
-    /// Uses ping-pong rendering between two textures.
+    /// Uses ping-pong rendering between two textures. All passes share one
+    /// command encoder for minimal GPU synchronization overhead.
     ///
     /// `blur_alpha`: if true, blurs both RGB and alpha (for soft shadow edges);
     ///               if false, preserves alpha while blurring RGB (for element blur)
@@ -5987,7 +6009,6 @@ impl GpuRenderer {
             let output = self
                 .layer_texture_cache
                 .acquire(&self.device, input.size, false);
-            // Copy input to output
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -6017,41 +6038,112 @@ impl GpuRenderer {
         }
 
         let size = input.size;
+        let blur_alpha_u32: u32 = if blur_alpha { 1 } else { 0 };
+
+        // Write per-pass uniforms to pre-allocated buffer pool (no allocation)
+        for i in 0..passes {
+            self.queue.write_buffer(
+                &self.buffers.blur_uniforms_pool[i as usize],
+                0,
+                bytemuck::bytes_of(&BlurUniforms {
+                    texel_size: [1.0 / size.0 as f32, 1.0 / size.1 as f32],
+                    radius,
+                    iteration: i,
+                    blur_alpha: blur_alpha_u32,
+                    _pad1: 0.0,
+                    _pad2: 0.0,
+                    _pad3: 0.0,
+                }),
+            );
+        }
 
         // For ping-pong we need two temp textures
         let temp_a = self.layer_texture_cache.acquire(&self.device, size, false);
         let temp_b = self.layer_texture_cache.acquire(&self.device, size, false);
 
-        // First pass: input -> temp_a
-        self.apply_blur_pass(&input.view, &temp_a.view, size, radius, 0, blur_alpha);
+        // Pre-create bind groups: pass 0 reads input, subsequent passes alternate temp_a/temp_b
+        let bind_groups: Vec<wgpu::BindGroup> = (0..passes)
+            .map(|i| {
+                let input_view = if i == 0 {
+                    &input.view
+                } else if i % 2 == 1 {
+                    &temp_a.view
+                } else {
+                    &temp_b.view
+                };
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Blur Effect Bind Group"),
+                    layout: &self.bind_group_layouts.blur,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.buffers.blur_uniforms_pool[i as usize]
+                                .as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(input_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
+                        },
+                    ],
+                })
+            })
+            .collect();
 
-        // Subsequent passes alternate between temp_a and temp_b
-        for i in 1..passes {
-            if i % 2 == 1 {
-                // temp_a -> temp_b
-                self.apply_blur_pass(&temp_a.view, &temp_b.view, size, radius, i, blur_alpha);
+        // Single command encoder for all passes
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Blur Multi-Pass Encoder"),
+            });
+
+        for i in 0..passes {
+            let output_view = if i % 2 == 0 {
+                &temp_a.view
             } else {
-                // temp_b -> temp_a
-                self.apply_blur_pass(&temp_b.view, &temp_a.view, size, radius, i, blur_alpha);
-            }
+                &temp_b.view
+            };
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blur Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: output_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.blur);
+            render_pass.set_bind_group(0, &bind_groups[i as usize], &[]);
+            render_pass.draw(0..6, 0..1);
         }
 
-        // Return the correct temp texture based on which has the final result
-        // Release the other one back to the cache
-        if passes % 2 == 1 {
-            // Odd number of passes: result is in temp_a
-            self.layer_texture_cache.release(temp_b);
-            temp_a
+        // Single GPU submission for all blur passes
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Determine which texture has the final blurred result
+        let (result, unused) = if passes % 2 == 1 {
+            (temp_a, temp_b)
         } else {
-            // Even number of passes: result is in temp_b
-            self.layer_texture_cache.release(temp_a);
-            temp_b
-        }
+            (temp_b, temp_a)
+        };
+        self.layer_texture_cache.release(unused);
+
+        result
     }
 
-    /// Apply multi-pass Kawase blur (element blur - preserves alpha)
+    /// Apply multi-pass Kawase blur (CSS filter blur)
     ///
-    /// Convenience wrapper that preserves alpha for element blur effects.
+    /// Blurs both RGB and alpha channels, producing soft edges.
     pub fn apply_blur(&mut self, input: &LayerTexture, radius: f32, passes: u32) -> LayerTexture {
         self.apply_blur_with_alpha(input, radius, passes, false)
     }
@@ -6388,8 +6480,7 @@ impl GpuRenderer {
     /// Calculate how much layer effects extend beyond the original content bounds.
     ///
     /// Returns (left, top, right, bottom) expansion in pixels.
-    /// Only effects that ADD content outside the element expand bounds (shadow, glow).
-    /// Blur does NOT expand because it just softens existing edges.
+    /// Blur expands bounds so the soft-edge falloff has room to render.
     fn calculate_effect_expansion(effects: &[blinc_core::LayerEffect]) -> (f32, f32, f32, f32) {
         use blinc_core::LayerEffect;
 
@@ -6400,9 +6491,14 @@ impl GpuRenderer {
 
         for effect in effects {
             match effect {
-                LayerEffect::Blur { .. } => {
-                    // Blur does NOT expand bounds - it only softens existing edges
-                    // The blurred content stays within the original element bounds
+                LayerEffect::Blur { radius, .. } => {
+                    // Blur softens edges, which extends beyond original bounds.
+                    // ~2x radius covers the visible falloff of Kawase blur.
+                    let expand = radius * 2.0;
+                    left = left.max(expand);
+                    top = top.max(expand);
+                    right = right.max(expand);
+                    bottom = bottom.max(expand);
                 }
                 LayerEffect::DropShadow {
                     offset_x,
@@ -6485,46 +6581,24 @@ impl GpuRenderer {
         }
 
         let size = input.size;
-        let mut current = self.layer_texture_cache.acquire(&self.device, size, false);
-
-        // Copy input to current
-        {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Layer Effect Init Copy"),
-                });
-            encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
-                    texture: &input.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::ImageCopyTexture {
-                    texture: &current.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width: size.0,
-                    height: size.1,
-                    depth_or_array_layers: 1,
-                },
-            );
-            self.queue.submit(std::iter::once(encoder.finish()));
-        }
+        // Track ownership: effects that produce a new texture pass ownership here.
+        // We avoid a redundant copy by using the input directly for the first effect
+        // and only copying when a non-blur effect needs a mutable working texture.
+        let mut current: Option<LayerTexture> = None;
 
         for effect in effects {
+            // Get the current working texture or the original input
+            let working = current.as_ref().unwrap_or(input);
+
             match effect {
                 LayerEffect::Blur { radius, quality: _ } => {
-                    // Calculate number of passes based on radius
-                    // More passes = smoother blur. Kawase blur needs ~radius/2 passes minimum
-                    let passes = (*radius / 2.0).ceil().max(2.0) as u32;
-                    let blurred = self.apply_blur(&current, *radius, passes);
-                    self.layer_texture_cache.release(current);
-                    current = blurred;
+                    // Blur reads from working and produces a new texture (no copy needed)
+                    let passes = ((*radius / 2.0).ceil().max(2.0) as u32).min(8);
+                    let blurred = self.apply_blur(working, *radius, passes);
+                    if let Some(prev) = current.take() {
+                        self.layer_texture_cache.release(prev);
+                    }
+                    current = Some(blurred);
                 }
 
                 LayerEffect::DropShadow {
@@ -6534,12 +6608,10 @@ impl GpuRenderer {
                     spread,
                     color,
                 } => {
-                    // Use distance-based shadow - no blur pass needed
-                    // The shader samples the original texture to find shape edges
                     let temp = self.layer_texture_cache.acquire(&self.device, size, false);
                     self.apply_drop_shadow(
-                        &current.view, // Not used for distance sampling
-                        &current.view, // Original texture for shape detection
+                        &working.view,
+                        &working.view,
                         &temp.view,
                         size,
                         (*offset_x, *offset_y),
@@ -6547,8 +6619,10 @@ impl GpuRenderer {
                         *spread,
                         [color.r, color.g, color.b, color.a],
                     );
-                    self.layer_texture_cache.release(current);
-                    current = temp;
+                    if let Some(prev) = current.take() {
+                        self.layer_texture_cache.release(prev);
+                    }
+                    current = Some(temp);
                 }
 
                 LayerEffect::Glow {
@@ -6557,11 +6631,9 @@ impl GpuRenderer {
                     range,
                     opacity,
                 } => {
-                    // Use dedicated glow shader with proper radial falloff
-                    // The shader finds distance to opaque pixels and creates smooth glow
                     let temp = self.layer_texture_cache.acquire(&self.device, size, false);
                     self.apply_glow(
-                        &current.view,
+                        &working.view,
                         &temp.view,
                         size,
                         [color.r, color.g, color.b, color.a],
@@ -6569,20 +6641,56 @@ impl GpuRenderer {
                         *range,
                         *opacity,
                     );
-                    self.layer_texture_cache.release(current);
-                    current = temp;
+                    if let Some(prev) = current.take() {
+                        self.layer_texture_cache.release(prev);
+                    }
+                    current = Some(temp);
                 }
 
                 LayerEffect::ColorMatrix { matrix } => {
                     let temp = self.layer_texture_cache.acquire(&self.device, size, false);
-                    self.apply_color_matrix(&current.view, &temp.view, matrix);
-                    self.layer_texture_cache.release(current);
-                    current = temp;
+                    self.apply_color_matrix(&working.view, &temp.view, matrix);
+                    if let Some(prev) = current.take() {
+                        self.layer_texture_cache.release(prev);
+                    }
+                    current = Some(temp);
                 }
             }
         }
 
-        current
+        // If no effect produced a new texture (shouldn't happen since effects is non-empty),
+        // fall back to a copy
+        current.unwrap_or_else(|| {
+            let output = self
+                .layer_texture_cache
+                .acquire(&self.device, input.size, false);
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Layer Effect Fallback Copy"),
+                });
+            encoder.copy_texture_to_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &input.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::ImageCopyTexture {
+                    texture: &output.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: input.size.0,
+                    height: input.size.1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.queue.submit(std::iter::once(encoder.finish()));
+            output
+        })
     }
 
     /// Composite two textures together

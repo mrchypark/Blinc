@@ -299,6 +299,72 @@ impl ActiveCssAnimation {
     }
 }
 
+/// Shared CSS animation/transition store
+///
+/// Wraps CSS keyframe animations and CSS transitions in a single struct
+/// that can be shared between the AnimationScheduler's background thread
+/// (for ticking) and the main render thread (for reading/writing).
+///
+/// The background thread ticks all animations at 120fps via a tick callback.
+/// The main thread inserts/removes animations and reads `current_properties`
+/// to apply animated values to render props.
+#[derive(Default)]
+pub struct CssAnimationStore {
+    /// Active CSS keyframe animations (from stylesheet `animation:` property)
+    pub animations: HashMap<LayoutNodeId, ActiveCssAnimation>,
+    /// Active CSS transitions (from stylesheet `transition:` property)
+    pub transitions: HashMap<LayoutNodeId, ActiveCssAnimation>,
+}
+
+impl CssAnimationStore {
+    /// Create a new empty store
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Tick all active CSS animations and transitions
+    ///
+    /// Called from the AnimationScheduler's background thread via tick callback.
+    /// Returns `(animations_active, transitions_active)`.
+    pub fn tick(&mut self, dt_ms: f32) -> (bool, bool) {
+        // Tick CSS animations
+        let mut anim_playing = false;
+        for anim in self.animations.values_mut() {
+            if anim.tick(dt_ms) {
+                anim_playing = true;
+            }
+        }
+
+        // Tick CSS transitions
+        let mut trans_playing = false;
+        let mut completed_transitions = Vec::new();
+        for (node_id, trans) in &mut self.transitions {
+            if trans.tick(dt_ms) {
+                trans_playing = true;
+            } else {
+                completed_transitions.push(*node_id);
+            }
+        }
+
+        // Remove completed transitions
+        for node_id in completed_transitions {
+            self.transitions.remove(&node_id);
+        }
+
+        (anim_playing, trans_playing)
+    }
+
+    /// Check if there are any active CSS animations
+    pub fn has_active_animations(&self) -> bool {
+        self.animations.values().any(|a| a.is_playing)
+    }
+
+    /// Check if there are any active CSS transitions
+    pub fn has_active_transitions(&self) -> bool {
+        !self.transitions.is_empty()
+    }
+}
+
 /// Dynamic render state for a single node
 ///
 /// Contains all properties that can change without requiring a tree rebuild.

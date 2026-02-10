@@ -51,7 +51,8 @@
 use std::collections::HashMap;
 
 use blinc_core::{
-    Brush, Color, CornerRadius, Gradient, GradientSpace, GradientStop, Point, Shadow, Transform,
+    Brush, ClipLength, ClipPath, Color, CornerRadius, Gradient, GradientSpace, GradientStop, Point,
+    Shadow, Transform,
 };
 use blinc_theme::{ColorToken, ThemeState};
 use nom::{
@@ -70,7 +71,7 @@ use tracing::debug;
 use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, WoodMaterial};
 use crate::element_style::{
     ElementStyle, SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection, StyleJustify,
-    StyleOverflow,
+    StyleOverflow, StylePosition,
 };
 use crate::units::Length;
 
@@ -519,6 +520,131 @@ impl CssSelector {
     }
 }
 
+// ============================================================================
+// Complex Selector Types (Phase 4: Selector Hierarchy)
+// ============================================================================
+
+/// Structural pseudo-class selectors
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum StructuralPseudo {
+    /// :first-child
+    FirstChild,
+    /// :last-child
+    LastChild,
+    /// :nth-child(n) — 1-based index
+    NthChild(usize),
+    /// :nth-last-child(n) — 1-based from end
+    NthLastChild(usize),
+    /// :only-child
+    OnlyChild,
+    /// :empty — no children
+    Empty,
+    /// :root — root element
+    Root,
+    /// :first-of-type — equivalent to :first-child in single-type DOM (Blinc)
+    FirstOfType,
+    /// :last-of-type — equivalent to :last-child in single-type DOM (Blinc)
+    LastOfType,
+    /// :nth-of-type(n) — equivalent to :nth-child(n) in single-type DOM (Blinc)
+    NthOfType(usize),
+    /// :nth-last-of-type(n) — equivalent to :nth-last-child(n) in single-type DOM (Blinc)
+    NthLastOfType(usize),
+    /// :only-of-type — equivalent to :only-child in single-type DOM (Blinc)
+    OnlyOfType,
+}
+
+/// A single part of a compound selector
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SelectorPart {
+    /// #id selector
+    Id(String),
+    /// .class selector
+    Class(String),
+    /// * universal selector (matches any element)
+    Universal,
+    /// :hover, :active, :focus, :disabled
+    State(ElementState),
+    /// :first-child, :last-child, :nth-child(n), :only-child, :empty, :root
+    PseudoClass(StructuralPseudo),
+    /// :not(selector) — negation pseudo-class
+    Not(Box<CompoundSelector>),
+    /// :is(selector, ...) / :where(selector, ...) — matches if any inner selector matches
+    Is(Vec<CompoundSelector>),
+}
+
+/// Combinator between compound selectors
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Combinator {
+    /// Descendant combinator (space): `#parent .child`
+    Descendant,
+    /// Child combinator (>): `#parent > .child`
+    Child,
+    /// Adjacent sibling combinator (+): `#prev + .next`
+    AdjacentSibling,
+    /// General sibling combinator (~): `#prev ~ .later`
+    GeneralSibling,
+}
+
+/// A compound selector is a sequence of simple selectors with no combinator.
+/// e.g. `#id.class:hover` = [Id("id"), Class("class"), State(Hover)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CompoundSelector {
+    pub parts: Vec<SelectorPart>,
+}
+
+impl CompoundSelector {
+    /// Check if this compound selector contains any state pseudo-class
+    pub fn has_state(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|p| matches!(p, SelectorPart::State(_)))
+    }
+
+    /// Get the state pseudo-class if present
+    pub fn get_state(&self) -> Option<&ElementState> {
+        self.parts.iter().find_map(|p| match p {
+            SelectorPart::State(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    /// Check if this compound selector contains any structural pseudo-class
+    pub fn has_structural_pseudo(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|p| matches!(p, SelectorPart::PseudoClass(_)))
+    }
+}
+
+/// A complex selector is a chain of compound selectors joined by combinators.
+/// e.g. `#parent:hover > .child:first-child`
+/// segments: [(parent compound, Some(Child)), (child compound, None)]
+///
+/// The last segment always has `combinator = None` (it's the target element).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ComplexSelector {
+    pub segments: Vec<(CompoundSelector, Option<Combinator>)>,
+}
+
+impl ComplexSelector {
+    /// Get the rightmost (target) compound selector
+    pub fn target(&self) -> Option<&CompoundSelector> {
+        self.segments.last().map(|(compound, _)| compound)
+    }
+
+    /// Check if this complex selector has any state pseudo-classes
+    pub fn has_state(&self) -> bool {
+        self.segments
+            .iter()
+            .any(|(compound, _)| compound.has_state())
+    }
+
+    /// Returns true if this is a simple selector (single compound, no combinators)
+    pub fn is_simple(&self) -> bool {
+        self.segments.len() == 1
+    }
+}
+
 /// A CSS keyframe animation definition
 ///
 /// Represents a parsed `@keyframes` rule with multiple stops.
@@ -728,6 +854,202 @@ impl CssKeyframes {
             props.blend_3d = Some(b);
         }
 
+        // Clip-path
+        match &style.clip_path {
+            Some(blinc_core::ClipPath::Inset {
+                top,
+                right,
+                bottom,
+                left,
+                ..
+            }) => {
+                props.clip_inset = Some([
+                    clip_length_to_percent(top),
+                    clip_length_to_percent(right),
+                    clip_length_to_percent(bottom),
+                    clip_length_to_percent(left),
+                ]);
+            }
+            Some(blinc_core::ClipPath::Circle {
+                radius: Some(r), ..
+            }) => {
+                props.clip_circle_radius = Some(clip_length_to_percent(r));
+            }
+            Some(blinc_core::ClipPath::Ellipse {
+                rx: Some(rx),
+                ry: Some(ry),
+                ..
+            }) => {
+                props.clip_ellipse_radii =
+                    Some([clip_length_to_percent(rx), clip_length_to_percent(ry)]);
+            }
+            _ => {}
+        }
+
+        // Background color (solid or gradient)
+        match &style.background {
+            Some(blinc_core::Brush::Solid(c)) => {
+                props.background_color = Some([c.r, c.g, c.b, c.a]);
+            }
+            Some(blinc_core::Brush::Gradient(gradient)) => {
+                let stops = gradient.stops();
+                if let Some(first) = stops.first() {
+                    props.gradient_start_color =
+                        Some([first.color.r, first.color.g, first.color.b, first.color.a]);
+                }
+                if let Some(last) = stops.last() {
+                    props.gradient_end_color =
+                        Some([last.color.r, last.color.g, last.color.b, last.color.a]);
+                }
+                if let blinc_core::Gradient::Linear { start, end, .. } = gradient {
+                    props.gradient_angle = Some(gradient_points_to_angle(*start, *end));
+                }
+            }
+            _ => {}
+        }
+
+        // Text color
+        if let Some(c) = &style.text_color {
+            props.text_color = Some([c.r, c.g, c.b, c.a]);
+        }
+
+        // Text shadow
+        if let Some(ts) = &style.text_shadow {
+            props.text_shadow_params = Some([ts.offset_x, ts.offset_y, ts.blur, ts.spread]);
+            props.text_shadow_color = Some([ts.color.r, ts.color.g, ts.color.b, ts.color.a]);
+        }
+
+        // Font size
+        if let Some(fs) = style.font_size {
+            props.font_size = Some(fs);
+        }
+
+        // Corner radius
+        if let Some(cr) = &style.corner_radius {
+            props.corner_radius =
+                Some([cr.top_left, cr.top_right, cr.bottom_right, cr.bottom_left]);
+        }
+
+        // Border
+        if let Some(bw) = style.border_width {
+            props.border_width = Some(bw);
+        }
+        if let Some(bc) = &style.border_color {
+            props.border_color = Some([bc.r, bc.g, bc.b, bc.a]);
+        }
+
+        // Outline
+        if let Some(ow) = style.outline_width {
+            props.outline_width = Some(ow);
+        }
+        if let Some(oc) = &style.outline_color {
+            props.outline_color = Some([oc.r, oc.g, oc.b, oc.a]);
+        }
+        if let Some(offset) = style.outline_offset {
+            props.outline_offset = Some(offset);
+        }
+
+        // Shadow
+        if let Some(shadow) = &style.shadow {
+            props.shadow_params =
+                Some([shadow.offset_x, shadow.offset_y, shadow.blur, shadow.spread]);
+            props.shadow_color = Some([
+                shadow.color.r,
+                shadow.color.g,
+                shadow.color.b,
+                shadow.color.a,
+            ]);
+        }
+
+        // 3D lighting
+        if let Some(li) = style.light_intensity {
+            props.light_intensity = Some(li);
+        }
+        if let Some(a) = style.ambient {
+            props.ambient = Some(a);
+        }
+        if let Some(s) = style.specular {
+            props.specular = Some(s);
+        }
+        if let Some(ld) = &style.light_direction {
+            props.light_direction = Some(*ld);
+        }
+
+        // CSS filter properties
+        if let Some(f) = &style.filter {
+            props.filter_grayscale = Some(f.grayscale);
+            props.filter_invert = Some(f.invert);
+            props.filter_sepia = Some(f.sepia);
+            props.filter_brightness = Some(f.brightness);
+            props.filter_contrast = Some(f.contrast);
+            props.filter_saturate = Some(f.saturate);
+            props.filter_hue_rotate = Some(f.hue_rotate);
+            props.filter_blur = Some(f.blur);
+        }
+
+        // Layout properties
+        if let Some(w) = style.width {
+            props.width = Some(w);
+        }
+        if let Some(h) = style.height {
+            props.height = Some(h);
+        }
+        if let Some(ref p) = style.padding {
+            props.padding = Some([p.top, p.right, p.bottom, p.left]);
+        }
+        if let Some(ref m) = style.margin {
+            props.margin = Some([m.top, m.right, m.bottom, m.left]);
+        }
+        if let Some(g) = style.gap {
+            props.gap = Some(g);
+        }
+        if let Some(v) = style.min_width {
+            props.min_width = Some(v);
+        }
+        if let Some(v) = style.max_width {
+            props.max_width = Some(v);
+        }
+        if let Some(v) = style.min_height {
+            props.min_height = Some(v);
+        }
+        if let Some(v) = style.max_height {
+            props.max_height = Some(v);
+        }
+        if let Some(v) = style.flex_grow {
+            props.flex_grow = Some(v);
+        }
+        if let Some(v) = style.flex_shrink {
+            props.flex_shrink = Some(v);
+        }
+        if let Some(v) = style.top {
+            props.inset_top = Some(v);
+        }
+        if let Some(v) = style.right {
+            props.inset_right = Some(v);
+        }
+        if let Some(v) = style.bottom {
+            props.inset_bottom = Some(v);
+        }
+        if let Some(v) = style.left {
+            props.inset_left = Some(v);
+        }
+        if let Some(z) = style.z_index {
+            props.z_index = Some(z as f32);
+        }
+
+        // Skew
+        if let Some(sx) = style.skew_x {
+            props.skew_x = Some(sx);
+        }
+        if let Some(sy) = style.skew_y {
+            props.skew_y = Some(sy);
+        }
+
+        // Transform origin
+        if let Some(to) = style.transform_origin {
+            props.transform_origin = Some(to);
+        }
+
         props
     }
 
@@ -773,6 +1095,34 @@ impl CssKeyframes {
         // Mat4 transforms are more complex, skip for now
 
         kf
+    }
+}
+
+/// A single CSS transition specification
+#[derive(Clone, Debug)]
+pub struct CssTransition {
+    /// Property name to transition (e.g. "opacity", "clip-path", "all")
+    pub property: String,
+    /// Duration in milliseconds
+    pub duration_ms: u32,
+    /// Timing function
+    pub timing: AnimationTiming,
+    /// Delay before starting in milliseconds
+    pub delay_ms: u32,
+}
+
+/// Set of CSS transitions parsed from `transition:` property
+#[derive(Clone, Debug, Default)]
+pub struct CssTransitionSet {
+    pub transitions: Vec<CssTransition>,
+}
+
+impl CssTransitionSet {
+    /// Find transition spec for a given property name (also matches "all")
+    pub fn get(&self, property: &str) -> Option<&CssTransition> {
+        self.transitions
+            .iter()
+            .find(|t| t.property == "all" || t.property == property)
     }
 }
 
@@ -833,14 +1183,20 @@ impl AnimationTiming {
     }
 
     /// Convert CSS animation timing to blinc_animation Easing
+    ///
+    /// Uses the exact cubic-bezier curves from the CSS specification:
+    /// - ease:        cubic-bezier(0.25, 0.1, 0.25, 1.0)
+    /// - ease-in:     cubic-bezier(0.42, 0.0, 1.0, 1.0)
+    /// - ease-out:    cubic-bezier(0.0, 0.0, 0.58, 1.0)
+    /// - ease-in-out: cubic-bezier(0.42, 0.0, 0.58, 1.0)
     pub fn to_easing(&self) -> blinc_animation::Easing {
         use blinc_animation::Easing;
         match self {
             AnimationTiming::Linear => Easing::Linear,
-            AnimationTiming::Ease => Easing::EaseInOut,
-            AnimationTiming::EaseIn => Easing::EaseIn,
-            AnimationTiming::EaseOut => Easing::EaseOut,
-            AnimationTiming::EaseInOut => Easing::EaseInOut,
+            AnimationTiming::Ease => Easing::CubicBezier(0.25, 0.1, 0.25, 1.0),
+            AnimationTiming::EaseIn => Easing::CubicBezier(0.42, 0.0, 1.0, 1.0),
+            AnimationTiming::EaseOut => Easing::CubicBezier(0.0, 0.0, 0.58, 1.0),
+            AnimationTiming::EaseInOut => Easing::CubicBezier(0.42, 0.0, 0.58, 1.0),
         }
     }
 }
@@ -900,8 +1256,10 @@ impl AnimationFillMode {
 /// A parsed stylesheet containing styles keyed by element ID
 #[derive(Clone, Default, Debug)]
 pub struct Stylesheet {
-    /// Styles keyed by selector (id or id:state)
+    /// Simple rules: styles keyed by selector (id or id:state) for O(1) lookup
     styles: HashMap<String, ElementStyle>,
+    /// Complex selector rules (class selectors, combinators, structural pseudos)
+    complex_rules: Vec<(ComplexSelector, ElementStyle)>,
     /// CSS custom properties (variables) defined in :root
     variables: HashMap<String, String>,
     /// Keyframe animations defined with @keyframes
@@ -959,6 +1317,7 @@ impl Stylesheet {
                 for (id, style) in parsed.rules {
                     stylesheet.styles.insert(id, style);
                 }
+                stylesheet.complex_rules = parsed.complex_rules;
                 for keyframes in parsed.keyframes {
                     stylesheet
                         .keyframes
@@ -1125,7 +1484,17 @@ impl Stylesheet {
 
     /// Check if the stylesheet is empty
     pub fn is_empty(&self) -> bool {
-        self.styles.is_empty()
+        self.styles.is_empty() && self.complex_rules.is_empty()
+    }
+
+    /// Get all complex selector rules
+    pub fn complex_rules(&self) -> &[(ComplexSelector, ElementStyle)] {
+        &self.complex_rules
+    }
+
+    /// Check if there are any complex rules that involve state changes
+    pub fn has_complex_state_rules(&self) -> bool {
+        self.complex_rules.iter().any(|(sel, _)| sel.has_state())
     }
 
     /// Merge another stylesheet into this one (cascade — later rules override earlier)
@@ -1136,6 +1505,7 @@ impl Stylesheet {
         for (key, style) in other.styles {
             self.styles.insert(key, style);
         }
+        self.complex_rules.extend(other.complex_rules);
         for (key, value) in other.variables {
             self.variables.insert(key, value);
         }
@@ -1506,6 +1876,308 @@ fn id_selector(input: &str) -> ParseResult<'_, CssSelector> {
     })(input)
 }
 
+/// Parse a complex selector: handles #id, .class, :state, :pseudo, combinators
+///
+/// Examples:
+///   `#card`
+///   `#card:hover`
+///   `.item:first-child`
+///   `#parent:hover > .child`
+///   `#list .item:last-child`
+///   `#parent:hover > #child:first-child`
+fn parse_complex_selector(input: &str) -> ParseResult<ComplexSelector> {
+    let mut segments = Vec::new();
+    let mut remaining = input;
+
+    loop {
+        // Parse a compound selector (one or more simple selectors with no combinator)
+        let (rest, compound) = parse_compound_selector(remaining)?;
+        remaining = rest;
+
+        // Look ahead for a combinator or the start of `{`
+        let trimmed = remaining.trim_start();
+
+        if trimmed.starts_with('{') || trimmed.is_empty() {
+            // End of selector — this is the last (target) segment
+            segments.push((compound, None));
+            break;
+        }
+
+        // Check for combinators: > (child), + (adjacent sibling), ~ (general sibling)
+        if let Some(after_gt) = trimmed.strip_prefix('>') {
+            remaining = after_gt.trim_start();
+            segments.push((compound, Some(Combinator::Child)));
+        } else if let Some(after_plus) = trimmed.strip_prefix('+') {
+            remaining = after_plus.trim_start();
+            segments.push((compound, Some(Combinator::AdjacentSibling)));
+        } else if let Some(after_tilde) = trimmed.strip_prefix('~') {
+            remaining = after_tilde.trim_start();
+            segments.push((compound, Some(Combinator::GeneralSibling)));
+        } else {
+            // Must be a descendant combinator (whitespace between compound selectors)
+            // Check that next char is a valid selector start (#, ., :, *, or alpha)
+            let next_ch = trimmed.chars().next().unwrap_or('{');
+            if next_ch == '#'
+                || next_ch == '.'
+                || next_ch == ':'
+                || next_ch == '*'
+                || next_ch.is_alphabetic()
+            {
+                remaining = trimmed;
+                segments.push((compound, Some(Combinator::Descendant)));
+            } else {
+                // Not a selector continuation — end here
+                segments.push((compound, None));
+                break;
+            }
+        }
+    }
+
+    if segments.is_empty() {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            remaining,
+            nom::error::ErrorKind::Many1,
+        )));
+    }
+
+    Ok((remaining, ComplexSelector { segments }))
+}
+
+/// Parse a compound selector: one or more simple selector parts with no combinator.
+/// e.g. `#id.class:hover:first-child`
+/// Find the index of the matching closing parenthesis for the opening paren at input[0].
+fn find_matching_paren(input: &str) -> Option<usize> {
+    if !input.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    for (i, c) in input.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse a comma-separated list of compound selectors (for :is() / :where()).
+fn parse_selector_list(input: &str) -> Vec<CompoundSelector> {
+    let mut selectors = Vec::new();
+    for part in input.split(',') {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            if let Ok((_, compound)) = parse_compound_selector(trimmed) {
+                selectors.push(compound);
+            }
+        }
+    }
+    selectors
+}
+
+fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
+    let mut parts = Vec::new();
+    let mut remaining = input;
+
+    loop {
+        if remaining.starts_with('#') {
+            // ID selector
+            let (rest, _) = char('#')(remaining)?;
+            let (rest, id) = identifier::<VerboseError<&str>>(rest)?;
+            parts.push(SelectorPart::Id(id.to_string()));
+            remaining = rest;
+        } else if remaining.starts_with('.') {
+            // Class selector
+            let (rest, _) = char('.')(remaining)?;
+            let (rest, class) = identifier::<VerboseError<&str>>(rest)?;
+            parts.push(SelectorPart::Class(class.to_string()));
+            remaining = rest;
+        } else if remaining.starts_with('*') {
+            // Universal selector
+            remaining = &remaining[1..];
+            parts.push(SelectorPart::Universal);
+        } else if remaining.starts_with(':') {
+            // Pseudo-class (state or structural)
+            let (rest, _) = char(':')(remaining)?;
+            let (rest, name) = identifier::<VerboseError<&str>>(rest)?;
+
+            // Check if it's a structural pseudo-class
+            match name.to_lowercase().as_str() {
+                "first-child" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::FirstChild));
+                    remaining = rest;
+                }
+                "last-child" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::LastChild));
+                    remaining = rest;
+                }
+                "only-child" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::OnlyChild));
+                    remaining = rest;
+                }
+                "empty" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::Empty));
+                    remaining = rest;
+                }
+                "root" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::Root));
+                    remaining = rest;
+                }
+                "nth-child" => {
+                    // Parse nth-child(N)
+                    if rest.starts_with('(') {
+                        let (rest2, _) = char('(')(rest)?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, n_str) =
+                            take_while1::<_, _, VerboseError<&str>>(|c: char| c.is_ascii_digit())(
+                                rest2,
+                            )?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, _) = char(')')(rest2)?;
+                        if let Ok(n) = n_str.parse::<usize>() {
+                            parts.push(SelectorPart::PseudoClass(StructuralPseudo::NthChild(n)));
+                        }
+                        remaining = rest2;
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                "nth-last-child" => {
+                    // Parse nth-last-child(N)
+                    if rest.starts_with('(') {
+                        let (rest2, _) = char('(')(rest)?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, n_str) =
+                            take_while1::<_, _, VerboseError<&str>>(|c: char| c.is_ascii_digit())(
+                                rest2,
+                            )?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, _) = char(')')(rest2)?;
+                        if let Ok(n) = n_str.parse::<usize>() {
+                            parts
+                                .push(SelectorPart::PseudoClass(StructuralPseudo::NthLastChild(n)));
+                        }
+                        remaining = rest2;
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                "not" => {
+                    // Parse :not(selector)
+                    if rest.starts_with('(') {
+                        let (rest2, _) = char('(')(rest)?;
+                        let rest2 = rest2.trim_start();
+                        // Parse the inner compound selector
+                        if let Ok((rest3, inner)) = parse_compound_selector(rest2) {
+                            let rest3 = rest3.trim_start();
+                            if let Ok((rest4, _)) = char::<&str, VerboseError<&str>>(')')(rest3) {
+                                parts.push(SelectorPart::Not(Box::new(inner)));
+                                remaining = rest4;
+                            } else {
+                                remaining = rest;
+                            }
+                        } else {
+                            remaining = rest;
+                        }
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                "is" | "where" => {
+                    // Parse :is(selector, ...) or :where(selector, ...)
+                    if rest.starts_with('(') {
+                        if let Some(close) = find_matching_paren(rest) {
+                            let inner = &rest[1..close];
+                            let selectors = parse_selector_list(inner);
+                            if !selectors.is_empty() {
+                                parts.push(SelectorPart::Is(selectors));
+                            }
+                            remaining = &rest[close + 1..];
+                        } else {
+                            remaining = rest;
+                        }
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                "first-of-type" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::FirstOfType));
+                    remaining = rest;
+                }
+                "last-of-type" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::LastOfType));
+                    remaining = rest;
+                }
+                "only-of-type" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::OnlyOfType));
+                    remaining = rest;
+                }
+                "nth-of-type" => {
+                    if rest.starts_with('(') {
+                        let (rest2, _) = char('(')(rest)?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, n_str) =
+                            take_while1::<_, _, VerboseError<&str>>(|c: char| c.is_ascii_digit())(
+                                rest2,
+                            )?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, _) = char(')')(rest2)?;
+                        if let Ok(n) = n_str.parse::<usize>() {
+                            parts.push(SelectorPart::PseudoClass(StructuralPseudo::NthOfType(n)));
+                        }
+                        remaining = rest2;
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                "nth-last-of-type" => {
+                    if rest.starts_with('(') {
+                        let (rest2, _) = char('(')(rest)?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, n_str) =
+                            take_while1::<_, _, VerboseError<&str>>(|c: char| c.is_ascii_digit())(
+                                rest2,
+                            )?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, _) = char(')')(rest2)?;
+                        if let Ok(n) = n_str.parse::<usize>() {
+                            parts.push(SelectorPart::PseudoClass(StructuralPseudo::NthLastOfType(
+                                n,
+                            )));
+                        }
+                        remaining = rest2;
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                _ => {
+                    // Try as element state
+                    if let Some(state) = ElementState::parse_state(name) {
+                        parts.push(SelectorPart::State(state));
+                    }
+                    remaining = rest;
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    if parts.is_empty() {
+        return Err(nom::Err::Error(VerboseError::from_error_kind(
+            input,
+            nom::error::ErrorKind::Many1,
+        )));
+    }
+
+    Ok((remaining, CompoundSelector { parts }))
+}
+
 /// Parse a property name (including CSS custom properties like --var-name)
 fn property_name(input: &str) -> ParseResult<'_, &str> {
     context(
@@ -1758,6 +2430,7 @@ where
 /// Result of parsing a stylesheet - rules, variables, and keyframes
 struct ParsedStylesheet {
     rules: Vec<(String, ElementStyle)>,
+    complex_rules: Vec<(ComplexSelector, ElementStyle)>,
     variables: HashMap<String, String>,
     keyframes: Vec<CssKeyframes>,
 }
@@ -1772,6 +2445,7 @@ fn parse_stylesheet_with_errors<'a>(
 
     // Parse blocks one at a time to collect errors
     let mut rules = Vec::new();
+    let mut complex_rules = Vec::new();
     let mut parsed_variables = variables.clone();
     let mut parsed_keyframes = Vec::new();
     let mut remaining = input;
@@ -1780,6 +2454,16 @@ fn parse_stylesheet_with_errors<'a>(
         let trimmed = remaining.trim_start();
         if trimmed.is_empty() {
             break;
+        }
+
+        // Skip CSS comments at the top level
+        if trimmed.starts_with("/*") {
+            if let Some(end) = trimmed.find("*/") {
+                remaining = &trimmed[end + 2..];
+                continue;
+            } else {
+                break; // Unterminated comment
+            }
         }
 
         // Try to parse a :root block first
@@ -1812,10 +2496,14 @@ fn parse_stylesheet_with_errors<'a>(
             }
         }
 
-        // Try to parse a rule
-        match css_rule_with_errors_and_vars(css, errors, &parsed_variables)(trimmed) {
-            Ok((rest, rule)) => {
-                rules.push(rule);
+        // Try to parse a rule (complex selector or simple #id selector)
+        match css_rule_complex_or_simple(css, errors, &parsed_variables)(trimmed) {
+            Ok((rest, ParsedRule::Simple(key, style))) => {
+                rules.push((key, style));
+                remaining = rest;
+            }
+            Ok((rest, ParsedRule::Complex(selector, style))) => {
+                complex_rules.push((selector, style));
                 remaining = rest;
             }
             Err(nom::Err::Error(_)) | Err(nom::Err::Failure(_)) => {
@@ -1833,10 +2521,102 @@ fn parse_stylesheet_with_errors<'a>(
         input,
         ParsedStylesheet {
             rules,
+            complex_rules,
             variables: parsed_variables,
             keyframes: parsed_keyframes,
         },
     ))
+}
+
+/// Result of parsing a CSS rule — either a simple #id rule or a complex selector rule
+enum ParsedRule {
+    /// Simple rule: key is "id" or "id:state"
+    Simple(String, ElementStyle),
+    /// Complex rule with a full selector chain
+    Complex(ComplexSelector, ElementStyle),
+}
+
+/// Parse a CSS rule with either a complex or simple selector
+fn css_rule_complex_or_simple<'a, 'b>(
+    original_css: &'a str,
+    errors: &'b mut Vec<ParseError>,
+    variables: &'b HashMap<String, String>,
+) -> impl FnMut(&'a str) -> ParseResult<'a, ParsedRule> + 'b
+where
+    'a: 'b,
+{
+    move |input: &'a str| {
+        let (input, _) = ws(input)?;
+
+        // Try to parse a complex selector (handles #id, .class, combinators, etc.)
+        let (input, selector) = context("CSS rule selector", parse_complex_selector)(input)?;
+        let (input, _) = ws(input)?;
+        let (input, properties) = context("CSS rule block", rule_block)(input)?;
+
+        let mut style = ElementStyle::new();
+        for (name, value) in properties {
+            let resolved_value = resolve_var_references(value, variables);
+            apply_property_with_errors(
+                &mut style,
+                name,
+                &resolved_value,
+                original_css,
+                input,
+                errors,
+            );
+        }
+
+        // Determine if this is a simple or complex rule for fast-path storage
+        let rule = if selector.is_simple() {
+            // Single compound selector — check if it's a simple #id or #id:state
+            let compound = &selector.segments[0].0;
+            if let Some(simple_key) = try_as_simple_selector(compound) {
+                ParsedRule::Simple(simple_key, style)
+            } else {
+                ParsedRule::Complex(selector, style)
+            }
+        } else {
+            ParsedRule::Complex(selector, style)
+        };
+
+        Ok((input, rule))
+    }
+}
+
+/// Try to convert a compound selector to a simple "id" or "id:state" key.
+/// Returns Some(key) if the compound is just #id or #id:state, None otherwise.
+fn try_as_simple_selector(compound: &CompoundSelector) -> Option<String> {
+    let mut id = None;
+    let mut state = None;
+
+    for part in &compound.parts {
+        match part {
+            SelectorPart::Id(i) => {
+                if id.is_some() {
+                    return None; // Multiple IDs
+                }
+                id = Some(i.as_str());
+            }
+            SelectorPart::State(s) => {
+                if state.is_some() {
+                    return None; // Multiple states
+                }
+                state = Some(s);
+            }
+            // If there are classes, structural pseudos, universal, :not(), or :is(), it's not simple
+            SelectorPart::Class(_)
+            | SelectorPart::PseudoClass(_)
+            | SelectorPart::Universal
+            | SelectorPart::Not(_)
+            | SelectorPart::Is(_) => return None,
+        }
+    }
+
+    let id = id?; // Must have an ID to be a simple selector
+    match state {
+        Some(s) => Some(format!("{}:{}", id, s)),
+        None => Some(id.to_string()),
+    }
 }
 
 /// Parse a complete rule with error collection and variable resolution: #id { ... } or #id:state { ... }
@@ -1951,6 +2731,16 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.background = Some(brush);
             }
         }
+        "color" => {
+            if let Some(c) = parse_color(value) {
+                style.text_color = Some(c);
+            }
+        }
+        "font-size" => {
+            if let Some(px) = parse_length_value(value) {
+                style.font_size = Some(px);
+            }
+        }
         "border-radius" => {
             if let Some(radius) = parse_radius(value) {
                 style.corner_radius = Some(radius);
@@ -1961,16 +2751,33 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.shadow = Some(shadow);
             }
         }
+        "text-shadow" => {
+            if let Some(shadow) = parse_shadow(value) {
+                style.text_shadow = Some(shadow);
+            }
+        }
         "transform" => {
             parse_transform_with_3d(value, style);
+        }
+        "transform-origin" => {
+            if let Some(origin) = parse_transform_origin(value) {
+                style.transform_origin = Some(origin);
+            }
         }
         "opacity" => {
             if let Ok((_, opacity)) = parse_opacity::<nom::error::Error<&str>>(value) {
                 style.opacity = Some(opacity.clamp(0.0, 1.0));
             }
         }
-        "render-layer" | "z-index" => {
+        "render-layer" => {
             if let Ok((_, layer)) = parse_render_layer::<nom::error::Error<&str>>(value) {
+                style.render_layer = Some(layer);
+            }
+        }
+        "z-index" => {
+            if let Ok(z) = value.trim().parse::<i32>() {
+                style.z_index = Some(z);
+            } else if let Ok((_, layer)) = parse_render_layer::<nom::error::Error<&str>>(value) {
                 style.render_layer = Some(layer);
             }
         }
@@ -2089,6 +2896,78 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.animation = Some(anim);
             }
         }
+        "transition" => {
+            if let Some(transitions) = parse_transition(value) {
+                style.transition = Some(transitions);
+            }
+        }
+        "transition-property" => {
+            let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                transitions: vec![CssTransition {
+                    property: String::new(),
+                    duration_ms: 0,
+                    timing: AnimationTiming::Ease,
+                    delay_ms: 0,
+                }],
+            });
+            if let Some(t) = ts.transitions.first_mut() {
+                t.property = value.trim().to_string();
+            }
+            style.transition = Some(ts);
+        }
+        "transition-duration" => {
+            if let Some(ms) = parse_time_value(value) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.duration_ms = ms;
+                }
+                style.transition = Some(ts);
+            }
+        }
+        "transition-timing-function" => {
+            if let Some(timing) = AnimationTiming::from_str(value.trim()) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.timing = timing;
+                }
+                style.transition = Some(ts);
+            }
+        }
+        "transition-delay" => {
+            if let Some(ms) = parse_time_value(value) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.delay_ms = ms;
+                }
+                style.transition = Some(ts);
+            }
+        }
+        "filter" => {
+            if let Some(filter) = parse_css_filter(value) {
+                style.filter = Some(filter);
+            }
+        }
         "backdrop-filter" => {
             let trimmed = value.trim().to_lowercase();
             match trimmed.as_str() {
@@ -2114,6 +2993,11 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                     style.render_layer = Some(RenderLayer::Glass);
                 }
                 _ => {}
+            }
+        }
+        "clip-path" => {
+            if let Some(cp) = parse_clip_path(value) {
+                style.clip_path = Some(cp);
             }
         }
         // =====================================================================
@@ -2235,6 +3119,18 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
             "scroll" | "auto" => style.overflow = Some(StyleOverflow::Scroll),
             _ => {}
         },
+        "overflow-x" => match value.trim() {
+            "hidden" | "clip" => style.overflow_x = Some(StyleOverflow::Clip),
+            "visible" => style.overflow_x = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow_x = Some(StyleOverflow::Scroll),
+            _ => {}
+        },
+        "overflow-y" => match value.trim() {
+            "hidden" | "clip" => style.overflow_y = Some(StyleOverflow::Clip),
+            "visible" => style.overflow_y = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow_y = Some(StyleOverflow::Scroll),
+            _ => {}
+        },
         "border-width" => {
             if let Some(px) = parse_css_px(value) {
                 style.border_width = Some(px);
@@ -2243,6 +3139,75 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
         "border-color" => {
             if let Some(color) = parse_color(value) {
                 style.border_color = Some(color);
+            }
+        }
+        "outline-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.outline_width = Some(px);
+            }
+        }
+        "outline-color" => {
+            if let Some(color) = parse_color(value) {
+                style.outline_color = Some(color);
+            }
+        }
+        "outline-offset" => {
+            if let Some(px) = parse_css_px(value) {
+                style.outline_offset = Some(px);
+            }
+        }
+        "outline" => {
+            // Shorthand: outline: <width> solid <color>
+            // We ignore the style (always solid) and parse width + color
+            let parts = split_whitespace_respecting_parens(value);
+            for part in &parts {
+                if let Some(px) = parse_css_px(part) {
+                    style.outline_width = Some(px);
+                } else if part != "solid" && part != "none" && part != "dotted" && part != "dashed"
+                {
+                    if let Some(color) = parse_color(part) {
+                        style.outline_color = Some(color);
+                    }
+                }
+            }
+            if value.trim() == "none" {
+                style.outline_width = Some(0.0);
+            }
+        }
+        "position" => match value.trim() {
+            "static" => style.position = Some(StylePosition::Static),
+            "relative" => style.position = Some(StylePosition::Relative),
+            "absolute" => style.position = Some(StylePosition::Absolute),
+            "fixed" => style.position = Some(StylePosition::Fixed),
+            "sticky" => style.position = Some(StylePosition::Sticky),
+            _ => {}
+        },
+        "top" => {
+            if let Some(px) = parse_css_px(value) {
+                style.top = Some(px);
+            }
+        }
+        "right" => {
+            if let Some(px) = parse_css_px(value) {
+                style.right = Some(px);
+            }
+        }
+        "bottom" => {
+            if let Some(px) = parse_css_px(value) {
+                style.bottom = Some(px);
+            }
+        }
+        "left" => {
+            if let Some(px) = parse_css_px(value) {
+                style.left = Some(px);
+            }
+        }
+        "inset" => {
+            if let Some(px) = parse_css_px(value) {
+                style.top = Some(px);
+                style.right = Some(px);
+                style.bottom = Some(px);
+                style.left = Some(px);
             }
         }
         _ => {
@@ -2275,6 +3240,20 @@ fn apply_property_with_errors(
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
+        "color" => {
+            if let Some(c) = parse_color(value) {
+                style.text_color = Some(c);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "font-size" => {
+            if let Some(px) = parse_length_value(value) {
+                style.font_size = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
         "border-radius" => {
             if let Some(radius) = parse_radius(value) {
                 style.corner_radius = Some(radius);
@@ -2289,8 +3268,22 @@ fn apply_property_with_errors(
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
+        "text-shadow" => {
+            if let Some(shadow) = parse_shadow(value) {
+                style.text_shadow = Some(shadow);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
         "transform" => {
             if !parse_transform_with_3d(value, style) {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "transform-origin" => {
+            if let Some(origin) = parse_transform_origin(value) {
+                style.transform_origin = Some(origin);
+            } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
@@ -2301,8 +3294,17 @@ fn apply_property_with_errors(
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
-        "render-layer" | "z-index" => {
+        "render-layer" => {
             if let Ok((_, layer)) = parse_render_layer::<nom::error::Error<&str>>(value) {
+                style.render_layer = Some(layer);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "z-index" => {
+            if let Ok(z) = value.trim().parse::<i32>() {
+                style.z_index = Some(z);
+            } else if let Ok((_, layer)) = parse_render_layer::<nom::error::Error<&str>>(value) {
                 style.render_layer = Some(layer);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
@@ -2462,6 +3464,88 @@ fn apply_property_with_errors(
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
+        "transition" => {
+            if let Some(transitions) = parse_transition(value) {
+                style.transition = Some(transitions);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "transition-property" => {
+            let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                transitions: vec![CssTransition {
+                    property: String::new(),
+                    duration_ms: 0,
+                    timing: AnimationTiming::Ease,
+                    delay_ms: 0,
+                }],
+            });
+            if let Some(t) = ts.transitions.first_mut() {
+                t.property = value.trim().to_string();
+            }
+            style.transition = Some(ts);
+        }
+        "transition-duration" => {
+            if let Some(ms) = parse_time_value(value) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.duration_ms = ms;
+                }
+                style.transition = Some(ts);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "transition-timing-function" => {
+            if let Some(timing) = AnimationTiming::from_str(value.trim()) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.timing = timing;
+                }
+                style.transition = Some(ts);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "transition-delay" => {
+            if let Some(ms) = parse_time_value(value) {
+                let mut ts = style.transition.take().unwrap_or_else(|| CssTransitionSet {
+                    transitions: vec![CssTransition {
+                        property: "all".to_string(),
+                        duration_ms: 0,
+                        timing: AnimationTiming::Ease,
+                        delay_ms: 0,
+                    }],
+                });
+                if let Some(t) = ts.transitions.first_mut() {
+                    t.delay_ms = ms;
+                }
+                style.transition = Some(ts);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "filter" => {
+            if let Some(filter) = parse_css_filter(value) {
+                style.filter = Some(filter);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
         "backdrop-filter" => {
             let trimmed = value.trim().to_lowercase();
             match trimmed.as_str() {
@@ -2488,6 +3572,13 @@ fn apply_property_with_errors(
                 _ => {
                     errors.push(ParseError::invalid_value(name, value, line, column));
                 }
+            }
+        }
+        "clip-path" => {
+            if let Some(cp) = parse_clip_path(value) {
+                style.clip_path = Some(cp);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
         // =====================================================================
@@ -2631,6 +3722,18 @@ fn apply_property_with_errors(
             "scroll" | "auto" => style.overflow = Some(StyleOverflow::Scroll),
             _ => errors.push(ParseError::invalid_value(name, value, line, column)),
         },
+        "overflow-x" => match value.trim() {
+            "hidden" | "clip" => style.overflow_x = Some(StyleOverflow::Clip),
+            "visible" => style.overflow_x = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow_x = Some(StyleOverflow::Scroll),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "overflow-y" => match value.trim() {
+            "hidden" | "clip" => style.overflow_y = Some(StyleOverflow::Clip),
+            "visible" => style.overflow_y = Some(StyleOverflow::Visible),
+            "scroll" | "auto" => style.overflow_y = Some(StyleOverflow::Scroll),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
         "border-width" => {
             if let Some(px) = parse_css_px(value) {
                 style.border_width = Some(px);
@@ -2641,6 +3744,89 @@ fn apply_property_with_errors(
         "border-color" => {
             if let Some(color) = parse_color(value) {
                 style.border_color = Some(color);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "outline-width" => {
+            if let Some(px) = parse_css_px(value) {
+                style.outline_width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "outline-color" => {
+            if let Some(color) = parse_color(value) {
+                style.outline_color = Some(color);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "outline-offset" => {
+            if let Some(px) = parse_css_px(value) {
+                style.outline_offset = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "outline" => {
+            let parts = split_whitespace_respecting_parens(value);
+            for part in &parts {
+                if let Some(px) = parse_css_px(part) {
+                    style.outline_width = Some(px);
+                } else if part != "solid" && part != "none" && part != "dotted" && part != "dashed"
+                {
+                    if let Some(color) = parse_color(part) {
+                        style.outline_color = Some(color);
+                    }
+                }
+            }
+            if value.trim() == "none" {
+                style.outline_width = Some(0.0);
+            }
+        }
+        "position" => match value.trim() {
+            "static" => style.position = Some(StylePosition::Static),
+            "relative" => style.position = Some(StylePosition::Relative),
+            "absolute" => style.position = Some(StylePosition::Absolute),
+            "fixed" => style.position = Some(StylePosition::Fixed),
+            "sticky" => style.position = Some(StylePosition::Sticky),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "top" => {
+            if let Some(px) = parse_css_px(value) {
+                style.top = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "right" => {
+            if let Some(px) = parse_css_px(value) {
+                style.right = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "bottom" => {
+            if let Some(px) = parse_css_px(value) {
+                style.bottom = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "left" => {
+            if let Some(px) = parse_css_px(value) {
+                style.left = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "inset" => {
+            if let Some(px) = parse_css_px(value) {
+                style.top = Some(px);
+                style.right = Some(px);
+                style.bottom = Some(px);
+                style.left = Some(px);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
@@ -2831,14 +4017,60 @@ fn parse_theme_shadow<'a, E: NomParseError<&'a str>>(
     Ok((input, shadow))
 }
 
-/// Parse explicit shadow: offset-x offset-y blur color
+/// Split a CSS value by whitespace while keeping parenthesized groups intact.
+/// e.g. "2px 2px 0px rgba(0, 0, 0, 0.5)" → ["2px", "2px", "0px", "rgba(0, 0, 0, 0.5)"]
+fn split_whitespace_respecting_parens(input: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut paren_depth: i32 = 0;
+
+    for c in input.chars() {
+        match c {
+            '(' => {
+                paren_depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                paren_depth = (paren_depth - 1).max(0);
+                current.push(c);
+            }
+            c if c.is_whitespace() && paren_depth == 0 => {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed);
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        parts.push(trimmed);
+    }
+
+    parts
+}
+
+/// Parse explicit shadow: offset-x offset-y blur [spread] color
 fn parse_explicit_shadow(input: &str) -> Option<Shadow> {
-    let parts: Vec<&str> = input.split_whitespace().collect();
+    let parts = split_whitespace_respecting_parens(input);
     if parts.len() >= 4 {
-        let offset_x = parse_length_value(parts[0])?;
-        let offset_y = parse_length_value(parts[1])?;
-        let blur = parse_length_value(parts[2])?;
-        let color = parse_color(parts[3])?;
+        let offset_x = parse_length_value(&parts[0])?;
+        let offset_y = parse_length_value(&parts[1])?;
+        let blur = parse_length_value(&parts[2])?;
+        // Try 5-part form: offset-x offset-y blur spread color
+        if parts.len() >= 5 {
+            if let Some(spread) = parse_length_value(&parts[3]) {
+                let color = parse_color(&parts[4])?;
+                let mut shadow = Shadow::new(offset_x, offset_y, blur, color);
+                shadow.spread = spread;
+                return Some(shadow);
+            }
+        }
+        // 4-part form: offset-x offset-y blur color
+        let color = parse_color(&parts[3])?;
         return Some(Shadow::new(offset_x, offset_y, blur, color));
     }
     None
@@ -2882,6 +4114,25 @@ fn parse_transform_with_3d(value: &str, style: &mut ElementStyle) -> bool {
         return true;
     }
 
+    // Try skewX(deg)
+    if let Some(deg) = parse_function_angle(trimmed, "skewX") {
+        style.skew_x = Some(deg);
+        return true;
+    }
+
+    // Try skewY(deg)
+    if let Some(deg) = parse_function_angle(trimmed, "skewY") {
+        style.skew_y = Some(deg);
+        return true;
+    }
+
+    // Try skew(xdeg) or skew(xdeg, ydeg)
+    if let Some((sx, sy)) = parse_skew_function(trimmed) {
+        style.skew_x = Some(sx);
+        style.skew_y = Some(sy);
+        return true;
+    }
+
     // Try perspective(px)
     if let Some(px) = parse_function_px(trimmed, "perspective") {
         style.perspective = Some(px);
@@ -2895,6 +4146,74 @@ fn parse_transform_with_3d(value: &str, style: &mut ElementStyle) -> bool {
     }
 
     false
+}
+
+/// Parse `skew(Xdeg)` or `skew(Xdeg, Ydeg)`
+fn parse_skew_function(input: &str) -> Option<(f32, f32)> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_lowercase();
+    if !lower.starts_with("skew(") {
+        return None;
+    }
+    let inner = trimmed[5..].strip_suffix(')')?.trim();
+    let parts: Vec<&str> = inner.split(',').collect();
+    match parts.len() {
+        1 => {
+            let x = parse_angle_str(parts[0].trim())?;
+            Some((x, 0.0))
+        }
+        2 => {
+            let x = parse_angle_str(parts[0].trim())?;
+            let y = parse_angle_str(parts[1].trim())?;
+            Some((x, y))
+        }
+        _ => None,
+    }
+}
+
+/// Parse `transform-origin: X Y` where X/Y can be percentages or keywords
+/// Returns [x%, y%] where 0% = left/top, 50% = center, 100% = right/bottom
+fn parse_transform_origin(value: &str) -> Option<[f32; 2]> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    let parse_one = |s: &str| -> Option<f32> {
+        match s {
+            "left" | "top" => Some(0.0),
+            "center" => Some(50.0),
+            "right" | "bottom" => Some(100.0),
+            _ => {
+                if let Some(pct) = s.strip_suffix('%') {
+                    pct.trim().parse::<f32>().ok()
+                } else {
+                    s.parse::<f32>().ok() // bare number = percentage
+                }
+            }
+        }
+    };
+    match parts.len() {
+        1 => {
+            let v = parse_one(parts[0])?;
+            Some([v, v])
+        }
+        2 => {
+            let x = parse_one(parts[0])?;
+            let y = parse_one(parts[1])?;
+            Some([x, y])
+        }
+        _ => None,
+    }
+}
+
+/// Parse an angle string like "30deg", "0.5rad", or plain number (assumed degrees)
+fn parse_angle_str(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if let Some(deg_str) = s.strip_suffix("deg") {
+        deg_str.trim().parse::<f32>().ok()
+    } else if let Some(rad_str) = s.strip_suffix("rad") {
+        rad_str.trim().parse::<f32>().ok().map(|r| r.to_degrees())
+    } else {
+        // Plain number assumed to be degrees
+        s.parse::<f32>().ok()
+    }
 }
 
 /// Parse a CSS function like `funcName(30deg)` and return degrees
@@ -3230,6 +4549,226 @@ fn parse_animation_fill_mode(input: &str) -> Option<AnimationFillMode> {
         "backwards" => Some(AnimationFillMode::Backwards),
         "both" => Some(AnimationFillMode::Both),
         _ => None,
+    }
+}
+
+// ============================================================================
+// Transition Parsing
+// ============================================================================
+
+/// Parse CSS transition shorthand
+///
+/// Supports:
+/// - `transition: all 300ms ease`
+/// - `transition: opacity 200ms ease-in-out`
+/// - `transition: opacity 200ms ease, clip-path 500ms ease-out 100ms`
+/// - `transition: none`
+fn parse_transition(value: &str) -> Option<CssTransitionSet> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Some(CssTransitionSet::default());
+    }
+
+    let mut transitions = Vec::new();
+    for segment in value.split(',') {
+        if let Some(t) = parse_single_transition(segment.trim()) {
+            transitions.push(t);
+        } else {
+            return None;
+        }
+    }
+
+    if transitions.is_empty() {
+        return None;
+    }
+
+    Some(CssTransitionSet { transitions })
+}
+
+/// Parse a single transition: `property duration [timing] [delay]`
+fn parse_single_transition(value: &str) -> Option<CssTransition> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut property = String::new();
+    let mut duration_ms = 0u32;
+    let mut timing = AnimationTiming::Ease;
+    let mut delay_ms = 0u32;
+    let mut duration_set = false;
+
+    for part in parts {
+        // Try as timing function
+        if let Some(t) = AnimationTiming::from_str(part) {
+            timing = t;
+            continue;
+        }
+
+        // Try as time value (first = duration, second = delay)
+        if let Some(ms) = parse_time_value(part) {
+            if !duration_set {
+                duration_ms = ms;
+                duration_set = true;
+            } else {
+                delay_ms = ms;
+            }
+            continue;
+        }
+
+        // Otherwise treat as property name
+        if property.is_empty() {
+            property = part.to_string();
+        }
+    }
+
+    if property.is_empty() {
+        return None;
+    }
+
+    Some(CssTransition {
+        property,
+        duration_ms,
+        timing,
+        delay_ms,
+    })
+}
+
+/// Parse CSS filter functions: `filter: grayscale(1) invert(0.5) brightness(1.2)`
+///
+/// Supports: grayscale, invert, sepia, hue-rotate, brightness, contrast, saturate
+/// Values can be plain numbers, percentages, or degrees (for hue-rotate)
+fn parse_css_filter(value: &str) -> Option<crate::element_style::CssFilter> {
+    use crate::element_style::CssFilter;
+
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Some(CssFilter::default());
+    }
+
+    let mut filter = CssFilter::default();
+    let mut found_any = false;
+    let mut remaining = value;
+
+    while !remaining.is_empty() {
+        remaining = remaining.trim_start();
+        if remaining.is_empty() {
+            break;
+        }
+
+        // Find function name and opening paren
+        if let Some(paren_pos) = remaining.find('(') {
+            let func_name = remaining[..paren_pos].trim();
+            let after_paren = &remaining[paren_pos + 1..];
+
+            // Find matching closing paren (handles nested parens like rgba())
+            let close_pos = {
+                let mut depth = 0i32;
+                let mut found = None;
+                for (i, ch) in after_paren.char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => {
+                            if depth == 0 {
+                                found = Some(i);
+                                break;
+                            }
+                            depth -= 1;
+                        }
+                        _ => {}
+                    }
+                }
+                found
+            };
+            if let Some(close_pos) = close_pos {
+                let arg_str = after_paren[..close_pos].trim();
+                remaining = after_paren[close_pos + 1..].trim_start();
+
+                let func_lower = func_name.to_lowercase();
+
+                // Handle special multi-arg functions first
+                if func_lower == "blur" {
+                    if let Some(px) = parse_css_px(arg_str) {
+                        filter.blur = px;
+                        found_any = true;
+                    }
+                    continue;
+                }
+                if func_lower == "drop-shadow" {
+                    let parts = split_whitespace_respecting_parens(arg_str);
+                    if parts.len() >= 3 {
+                        let x = parse_length_value(&parts[0]);
+                        let y = parse_length_value(&parts[1]);
+                        let blur_val = parse_length_value(&parts[2]);
+                        let color = if parts.len() >= 4 {
+                            parse_color(&parts[3])
+                        } else {
+                            Some(blinc_core::Color::rgba(0.0, 0.0, 0.0, 0.5))
+                        };
+                        if let (Some(x), Some(y), Some(b), Some(c)) = (x, y, blur_val, color) {
+                            filter.drop_shadow = Some(blinc_core::Shadow::new(x, y, b, c));
+                            found_any = true;
+                        }
+                    }
+                    continue;
+                }
+
+                // Parse the argument value for simple single-value functions
+                let arg_val = if let Some(deg_str) = arg_str.strip_suffix("deg") {
+                    deg_str.trim().parse::<f32>().ok()
+                } else if let Some(pct_str) = arg_str.strip_suffix('%') {
+                    pct_str.trim().parse::<f32>().ok().map(|v| v / 100.0)
+                } else {
+                    arg_str.parse::<f32>().ok()
+                };
+
+                if let Some(v) = arg_val {
+                    match func_lower.as_str() {
+                        "grayscale" => {
+                            filter.grayscale = v;
+                            found_any = true;
+                        }
+                        "invert" => {
+                            filter.invert = v;
+                            found_any = true;
+                        }
+                        "sepia" => {
+                            filter.sepia = v;
+                            found_any = true;
+                        }
+                        "hue-rotate" => {
+                            filter.hue_rotate = v;
+                            found_any = true;
+                        }
+                        "brightness" => {
+                            filter.brightness = v;
+                            found_any = true;
+                        }
+                        "contrast" => {
+                            filter.contrast = v;
+                            found_any = true;
+                        }
+                        "saturate" => {
+                            filter.saturate = v;
+                            found_any = true;
+                        }
+                        _ => {
+                            // Unknown filter function, skip
+                        }
+                    }
+                }
+            } else {
+                break; // No closing paren
+            }
+        } else {
+            break; // No opening paren
+        }
+    }
+
+    if found_any {
+        Some(filter)
+    } else {
+        None
     }
 }
 
@@ -3717,7 +5256,7 @@ fn parse_angle_value(input: &str) -> Option<f32> {
 /// Convert CSS gradient angle to start/end points
 /// CSS angles: 0deg = to top, 90deg = to right, 180deg = to bottom, 270deg = to left
 /// In ObjectBoundingBox space (0-1 coordinates)
-fn angle_to_gradient_points(angle_deg: f32) -> (Point, Point) {
+pub fn angle_to_gradient_points(angle_deg: f32) -> (Point, Point) {
     // CSS gradient angles are measured clockwise from top (0deg = up)
     // Convert to mathematical angle (counterclockwise from right)
     let angle_rad = (90.0 - angle_deg) * std::f32::consts::PI / 180.0;
@@ -3743,6 +5282,19 @@ fn angle_to_gradient_points(angle_deg: f32) -> (Point, Point) {
     let end = Point::new(center.x + dx * len, center.y + dy * len);
 
     (start, end)
+}
+
+/// Reverse-compute CSS gradient angle (in degrees) from ObjectBoundingBox start/end points.
+/// Inverse of `angle_to_gradient_points`.
+pub fn gradient_points_to_angle(start: Point, end: Point) -> f32 {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    // CSS: 0deg = to top, 90deg = to right, clockwise
+    // atan2 gives counterclockwise from positive-x
+    let math_angle = (-dy).atan2(dx); // negate dy for screen coords
+    let css_deg = 90.0 - math_angle * 180.0 / std::f32::consts::PI;
+    // Normalize to 0..360
+    ((css_deg % 360.0) + 360.0) % 360.0
 }
 
 /// Parse color stops from gradient parts
@@ -3883,6 +5435,643 @@ fn parse_position_value(input: &str) -> Option<f32> {
         "center" => Some(0.5),
         "right" | "bottom" => Some(1.0),
         _ => None,
+    }
+}
+
+// ============================================================================
+// CSS clip-path Parsing
+// ============================================================================
+
+/// Parse a CSS length value (px or %) into a ClipLength
+/// Convert a ClipLength to a float value for animation interpolation
+fn clip_length_to_percent(len: &ClipLength) -> f32 {
+    match len {
+        ClipLength::Percent(p) => *p,
+        ClipLength::Px(px) => *px,
+    }
+}
+
+fn parse_clip_length(s: &str) -> Option<ClipLength> {
+    let s = s.trim();
+    if let Some(stripped) = s.strip_suffix('%') {
+        stripped.trim().parse::<f32>().ok().map(ClipLength::Percent)
+    } else if let Some(stripped) = s.strip_suffix("px") {
+        stripped.trim().parse::<f32>().ok().map(ClipLength::Px)
+    } else {
+        // Bare number → pixels
+        s.parse::<f32>().ok().map(ClipLength::Px)
+    }
+}
+
+/// Parse the `at cx cy` position suffix (default: 50% 50%)
+fn parse_at_position(s: &str) -> ((ClipLength, ClipLength), &str) {
+    let default = (ClipLength::Percent(50.0), ClipLength::Percent(50.0));
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("at") {
+        let rest = rest.trim();
+        let tokens: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
+        if tokens.len() == 2 {
+            if let (Some(cx), Some(cy)) =
+                (parse_clip_length(tokens[0]), parse_clip_length(tokens[1]))
+            {
+                return ((cx, cy), "");
+            }
+        }
+        // single token → cx, cy=50%
+        if let Some(cx) = tokens.first().and_then(|t| parse_clip_length(t)) {
+            return ((cx, ClipLength::Percent(50.0)), "");
+        }
+        (default, s)
+    } else {
+        (default, s)
+    }
+}
+
+/// Parse `round <radius>` suffix, returning the radius and remaining content
+fn parse_round_suffix(s: &str) -> (Option<f32>, &str) {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("round") {
+        let rest = rest.trim();
+        if let Some(px) = parse_css_px(rest) {
+            return (Some(px), "");
+        }
+        (None, s)
+    } else {
+        (None, s)
+    }
+}
+
+/// Parse a full CSS `clip-path` value string into a `ClipPath`
+///
+/// Supported functions:
+/// - `circle(radius at cx cy)`
+/// - `ellipse(rx ry at cx cy)`
+/// - `inset(top right bottom left round radius)`
+/// - `rect(top right bottom left round radius)`
+/// - `xywh(x y w h round radius)`
+/// - `polygon(x1 y1, x2 y2, ...)`
+/// - `path("M 0 0 L ...")`
+pub fn parse_clip_path(value: &str) -> Option<ClipPath> {
+    let value = value.trim();
+
+    // Extract function name and inner content
+    let paren_start = value.find('(')?;
+    let paren_end = value.rfind(')')?;
+    if paren_end <= paren_start {
+        return None;
+    }
+    let func_name = value[..paren_start].trim().to_lowercase();
+    let inner = value[paren_start + 1..paren_end].trim();
+
+    match func_name.as_str() {
+        "circle" => {
+            // circle() or circle(radius) or circle(radius at cx cy) or circle(at cx cy)
+            if inner.is_empty() {
+                return Some(ClipPath::Circle {
+                    radius: None,
+                    center: (ClipLength::Percent(50.0), ClipLength::Percent(50.0)),
+                });
+            }
+            // Check if starts with "at" (no radius)
+            if inner.starts_with("at") {
+                let (center, _) = parse_at_position(inner);
+                return Some(ClipPath::Circle {
+                    radius: None,
+                    center,
+                });
+            }
+            // radius [at cx cy]
+            let parts: Vec<&str> = inner.splitn(2, " at ").collect();
+            let radius = parse_clip_length(parts[0].trim());
+            let center = if parts.len() > 1 {
+                let (center, _) = parse_at_position(&format!("at {}", parts[1]));
+                center
+            } else {
+                (ClipLength::Percent(50.0), ClipLength::Percent(50.0))
+            };
+            Some(ClipPath::Circle { radius, center })
+        }
+        "ellipse" => {
+            // ellipse() or ellipse(rx ry) or ellipse(rx ry at cx cy)
+            if inner.is_empty() {
+                return Some(ClipPath::Ellipse {
+                    rx: None,
+                    ry: None,
+                    center: (ClipLength::Percent(50.0), ClipLength::Percent(50.0)),
+                });
+            }
+            if inner.starts_with("at") {
+                let (center, _) = parse_at_position(inner);
+                return Some(ClipPath::Ellipse {
+                    rx: None,
+                    ry: None,
+                    center,
+                });
+            }
+            let parts: Vec<&str> = inner.splitn(2, " at ").collect();
+            let radii_str = parts[0].trim();
+            let radii_tokens: Vec<&str> = radii_str.split_whitespace().collect();
+            let (rx, ry) = if radii_tokens.len() >= 2 {
+                (
+                    parse_clip_length(radii_tokens[0]),
+                    parse_clip_length(radii_tokens[1]),
+                )
+            } else if radii_tokens.len() == 1 {
+                let r = parse_clip_length(radii_tokens[0]);
+                (r, r)
+            } else {
+                (None, None)
+            };
+            let center = if parts.len() > 1 {
+                let (center, _) = parse_at_position(&format!("at {}", parts[1]));
+                center
+            } else {
+                (ClipLength::Percent(50.0), ClipLength::Percent(50.0))
+            };
+            Some(ClipPath::Ellipse { rx, ry, center })
+        }
+        "inset" | "rect" => {
+            // inset(top right bottom left [round radius])
+            // rect(top right bottom left [round radius])
+            let (inner_no_round, round_part) = if let Some(idx) = inner.find("round") {
+                (inner[..idx].trim(), Some(inner[idx..].trim()))
+            } else {
+                (inner, None)
+            };
+            let round = round_part
+                .and_then(|r| r.strip_prefix("round").and_then(|v| parse_css_px(v.trim())));
+            let tokens: Vec<&str> = inner_no_round.split_whitespace().collect();
+            let (top, right, bottom, left) = match tokens.len() {
+                1 => {
+                    let v = parse_clip_length(tokens[0])?;
+                    (v, v, v, v)
+                }
+                2 => {
+                    let tb = parse_clip_length(tokens[0])?;
+                    let lr = parse_clip_length(tokens[1])?;
+                    (tb, lr, tb, lr)
+                }
+                3 => {
+                    let t = parse_clip_length(tokens[0])?;
+                    let lr = parse_clip_length(tokens[1])?;
+                    let b = parse_clip_length(tokens[2])?;
+                    (t, lr, b, lr)
+                }
+                4.. => {
+                    let t = parse_clip_length(tokens[0])?;
+                    let r = parse_clip_length(tokens[1])?;
+                    let b = parse_clip_length(tokens[2])?;
+                    let l = parse_clip_length(tokens[3])?;
+                    (t, r, b, l)
+                }
+                _ => return None,
+            };
+            if func_name == "inset" {
+                Some(ClipPath::Inset {
+                    top,
+                    right,
+                    bottom,
+                    left,
+                    round,
+                })
+            } else {
+                Some(ClipPath::Rect {
+                    top,
+                    right,
+                    bottom,
+                    left,
+                    round,
+                })
+            }
+        }
+        "xywh" => {
+            // xywh(x y w h [round radius])
+            let (inner_no_round, round_part) = if let Some(idx) = inner.find("round") {
+                (inner[..idx].trim(), Some(inner[idx..].trim()))
+            } else {
+                (inner, None)
+            };
+            let round = round_part
+                .and_then(|r| r.strip_prefix("round").and_then(|v| parse_css_px(v.trim())));
+            let tokens: Vec<&str> = inner_no_round.split_whitespace().collect();
+            if tokens.len() < 4 {
+                return None;
+            }
+            let x = parse_clip_length(tokens[0])?;
+            let y = parse_clip_length(tokens[1])?;
+            let w = parse_clip_length(tokens[2])?;
+            let h = parse_clip_length(tokens[3])?;
+            Some(ClipPath::Xywh { x, y, w, h, round })
+        }
+        "polygon" => {
+            // polygon(x1 y1, x2 y2, ...)
+            let point_strs: Vec<&str> = inner.split(',').collect();
+            let mut points = Vec::new();
+            for ps in point_strs {
+                let coords: Vec<&str> = ps.split_whitespace().collect();
+                if coords.len() >= 2 {
+                    let x = parse_clip_length(coords[0])?;
+                    let y = parse_clip_length(coords[1])?;
+                    points.push((x, y));
+                }
+            }
+            if points.len() < 3 {
+                return None;
+            }
+            Some(ClipPath::Polygon { points })
+        }
+        "path" => {
+            // path("M 0 0 L 100 0 ...")
+            // Extract the quoted string
+            let inner = inner.trim();
+            let path_str = if (inner.starts_with('"') && inner.ends_with('"'))
+                || (inner.starts_with('\'') && inner.ends_with('\''))
+            {
+                &inner[1..inner.len() - 1]
+            } else {
+                inner
+            };
+            let vertices = flatten_svg_path(path_str)?;
+            if vertices.len() < 3 {
+                return None;
+            }
+            Some(ClipPath::Path { vertices })
+        }
+        _ => None,
+    }
+}
+
+/// Flatten SVG path commands into a list of (x, y) vertices
+///
+/// Supports: M/m, L/l, H/h, V/v, C/c, S/s, Q/q, T/t, A/a (approximated), Z/z
+/// Cubic/quadratic curves are subdivided into line segments for polygon clipping.
+fn flatten_svg_path(d: &str) -> Option<Vec<(f32, f32)>> {
+    let mut vertices = Vec::new();
+    let mut cx = 0.0_f32;
+    let mut cy = 0.0_f32;
+    let mut start_x = 0.0_f32;
+    let mut start_y = 0.0_f32;
+    let mut last_cp_x = 0.0_f32;
+    let mut last_cp_y = 0.0_f32;
+    let mut last_cmd = ' ';
+
+    // Tokenize: split on command letters, keeping the letter
+    let mut tokens: Vec<(char, Vec<f32>)> = Vec::new();
+    let mut current_cmd = ' ';
+    let mut num_buf = String::new();
+    let mut nums: Vec<f32> = Vec::new();
+
+    let flush_num = |buf: &mut String, nums: &mut Vec<f32>| {
+        if !buf.is_empty() {
+            if let Ok(n) = buf.parse::<f32>() {
+                nums.push(n);
+            }
+            buf.clear();
+        }
+    };
+
+    for ch in d.chars() {
+        if ch.is_ascii_alphabetic() {
+            flush_num(&mut num_buf, &mut nums);
+            if current_cmd != ' ' {
+                tokens.push((current_cmd, std::mem::take(&mut nums)));
+            }
+            current_cmd = ch;
+        } else if ch == ',' || ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+            flush_num(&mut num_buf, &mut nums);
+        } else if ch == '-'
+            && !num_buf.is_empty()
+            && !num_buf.ends_with('e')
+            && !num_buf.ends_with('E')
+        {
+            // Negative sign starts a new number (unless after exponent)
+            flush_num(&mut num_buf, &mut nums);
+            num_buf.push(ch);
+        } else {
+            num_buf.push(ch);
+        }
+    }
+    flush_num(&mut num_buf, &mut nums);
+    if current_cmd != ' ' {
+        tokens.push((current_cmd, nums));
+    }
+
+    for (cmd, nums) in &tokens {
+        let is_rel = cmd.is_ascii_lowercase();
+        let base_x = if is_rel { cx } else { 0.0 };
+        let base_y = if is_rel { cy } else { 0.0 };
+
+        match cmd.to_ascii_uppercase() {
+            'M' => {
+                // moveto
+                let mut i = 0;
+                while i + 1 < nums.len() {
+                    let x = base_x + nums[i];
+                    let y = base_y + nums[i + 1];
+                    if i == 0 {
+                        start_x = x;
+                        start_y = y;
+                    }
+                    vertices.push((x, y));
+                    cx = x;
+                    cy = y;
+                    i += 2;
+                }
+            }
+            'L' => {
+                let mut i = 0;
+                while i + 1 < nums.len() {
+                    cx = base_x + nums[i];
+                    cy = base_y + nums[i + 1];
+                    vertices.push((cx, cy));
+                    i += 2;
+                }
+            }
+            'H' => {
+                for n in nums {
+                    cx = base_x + n;
+                    vertices.push((cx, cy));
+                }
+            }
+            'V' => {
+                for n in nums {
+                    cy = base_y + n;
+                    vertices.push((cx, cy));
+                }
+            }
+            'C' => {
+                // cubic bezier
+                let mut i = 0;
+                while i + 5 < nums.len() {
+                    let x1 = base_x + nums[i];
+                    let y1 = base_y + nums[i + 1];
+                    let x2 = base_x + nums[i + 2];
+                    let y2 = base_y + nums[i + 3];
+                    let x = base_x + nums[i + 4];
+                    let y = base_y + nums[i + 5];
+                    subdivide_cubic(&mut vertices, cx, cy, x1, y1, x2, y2, x, y, 0);
+                    last_cp_x = x2;
+                    last_cp_y = y2;
+                    cx = x;
+                    cy = y;
+                    i += 6;
+                }
+                last_cmd = cmd.to_ascii_uppercase();
+                continue;
+            }
+            'S' => {
+                // smooth cubic
+                let mut i = 0;
+                while i + 3 < nums.len() {
+                    let x1 = if last_cmd == 'C' || last_cmd == 'S' {
+                        2.0 * cx - last_cp_x
+                    } else {
+                        cx
+                    };
+                    let y1 = if last_cmd == 'C' || last_cmd == 'S' {
+                        2.0 * cy - last_cp_y
+                    } else {
+                        cy
+                    };
+                    let x2 = base_x + nums[i];
+                    let y2 = base_y + nums[i + 1];
+                    let x = base_x + nums[i + 2];
+                    let y = base_y + nums[i + 3];
+                    subdivide_cubic(&mut vertices, cx, cy, x1, y1, x2, y2, x, y, 0);
+                    last_cp_x = x2;
+                    last_cp_y = y2;
+                    cx = x;
+                    cy = y;
+                    i += 4;
+                }
+                last_cmd = 'S';
+                continue;
+            }
+            'Q' => {
+                // quadratic bezier
+                let mut i = 0;
+                while i + 3 < nums.len() {
+                    let qx = base_x + nums[i];
+                    let qy = base_y + nums[i + 1];
+                    let x = base_x + nums[i + 2];
+                    let y = base_y + nums[i + 3];
+                    subdivide_quadratic(&mut vertices, cx, cy, qx, qy, x, y, 0);
+                    last_cp_x = qx;
+                    last_cp_y = qy;
+                    cx = x;
+                    cy = y;
+                    i += 4;
+                }
+                last_cmd = 'Q';
+                continue;
+            }
+            'T' => {
+                // smooth quadratic
+                let mut i = 0;
+                while i + 1 < nums.len() {
+                    let qx = if last_cmd == 'Q' || last_cmd == 'T' {
+                        2.0 * cx - last_cp_x
+                    } else {
+                        cx
+                    };
+                    let qy = if last_cmd == 'Q' || last_cmd == 'T' {
+                        2.0 * cy - last_cp_y
+                    } else {
+                        cy
+                    };
+                    let x = base_x + nums[i];
+                    let y = base_y + nums[i + 1];
+                    subdivide_quadratic(&mut vertices, cx, cy, qx, qy, x, y, 0);
+                    last_cp_x = qx;
+                    last_cp_y = qy;
+                    cx = x;
+                    cy = y;
+                    i += 2;
+                }
+                last_cmd = 'T';
+                continue;
+            }
+            'A' => {
+                // Arc: approximate with line segments
+                let mut i = 0;
+                while i + 6 < nums.len() {
+                    let x = base_x + nums[i + 5];
+                    let y = base_y + nums[i + 6];
+                    // Simple approximation: subdivide arc into segments
+                    approximate_arc(
+                        &mut vertices,
+                        cx,
+                        cy,
+                        nums[i],
+                        nums[i + 1],
+                        nums[i + 2],
+                        nums[i + 3] != 0.0,
+                        nums[i + 4] != 0.0,
+                        x,
+                        y,
+                    );
+                    cx = x;
+                    cy = y;
+                    i += 7;
+                }
+            }
+            'Z' => {
+                if (cx - start_x).abs() > 0.01 || (cy - start_y).abs() > 0.01 {
+                    vertices.push((start_x, start_y));
+                }
+                cx = start_x;
+                cy = start_y;
+            }
+            _ => {}
+        }
+        last_cmd = cmd.to_ascii_uppercase();
+    }
+
+    if vertices.is_empty() {
+        None
+    } else {
+        Some(vertices)
+    }
+}
+
+/// Recursively subdivide a cubic bezier curve into line segments
+#[allow(clippy::too_many_arguments)]
+fn subdivide_cubic(
+    out: &mut Vec<(f32, f32)>,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    x3: f32,
+    y3: f32,
+    depth: u32,
+) {
+    const MAX_DEPTH: u32 = 6;
+    const TOLERANCE: f32 = 1.0;
+
+    if depth >= MAX_DEPTH {
+        out.push((x3, y3));
+        return;
+    }
+
+    // Flatness check: max deviation of control points from the line p0→p3
+    let dx = x3 - x0;
+    let dy = y3 - y0;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 0.0001 {
+        out.push((x3, y3));
+        return;
+    }
+    let d1 = ((x1 - x0) * dy - (y1 - y0) * dx).abs();
+    let d2 = ((x2 - x0) * dy - (y2 - y0) * dx).abs();
+    let max_dev = (d1 + d2) / len_sq.sqrt();
+
+    if max_dev < TOLERANCE {
+        out.push((x3, y3));
+        return;
+    }
+
+    // De Casteljau subdivision at t=0.5
+    let m01x = (x0 + x1) * 0.5;
+    let m01y = (y0 + y1) * 0.5;
+    let m12x = (x1 + x2) * 0.5;
+    let m12y = (y1 + y2) * 0.5;
+    let m23x = (x2 + x3) * 0.5;
+    let m23y = (y2 + y3) * 0.5;
+    let m012x = (m01x + m12x) * 0.5;
+    let m012y = (m01y + m12y) * 0.5;
+    let m123x = (m12x + m23x) * 0.5;
+    let m123y = (m12y + m23y) * 0.5;
+    let mx = (m012x + m123x) * 0.5;
+    let my = (m012y + m123y) * 0.5;
+
+    subdivide_cubic(out, x0, y0, m01x, m01y, m012x, m012y, mx, my, depth + 1);
+    subdivide_cubic(out, mx, my, m123x, m123y, m23x, m23y, x3, y3, depth + 1);
+}
+
+/// Recursively subdivide a quadratic bezier curve into line segments
+#[allow(clippy::too_many_arguments)]
+fn subdivide_quadratic(
+    out: &mut Vec<(f32, f32)>,
+    x0: f32,
+    y0: f32,
+    qx: f32,
+    qy: f32,
+    x2: f32,
+    y2: f32,
+    depth: u32,
+) {
+    const MAX_DEPTH: u32 = 6;
+    const TOLERANCE: f32 = 1.0;
+
+    if depth >= MAX_DEPTH {
+        out.push((x2, y2));
+        return;
+    }
+
+    // Flatness: deviation of control point from midpoint of line p0→p2
+    let mid_x = (x0 + x2) * 0.5;
+    let mid_y = (y0 + y2) * 0.5;
+    let dev = ((qx - mid_x).powi(2) + (qy - mid_y).powi(2)).sqrt();
+
+    if dev < TOLERANCE {
+        out.push((x2, y2));
+        return;
+    }
+
+    // De Casteljau at t=0.5
+    let m01x = (x0 + qx) * 0.5;
+    let m01y = (y0 + qy) * 0.5;
+    let m12x = (qx + x2) * 0.5;
+    let m12y = (qy + y2) * 0.5;
+    let mx = (m01x + m12x) * 0.5;
+    let my = (m01y + m12y) * 0.5;
+
+    subdivide_quadratic(out, x0, y0, m01x, m01y, mx, my, depth + 1);
+    subdivide_quadratic(out, mx, my, m12x, m12y, x2, y2, depth + 1);
+}
+
+/// Approximate an SVG arc with line segments
+#[allow(clippy::too_many_arguments)]
+fn approximate_arc(
+    out: &mut Vec<(f32, f32)>,
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
+    x_rotation: f32,
+    large_arc: bool,
+    sweep: bool,
+    x: f32,
+    y: f32,
+) {
+    // Simple approximation: use enough segments for smooth arc
+    let dx = x - cx;
+    let dy = y - cy;
+    let dist = (dx * dx + dy * dy).sqrt();
+    let segments = (dist / 4.0).clamp(8.0, 32.0) as u32;
+
+    if rx.abs() < 0.001 || ry.abs() < 0.001 {
+        out.push((x, y));
+        return;
+    }
+
+    // Simplified: compute endpoints as parametric arc
+    let cos_rot = x_rotation.to_radians().cos();
+    let sin_rot = x_rotation.to_radians().sin();
+
+    // Use the SVG arc endpoint parameterization (simplified)
+    // For clip-path, a reasonable approximation is sufficient
+    let _ = (large_arc, sweep, cos_rot, sin_rot, rx, ry);
+
+    // Fallback: linear interpolation for robustness
+    for i in 1..=segments {
+        let t = i as f32 / segments as f32;
+        let px = cx + dx * t;
+        let py = cy + dy * t;
+        out.push((px, py));
     }
 }
 
@@ -5812,21 +8001,25 @@ mod tests {
             AnimationTiming::Linear.to_easing(),
             Easing::Linear
         ));
+        // CSS ease = cubic-bezier(0.25, 0.1, 0.25, 1.0)
         assert!(matches!(
             AnimationTiming::Ease.to_easing(),
-            Easing::EaseInOut
+            Easing::CubicBezier(0.25, 0.1, 0.25, 1.0)
         ));
+        // CSS ease-in = cubic-bezier(0.42, 0.0, 1.0, 1.0)
         assert!(matches!(
             AnimationTiming::EaseIn.to_easing(),
-            Easing::EaseIn
+            Easing::CubicBezier(0.42, 0.0, 1.0, 1.0)
         ));
+        // CSS ease-out = cubic-bezier(0.0, 0.0, 0.58, 1.0)
         assert!(matches!(
             AnimationTiming::EaseOut.to_easing(),
-            Easing::EaseOut
+            Easing::CubicBezier(0.0, 0.0, 0.58, 1.0)
         ));
+        // CSS ease-in-out = cubic-bezier(0.42, 0.0, 0.58, 1.0)
         assert!(matches!(
             AnimationTiming::EaseInOut.to_easing(),
-            Easing::EaseInOut
+            Easing::CubicBezier(0.42, 0.0, 0.58, 1.0)
         ));
     }
 

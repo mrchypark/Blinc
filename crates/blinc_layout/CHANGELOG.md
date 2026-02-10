@@ -67,7 +67,49 @@ All notable changes to `blinc_layout` will be documented in this file.
 - `animation-direction: normal | reverse | alternate | alternate-reverse`
 - `animation-fill-mode: none | forwards | backwards | both`
 - `animation-iteration-count: <number> | infinite`
-- Animatable properties: `opacity`, `scale`, `scale-x`, `scale-y`, `translate-x`, `translate-y`, `rotate`, `rotate-x`, `rotate-y`, `perspective`, `depth`, `translate-z`, `blend-3d`
+- Animatable properties: `opacity`, `scale`, `scale-x`, `scale-y`, `translate-x`, `translate-y`, `rotate`, `rotate-x`, `rotate-y`, `perspective`, `depth`, `translate-z`, `blend-3d`, `background`, `border-color`, `border-radius`, `border-width`, `box-shadow`, `clip-path`, `filter` (including `blur`), `width`, `height`, `padding`, `margin`, `gap`
+
+#### CSS Transitions
+
+- `transition` shorthand: property, duration, timing-function, delay
+- `transition: all 300ms ease` wildcard for all animatable properties
+- Comma-separated multi-property transitions
+- Smooth reverse transitions on hover-leave with mid-flight reversal support
+- Filter identity defaults for proper interpolation (brightness/contrast/saturate default to 1.0)
+
+#### CSS Filters
+
+- `filter` property: `grayscale()`, `invert()`, `sepia()`, `hue-rotate()`, `brightness()`, `contrast()`, `saturate()`
+- `filter: blur(Npx)` with GPU Kawase multi-pass blur via LayerEffect pipeline
+- `filter: drop-shadow(x y blur color)` with GPU drop-shadow via LayerEffect pipeline
+- Space-separated multi-function syntax: `filter: blur(4px) grayscale(1) brightness(1.5)`
+- Supports `N`, `N%`, `Ndeg`, `Npx` argument formats
+- Nested parenthesis handling in filter parser (e.g. `drop-shadow(4px 4px 8px rgba(0,0,0,0.5))`)
+
+#### Selector Hierarchy
+
+- `.class` selectors via `Div::class("name")`
+- Descendant combinator (space): `#parent .child`
+- Child combinator (`>`): `#parent > .child`
+- Compound selectors: `#id.class:hover`
+- Structural pseudo-classes: `:first-child`, `:last-child`, `:nth-child(N)`, `:only-child`
+- Complex selector matching engine with ancestor chain walking
+
+#### Advanced Selectors
+
+- Adjacent sibling combinator (`+`): `.a + .b`
+- General sibling combinator (`~`): `.a ~ .b`
+- `:not()` negation pseudo-class
+- `:is()` / `:where()` functional pseudo-classes (matches any of listed selectors)
+- `:first-of-type`, `:last-of-type`, `:nth-of-type(N)`, `:nth-last-of-type(N)`, `:only-of-type`
+- `:empty`, `:root` pseudo-classes
+- `*` universal selector
+
+#### Layout Property Animation
+
+- Animatable layout properties: `width`, `height`, `padding`, `margin`, `gap`
+- Per-frame taffy style override with automatic `compute_layout()` when layout properties change
+- `base_taffy_styles` snapshot for state reset
 
 #### Theme System
 
@@ -79,6 +121,14 @@ All notable changes to `blinc_layout` will be documented in this file.
 #### Events
 
 - `PINCH` event support in `EventContext` (center and scale fields)
+
+### Fixed
+
+- CSS timing functions now map to spec-correct cubic-bezier values (`ease` was incorrectly using `ease-in-out` polynomial, causing 6.5x slower initial progress than CSS spec)
+- Transform-origin mid-flight reversal jitter: `snapshot_before_keyframe_properties` now overlays `transform_origin` from active transition, preventing snap-back on hover-leave
+- Cubic-bezier solver rewritten with f64 internal precision and binary-search fallback for jitter-free interpolation at 120fps
+- Hover-leave reverse transitions now properly detected and animated (previously snapped to base state instantly)
+- Transition repeat regression: pre-reset snapshots prevent spurious re-transitions when hover state persists after transition completion
 
 ## [0.1.12] - 2025-01-19
 

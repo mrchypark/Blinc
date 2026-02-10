@@ -467,7 +467,7 @@ impl IOSRenderContext {
             tree.start_all_css_animations();
         }
 
-        // Tick CSS animations and apply state styles
+        // Tick and apply CSS animations/transitions synchronously with rendering
         if let Some(ref mut tree) = self.render_tree {
             let current_time = blinc_layout::prelude::elapsed_ms();
             let dt_ms = if self.last_frame_time_ms > 0 {
@@ -475,12 +475,21 @@ impl IOSRenderContext {
             } else {
                 16.0
             };
-            let css_animating = tree.tick_css_animations(dt_ms);
-            if css_animating {
-                tree.apply_all_css_animation_props();
+            {
+                let store = tree.css_anim_store();
+                let mut s = store.lock().unwrap();
+                s.tick(dt_ms);
             }
+            let css_active = tree.css_has_active();
             if tree.stylesheet().is_some() {
                 tree.apply_stylesheet_state_styles(&self.windowed_ctx.event_router);
+            }
+            if css_active || !tree.css_transitions_empty() {
+                tree.apply_all_css_animation_props();
+                tree.apply_all_css_transition_props();
+                if tree.apply_animated_layout_props() {
+                    tree.compute_layout(self.width, self.height);
+                }
             }
             self.last_frame_time_ms = current_time;
         }
@@ -1098,7 +1107,7 @@ pub extern "C" fn blinc_tick_animations(ctx: *mut IOSRenderContext) -> bool {
             false
         };
 
-        // Tick CSS animations and apply state styles
+        // Tick and apply CSS animations/transitions synchronously with rendering
         let css_active = if let Some(ref mut tree) = ctx.render_tree {
             let current_time = blinc_layout::prelude::elapsed_ms();
             let dt_ms = if ctx.last_frame_time_ms > 0 {
@@ -1106,15 +1115,24 @@ pub extern "C" fn blinc_tick_animations(ctx: *mut IOSRenderContext) -> bool {
             } else {
                 16.0
             };
-            let animating = tree.tick_css_animations(dt_ms);
-            if animating {
-                tree.apply_all_css_animation_props();
+            {
+                let store = tree.css_anim_store();
+                let mut s = store.lock().unwrap();
+                s.tick(dt_ms);
             }
+            let active = tree.css_has_active();
             if tree.stylesheet().is_some() {
                 tree.apply_stylesheet_state_styles(&ctx.windowed_ctx.event_router);
             }
+            if active || !tree.css_transitions_empty() {
+                tree.apply_all_css_animation_props();
+                tree.apply_all_css_transition_props();
+                if tree.apply_animated_layout_props() {
+                    tree.compute_layout(ctx.width, ctx.height);
+                }
+            }
             ctx.last_frame_time_ms = current_time;
-            animating
+            active
         } else {
             false
         };

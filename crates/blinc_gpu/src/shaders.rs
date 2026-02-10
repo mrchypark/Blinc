@@ -50,6 +50,7 @@ const CLIP_NONE: u32 = 0u;
 const CLIP_RECT: u32 = 1u;
 const CLIP_CIRCLE: u32 = 2u;
 const CLIP_ELLIPSE: u32 = 3u;
+const CLIP_POLYGON: u32 = 4u;
 
 struct Primitive {
     // Bounds (x, y, width, height)
@@ -76,6 +77,10 @@ struct Primitive {
     gradient_params: vec4<f32>,
     // Rotation (sin_rz, cos_rz, sin_ry, cos_ry) - for rotated SDF evaluation
     rotation: vec4<f32>,
+    // Local 2x2 affine (a, b, c, d) - normalized (DPI removed).
+    // Maps local rect space → screen space. Supports rotation, scale, AND skew.
+    // Identity = (1, 0, 0, 1).
+    local_affine: vec4<f32>,
     // Perspective (sin_rx, cos_rx, perspective_d, shape_3d_type)
     // shape_3d_type: 0=none, 1=box, 2=sphere, 3=cylinder, 4=torus, 5=capsule, 6=group
     perspective: vec4<f32>,
@@ -83,6 +88,10 @@ struct Primitive {
     sdf_3d: vec4<f32>,
     // Light params (dir_x, dir_y, dir_z, intensity)
     light: vec4<f32>,
+    // CSS filter A (grayscale, invert, sepia, hue_rotate_rad)
+    filter_a: vec4<f32>,
+    // CSS filter B (brightness, contrast, saturate, 0)
+    filter_b: vec4<f32>,
     // Type info (primitive_type, fill_type, clip_type, 0)
     type_info: vec4<u32>,
 }
@@ -93,6 +102,9 @@ struct Primitive {
 @group(0) @binding(2) var glyph_atlas: texture_2d<f32>;
 @group(0) @binding(3) var glyph_sampler: sampler;
 @group(0) @binding(4) var color_glyph_atlas: texture_2d<f32>;
+// Auxiliary data buffer for variable-length per-primitive data
+// (3D group shape descriptors, polygon clip vertices, etc.)
+@group(0) @binding(5) var<storage, read> aux_data: array<vec4<f32>>;
 
 // ============================================================================
 // Vertex Shader
@@ -110,7 +122,7 @@ fn vs_main(
     // Expand bounds for shadow blur
     let blur_expand = prim.shadow.z * 3.0 + abs(prim.shadow.x) + abs(prim.shadow.y);
 
-    // Check for rotation and 3D transforms
+    // Check for rotation, skew, and 3D transforms
     let sin_rz = prim.rotation.x;
     let cos_rz = prim.rotation.y;
     let sin_ry = prim.rotation.z;
@@ -118,8 +130,11 @@ fn vs_main(
     let sin_rx = prim.perspective.x;
     let cos_rx = prim.perspective.y;
     let persp_d = prim.perspective.z;
-    let has_rotation = abs(sin_rz) > 0.0001;
+    let la = prim.local_affine; // [a, b, c, d] of normalized 2x2 affine
     let has_3d = abs(sin_ry) > 0.0001 || abs(sin_rx) > 0.0001 || persp_d > 0.001;
+    // Check if local_affine is non-identity (rotation, skew, or non-uniform scale)
+    let has_local_affine = abs(la.x - 1.0) > 0.0001 || abs(la.y) > 0.0001
+                        || abs(la.z) > 0.0001 || abs(la.w - 1.0) > 0.0001;
 
     var bounds: vec4<f32>;
     if has_3d {
@@ -161,17 +176,23 @@ fn vs_main(
         min_p -= vec2<f32>(blur_expand + 2.0);
         max_p += vec2<f32>(blur_expand + 2.0);
         bounds = vec4<f32>(ctr + min_p, max_p - min_p);
-    } else if has_rotation {
-        // For rotated rects, compute the AABB that covers the rotated shape
+    } else if has_local_affine {
+        // General 2D affine (rotation, skew, non-uniform scale):
+        // Transform the 4 corners of the local rect by the local_affine to find AABB
         let center = prim.bounds.xy + prim.bounds.zw * 0.5;
-        let half = prim.bounds.zw * 0.5;
-        let abs_cos = abs(cos_rz);
-        let abs_sin = abs(sin_rz);
-        let aabb_hw = half.x * abs_cos + half.y * abs_sin + blur_expand;
-        let aabb_hh = half.x * abs_sin + half.y * abs_cos + blur_expand;
+        let hw = prim.bounds.z * 0.5;
+        let hh = prim.bounds.w * 0.5;
+        // Transform corners: la * (±hw, ±hh)
+        // new_x = la.x * cx + la.z * cy, new_y = la.y * cx + la.w * cy
+        let c0x = la.x * hw + la.z * hh;
+        let c0y = la.y * hw + la.w * hh;
+        let c1x = -la.x * hw + la.z * hh;
+        let c1y = -la.y * hw + la.w * hh;
+        let aabb_hw = max(abs(c0x), abs(c1x)) + blur_expand;
+        let aabb_hh = max(abs(c0y), abs(c1y)) + blur_expand;
         bounds = vec4<f32>(center.x - aabb_hw, center.y - aabb_hh, aabb_hw * 2.0, aabb_hh * 2.0);
     } else {
-        // Original non-rotated path
+        // Original non-rotated, non-skewed path
         bounds = vec4<f32>(
             prim.bounds.x - blur_expand,
             prim.bounds.y - blur_expand,
@@ -340,42 +361,209 @@ fn shadow_circle(p: vec2<f32>, center: vec2<f32>, radius: f32, sigma: f32) -> f3
 }
 
 // Calculate clip alpha (1.0 = inside clip, 0.0 = outside)
+// For non-rect clips (circle, ellipse, polygon):
+//   clip_bounds = rect scissor from parent clips [x, y, w, h]
+//   clip_radius = shape-specific data
+// The shader applies BOTH the rect scissor AND the shape clip.
 fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_type: u32) -> f32 {
     // If no clip, return 1.0 (fully visible)
     if clip_type == CLIP_NONE {
         return 1.0;
     }
 
-    var clip_d: f32;
+    let aa_width = 0.75;
 
     switch clip_type {
         case CLIP_RECT: {
             // Rectangular clip with optional rounded corners
             let clip_origin = clip_bounds.xy;
             let clip_size = clip_bounds.zw;
-            clip_d = sd_rounded_rect(p, clip_origin, clip_size, clip_radius);
+            let clip_d = sd_rounded_rect(p, clip_origin, clip_size, clip_radius);
+            return 1.0 - smoothstep(-aa_width, aa_width, clip_d);
         }
         case CLIP_CIRCLE: {
-            // Circle clip: clip_bounds = (cx, cy, radius, radius)
-            let center = clip_bounds.xy;
-            let radius = clip_radius.x;
-            clip_d = sd_circle(p, center, radius);
+            // clip_bounds = rect scissor, clip_radius = [cx, cy, radius, 0]
+            let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
+            let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
+            let center = clip_radius.xy;
+            let radius = clip_radius.z;
+            let clip_d = sd_circle(p, center, radius);
+            let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
+            return scissor_alpha * shape_alpha;
         }
         case CLIP_ELLIPSE: {
-            // Ellipse clip: clip_bounds = (cx, cy, rx, ry)
-            let center = clip_bounds.xy;
-            let radii = clip_radius.xy;
-            clip_d = sd_ellipse(p, center, radii);
+            // clip_bounds = rect scissor, clip_radius = [cx, cy, rx, ry]
+            let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
+            let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
+            let center = clip_radius.xy;
+            let radii = clip_radius.zw;
+            let clip_d = sd_ellipse(p, center, radii);
+            let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
+            return scissor_alpha * shape_alpha;
+        }
+        case CLIP_POLYGON: {
+            // clip_bounds = rect scissor, clip_radius = [0, 0, vertex_count, aux_offset]
+            let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
+            let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
+            let vertex_count = u32(clip_radius.z);
+            let aux_offset = u32(clip_radius.w);
+            let shape_alpha = calculate_polygon_clip_alpha(p, vertex_count, aux_offset);
+            return scissor_alpha * shape_alpha;
         }
         default: {
             return 1.0;
         }
     }
+}
 
-    // Anti-aliased clip edge
-    // Use constant AA width to avoid discontinuities at triangle seams on Vulkan
+// Polygon clip using winding number test with edge-distance anti-aliasing.
+// Vertices packed in aux_data as vec4(x0, y0, x1, y1) — 2 vertices per vec4.
+fn calculate_polygon_clip_alpha(p: vec2<f32>, vertex_count: u32, aux_offset: u32) -> f32 {
+    if vertex_count < 3u {
+        return 1.0;
+    }
+
+    var winding: i32 = 0;
+    var min_edge_dist: f32 = 1e10;
+
+    for (var i: u32 = 0u; i < vertex_count; i = i + 1u) {
+        // Read vertex i: packed as (x0, y0, x1, y1) per vec4
+        let vec_idx = aux_offset + (i / 2u);
+        let data = aux_data[vec_idx];
+        var vi: vec2<f32>;
+        if (i % 2u) == 0u {
+            vi = data.xy;
+        } else {
+            vi = data.zw;
+        }
+
+        // Read vertex j (next, wrapping)
+        let j = (i + 1u) % vertex_count;
+        let vec_idx_j = aux_offset + (j / 2u);
+        let data_j = aux_data[vec_idx_j];
+        var vj: vec2<f32>;
+        if (j % 2u) == 0u {
+            vj = data_j.xy;
+        } else {
+            vj = data_j.zw;
+        }
+
+        // Winding number contribution (crossing number test)
+        let edge = vj - vi;
+        if vi.y <= p.y {
+            if vj.y > p.y {
+                // Upward crossing
+                let cross_val = edge.x * (p.y - vi.y) - edge.y * (p.x - vi.x);
+                if cross_val > 0.0 {
+                    winding = winding + 1;
+                }
+            }
+        } else {
+            if vj.y <= p.y {
+                // Downward crossing
+                let cross_val = edge.x * (p.y - vi.y) - edge.y * (p.x - vi.x);
+                if cross_val < 0.0 {
+                    winding = winding - 1;
+                }
+            }
+        }
+
+        // Minimum distance to this edge segment (for anti-aliasing)
+        let ap = p - vi;
+        let edge_len_sq = dot(edge, edge);
+        var t: f32 = 0.0;
+        if edge_len_sq > 0.0001 {
+            t = clamp(dot(ap, edge) / edge_len_sq, 0.0, 1.0);
+        }
+        let closest = vi + edge * t;
+        let dist = length(p - closest);
+        min_edge_dist = min(min_edge_dist, dist);
+    }
+
+    // Inside if winding number is non-zero
+    let is_inside = winding != 0;
+
+    // Signed distance: negative inside, positive outside
+    let signed_dist = select(min_edge_dist, -min_edge_dist, is_inside);
+
+    // Anti-aliased edge
     let aa_width = 0.75;
-    return 1.0 - smoothstep(-aa_width, aa_width, clip_d);
+    return 1.0 - smoothstep(-aa_width, aa_width, signed_dist);
+}
+
+// ============================================================================
+// CSS Filter Functions
+// ============================================================================
+
+/// Apply CSS filter effects to a color.
+/// filter_a = (grayscale, invert, sepia, hue_rotate_rad)
+/// filter_b = (brightness, contrast, saturate, 0)
+fn apply_css_filter(color: vec4<f32>, filter_a: vec4<f32>, filter_b: vec4<f32>) -> vec4<f32> {
+    var rgb = color.rgb;
+
+    // Grayscale: desaturate using luminance weights
+    let grayscale = filter_a.x;
+    if grayscale > 0.0 {
+        let lum = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        rgb = mix(rgb, vec3<f32>(lum, lum, lum), grayscale);
+    }
+
+    // Sepia: apply sepia tone matrix
+    let sepia = filter_a.z;
+    if sepia > 0.0 {
+        let sepia_r = dot(rgb, vec3<f32>(0.393, 0.769, 0.189));
+        let sepia_g = dot(rgb, vec3<f32>(0.349, 0.686, 0.168));
+        let sepia_b = dot(rgb, vec3<f32>(0.272, 0.534, 0.131));
+        rgb = mix(rgb, vec3<f32>(sepia_r, sepia_g, sepia_b), sepia);
+    }
+
+    // Invert
+    let invert = filter_a.y;
+    if invert > 0.0 {
+        rgb = mix(rgb, vec3<f32>(1.0) - rgb, invert);
+    }
+
+    // Hue-rotate: rotate in RGB space using rotation matrix
+    let hue_rad = filter_a.w;
+    if abs(hue_rad) > 0.001 {
+        let cos_h = cos(hue_rad);
+        let sin_h = sin(hue_rad);
+        let w = vec3<f32>(0.2126, 0.7152, 0.0722);
+        // Rodrigues-style hue rotation matrix
+        let r = vec3<f32>(
+            cos_h + (1.0 - cos_h) * w.x,
+            (1.0 - cos_h) * w.x * w.y - sin_h * w.z,
+            (1.0 - cos_h) * w.x * w.z + sin_h * w.y
+        );
+        let g = vec3<f32>(
+            (1.0 - cos_h) * w.x * w.y + sin_h * w.z,
+            cos_h + (1.0 - cos_h) * w.y,
+            (1.0 - cos_h) * w.y * w.z - sin_h * w.x
+        );
+        let b = vec3<f32>(
+            (1.0 - cos_h) * w.x * w.z - sin_h * w.y,
+            (1.0 - cos_h) * w.y * w.z + sin_h * w.x,
+            cos_h + (1.0 - cos_h) * w.z
+        );
+        rgb = vec3<f32>(dot(rgb, r), dot(rgb, g), dot(rgb, b));
+    }
+
+    // Brightness
+    let brightness = filter_b.x;
+    rgb = rgb * brightness;
+
+    // Contrast
+    let contrast = filter_b.y;
+    rgb = (rgb - vec3<f32>(0.5)) * contrast + vec3<f32>(0.5);
+
+    // Saturate
+    let saturate = filter_b.z;
+    if abs(saturate - 1.0) > 0.001 {
+        let lum = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+        rgb = mix(vec3<f32>(lum, lum, lum), rgb, saturate);
+    }
+
+    return vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), color.a);
 }
 
 // ============================================================================
@@ -467,6 +655,64 @@ fn apply_boolean_op(d_accum: f32, d_new: f32, op_type: u32, blend: f32) -> f32 {
         case 5u: { return op_smooth_intersect(d_accum, d_new, max(blend, 0.001)); }
         default: { return op_union(d_accum, d_new); }
     }
+}
+
+// ============================================================================
+// 3D Group SDF Evaluation
+// ============================================================================
+
+fn eval_group_sdf(p: vec3<f32>, shape_count: u32, aux_offset: u32) -> f32 {
+    var d = 1e10;
+    for (var i = 0u; i < shape_count; i++) {
+        let base = aux_offset + i * 4u;
+        let s_offset = aux_data[base];       // x, y, z, corner_radius
+        let s_params = aux_data[base + 1u];  // shape_type, depth, op_type, blend
+        let s_half = aux_data[base + 2u];    // half_w, half_h, half_d, 0
+
+        let local_p = p - s_offset.xyz;
+        let shape_d = sdf_3d_eval(local_p, u32(s_params.x), s_half.xyz, s_offset.w);
+
+        if i == 0u {
+            d = shape_d;
+        } else {
+            d = apply_boolean_op(d, shape_d, u32(s_params.z), s_params.w);
+        }
+    }
+    return d;
+}
+
+// Compute group normal via central differences
+fn eval_group_normal(hp: vec3<f32>, shape_count: u32, aux_offset: u32) -> vec3<f32> {
+    let eps = 0.001;
+    return normalize(vec3<f32>(
+        eval_group_sdf(hp + vec3<f32>(eps, 0.0, 0.0), shape_count, aux_offset) -
+        eval_group_sdf(hp - vec3<f32>(eps, 0.0, 0.0), shape_count, aux_offset),
+        eval_group_sdf(hp + vec3<f32>(0.0, eps, 0.0), shape_count, aux_offset) -
+        eval_group_sdf(hp - vec3<f32>(0.0, eps, 0.0), shape_count, aux_offset),
+        eval_group_sdf(hp + vec3<f32>(0.0, 0.0, eps), shape_count, aux_offset) -
+        eval_group_sdf(hp - vec3<f32>(0.0, 0.0, eps), shape_count, aux_offset)
+    ));
+}
+
+// Find which shape in the group is closest to the hit point (for per-shape coloring)
+fn eval_group_closest_shape_color(hp: vec3<f32>, shape_count: u32, aux_offset: u32) -> vec4<f32> {
+    var min_d = 1e10;
+    var closest_color = vec4<f32>(1.0);
+    for (var i = 0u; i < shape_count; i++) {
+        let base = aux_offset + i * 4u;
+        let s_offset = aux_data[base];
+        let s_params = aux_data[base + 1u];
+        let s_half = aux_data[base + 2u];
+        let s_color = aux_data[base + 3u];
+
+        let local_p = hp - s_offset.xyz;
+        let d = abs(sdf_3d_eval(local_p, u32(s_params.x), s_half.xyz, s_offset.w));
+        if d < min_d {
+            min_d = d;
+            closest_color = s_color;
+        }
+    }
+    return closest_color;
 }
 
 // ============================================================================
@@ -694,6 +940,91 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return result_3d;
     }
 
+    // ── 3D Group SDF Raymarching Path ──
+    // border[1] = shape_count, border[2] = aux_data offset
+    if shape_type == SHAPE_GROUP && prim.border.y > 0.5 {
+        let group_shape_count = u32(prim.border.y);
+        let group_aux_offset = u32(prim.border.z);
+
+        // Use max depth from child shapes via border[3] (set by paint context)
+        let group_depth = max(prim.border.w, 1.0);
+        let translate_z = prim.sdf_3d.w;
+        let pd = select(800.0, persp_d, persp_d > 0.001);
+        let rel = p - center;
+
+        // Ray setup (same as individual shapes)
+        let cam_vs = vec3<f32>(0.0, 0.0, pd - translate_z);
+        let frag_vs = vec3<f32>(rel.x, rel.y, 0.0);
+        let ray_dir_vs = normalize(frag_vs - cam_vs);
+
+        // Transform ray to shape space
+        var ro = cam_vs;
+        var rd = ray_dir_vs;
+        ro = rotate_y_inv(ro, sin_ry, cos_ry);
+        rd = rotate_y_inv(rd, sin_ry, cos_ry);
+        ro = rotate_x_inv(ro, sin_rx, cos_rx);
+        rd = rotate_x_inv(rd, sin_rx, cos_rx);
+        ro = rotate_z_inv(ro, sin_rz, cos_rz);
+        rd = rotate_z_inv(rd, sin_rz, cos_rz);
+
+        // AABB for the entire group
+        let half_3d = vec3<f32>(size.x * 0.5, size.y * 0.5, group_depth * 0.5);
+        let aabb_t = ray_aabb_intersect(ro, rd, half_3d);
+        if aabb_t.x > aabb_t.y || aabb_t.y < 0.0 {
+            discard;
+        }
+
+        // Raymarch the compound SDF (32 steps)
+        var t_rm = max(aabb_t.x - 0.01, 0.0);
+        let t_max = aabb_t.x + length(half_3d) * 2.0 + 1.0;
+        var hit = false;
+        var min_d = 1e10;
+        for (var i = 0u; i < 32u; i++) {
+            let pos = ro + rd * t_rm;
+            let d3 = eval_group_sdf(pos, group_shape_count, group_aux_offset);
+            min_d = min(min_d, d3);
+            if d3 < 0.001 {
+                hit = true;
+                break;
+            }
+            t_rm += d3;
+            if t_rm > t_max {
+                break;
+            }
+        }
+
+        // Edge anti-aliasing
+        let pixel_size = max(t_rm / pd, 0.5);
+        var edge_aa = 1.0;
+        if !hit {
+            if min_d > pixel_size * 2.0 {
+                discard;
+            }
+            edge_aa = 1.0 - smoothstep(0.0, pixel_size * 1.5, min_d);
+        }
+
+        // Compute normal via group SDF
+        let hp = ro + rd * t_rm;
+        let normal = eval_group_normal(hp, group_shape_count, group_aux_offset);
+
+        // Lighting (same as individual shapes)
+        let light_dir = normalize(prim.light.xyz);
+        let n_dot_l = max(dot(normal, light_dir), 0.0);
+        let ambient_3d = prim.sdf_3d.y;
+        let diffuse_3d = n_dot_l * prim.light.w;
+        let view_dir = normalize(-rd);
+        let half_vec = normalize(light_dir + view_dir);
+        let spec_3d = pow(max(dot(normal, half_vec), 0.0), prim.sdf_3d.z) * 0.5;
+        let lighting = ambient_3d + diffuse_3d + spec_3d;
+
+        // Per-shape coloring: find which child shape is closest to the hit point
+        let base_color_3d = eval_group_closest_shape_color(hp, group_shape_count, group_aux_offset);
+
+        var result_3d = base_color_3d * vec4<f32>(vec3<f32>(lighting), 1.0);
+        result_3d.a *= clip_alpha * edge_aa;
+        return result_3d;
+    }
+
     // ── Perspective Unprojection (flat elements with 3D perspective) ──
     var sp = p;
     if has_3d {
@@ -712,10 +1043,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         let safe_w = max(abs(w), 0.001) * sign(w + 0.001);
         sp = vec2<f32>(u / safe_w, v / safe_w) + center;
-    } else if abs(sin_rz) > 0.0001 {
-        // 2D rotation only (existing fast path)
-        let rel = p - center;
-        sp = vec2<f32>(rel.x * cos_rz + rel.y * sin_rz, -rel.x * sin_rz + rel.y * cos_rz) + center;
+    } else {
+        // 2D affine (rotation, skew, non-uniform scale) via inverse local_affine
+        let la = prim.local_affine;
+        let is_identity = abs(la.x - 1.0) < 0.0001 && abs(la.y) < 0.0001
+                       && abs(la.z) < 0.0001 && abs(la.w - 1.0) < 0.0001;
+        if !is_identity {
+            let rel = p - center;
+            // Compute inverse of 2x2 [a,b; c,d]: inv = [d,-b; -c,a] / det
+            let det = la.x * la.w - la.y * la.z;
+            let inv_det = select(-1.0, 1.0, det >= 0.0) / max(abs(det), 0.0001);
+            let inv_a = la.w * inv_det;
+            let inv_b = -la.y * inv_det;
+            let inv_c = -la.z * inv_det;
+            let inv_d = la.x * inv_det;
+            sp = vec2<f32>(inv_a * rel.x + inv_c * rel.y, inv_b * rel.x + inv_d * rel.y) + center;
+        }
     }
 
     var result = vec4<f32>(0.0);
@@ -857,8 +1200,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let is_color = fill_type == 1u;
 
             // Calculate UV within the glyph quad
-            // p is in screen coordinates, bounds defines the glyph quad
-            let local_uv = (p - origin) / size;
+            // Use sp (inverse-transformed point) so rotated/skewed text samples correctly
+            let local_uv = (sp - origin) / size;
 
             // Map to atlas UV coordinates
             let atlas_uv = uv_bounds.xy + local_uv * (uv_bounds.zw - uv_bounds.xy);
@@ -1052,6 +1395,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // NOW apply outer edge anti-aliasing to the combined result
     // This gives smooth edges against the background without shadow bleed
     result.a *= fill_alpha;
+
+    // Apply CSS filters (grayscale, invert, sepia, hue-rotate, brightness, contrast, saturate)
+    // Skip if all identity (filter_a all zero, filter_b = (1,1,1,0))
+    let fa = prim.filter_a;
+    let fb = prim.filter_b;
+    if fa.x != 0.0 || fa.y != 0.0 || fa.z != 0.0 || abs(fa.w) > 0.001 || fb.x != 1.0 || fb.y != 1.0 || fb.z != 1.0 {
+        result = apply_css_filter(result, fa, fb);
+    }
 
     return result;
 }
@@ -2196,6 +2547,7 @@ const CLIP_NONE: u32 = 0u;
 const CLIP_RECT: u32 = 1u;
 const CLIP_CIRCLE: u32 = 2u;
 const CLIP_ELLIPSE: u32 = 3u;
+const CLIP_POLYGON: u32 = 4u;
 
 struct Uniforms {
     // viewport_size (vec2) + padding (vec2) = 16 bytes, offset 0
@@ -2299,38 +2651,43 @@ fn sd_ellipse(p: vec2<f32>, center: vec2<f32>, radii: vec2<f32>) -> f32 {
 }
 
 // Calculate clip alpha (1.0 = inside clip, 0.0 = outside)
+// For non-rect clips: clip_bounds = rect scissor, clip_radius = shape data
 fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_type: u32) -> f32 {
     if clip_type == CLIP_NONE {
         return 1.0;
     }
 
-    var clip_d: f32;
+    let aa_width = 0.75;
 
     switch clip_type {
         case CLIP_RECT: {
             let clip_origin = clip_bounds.xy;
             let clip_size = clip_bounds.zw;
-            clip_d = sd_rounded_rect(p, clip_origin, clip_size, clip_radius);
+            let clip_d = sd_rounded_rect(p, clip_origin, clip_size, clip_radius);
+            return 1.0 - smoothstep(-aa_width, aa_width, clip_d);
         }
         case CLIP_CIRCLE: {
-            let center = clip_bounds.xy;
-            let radius = clip_radius.x;
-            clip_d = sd_circle(p, center, radius);
+            let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
+            let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
+            let center = clip_radius.xy;
+            let radius = clip_radius.z;
+            let clip_d = sd_circle(p, center, radius);
+            let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
+            return scissor_alpha * shape_alpha;
         }
         case CLIP_ELLIPSE: {
-            let center = clip_bounds.xy;
-            let radii = clip_radius.xy;
-            clip_d = sd_ellipse(p, center, radii);
+            let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
+            let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
+            let center = clip_radius.xy;
+            let radii = clip_radius.zw;
+            let clip_d = sd_ellipse(p, center, radii);
+            let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
+            return scissor_alpha * shape_alpha;
         }
         default: {
             return 1.0;
         }
     }
-
-    // Anti-aliased clip edge
-    // Use constant AA width to avoid discontinuities at triangle seams on Vulkan
-    let aa_width = 0.75;
-    return 1.0 - smoothstep(-aa_width, aa_width, clip_d);
 }
 
 // ============================================================================
@@ -2955,12 +3312,11 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_kawase_blur(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Use small fixed offsets to preserve shape during multi-pass blur
-    // Larger radii use more passes rather than larger offsets
-    // This prevents corner fill-in by spreading gradually
+    // Kawase blur: each pass samples at increasing offsets scaled by the radius
+    // More passes spread the blur further; radius controls per-pass spread
     let base_offset = f32(uniforms.iteration) + 0.5;
-    // Fixed small multiplier - more passes will accumulate the blur
-    let offset = base_offset * 1.2;
+    let spread = max(uniforms.radius * 0.4, 1.0);
+    let offset = base_offset * spread;
     let pixel_offset = offset * uniforms.texel_size;
 
     // Sample in + pattern (up, down, left, right) instead of X pattern
@@ -2977,27 +3333,30 @@ fn fs_kawase_blur(in: VertexOutput) -> @location(0) vec4<f32> {
     let s4 = textureSample(input_texture, input_sampler, uv_right);
 
     if (uniforms.blur_alpha == 0u) {
-        // Element blur mode: preserve alpha, blur RGB only with alpha weighting
-        // This preserves corner radius while preventing darkening
+        // CSS filter blur mode: blur all RGBA for visible effect on solid-color elements.
+        // Alpha-weighted RGB averaging prevents dark fringing at transparent edges.
+        // The alpha-restore pass (mode 2) will fix corner softening after all blur passes.
         let total_alpha = s0.a + s1.a + s2.a + s3.a + s4.a;
+        let avg_alpha = total_alpha / 5.0;
 
-        if (total_alpha < 0.001) {
+        if (avg_alpha < 0.001) {
             return vec4<f32>(0.0, 0.0, 0.0, 0.0);
         }
 
-        // Weight RGB by alpha to prevent black transparent pixels from darkening
         let weighted_rgb = s0.rgb * s0.a + s1.rgb * s1.a + s2.rgb * s2.a + s3.rgb * s3.a + s4.rgb * s4.a;
         let avg_rgb = weighted_rgb / total_alpha;
 
-        // Preserve center sample's alpha to maintain corner radius
-        return vec4<f32>(avg_rgb, s0.a);
-    } else {
+        return vec4<f32>(avg_rgb, avg_alpha);
+    } else if (uniforms.blur_alpha == 1u) {
         // Shadow blur mode: only blur alpha for shadow shape
         // Output white RGB since drop shadow shader uses uniform color, not texture RGB
         let total_alpha = s0.a + s1.a + s2.a + s3.a + s4.a;
         let avg_alpha = total_alpha / 5.0;
 
         return vec4<f32>(1.0, 1.0, 1.0, avg_alpha);
+    } else {
+        // Mode 2: passthrough — sample center pixel only (used for alpha restore pass)
+        return s0;
     }
 }
 

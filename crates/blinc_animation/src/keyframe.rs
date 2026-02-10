@@ -110,7 +110,7 @@ impl KeyframeAnimation {
 // ============================================================================
 
 /// Properties that can be animated in a multi-property keyframe
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct KeyframeProperties {
     /// Opacity (0.0 to 1.0)
     pub opacity: Option<f32>,
@@ -136,6 +136,128 @@ pub struct KeyframeProperties {
     pub translate_z: Option<f32>,
     /// Blend radius for smooth boolean operations (in pixels)
     pub blend_3d: Option<f32>,
+    /// Clip-path inset [top%, right%, bottom%, left%]
+    pub clip_inset: Option<[f32; 4]>,
+
+    // --- Color properties ---
+    /// Background color RGBA (solid brush)
+    pub background_color: Option<[f32; 4]>,
+    /// Gradient start color RGBA (first stop)
+    pub gradient_start_color: Option<[f32; 4]>,
+    /// Gradient end color RGBA (last stop)
+    pub gradient_end_color: Option<[f32; 4]>,
+    /// Gradient angle in degrees (linear gradients)
+    pub gradient_angle: Option<f32>,
+    /// Border color RGBA
+    pub border_color: Option<[f32; 4]>,
+    /// Text foreground color RGBA
+    pub text_color: Option<[f32; 4]>,
+
+    // --- Geometric properties ---
+    /// Corner radius [top_left, top_right, bottom_right, bottom_left]
+    pub corner_radius: Option<[f32; 4]>,
+    /// Border width in pixels
+    pub border_width: Option<f32>,
+    /// Outline width in pixels
+    pub outline_width: Option<f32>,
+    /// Outline color RGBA
+    pub outline_color: Option<[f32; 4]>,
+    /// Outline offset in pixels
+    pub outline_offset: Option<f32>,
+    /// Clip-path circle radius (percent)
+    pub clip_circle_radius: Option<f32>,
+    /// Clip-path ellipse radii [rx, ry] (percent)
+    pub clip_ellipse_radii: Option<[f32; 2]>,
+
+    // --- Shadow properties ---
+    /// Shadow [offset_x, offset_y, blur, spread]
+    pub shadow_params: Option<[f32; 4]>,
+    /// Shadow color RGBA
+    pub shadow_color: Option<[f32; 4]>,
+    /// Text shadow [offset_x, offset_y, blur, spread]
+    pub text_shadow_params: Option<[f32; 4]>,
+    /// Text shadow color RGBA
+    pub text_shadow_color: Option<[f32; 4]>,
+
+    // --- 3D lighting ---
+    /// Light intensity (0.0-1.0+)
+    pub light_intensity: Option<f32>,
+    /// Ambient light level (0.0-1.0)
+    pub ambient: Option<f32>,
+    /// Specular power (higher = sharper highlights)
+    pub specular: Option<f32>,
+    /// Light direction [x, y, z]
+    pub light_direction: Option<[f32; 3]>,
+
+    // --- CSS filter properties ---
+    /// filter: grayscale(0..1)
+    pub filter_grayscale: Option<f32>,
+    /// filter: invert(0..1)
+    pub filter_invert: Option<f32>,
+    /// filter: sepia(0..1)
+    pub filter_sepia: Option<f32>,
+    /// filter: brightness(multiplier, 1.0 = normal)
+    pub filter_brightness: Option<f32>,
+    /// filter: contrast(multiplier, 1.0 = normal)
+    pub filter_contrast: Option<f32>,
+    /// filter: saturate(multiplier, 1.0 = normal)
+    pub filter_saturate: Option<f32>,
+    /// filter: hue-rotate(degrees)
+    pub filter_hue_rotate: Option<f32>,
+    /// filter: blur(px)
+    pub filter_blur: Option<f32>,
+
+    // --- Layout properties (require layout recomputation) ---
+    /// Width in pixels
+    pub width: Option<f32>,
+    /// Height in pixels
+    pub height: Option<f32>,
+    /// Min-width in pixels
+    pub min_width: Option<f32>,
+    /// Max-width in pixels
+    pub max_width: Option<f32>,
+    /// Min-height in pixels
+    pub min_height: Option<f32>,
+    /// Max-height in pixels
+    pub max_height: Option<f32>,
+    /// Padding [top, right, bottom, left] in pixels
+    pub padding: Option<[f32; 4]>,
+    /// Margin [top, right, bottom, left] in pixels
+    pub margin: Option<[f32; 4]>,
+    /// Gap between flex items in pixels
+    pub gap: Option<f32>,
+    /// Flex grow factor
+    pub flex_grow: Option<f32>,
+    /// Flex shrink factor
+    pub flex_shrink: Option<f32>,
+
+    // --- Positioning (require layout recomputation) ---
+    /// top inset in pixels
+    pub inset_top: Option<f32>,
+    /// right inset in pixels
+    pub inset_right: Option<f32>,
+    /// bottom inset in pixels
+    pub inset_bottom: Option<f32>,
+    /// left inset in pixels
+    pub inset_left: Option<f32>,
+
+    // --- Text properties ---
+    /// Font size in pixels
+    pub font_size: Option<f32>,
+
+    // --- Skew ---
+    /// Skew X in degrees
+    pub skew_x: Option<f32>,
+    /// Skew Y in degrees
+    pub skew_y: Option<f32>,
+
+    // --- Transform origin ---
+    /// Transform origin [x%, y%] (default 50%, 50% = center)
+    pub transform_origin: Option<[f32; 2]>,
+
+    // --- Stacking ---
+    /// z-index (f32 for smooth interpolation, rounded on apply)
+    pub z_index: Option<f32>,
 }
 
 impl KeyframeProperties {
@@ -257,6 +379,83 @@ impl KeyframeProperties {
             depth: lerp_opt(self.depth, other.depth, t),
             translate_z: lerp_opt(self.translate_z, other.translate_z, t),
             blend_3d: lerp_opt(self.blend_3d, other.blend_3d, t),
+            clip_inset: lerp_opt_array4(self.clip_inset, other.clip_inset, t),
+            // Color
+            background_color: lerp_opt_array4(self.background_color, other.background_color, t),
+            gradient_start_color: lerp_opt_array4(
+                self.gradient_start_color,
+                other.gradient_start_color,
+                t,
+            ),
+            gradient_end_color: lerp_opt_array4(
+                self.gradient_end_color,
+                other.gradient_end_color,
+                t,
+            ),
+            gradient_angle: lerp_opt(self.gradient_angle, other.gradient_angle, t),
+            border_color: lerp_opt_array4(self.border_color, other.border_color, t),
+            text_color: lerp_opt_array4(self.text_color, other.text_color, t),
+            // Geometric
+            corner_radius: lerp_opt_array4(self.corner_radius, other.corner_radius, t),
+            border_width: lerp_opt(self.border_width, other.border_width, t),
+            outline_width: lerp_opt(self.outline_width, other.outline_width, t),
+            outline_color: lerp_opt_array4(self.outline_color, other.outline_color, t),
+            outline_offset: lerp_opt(self.outline_offset, other.outline_offset, t),
+            clip_circle_radius: lerp_opt(self.clip_circle_radius, other.clip_circle_radius, t),
+            clip_ellipse_radii: lerp_opt_array2(
+                self.clip_ellipse_radii,
+                other.clip_ellipse_radii,
+                t,
+            ),
+            // Shadow
+            shadow_params: lerp_opt_array4(self.shadow_params, other.shadow_params, t),
+            shadow_color: lerp_opt_array4(self.shadow_color, other.shadow_color, t),
+            text_shadow_params: lerp_opt_array4(
+                self.text_shadow_params,
+                other.text_shadow_params,
+                t,
+            ),
+            text_shadow_color: lerp_opt_array4(self.text_shadow_color, other.text_shadow_color, t),
+            // 3D lighting
+            light_intensity: lerp_opt(self.light_intensity, other.light_intensity, t),
+            ambient: lerp_opt(self.ambient, other.ambient, t),
+            specular: lerp_opt(self.specular, other.specular, t),
+            light_direction: lerp_opt_array3(self.light_direction, other.light_direction, t),
+            // Filters
+            filter_grayscale: lerp_opt(self.filter_grayscale, other.filter_grayscale, t),
+            filter_invert: lerp_opt(self.filter_invert, other.filter_invert, t),
+            filter_sepia: lerp_opt(self.filter_sepia, other.filter_sepia, t),
+            filter_brightness: lerp_opt(self.filter_brightness, other.filter_brightness, t),
+            filter_contrast: lerp_opt(self.filter_contrast, other.filter_contrast, t),
+            filter_saturate: lerp_opt(self.filter_saturate, other.filter_saturate, t),
+            filter_hue_rotate: lerp_opt(self.filter_hue_rotate, other.filter_hue_rotate, t),
+            filter_blur: lerp_opt(self.filter_blur, other.filter_blur, t),
+            // Layout
+            width: lerp_opt(self.width, other.width, t),
+            height: lerp_opt(self.height, other.height, t),
+            min_width: lerp_opt(self.min_width, other.min_width, t),
+            max_width: lerp_opt(self.max_width, other.max_width, t),
+            min_height: lerp_opt(self.min_height, other.min_height, t),
+            max_height: lerp_opt(self.max_height, other.max_height, t),
+            padding: lerp_opt_array4(self.padding, other.padding, t),
+            margin: lerp_opt_array4(self.margin, other.margin, t),
+            gap: lerp_opt(self.gap, other.gap, t),
+            flex_grow: lerp_opt(self.flex_grow, other.flex_grow, t),
+            flex_shrink: lerp_opt(self.flex_shrink, other.flex_shrink, t),
+            // Positioning
+            inset_top: lerp_opt(self.inset_top, other.inset_top, t),
+            inset_right: lerp_opt(self.inset_right, other.inset_right, t),
+            inset_bottom: lerp_opt(self.inset_bottom, other.inset_bottom, t),
+            inset_left: lerp_opt(self.inset_left, other.inset_left, t),
+            // Text properties
+            font_size: lerp_opt(self.font_size, other.font_size, t),
+            // Skew
+            skew_x: lerp_opt(self.skew_x, other.skew_x, t),
+            skew_y: lerp_opt(self.skew_y, other.skew_y, t),
+            // Transform origin
+            transform_origin: lerp_opt_array2(self.transform_origin, other.transform_origin, t),
+            // Stacking
+            z_index: lerp_opt(self.z_index, other.z_index, t),
         }
     }
 
@@ -308,6 +507,45 @@ impl KeyframeProperties {
 fn lerp_opt(a: Option<f32>, b: Option<f32>, t: f32) -> Option<f32> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a + (b - a) * t),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// Helper to interpolate optional [f32; 2] arrays
+fn lerp_opt_array2(a: Option<[f32; 2]>, b: Option<[f32; 2]>, t: f32) -> Option<[f32; 2]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// Helper to interpolate optional [f32; 3] arrays
+fn lerp_opt_array3(a: Option<[f32; 3]>, b: Option<[f32; 3]>, t: f32) -> Option<[f32; 3]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+/// Helper to interpolate optional [f32; 4] arrays
+fn lerp_opt_array4(a: Option<[f32; 4]>, b: Option<[f32; 4]>, t: f32) -> Option<[f32; 4]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+            a[3] + (b[3] - a[3]) * t,
+        ]),
         (Some(a), None) => Some(a),
         (None, Some(b)) => Some(b),
         (None, None) => None,
