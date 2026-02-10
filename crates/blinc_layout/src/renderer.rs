@@ -11,8 +11,8 @@ use blinc_animation::AnimationScheduler;
 use indexmap::IndexMap;
 
 use blinc_core::{
-    BlendMode, Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle, LayerConfig, Point,
-    Rect, Shadow, Stroke, Transform, Vec2,
+    BlendMode, BlurQuality, Brush, ClipShape, Color, CornerRadius, DrawContext, GlassStyle,
+    LayerConfig, LayerEffect, Point, Rect, Shadow, Stroke, Transform, Vec2,
 };
 use taffy::prelude::*;
 use taffy::Overflow;
@@ -4480,6 +4480,38 @@ impl RenderTree {
         }
         if let Some(filter) = style.filter {
             props.filter = Some(filter);
+            // Convert blur filter to LayerEffect for GPU processing
+            if filter.blur > 0.0 {
+                // Remove any existing blur effect before adding updated one
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::Blur { .. }));
+                props.layer_effects.push(LayerEffect::Blur {
+                    radius: filter.blur,
+                    quality: BlurQuality::Medium,
+                });
+            } else {
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::Blur { .. }));
+            }
+            // Convert drop-shadow filter to LayerEffect
+            if let Some(ds) = &filter.drop_shadow {
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::DropShadow { .. }));
+                props.layer_effects.push(LayerEffect::DropShadow {
+                    offset_x: ds.offset_x,
+                    offset_y: ds.offset_y,
+                    blur: ds.blur,
+                    spread: ds.spread,
+                    color: ds.color,
+                });
+            } else {
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::DropShadow { .. }));
+            }
         }
         // Text color
         if let Some(c) = &style.text_color {
@@ -5248,6 +5280,15 @@ impl RenderTree {
                         return false;
                     }
                 }
+                SelectorPart::Is(selectors) => {
+                    // :is(sel1, sel2, ...) — matches if ANY inner selector matches
+                    let any_match = selectors
+                        .iter()
+                        .any(|s| self.compound_matches(s, node_id, hovered, pressed, focused));
+                    if !any_match {
+                        return false;
+                    }
+                }
                 SelectorPart::PseudoClass(pseudo) => {
                     let matches = match pseudo {
                         StructuralPseudo::FirstChild => {
@@ -5280,6 +5321,33 @@ impl RenderTree {
                         }
                         StructuralPseudo::Empty => !self.element_registry.has_children(node_id),
                         StructuralPseudo::Root => self.element_registry.is_root(node_id),
+                        // *-of-type: In Blinc all elements are Div, so equivalent to *-child
+                        StructuralPseudo::FirstOfType => {
+                            self.element_registry.get_child_index(node_id) == Some(0)
+                        }
+                        StructuralPseudo::LastOfType => {
+                            let index = self.element_registry.get_child_index(node_id);
+                            let count = self.element_registry.get_sibling_count(node_id);
+                            match (index, count) {
+                                (Some(i), Some(c)) if c > 0 => i == c - 1,
+                                _ => false,
+                            }
+                        }
+                        StructuralPseudo::NthOfType(n) => {
+                            self.element_registry.get_child_index(node_id)
+                                == Some(n.saturating_sub(1))
+                        }
+                        StructuralPseudo::NthLastOfType(n) => {
+                            let index = self.element_registry.get_child_index(node_id);
+                            let count = self.element_registry.get_sibling_count(node_id);
+                            match (index, count) {
+                                (Some(i), Some(c)) if c > 0 => i == c - n,
+                                _ => false,
+                            }
+                        }
+                        StructuralPseudo::OnlyOfType => {
+                            self.element_registry.get_sibling_count(node_id) == Some(1)
+                        }
                     };
                     if !matches {
                         return false;
@@ -6142,6 +6210,7 @@ impl RenderTree {
         check_transition!(filter_contrast, "filter", default 1.0);
         check_transition!(filter_saturate, "filter", default 1.0);
         check_transition!(filter_hue_rotate, "filter", default 0.0);
+        check_transition!(filter_blur, "filter", default 0.0);
 
         // Layout properties (require layout recomputation when transitioning)
         check_transition!(width, "width");
@@ -6559,9 +6628,11 @@ impl RenderTree {
             || anim_props.filter_brightness.is_some()
             || anim_props.filter_contrast.is_some()
             || anim_props.filter_saturate.is_some()
-            || anim_props.filter_hue_rotate.is_some();
+            || anim_props.filter_hue_rotate.is_some()
+            || anim_props.filter_blur.is_some();
         if has_filter {
             let existing = props.filter.unwrap_or_default();
+            let blur = anim_props.filter_blur.unwrap_or(existing.blur);
             props.filter = Some(crate::element_style::CssFilter {
                 grayscale: anim_props.filter_grayscale.unwrap_or(existing.grayscale),
                 invert: anim_props.filter_invert.unwrap_or(existing.invert),
@@ -6570,7 +6641,23 @@ impl RenderTree {
                 brightness: anim_props.filter_brightness.unwrap_or(existing.brightness),
                 contrast: anim_props.filter_contrast.unwrap_or(existing.contrast),
                 saturate: anim_props.filter_saturate.unwrap_or(existing.saturate),
+                blur,
+                drop_shadow: existing.drop_shadow,
             });
+            // Update LayerEffect for blur
+            if blur > 0.0 {
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::Blur { .. }));
+                props.layer_effects.push(LayerEffect::Blur {
+                    radius: blur,
+                    quality: BlurQuality::Medium,
+                });
+            } else {
+                props
+                    .layer_effects
+                    .retain(|e| !matches!(e, LayerEffect::Blur { .. }));
+            }
         }
 
         // z-index (round from f32 to i32)
@@ -6754,6 +6841,7 @@ impl RenderTree {
             kp.filter_contrast = Some(f.contrast);
             kp.filter_saturate = Some(f.saturate);
             kp.filter_hue_rotate = Some(f.hue_rotate);
+            kp.filter_blur = Some(f.blur);
         }
 
         // z-index (as f32 for smooth interpolation)
@@ -7916,6 +8004,32 @@ impl RenderTree {
         let has_opacity_layer = node_motion_opacity < 1.0 || has_layer_effects;
         let should_push_layer = has_opacity_layer && effective_layer == target_layer;
         if should_push_layer {
+            // Scale layer effect radii by DPI factor (CSS px → physical px)
+            let scaled_effects: Vec<LayerEffect> = render_node
+                .props
+                .layer_effects
+                .iter()
+                .map(|e| match e {
+                    LayerEffect::Blur { radius, quality } => LayerEffect::Blur {
+                        radius: radius * self.scale_factor,
+                        quality: *quality,
+                    },
+                    LayerEffect::DropShadow {
+                        offset_x,
+                        offset_y,
+                        blur,
+                        spread,
+                        color,
+                    } => LayerEffect::DropShadow {
+                        offset_x: offset_x * self.scale_factor,
+                        offset_y: offset_y * self.scale_factor,
+                        blur: blur * self.scale_factor,
+                        spread: spread * self.scale_factor,
+                        color: *color,
+                    },
+                    other => other.clone(),
+                })
+                .collect();
             ctx.push_layer(LayerConfig {
                 id: None,
                 position: Some(blinc_core::Point::new(bounds.x, bounds.y)),
@@ -7923,7 +8037,7 @@ impl RenderTree {
                 blend_mode: BlendMode::Normal,
                 opacity: node_motion_opacity,
                 depth: false,
-                effects: render_node.props.layer_effects.clone(),
+                effects: scaled_effects,
             });
         }
 

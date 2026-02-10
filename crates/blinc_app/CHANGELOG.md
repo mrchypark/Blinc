@@ -26,6 +26,8 @@ All notable changes to `blinc_app` will be documented in this file.
 #### Styling Demo Enhancements
 
 - CSS filter hover demo (`.filter-card:hover` with brightness, saturate, contrast)
+- Filter blur & drop-shadow demos (static blur, hover transition, keyframe animation, combo)
+- `:is()` / `:where()` / `*-of-type` selector demos
 
 ### Fixed
 

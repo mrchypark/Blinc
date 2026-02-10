@@ -495,6 +495,47 @@ fn main() -> Result<()> {
                 box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
             }
 
+            /* :is() pseudo-class: matches any of the listed selectors */
+            .is-card {
+                background: #374151;
+                border-radius: 8px;
+                transition: all 300ms ease;
+            }
+            :is(.is-primary, .is-accent):hover {
+                background: #3b82f6;
+                box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+            }
+
+            /* :where() pseudo-class (same as :is but zero specificity) */
+            :where(.is-secondary):hover {
+                background: #8b5cf6;
+                box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+            }
+
+            /* :first-of-type / :last-of-type */
+            .type-item {
+                background: #374151;
+                border-radius: 8px;
+            }
+            .type-item:first-of-type {
+                background: #059669;
+            }
+            .type-item:last-of-type {
+                background: #dc2626;
+            }
+
+            /* :nth-of-type */
+            .nth-type-item {
+                background: #374151;
+                border-radius: 8px;
+            }
+            .nth-type-item:nth-of-type(2) {
+                background: #d97706;
+            }
+            .nth-type-item:only-of-type {
+                background: #7c3aed;
+            }
+
             /* --- Gradient Animation demos --- */
 
             /* Gradient transition on hover */
@@ -543,6 +584,56 @@ fn main() -> Result<()> {
             }
             #text-shadow-hover:hover {
                 text-shadow: 3px 3px 0px rgba(239, 68, 68, 1.0);
+            }
+
+            /* --- Filter blur & drop-shadow demos --- */
+
+            /* Static blur */
+            #filter-blur-static {
+                background: #3b82f6;
+                border-radius: 12px;
+                filter: blur(4px);
+            }
+
+            /* Blur transition on hover */
+            #filter-blur-hover {
+                background: #22c55e;
+                border-radius: 12px;
+                filter: blur(0px);
+                transition: filter 400ms ease;
+            }
+            #filter-blur-hover:hover {
+                filter: blur(8px);
+            }
+
+            /* Drop-shadow */
+            #filter-drop-shadow {
+                background: #a855f7;
+                border-radius: 12px;
+                filter: drop-shadow(4px 4px 8px rgba(0, 0, 0, 0.5));
+            }
+
+            /* Combined blur + color filter */
+            #filter-blur-combo {
+                background: #f97316;
+                border-radius: 12px;
+                filter: blur(6px) brightness(1.3);
+                transition: filter 500ms ease;
+            }
+            #filter-blur-combo:hover {
+                filter: blur(0px) brightness(1.0);
+            }
+
+            /* Blur keyframe animation */
+            @keyframes blur-pulse {
+                0% { filter: blur(0px); }
+                50% { filter: blur(6px); }
+                100% { filter: blur(0px); }
+            }
+            #filter-blur-anim {
+                background: #ec4899;
+                border-radius: 12px;
+                animation: blur-pulse 3000ms ease-in-out infinite;
             }
 
             /* --- Layout Property Animation demos --- */
@@ -831,6 +922,10 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(selector_hierarchy_section())
                     // Advanced selectors (+, ~, :not(), :empty, *)
                     .child(advanced_selectors_section())
+                    // :is()/:where() and *-of-type selectors
+                    .child(is_where_of_type_section())
+                    // Filter blur & drop-shadow (Phase 8)
+                    .child(filter_blur_section())
                     // Gradient animation (Phase 6)
                     .child(gradient_animation_section())
                     // Text shadow (Phase 7)
@@ -1800,6 +1895,265 @@ fn advanced_selectors_section() -> impl ElementBuilder {
                                         .items_center()
                                         .child(text("C").size(14.0).color(Color::WHITE)),
                                 ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// :is()/:where() AND *-of-type SELECTORS SECTION
+// ============================================================================
+
+fn is_where_of_type_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title(":is() / :where() / *-of-type"))
+        .child(section_description(
+            "Functional pseudo-classes :is(), :where() and structural *-of-type selectors.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. :is() — hover highlights primary or accent cards
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(
+                            ":is(.is-primary, .is-accent):hover { bg: blue }",
+                        ))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("is-card")
+                                        .class("is-primary")
+                                        .w(90.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Primary").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("is-card")
+                                        .class("is-secondary")
+                                        .w(90.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Secondary").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("is-card")
+                                        .class("is-accent")
+                                        .w(90.0)
+                                        .h(60.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Accent").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 2. :where() — secondary gets purple hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(4.0)
+                        .child(code_label(":where(.is-secondary):hover { bg: purple }")),
+                )
+                // 3. :first-of-type / :last-of-type
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(
+                            ":first-of-type { green }  :last-of-type { red }",
+                        ))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("First").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Middle").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("Last").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                )
+                // 4. :nth-of-type(2) — highlights 2nd item
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label(":nth-of-type(2) { orange }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(12.0)
+                                .child(
+                                    div()
+                                        .class("nth-type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("1st").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("nth-type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("2nd").size(12.0).color(Color::WHITE)),
+                                )
+                                .child(
+                                    div()
+                                        .class("nth-type-item")
+                                        .w(80.0)
+                                        .h(50.0)
+                                        .flex_col()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(text("3rd").size(12.0).color(Color::WHITE)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// FILTER BLUR & DROP-SHADOW SECTION (Phase 8)
+// ============================================================================
+
+fn filter_blur_section() -> impl ElementBuilder {
+    section_container()
+        .child(section_title("Filter: blur() & drop-shadow()"))
+        .child(section_description(
+            "CSS filter: blur(Npx) renders via Kawase multi-pass GPU blur. drop-shadow() adds offset shadow. Both support transitions and @keyframes.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(16.0)
+                // 1. Static blur
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("filter: blur(4px)"))
+                        .child(
+                            div()
+                                .id("filter-blur-static")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Blurred").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 2. Blur transition on hover
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("hover: blur(0px) → blur(8px)"))
+                        .child(
+                            div()
+                                .id("filter-blur-hover")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Hover me").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 3. Drop-shadow
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("filter: drop-shadow(4px 4px 8px rgba(0,0,0,0.5))"))
+                        .child(
+                            div()
+                                .id("filter-drop-shadow")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Drop Shadow").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 4. Combined blur + brightness
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("hover: blur(2px) brightness(1.2) → blur(0px) brightness(1.0)"))
+                        .child(
+                            div()
+                                .id("filter-blur-combo")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Combo filter").size(14.0).color(Color::WHITE)),
+                        ),
+                )
+                // 5. Blur keyframe animation
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("@keyframes blur-pulse { 0%→0px 50%→6px 100%→0px }"))
+                        .child(
+                            div()
+                                .id("filter-blur-anim")
+                                .w(200.0)
+                                .h(80.0)
+                                .flex_col()
+                                .justify_center()
+                                .items_center()
+                                .child(text("Pulsing blur").size(14.0).color(Color::WHITE)),
                         ),
                 ),
         )

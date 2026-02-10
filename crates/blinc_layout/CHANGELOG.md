@@ -67,7 +67,7 @@ All notable changes to `blinc_layout` will be documented in this file.
 - `animation-direction: normal | reverse | alternate | alternate-reverse`
 - `animation-fill-mode: none | forwards | backwards | both`
 - `animation-iteration-count: <number> | infinite`
-- Animatable properties: `opacity`, `scale`, `scale-x`, `scale-y`, `translate-x`, `translate-y`, `rotate`, `rotate-x`, `rotate-y`, `perspective`, `depth`, `translate-z`, `blend-3d`, `background`, `border-color`, `border-radius`, `border-width`, `box-shadow`, `clip-path`, `filter`, `width`, `height`, `padding`, `margin`, `gap`
+- Animatable properties: `opacity`, `scale`, `scale-x`, `scale-y`, `translate-x`, `translate-y`, `rotate`, `rotate-x`, `rotate-y`, `perspective`, `depth`, `translate-z`, `blend-3d`, `background`, `border-color`, `border-radius`, `border-width`, `box-shadow`, `clip-path`, `filter` (including `blur`), `width`, `height`, `padding`, `margin`, `gap`
 
 #### CSS Transitions
 
@@ -80,8 +80,11 @@ All notable changes to `blinc_layout` will be documented in this file.
 #### CSS Filters
 
 - `filter` property: `grayscale()`, `invert()`, `sepia()`, `hue-rotate()`, `brightness()`, `contrast()`, `saturate()`
-- Space-separated multi-function syntax: `filter: grayscale(1) brightness(1.5) contrast(1.2)`
-- Supports `N`, `N%`, `Ndeg` argument formats
+- `filter: blur(Npx)` with GPU Kawase multi-pass blur via LayerEffect pipeline
+- `filter: drop-shadow(x y blur color)` with GPU drop-shadow via LayerEffect pipeline
+- Space-separated multi-function syntax: `filter: blur(4px) grayscale(1) brightness(1.5)`
+- Supports `N`, `N%`, `Ndeg`, `Npx` argument formats
+- Nested parenthesis handling in filter parser (e.g. `drop-shadow(4px 4px 8px rgba(0,0,0,0.5))`)
 
 #### Selector Hierarchy
 
@@ -91,6 +94,16 @@ All notable changes to `blinc_layout` will be documented in this file.
 - Compound selectors: `#id.class:hover`
 - Structural pseudo-classes: `:first-child`, `:last-child`, `:nth-child(N)`, `:only-child`
 - Complex selector matching engine with ancestor chain walking
+
+#### Advanced Selectors
+
+- Adjacent sibling combinator (`+`): `.a + .b`
+- General sibling combinator (`~`): `.a ~ .b`
+- `:not()` negation pseudo-class
+- `:is()` / `:where()` functional pseudo-classes (matches any of listed selectors)
+- `:first-of-type`, `:last-of-type`, `:nth-of-type(N)`, `:nth-last-of-type(N)`, `:only-of-type`
+- `:empty`, `:root` pseudo-classes
+- `*` universal selector
 
 #### Layout Property Animation
 

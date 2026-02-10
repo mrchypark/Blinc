@@ -940,7 +940,7 @@ impl From<f32> for CornerRadius {
 }
 
 /// Shadow configuration
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Shadow {
     pub offset_x: f32,
     pub offset_y: f32,

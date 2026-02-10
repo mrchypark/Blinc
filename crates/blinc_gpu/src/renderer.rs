@@ -245,8 +245,8 @@ struct Buffers {
     path_vertices: Option<wgpu::Buffer>,
     /// Index buffer for path geometry (dynamic, recreated as needed)
     path_indices: Option<wgpu::Buffer>,
-    /// Cached uniform buffer for blur effect
-    blur_uniforms: wgpu::Buffer,
+    /// Pre-allocated uniform buffers for multi-pass blur (one per pass, max 8)
+    blur_uniforms_pool: Vec<wgpu::Buffer>,
     /// Cached uniform buffer for drop shadow effect
     drop_shadow_uniforms: wgpu::Buffer,
     /// Cached uniform buffer for glow effect
@@ -499,6 +499,7 @@ pub struct LayerTextureCache {
     pool_small: Vec<LayerTexture>, // <= 128
     pool_medium: Vec<LayerTexture>, // <= 256
     pool_large: Vec<LayerTexture>,  // <= 512
+    pool_xlarge: Vec<LayerTexture>, // > 512
     /// Texture format used for all layer textures
     format: wgpu::TextureFormat,
     /// Maximum textures per bucket
@@ -515,8 +516,9 @@ impl LayerTextureCache {
             pool_small: Vec::with_capacity(4),
             pool_medium: Vec::with_capacity(4),
             pool_large: Vec::with_capacity(4),
+            pool_xlarge: Vec::with_capacity(4),
             format,
-            max_per_bucket: 4, // 4 textures per bucket = 12 total max
+            max_per_bucket: 4,
             stats: TextureCacheStats::default(),
         }
     }
@@ -538,7 +540,7 @@ impl LayerTextureCache {
             TextureSizeBucket::Small => &self.pool_small,
             TextureSizeBucket::Medium => &self.pool_medium,
             TextureSizeBucket::Large => &self.pool_large,
-            TextureSizeBucket::XLarge => &self.pool_large, // XLarge uses large pool but rarely cached
+            TextureSizeBucket::XLarge => &self.pool_xlarge,
         }
     }
 
@@ -548,7 +550,7 @@ impl LayerTextureCache {
             TextureSizeBucket::Small => &mut self.pool_small,
             TextureSizeBucket::Medium => &mut self.pool_medium,
             TextureSizeBucket::Large => &mut self.pool_large,
-            TextureSizeBucket::XLarge => &mut self.pool_large,
+            TextureSizeBucket::XLarge => &mut self.pool_xlarge,
         }
     }
 
@@ -575,37 +577,34 @@ impl LayerTextureCache {
         }
 
         // Try to find in primary bucket
-        let found_in_primary = match bucket {
-            TextureSizeBucket::Small => find_matching(&self.pool_small, size, with_depth),
-            TextureSizeBucket::Medium => find_matching(&self.pool_medium, size, with_depth),
-            TextureSizeBucket::Large => find_matching(&self.pool_large, size, with_depth),
-            TextureSizeBucket::XLarge => find_matching(&self.pool_large, size, with_depth),
+        let primary_pool = match bucket {
+            TextureSizeBucket::Small => &self.pool_small,
+            TextureSizeBucket::Medium => &self.pool_medium,
+            TextureSizeBucket::Large => &self.pool_large,
+            TextureSizeBucket::XLarge => &self.pool_xlarge,
         };
+        let found_in_primary = find_matching(primary_pool, size, with_depth);
 
         if let Some(index) = found_in_primary {
             self.stats.hits += 1;
             let texture = match bucket {
                 TextureSizeBucket::Small => self.pool_small.swap_remove(index),
                 TextureSizeBucket::Medium => self.pool_medium.swap_remove(index),
-                TextureSizeBucket::Large | TextureSizeBucket::XLarge => {
-                    self.pool_large.swap_remove(index)
-                }
+                TextureSizeBucket::Large => self.pool_large.swap_remove(index),
+                TextureSizeBucket::XLarge => self.pool_xlarge.swap_remove(index),
             };
             self.update_pool_stats();
             return texture;
         }
 
-        // Try larger buckets
+        // Try larger buckets as fallback
         let found_in_larger = match bucket {
-            TextureSizeBucket::Small => {
-                // Try medium first, then large
-                find_matching(&self.pool_medium, size, with_depth)
-                    .map(|i| (TextureSizeBucket::Medium, i))
-                    .or_else(|| {
-                        find_matching(&self.pool_large, size, with_depth)
-                            .map(|i| (TextureSizeBucket::Large, i))
-                    })
-            }
+            TextureSizeBucket::Small => find_matching(&self.pool_medium, size, with_depth)
+                .map(|i| (TextureSizeBucket::Medium, i))
+                .or_else(|| {
+                    find_matching(&self.pool_large, size, with_depth)
+                        .map(|i| (TextureSizeBucket::Large, i))
+                }),
             TextureSizeBucket::Medium => find_matching(&self.pool_large, size, with_depth)
                 .map(|i| (TextureSizeBucket::Large, i)),
             _ => None,
@@ -625,13 +624,15 @@ impl LayerTextureCache {
         // No suitable texture in pool, create a new one
         self.stats.misses += 1;
 
-        // Round up to bucket size for better future reuse
-        let rounded_size = if bucket != TextureSizeBucket::XLarge {
+        // Round up for better future reuse
+        let rounded_size = if bucket == TextureSizeBucket::XLarge {
+            // Round XLarge to 64px increments for better cache reuse
+            let w = size.0.div_ceil(64) * 64;
+            let h = size.1.div_ceil(64) * 64;
+            (w, h)
+        } else {
             let bucket_max = bucket.max_size();
             (size.0.max(bucket_max), size.1.max(bucket_max))
-        } else {
-            // For XLarge, use exact size (no rounding)
-            size
         };
 
         LayerTexture::new(device, rounded_size, self.format, with_depth)
@@ -644,16 +645,11 @@ impl LayerTextureCache {
         let bucket = TextureSizeBucket::from_size(texture.size);
         let max = self.max_per_bucket;
 
-        // Don't pool XLarge textures
-        if bucket == TextureSizeBucket::XLarge {
-            return;
-        }
-
         let pool = match bucket {
             TextureSizeBucket::Small => &mut self.pool_small,
             TextureSizeBucket::Medium => &mut self.pool_medium,
             TextureSizeBucket::Large => &mut self.pool_large,
-            TextureSizeBucket::XLarge => return, // Already handled above
+            TextureSizeBucket::XLarge => &mut self.pool_xlarge,
         };
 
         if pool.len() < max {
@@ -668,7 +664,12 @@ impl LayerTextureCache {
         let mut count = 0;
         let mut bytes = 0u64;
 
-        for pool in [&self.pool_small, &self.pool_medium, &self.pool_large] {
+        for pool in [
+            &self.pool_small,
+            &self.pool_medium,
+            &self.pool_large,
+            &self.pool_xlarge,
+        ] {
             for t in pool {
                 count += 1;
                 bytes += Self::estimate_texture_bytes(t.size, t.has_depth);
@@ -683,8 +684,7 @@ impl LayerTextureCache {
     ///
     /// Call this at frame start to evict any large textures that accumulated.
     pub fn evict_oversized(&mut self) {
-        // With bucketed pools, we don't need to do much here
-        // But we can trim pools that are over capacity
+        // Trim pools that are over capacity
         while self.pool_small.len() > self.max_per_bucket {
             self.pool_small.pop();
         }
@@ -693,6 +693,9 @@ impl LayerTextureCache {
         }
         while self.pool_large.len() > self.max_per_bucket {
             self.pool_large.pop();
+        }
+        while self.pool_xlarge.len() > self.max_per_bucket {
+            self.pool_xlarge.pop();
         }
         self.update_pool_stats();
     }
@@ -740,12 +743,16 @@ impl LayerTextureCache {
         self.pool_small.clear();
         self.pool_medium.clear();
         self.pool_large.clear();
+        self.pool_xlarge.clear();
         self.stats = TextureCacheStats::default();
     }
 
     /// Get the total number of textures in all pools
     pub fn pool_size(&self) -> usize {
-        self.pool_small.len() + self.pool_medium.len() + self.pool_large.len()
+        self.pool_small.len()
+            + self.pool_medium.len()
+            + self.pool_large.len()
+            + self.pool_xlarge.len()
     }
 
     /// Get the number of named textures
@@ -2527,13 +2534,17 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
-        // Cached effect uniform buffers (avoid per-frame allocation)
-        let blur_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Blur Uniforms Buffer"),
-            size: std::mem::size_of::<BlurUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        // Pre-allocate 8 uniform buffers for multi-pass blur (one per pass)
+        let blur_uniforms_pool: Vec<wgpu::Buffer> = (0..8)
+            .map(|i| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("Blur Uniforms Pass {i}")),
+                    size: std::mem::size_of::<BlurUniforms>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
 
         let drop_shadow_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Drop Shadow Uniforms Buffer"),
@@ -2574,7 +2585,7 @@ impl GpuRenderer {
             path_uniforms,
             path_vertices: None,
             path_indices: None,
-            blur_uniforms,
+            blur_uniforms_pool,
             drop_shadow_uniforms,
             glow_uniforms,
             color_matrix_uniforms,
@@ -5691,85 +5702,10 @@ impl GpuRenderer {
     ///
     /// `blur_alpha`: if true, blurs both RGB and alpha (for soft shadow edges);
     ///               if false, preserves alpha while blurring RGB (for element blur)
-    pub fn apply_blur_pass(
-        &mut self,
-        input: &wgpu::TextureView,
-        output: &wgpu::TextureView,
-        size: (u32, u32),
-        radius: f32,
-        iteration: u32,
-        blur_alpha: bool,
-    ) {
-        let uniforms = BlurUniforms {
-            texel_size: [1.0 / size.0 as f32, 1.0 / size.1 as f32],
-            radius,
-            iteration,
-            blur_alpha: if blur_alpha { 1 } else { 0 },
-            _pad1: 0.0,
-            _pad2: 0.0,
-            _pad3: 0.0,
-        };
-
-        // Use cached buffer instead of creating per-pass
-        self.queue.write_buffer(
-            &self.buffers.blur_uniforms,
-            0,
-            bytemuck::bytes_of(&uniforms),
-        );
-
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Blur Effect Bind Group"),
-            layout: &self.bind_group_layouts.blur,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.buffers.blur_uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(input),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
-                },
-            ],
-        });
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Blur Pass Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blur Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: output,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(&self.pipelines.blur);
-            render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
-        }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-    }
-
-    /// Apply multi-pass Kawase blur
+    /// Apply multi-pass Kawase blur, batched into a single GPU submission.
     ///
-    /// Performs multiple blur passes for higher quality blur.
-    /// Uses ping-pong rendering between two textures.
+    /// Uses ping-pong rendering between two textures. All passes share one
+    /// command encoder for minimal GPU synchronization overhead.
     ///
     /// `blur_alpha`: if true, blurs both RGB and alpha (for soft shadow edges);
     ///               if false, preserves alpha while blurring RGB (for element blur)
@@ -5787,7 +5723,6 @@ impl GpuRenderer {
             let output = self
                 .layer_texture_cache
                 .acquire(&self.device, input.size, false);
-            // Copy input to output
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -5817,41 +5752,112 @@ impl GpuRenderer {
         }
 
         let size = input.size;
+        let blur_alpha_u32: u32 = if blur_alpha { 1 } else { 0 };
+
+        // Write per-pass uniforms to pre-allocated buffer pool (no allocation)
+        for i in 0..passes {
+            self.queue.write_buffer(
+                &self.buffers.blur_uniforms_pool[i as usize],
+                0,
+                bytemuck::bytes_of(&BlurUniforms {
+                    texel_size: [1.0 / size.0 as f32, 1.0 / size.1 as f32],
+                    radius,
+                    iteration: i,
+                    blur_alpha: blur_alpha_u32,
+                    _pad1: 0.0,
+                    _pad2: 0.0,
+                    _pad3: 0.0,
+                }),
+            );
+        }
 
         // For ping-pong we need two temp textures
-        let mut temp_a = self.layer_texture_cache.acquire(&self.device, size, false);
-        let mut temp_b = self.layer_texture_cache.acquire(&self.device, size, false);
+        let temp_a = self.layer_texture_cache.acquire(&self.device, size, false);
+        let temp_b = self.layer_texture_cache.acquire(&self.device, size, false);
 
-        // First pass: input -> temp_a
-        self.apply_blur_pass(&input.view, &temp_a.view, size, radius, 0, blur_alpha);
+        // Pre-create bind groups: pass 0 reads input, subsequent passes alternate temp_a/temp_b
+        let bind_groups: Vec<wgpu::BindGroup> = (0..passes)
+            .map(|i| {
+                let input_view = if i == 0 {
+                    &input.view
+                } else if i % 2 == 1 {
+                    &temp_a.view
+                } else {
+                    &temp_b.view
+                };
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Blur Effect Bind Group"),
+                    layout: &self.bind_group_layouts.blur,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.buffers.blur_uniforms_pool[i as usize]
+                                .as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(input_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
+                        },
+                    ],
+                })
+            })
+            .collect();
 
-        // Subsequent passes alternate between temp_a and temp_b
-        for i in 1..passes {
-            if i % 2 == 1 {
-                // temp_a -> temp_b
-                self.apply_blur_pass(&temp_a.view, &temp_b.view, size, radius, i, blur_alpha);
+        // Single command encoder for all passes
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Blur Multi-Pass Encoder"),
+            });
+
+        for i in 0..passes {
+            let output_view = if i % 2 == 0 {
+                &temp_a.view
             } else {
-                // temp_b -> temp_a
-                self.apply_blur_pass(&temp_b.view, &temp_a.view, size, radius, i, blur_alpha);
-            }
+                &temp_b.view
+            };
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blur Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: output_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.blur);
+            render_pass.set_bind_group(0, &bind_groups[i as usize], &[]);
+            render_pass.draw(0..6, 0..1);
         }
 
-        // Return the correct temp texture based on which has the final result
-        // Release the other one back to the cache
-        if passes % 2 == 1 {
-            // Odd number of passes: result is in temp_a
-            self.layer_texture_cache.release(temp_b);
-            temp_a
+        // Single GPU submission for all blur passes
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Determine which texture has the final blurred result
+        let (result, unused) = if passes % 2 == 1 {
+            (temp_a, temp_b)
         } else {
-            // Even number of passes: result is in temp_b
-            self.layer_texture_cache.release(temp_a);
-            temp_b
-        }
+            (temp_b, temp_a)
+        };
+        self.layer_texture_cache.release(unused);
+
+        result
     }
 
-    /// Apply multi-pass Kawase blur (element blur - preserves alpha)
+    /// Apply multi-pass Kawase blur (CSS filter blur)
     ///
-    /// Convenience wrapper that preserves alpha for element blur effects.
+    /// Blurs both RGB and alpha channels, producing soft edges.
     pub fn apply_blur(&mut self, input: &LayerTexture, radius: f32, passes: u32) -> LayerTexture {
         self.apply_blur_with_alpha(input, radius, passes, false)
     }
@@ -6188,8 +6194,7 @@ impl GpuRenderer {
     /// Calculate how much layer effects extend beyond the original content bounds.
     ///
     /// Returns (left, top, right, bottom) expansion in pixels.
-    /// Only effects that ADD content outside the element expand bounds (shadow, glow).
-    /// Blur does NOT expand because it just softens existing edges.
+    /// Blur expands bounds so the soft-edge falloff has room to render.
     fn calculate_effect_expansion(effects: &[blinc_core::LayerEffect]) -> (f32, f32, f32, f32) {
         use blinc_core::LayerEffect;
 
@@ -6200,9 +6205,14 @@ impl GpuRenderer {
 
         for effect in effects {
             match effect {
-                LayerEffect::Blur { .. } => {
-                    // Blur does NOT expand bounds - it only softens existing edges
-                    // The blurred content stays within the original element bounds
+                LayerEffect::Blur { radius, .. } => {
+                    // Blur softens edges, which extends beyond original bounds.
+                    // ~2x radius covers the visible falloff of Kawase blur.
+                    let expand = radius * 2.0;
+                    left = left.max(expand);
+                    top = top.max(expand);
+                    right = right.max(expand);
+                    bottom = bottom.max(expand);
                 }
                 LayerEffect::DropShadow {
                     offset_x,
@@ -6285,46 +6295,24 @@ impl GpuRenderer {
         }
 
         let size = input.size;
-        let mut current = self.layer_texture_cache.acquire(&self.device, size, false);
-
-        // Copy input to current
-        {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Layer Effect Init Copy"),
-                });
-            encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
-                    texture: &input.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::ImageCopyTexture {
-                    texture: &current.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width: size.0,
-                    height: size.1,
-                    depth_or_array_layers: 1,
-                },
-            );
-            self.queue.submit(std::iter::once(encoder.finish()));
-        }
+        // Track ownership: effects that produce a new texture pass ownership here.
+        // We avoid a redundant copy by using the input directly for the first effect
+        // and only copying when a non-blur effect needs a mutable working texture.
+        let mut current: Option<LayerTexture> = None;
 
         for effect in effects {
+            // Get the current working texture or the original input
+            let working = current.as_ref().unwrap_or(input);
+
             match effect {
                 LayerEffect::Blur { radius, quality: _ } => {
-                    // Calculate number of passes based on radius
-                    // More passes = smoother blur. Kawase blur needs ~radius/2 passes minimum
-                    let passes = (*radius / 2.0).ceil().max(2.0) as u32;
-                    let blurred = self.apply_blur(&current, *radius, passes);
-                    self.layer_texture_cache.release(current);
-                    current = blurred;
+                    // Blur reads from working and produces a new texture (no copy needed)
+                    let passes = ((*radius / 2.0).ceil().max(2.0) as u32).min(8);
+                    let blurred = self.apply_blur(working, *radius, passes);
+                    if let Some(prev) = current.take() {
+                        self.layer_texture_cache.release(prev);
+                    }
+                    current = Some(blurred);
                 }
 
                 LayerEffect::DropShadow {
@@ -6334,12 +6322,10 @@ impl GpuRenderer {
                     spread,
                     color,
                 } => {
-                    // Use distance-based shadow - no blur pass needed
-                    // The shader samples the original texture to find shape edges
                     let temp = self.layer_texture_cache.acquire(&self.device, size, false);
                     self.apply_drop_shadow(
-                        &current.view, // Not used for distance sampling
-                        &current.view, // Original texture for shape detection
+                        &working.view,
+                        &working.view,
                         &temp.view,
                         size,
                         (*offset_x, *offset_y),
@@ -6347,8 +6333,10 @@ impl GpuRenderer {
                         *spread,
                         [color.r, color.g, color.b, color.a],
                     );
-                    self.layer_texture_cache.release(current);
-                    current = temp;
+                    if let Some(prev) = current.take() {
+                        self.layer_texture_cache.release(prev);
+                    }
+                    current = Some(temp);
                 }
 
                 LayerEffect::Glow {
@@ -6357,11 +6345,9 @@ impl GpuRenderer {
                     range,
                     opacity,
                 } => {
-                    // Use dedicated glow shader with proper radial falloff
-                    // The shader finds distance to opaque pixels and creates smooth glow
                     let temp = self.layer_texture_cache.acquire(&self.device, size, false);
                     self.apply_glow(
-                        &current.view,
+                        &working.view,
                         &temp.view,
                         size,
                         [color.r, color.g, color.b, color.a],
@@ -6369,20 +6355,56 @@ impl GpuRenderer {
                         *range,
                         *opacity,
                     );
-                    self.layer_texture_cache.release(current);
-                    current = temp;
+                    if let Some(prev) = current.take() {
+                        self.layer_texture_cache.release(prev);
+                    }
+                    current = Some(temp);
                 }
 
                 LayerEffect::ColorMatrix { matrix } => {
                     let temp = self.layer_texture_cache.acquire(&self.device, size, false);
-                    self.apply_color_matrix(&current.view, &temp.view, matrix);
-                    self.layer_texture_cache.release(current);
-                    current = temp;
+                    self.apply_color_matrix(&working.view, &temp.view, matrix);
+                    if let Some(prev) = current.take() {
+                        self.layer_texture_cache.release(prev);
+                    }
+                    current = Some(temp);
                 }
             }
         }
 
-        current
+        // If no effect produced a new texture (shouldn't happen since effects is non-empty),
+        // fall back to a copy
+        current.unwrap_or_else(|| {
+            let output = self
+                .layer_texture_cache
+                .acquire(&self.device, input.size, false);
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Layer Effect Fallback Copy"),
+                });
+            encoder.copy_texture_to_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &input.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::ImageCopyTexture {
+                    texture: &output.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: input.size.0,
+                    height: input.size.1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.queue.submit(std::iter::once(encoder.finish()));
+            output
+        })
     }
 
     /// Composite two textures together

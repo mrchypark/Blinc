@@ -50,6 +50,10 @@ pub struct CssFilter {
     pub contrast: f32,
     /// Saturation multiplier (1.0 = normal)
     pub saturate: f32,
+    /// Blur radius in pixels (0.0 = no blur)
+    pub blur: f32,
+    /// Drop shadow (offset, blur, color) — rendered as LayerEffect
+    pub drop_shadow: Option<Shadow>,
 }
 
 impl Default for CssFilter {
@@ -62,6 +66,8 @@ impl Default for CssFilter {
             brightness: 1.0,
             contrast: 1.0,
             saturate: 1.0,
+            blur: 0.0,
+            drop_shadow: None,
         }
     }
 }
@@ -76,6 +82,8 @@ impl CssFilter {
             && self.brightness == 1.0
             && self.contrast == 1.0
             && self.saturate == 1.0
+            && self.blur == 0.0
+            && self.drop_shadow.is_none()
     }
 }
 use blinc_theme::ThemeState;

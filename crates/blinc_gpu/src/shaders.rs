@@ -3217,12 +3217,11 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_kawase_blur(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Use small fixed offsets to preserve shape during multi-pass blur
-    // Larger radii use more passes rather than larger offsets
-    // This prevents corner fill-in by spreading gradually
+    // Kawase blur: each pass samples at increasing offsets scaled by the radius
+    // More passes spread the blur further; radius controls per-pass spread
     let base_offset = f32(uniforms.iteration) + 0.5;
-    // Fixed small multiplier - more passes will accumulate the blur
-    let offset = base_offset * 1.2;
+    let spread = max(uniforms.radius * 0.4, 1.0);
+    let offset = base_offset * spread;
     let pixel_offset = offset * uniforms.texel_size;
 
     // Sample in + pattern (up, down, left, right) instead of X pattern
@@ -3239,27 +3238,30 @@ fn fs_kawase_blur(in: VertexOutput) -> @location(0) vec4<f32> {
     let s4 = textureSample(input_texture, input_sampler, uv_right);
 
     if (uniforms.blur_alpha == 0u) {
-        // Element blur mode: preserve alpha, blur RGB only with alpha weighting
-        // This preserves corner radius while preventing darkening
+        // CSS filter blur mode: blur all RGBA for visible effect on solid-color elements.
+        // Alpha-weighted RGB averaging prevents dark fringing at transparent edges.
+        // The alpha-restore pass (mode 2) will fix corner softening after all blur passes.
         let total_alpha = s0.a + s1.a + s2.a + s3.a + s4.a;
+        let avg_alpha = total_alpha / 5.0;
 
-        if (total_alpha < 0.001) {
+        if (avg_alpha < 0.001) {
             return vec4<f32>(0.0, 0.0, 0.0, 0.0);
         }
 
-        // Weight RGB by alpha to prevent black transparent pixels from darkening
         let weighted_rgb = s0.rgb * s0.a + s1.rgb * s1.a + s2.rgb * s2.a + s3.rgb * s3.a + s4.rgb * s4.a;
         let avg_rgb = weighted_rgb / total_alpha;
 
-        // Preserve center sample's alpha to maintain corner radius
-        return vec4<f32>(avg_rgb, s0.a);
-    } else {
+        return vec4<f32>(avg_rgb, avg_alpha);
+    } else if (uniforms.blur_alpha == 1u) {
         // Shadow blur mode: only blur alpha for shadow shape
         // Output white RGB since drop shadow shader uses uniform color, not texture RGB
         let total_alpha = s0.a + s1.a + s2.a + s3.a + s4.a;
         let avg_alpha = total_alpha / 5.0;
 
         return vec4<f32>(1.0, 1.0, 1.0, avg_alpha);
+    } else {
+        // Mode 2: passthrough — sample center pixel only (used for alpha restore pass)
+        return s0;
     }
 }
 

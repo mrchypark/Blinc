@@ -541,6 +541,16 @@ pub enum StructuralPseudo {
     Empty,
     /// :root — root element
     Root,
+    /// :first-of-type — equivalent to :first-child in single-type DOM (Blinc)
+    FirstOfType,
+    /// :last-of-type — equivalent to :last-child in single-type DOM (Blinc)
+    LastOfType,
+    /// :nth-of-type(n) — equivalent to :nth-child(n) in single-type DOM (Blinc)
+    NthOfType(usize),
+    /// :nth-last-of-type(n) — equivalent to :nth-last-child(n) in single-type DOM (Blinc)
+    NthLastOfType(usize),
+    /// :only-of-type — equivalent to :only-child in single-type DOM (Blinc)
+    OnlyOfType,
 }
 
 /// A single part of a compound selector
@@ -558,6 +568,8 @@ pub enum SelectorPart {
     PseudoClass(StructuralPseudo),
     /// :not(selector) — negation pseudo-class
     Not(Box<CompoundSelector>),
+    /// :is(selector, ...) / :where(selector, ...) — matches if any inner selector matches
+    Is(Vec<CompoundSelector>),
 }
 
 /// Combinator between compound selectors
@@ -972,6 +984,7 @@ impl CssKeyframes {
             props.filter_contrast = Some(f.contrast);
             props.filter_saturate = Some(f.saturate);
             props.filter_hue_rotate = Some(f.hue_rotate);
+            props.filter_blur = Some(f.blur);
         }
 
         // Layout properties
@@ -1932,6 +1945,41 @@ fn parse_complex_selector(input: &str) -> ParseResult<ComplexSelector> {
 
 /// Parse a compound selector: one or more simple selector parts with no combinator.
 /// e.g. `#id.class:hover:first-child`
+/// Find the index of the matching closing parenthesis for the opening paren at input[0].
+fn find_matching_paren(input: &str) -> Option<usize> {
+    if !input.starts_with('(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    for (i, c) in input.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse a comma-separated list of compound selectors (for :is() / :where()).
+fn parse_selector_list(input: &str) -> Vec<CompoundSelector> {
+    let mut selectors = Vec::new();
+    for part in input.split(',') {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            if let Ok((_, compound)) = parse_compound_selector(trimmed) {
+                selectors.push(compound);
+            }
+        }
+    }
+    selectors
+}
+
 fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
     let mut parts = Vec::new();
     let mut remaining = input;
@@ -2036,6 +2084,73 @@ fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
                         } else {
                             remaining = rest;
                         }
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                "is" | "where" => {
+                    // Parse :is(selector, ...) or :where(selector, ...)
+                    if rest.starts_with('(') {
+                        if let Some(close) = find_matching_paren(rest) {
+                            let inner = &rest[1..close];
+                            let selectors = parse_selector_list(inner);
+                            if !selectors.is_empty() {
+                                parts.push(SelectorPart::Is(selectors));
+                            }
+                            remaining = &rest[close + 1..];
+                        } else {
+                            remaining = rest;
+                        }
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                "first-of-type" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::FirstOfType));
+                    remaining = rest;
+                }
+                "last-of-type" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::LastOfType));
+                    remaining = rest;
+                }
+                "only-of-type" => {
+                    parts.push(SelectorPart::PseudoClass(StructuralPseudo::OnlyOfType));
+                    remaining = rest;
+                }
+                "nth-of-type" => {
+                    if rest.starts_with('(') {
+                        let (rest2, _) = char('(')(rest)?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, n_str) =
+                            take_while1::<_, _, VerboseError<&str>>(|c: char| c.is_ascii_digit())(
+                                rest2,
+                            )?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, _) = char(')')(rest2)?;
+                        if let Ok(n) = n_str.parse::<usize>() {
+                            parts.push(SelectorPart::PseudoClass(StructuralPseudo::NthOfType(n)));
+                        }
+                        remaining = rest2;
+                    } else {
+                        remaining = rest;
+                    }
+                }
+                "nth-last-of-type" => {
+                    if rest.starts_with('(') {
+                        let (rest2, _) = char('(')(rest)?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, n_str) =
+                            take_while1::<_, _, VerboseError<&str>>(|c: char| c.is_ascii_digit())(
+                                rest2,
+                            )?;
+                        let (rest2, _) = ws::<VerboseError<&str>>(rest2)?;
+                        let (rest2, _) = char(')')(rest2)?;
+                        if let Ok(n) = n_str.parse::<usize>() {
+                            parts.push(SelectorPart::PseudoClass(StructuralPseudo::NthLastOfType(
+                                n,
+                            )));
+                        }
+                        remaining = rest2;
                     } else {
                         remaining = rest;
                     }
@@ -2488,11 +2603,12 @@ fn try_as_simple_selector(compound: &CompoundSelector) -> Option<String> {
                 }
                 state = Some(s);
             }
-            // If there are classes, structural pseudos, universal, or :not(), it's not simple
+            // If there are classes, structural pseudos, universal, :not(), or :is(), it's not simple
             SelectorPart::Class(_)
             | SelectorPart::PseudoClass(_)
             | SelectorPart::Universal
-            | SelectorPart::Not(_) => return None,
+            | SelectorPart::Not(_)
+            | SelectorPart::Is(_) => return None,
         }
     }
 
@@ -4545,12 +4661,59 @@ fn parse_css_filter(value: &str) -> Option<crate::element_style::CssFilter> {
             let func_name = remaining[..paren_pos].trim();
             let after_paren = &remaining[paren_pos + 1..];
 
-            // Find closing paren
-            if let Some(close_pos) = after_paren.find(')') {
+            // Find matching closing paren (handles nested parens like rgba())
+            let close_pos = {
+                let mut depth = 0i32;
+                let mut found = None;
+                for (i, ch) in after_paren.char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' => {
+                            if depth == 0 {
+                                found = Some(i);
+                                break;
+                            }
+                            depth -= 1;
+                        }
+                        _ => {}
+                    }
+                }
+                found
+            };
+            if let Some(close_pos) = close_pos {
                 let arg_str = after_paren[..close_pos].trim();
                 remaining = after_paren[close_pos + 1..].trim_start();
 
-                // Parse the argument value
+                let func_lower = func_name.to_lowercase();
+
+                // Handle special multi-arg functions first
+                if func_lower == "blur" {
+                    if let Some(px) = parse_css_px(arg_str) {
+                        filter.blur = px;
+                        found_any = true;
+                    }
+                    continue;
+                }
+                if func_lower == "drop-shadow" {
+                    let parts = split_whitespace_respecting_parens(arg_str);
+                    if parts.len() >= 3 {
+                        let x = parse_length_value(&parts[0]);
+                        let y = parse_length_value(&parts[1]);
+                        let blur_val = parse_length_value(&parts[2]);
+                        let color = if parts.len() >= 4 {
+                            parse_color(&parts[3])
+                        } else {
+                            Some(blinc_core::Color::rgba(0.0, 0.0, 0.0, 0.5))
+                        };
+                        if let (Some(x), Some(y), Some(b), Some(c)) = (x, y, blur_val, color) {
+                            filter.drop_shadow = Some(blinc_core::Shadow::new(x, y, b, c));
+                            found_any = true;
+                        }
+                    }
+                    continue;
+                }
+
+                // Parse the argument value for simple single-value functions
                 let arg_val = if let Some(deg_str) = arg_str.strip_suffix("deg") {
                     deg_str.trim().parse::<f32>().ok()
                 } else if let Some(pct_str) = arg_str.strip_suffix('%') {
@@ -4560,7 +4723,7 @@ fn parse_css_filter(value: &str) -> Option<crate::element_style::CssFilter> {
                 };
 
                 if let Some(v) = arg_val {
-                    match func_name.to_lowercase().as_str() {
+                    match func_lower.as_str() {
                         "grayscale" => {
                             filter.grayscale = v;
                             found_any = true;

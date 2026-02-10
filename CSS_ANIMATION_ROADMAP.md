@@ -118,7 +118,7 @@ Not currently parsed — need parser + animation support.
 
 ## Phase 6: Gradient Animation
 
-- [ ] Background gradient color stop interpolation
+- [x] Background gradient color stop interpolation
 
 ### Implementation
 1. Extend `KeyframeProperties` with gradient-specific fields:
@@ -136,7 +136,7 @@ Not currently parsed — need parser + animation support.
 
 ## Phase 7: Text Shadow
 
-- [ ] `text-shadow` — offset, blur, color
+- [x] `text-shadow` — offset, blur, color
 
 ### Implementation
 1. Add `TextShadow` struct to `element_style.rs`
@@ -152,7 +152,7 @@ Not currently parsed — need parser + animation support.
 ## Phase 8: Filter Extensions
 
 ### blur()
-- [ ] `filter: blur(Npx)` — requires multi-pass rendering
+- [x] `filter: blur(Npx)` — uses existing Kawase multi-pass GPU blur
 
 ### Implementation
 1. Render element to offscreen texture
@@ -164,7 +164,7 @@ Not currently parsed — need parser + animation support.
 **Complexity**: High — multi-pass rendering, offscreen textures, significant GPU pipeline work.
 
 ### drop-shadow()
-- [ ] `filter: drop-shadow(x y blur color)` — similar to blur but shaped
+- [x] `filter: drop-shadow(x y blur color)` — uses existing LayerEffect::DropShadow
 
 ### Implementation
 1. Render element alpha to offscreen texture
@@ -196,9 +196,9 @@ Not animation properties per se, but needed for standard CSS patterns:
 - [x] `+` adjacent sibling combinator
 - [x] `~` general sibling combinator
 - [x] `:not()` pseudo-class
-- [ ] `:is()` / `:where()` pseudo-classes
+- [x] `:is()` / `:where()` pseudo-classes
 - [x] `:nth-last-child()`
-- [ ] `:nth-of-type()`, `:first-of-type()`, `:last-of-type()`
+- [x] `:nth-of-type()`, `:first-of-type()`, `:last-of-type()`
 - [x] `:empty`, `:root`
 - [x] `*` universal selector
 - [x] Multiple classes `.class1.class2` (compound selectors already supported)

@@ -204,6 +204,8 @@ pub struct KeyframeProperties {
     pub filter_saturate: Option<f32>,
     /// filter: hue-rotate(degrees)
     pub filter_hue_rotate: Option<f32>,
+    /// filter: blur(px)
+    pub filter_blur: Option<f32>,
 
     // --- Layout properties (require layout recomputation) ---
     /// Width in pixels
@@ -427,6 +429,7 @@ impl KeyframeProperties {
             filter_contrast: lerp_opt(self.filter_contrast, other.filter_contrast, t),
             filter_saturate: lerp_opt(self.filter_saturate, other.filter_saturate, t),
             filter_hue_rotate: lerp_opt(self.filter_hue_rotate, other.filter_hue_rotate, t),
+            filter_blur: lerp_opt(self.filter_blur, other.filter_blur, t),
             // Layout
             width: lerp_opt(self.width, other.width, t),
             height: lerp_opt(self.height, other.height, t),

@@ -45,6 +45,16 @@ All notable changes to `blinc_gpu` will be documented in this file.
 - `apply_css_filter()` WGSL function: grayscale, invert, sepia, hue-rotate, brightness, contrast, saturate
 - Identity-skip guard in fragment shader for zero-cost when no filter is active
 
+#### Kawase Blur Pipeline
+
+- Multi-pass Kawase blur shader with 3 modes: CSS filter (RGBA), shadow (alpha-only), passthrough
+- Batched blur passes into single GPU command encoder (was per-pass submission)
+- Pre-allocated 8 uniform buffers in `blur_uniforms_pool` (eliminates per-frame buffer creation)
+- `apply_blur()` and `apply_shadow_blur()` convenience wrappers
+- `calculate_effect_expansion()` for automatic layer texture sizing based on effect parameters
+- DPI-scaled layer effects in `render_layer_with_motion`
+- XLarge texture pooling in `LayerTextureCache` (>512px textures were previously dropped every frame)
+
 #### Paint Context
 
 - `set_3d_shape()` for configuring per-element 3D shape parameters
