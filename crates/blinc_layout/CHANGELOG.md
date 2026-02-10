@@ -130,7 +130,22 @@ All notable changes to `blinc_layout` will be documented in this file.
 
 - `PINCH` event support in `EventContext` (center and scale fields)
 
+#### CSS Form Widget Styling
+
+- `caret-color` CSS property for text input cursor color
+- `selection-color` CSS property for text selection highlight
+- `::placeholder` pseudo-element for placeholder text styling (`color` property)
+- `Stateful<S>` now forwards `element_id()` and `element_classes()` to ElementBuilder, enabling CSS matching for all Stateful-based widgets
+- `.id()` and `.class()` builder methods on TextInput and TextArea
+- CSS-aware `state_callback` in TextInput and TextArea: queries active stylesheet for base, `:hover`, `:focus`, `:disabled`, and `::placeholder` overrides
+- `set_active_stylesheet()` / `active_stylesheet()` global for widget access to the current stylesheet
+- `get_placeholder_style()` on Stylesheet for `::placeholder` pseudo-element lookup
+- `Stateful::inner_layout_style()` method for capturing final taffy Style after all builder methods
+
 ### Fixed
+
+- Stateful `base_style` capture timing: `on_state()` captured layout style before `.w()`/`.h()` were applied, causing widgets to revert to constructor defaults (e.g., `w_full()`) on state transitions. Now updated in `build()` with the final layout style
+- CSS-parsed `backdrop-filter: blur()` glass now uses subtle white tint (`rgba(1,1,1,0.1)`) and zero border-thickness for clean frosted glass appearance (was fully transparent tint, making glass indistinguishable from backdrop)
 
 - CSS-parsed `backdrop-filter: blur()` glass now uses subtle white tint (`rgba(1,1,1,0.1)`) and zero border-thickness for clean frosted glass appearance (was fully transparent tint, making glass indistinguishable from backdrop)
 - CSS timing functions now map to spec-correct cubic-bezier values (`ease` was incorrectly using `ease-in-out` polynomial, causing 6.5x slower initial progress than CSS spec)

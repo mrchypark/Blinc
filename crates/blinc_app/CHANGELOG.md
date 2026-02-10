@@ -30,6 +30,15 @@ All notable changes to `blinc_app` will be documented in this file.
 - Backdrop-filter animation demos (static blur, hover transition, blur+saturate combo, keyframe pulse)
 - `:is()` / `:where()` / `*-of-type` selector demos
 
+#### CSS Form Input Styling
+
+- Form input styling demo section with CSS-styled TextInput and TextArea widgets
+- `#demo-input` with `:hover`, `:focus`, `::placeholder` pseudo-class/element demos
+- `#accent-input` with warm color scheme (yellow/amber) CSS styling
+- `#disabled-input` with `opacity: 0.5` disabled state demo
+- `#demo-textarea` with `:hover`, `:focus` CSS styling and `caret-color` demo
+- Text input focus bridge to EventRouter for `:focus` CSS matching in windowed runner
+
 ### Fixed
 
 - Backdrop-filter demo parent containers now include `rounded(12.0)` so glass corner radius is visible against page background
