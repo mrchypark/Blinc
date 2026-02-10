@@ -30,6 +30,7 @@ use blinc_core::reactive::SignalId;
 use blinc_core::Color;
 use blinc_theme::{ColorToken, ThemeState};
 
+use crate::css_parser::{active_stylesheet, ElementState};
 use crate::div::{div, Div, ElementBuilder};
 use crate::element::RenderProps;
 use crate::stateful::{ButtonState, SharedState, Stateful};
@@ -440,6 +441,18 @@ impl Button {
         self.inner = self.inner.opacity(v);
         self
     }
+
+    /// Set the element ID for CSS selector targeting
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, class: &str) -> Self {
+        self.inner = self.inner.class(class);
+        self
+    }
 }
 
 /// Create a button with a text label and context-managed state
@@ -516,6 +529,8 @@ impl ElementBuilder for Button {
         // Capture current config values for the on_state callback
         let config_for_state = Arc::clone(&self.config);
         let custom_callback = self.custom_state_callback.clone();
+        // Capture element ID for CSS override resolution
+        let css_element_id = self.inner.element_id().map(|s| s.to_string());
 
         // Ensure state transition handlers (hover, press) are registered
         // This is needed because Button bypasses Stateful::on_state() and sets
@@ -530,7 +545,11 @@ impl ElementBuilder for Button {
             shared.state_callback =
                 Some(Arc::new(move |state: &ButtonState, container: &mut Div| {
                     tracing::debug!("Button on_state callback fired, state={:?}", state);
-                    let cfg = config_for_state.lock().unwrap();
+                    let mut cfg = config_for_state.lock().unwrap();
+
+                    // Apply CSS overrides if stylesheet is active
+                    apply_css_overrides_button(&mut cfg, css_element_id.as_deref(), state);
+
                     let bg = match state {
                         ButtonState::Idle => cfg.bg_color,
                         ButtonState::Hovered => cfg.hover_color,
@@ -584,6 +603,18 @@ impl ElementBuilder for Button {
         crate::div::ElementTypeId::Div
     }
 
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("button")
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
+    }
+
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
         // Delegate to the inner Stateful which has the cached event handlers
         self.inner.event_handlers()
@@ -591,5 +622,70 @@ impl ElementBuilder for Button {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+}
+
+/// Apply CSS overrides from active stylesheet to button config
+fn apply_css_overrides_button(
+    cfg: &mut ButtonConfig,
+    css_element_id: Option<&str>,
+    state: &ButtonState,
+) {
+    let stylesheet = match active_stylesheet() {
+        Some(s) => s,
+        None => return,
+    };
+
+    // Helper to apply a single ElementStyle to the button config
+    let apply = |cfg: &mut ButtonConfig,
+                 style: &crate::element_style::ElementStyle,
+                 is_state_specific: bool| {
+        if let Some(blinc_core::Brush::Solid(c)) = style.background.as_ref() {
+            if is_state_specific {
+                // State-specific styles override the state's color
+                match state {
+                    ButtonState::Idle => cfg.bg_color = *c,
+                    ButtonState::Hovered => cfg.hover_color = *c,
+                    ButtonState::Pressed => cfg.pressed_color = *c,
+                    ButtonState::Disabled => cfg.disabled_color = *c,
+                }
+            } else {
+                // Base styles set the idle color
+                cfg.bg_color = *c;
+            }
+        }
+        if let Some(c) = style.text_color {
+            cfg.text_color = c;
+        }
+        if let Some(fs) = style.font_size {
+            cfg.text_size = fs;
+        }
+    };
+
+    // 1. Resolve by element ID (if set)
+    if let Some(id) = css_element_id {
+        // Base style
+        if let Some(base) = stylesheet.get(id) {
+            apply(cfg, base, false);
+        }
+        // State-specific
+        match state {
+            ButtonState::Hovered => {
+                if let Some(s) = stylesheet.get_with_state(id, ElementState::Hover) {
+                    apply(cfg, s, true);
+                }
+            }
+            ButtonState::Pressed => {
+                if let Some(s) = stylesheet.get_with_state(id, ElementState::Active) {
+                    apply(cfg, s, true);
+                }
+            }
+            ButtonState::Disabled => {
+                if let Some(s) = stylesheet.get_with_state(id, ElementState::Disabled) {
+                    apply(cfg, s, true);
+                }
+            }
+            ButtonState::Idle => {}
+        }
     }
 }

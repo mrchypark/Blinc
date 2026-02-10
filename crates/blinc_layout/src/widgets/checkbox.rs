@@ -288,7 +288,7 @@ impl Checkbox {
                         let checkmark_svg = format!(
                             r#"<svg xmlns="http://www.w3.org/2000/svg" width="{icon_size}" height="{icon_size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>"#
                         );
-                        d.child(svg(&checkmark_svg).size(icon_size, icon_size).color(colors.check_color))
+                        d.child(svg(&checkmark_svg).size(icon_size, icon_size).color(colors.check_color).internal())
                     })
                     .when(!is_checked, |d| {
                         d.child(div().w(icon_size).h(icon_size))
@@ -353,6 +353,10 @@ impl ElementBuilder for Checkbox {
 
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         self.inner.element_type_id()
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("checkbox")
     }
 
     fn layout_style(&self) -> Option<&taffy::Style> {
@@ -496,6 +500,10 @@ impl ElementBuilder for CheckboxBuilder {
 
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         self.get_or_build().element_type_id()
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("checkbox")
     }
 
     fn layout_style(&self) -> Option<&taffy::Style> {

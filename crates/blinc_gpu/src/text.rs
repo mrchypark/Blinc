@@ -292,7 +292,7 @@ impl TextRenderingContext {
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
         self.prepare_text_with_style(
             text, x, y, font_size, color, anchor, alignment, width, wrap, font_name, generic, 400,
-            false, None,
+            false, None, 0.0,
         )
     }
 
@@ -330,10 +330,12 @@ impl TextRenderingContext {
         weight: u16,
         italic: bool,
         layout_height: Option<f32>,
+        letter_spacing: f32,
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
         let mut options = LayoutOptions {
             anchor,
             alignment,
+            letter_spacing,
             ..Default::default()
         };
         if let Some(w) = width {

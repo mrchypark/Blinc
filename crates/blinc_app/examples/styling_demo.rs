@@ -12,12 +12,12 @@
 
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
-use blinc_layout::widgets::radio_group;
 use blinc_core::{Color, Shadow, Transform};
 use blinc_layout::css;
 use blinc_layout::css_parser::Stylesheet;
 use blinc_layout::element_style::ElementStyle;
 use blinc_layout::style;
+use blinc_layout::widgets::radio_group;
 use blinc_theme::{ColorToken, ThemeState};
 
 fn main() -> Result<()> {
@@ -1119,6 +1119,50 @@ fn main() -> Result<()> {
                 border-color: #3b82f6;
             }
 
+            /* ============================================================ */
+            /* Global tag-name selectors (Phase 7: CSS for all widgets)     */
+            /* ============================================================ */
+
+            /* Style ALL h1 headings globally — uses theme CSS variables */
+            h1 {
+                color: var(--text-primary);
+                letter-spacing: -0.5px;
+            }
+
+            /* Style ALL paragraphs — uses theme CSS variables */
+            p {
+                color: var(--text-secondary);
+                line-height: 1.6;
+            }
+
+            /* Style ALL blockquotes */
+            blockquote {
+                background: var(--surface-elevated);
+                border-color: var(--primary);
+                border-radius: 4px;
+            }
+
+            /* Style ALL SVG icons — uses theme text-tertiary for muted icon color */
+            svg {
+                fill: var(--text-tertiary);
+            }
+
+            /* SVG stroke on hover */
+            #stroke-svg {
+                fill: none;
+                stroke: var(--border);
+                stroke-width: 2px;
+            }
+            #stroke-svg:hover {
+                stroke: var(--primary);
+                stroke-width: 3px;
+            }
+
+            /* Per-instance override — higher specificity than tag selector */
+            #accent-svg {
+                fill: var(--warning);
+            }
+
             "#,
             );
             css_loaded = true;
@@ -1175,6 +1219,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(form_input_section())
                     // Checkbox & Radio CSS Styling
                     .child(form_controls_section(ctx))
+                    // Global tag-name CSS selectors
+                    .child(global_tag_selectors_section())
                     // CSS Stylesheet integration
                     .child(css_stylesheet_section())
                     .child(css_hover_section())
@@ -2992,6 +3038,109 @@ fn form_controls_section(ctx: &WindowedContext) -> impl ElementBuilder {
 // ============================================================================
 // CSS STYLESHEET SECTION (automatic style application via ctx.add_css)
 // ============================================================================
+
+// ============================================================================
+// GLOBAL TAG-NAME CSS SELECTORS
+// ============================================================================
+
+fn global_tag_selectors_section() -> impl ElementBuilder {
+    // Simple inline SVG icons for the demo
+    let star_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>"#;
+    let heart_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>"#;
+
+    section_container()
+        .child(section_title("Global Tag-Name CSS Selectors"))
+        .child(section_description(
+            "Type selectors style ALL instances of a widget without needing #id. Per-instance #id overrides take higher priority.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(24.0)
+                // --- Typography: h1 { } and p { } ---
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("h1 { color: var(--text-primary); letter-spacing: -0.5px; }"))
+                        .child(h1("Heading Styled by Tag Selector"))
+                        .child(code_label("p { color: var(--text-secondary); line-height: 1.6; }"))
+                        .child(p("This paragraph is styled globally via the p { } type selector. All paragraphs get the same base styling without needing individual IDs.")),
+                )
+                // --- Blockquote: blockquote { } ---
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("blockquote { background: var(--surface-elevated); border-color: var(--primary); }"))
+                        .child(
+                            blockquote()
+                                .child(p("This blockquote is styled by the global blockquote { } selector. No ID needed.")),
+                        ),
+                )
+                // --- SVG: svg { } + #accent-svg override ---
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("svg { fill: var(--text-tertiary); }  +  #accent-svg { fill: var(--warning); }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(16.0)
+                                .items_center()
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(4.0)
+                                        .items_center()
+                                        .child(svg(star_svg).size(32.0, 32.0))
+                                        .child(code_label("svg { }")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(4.0)
+                                        .items_center()
+                                        .child(svg(heart_svg).size(32.0, 32.0))
+                                        .child(code_label("svg { }")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(4.0)
+                                        .items_center()
+                                        .child(svg(star_svg).size(32.0, 32.0).id("accent-svg"))
+                                        .child(code_label("#accent-svg")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(4.0)
+                                        .items_center()
+                                        .child(svg(star_svg).size(32.0, 32.0).id("stroke-svg"))
+                                        .child(code_label(":hover stroke")),
+                                ),
+                        ),
+                )
+                // --- Explanation ---
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(4.0)
+                        .child(
+                            text("Specificity: #id > type selector > universal *")
+                                .size(12.0)
+                                .color(Color::rgba(0.5, 0.6, 0.7, 1.0)),
+                        )
+                        .child(
+                            text("The accent star uses #accent-svg { fill: var(--warning) } which overrides the global svg { fill: var(--text-tertiary) }.")
+                                .size(12.0)
+                                .color(Color::rgba(0.5, 0.6, 0.7, 1.0)),
+                        ),
+                ),
+        )
+}
 
 fn css_stylesheet_section() -> impl ElementBuilder {
     let theme = ThemeState::get();

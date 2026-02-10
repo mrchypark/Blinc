@@ -91,6 +91,28 @@ use blinc_theme::ThemeState;
 use crate::css_parser::{CssAnimation, CssTransitionSet};
 use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, WoodMaterial};
 
+/// Text decoration line types
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextDecoration {
+    /// No decoration
+    None,
+    /// Underline
+    Underline,
+    /// Line through the middle of the text
+    LineThrough,
+}
+
+/// CSS scrollbar-width values
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ScrollbarWidth {
+    /// Default scrollbar width
+    Auto,
+    /// Thin scrollbar
+    Thin,
+    /// Hidden scrollbar (no space taken)
+    None,
+}
+
 // ============================================================================
 // Layout Style Types
 // ============================================================================
@@ -222,6 +244,16 @@ pub struct ElementStyle {
     pub font_size: Option<f32>,
     /// Text shadow (offset, blur, color)
     pub text_shadow: Option<Shadow>,
+    /// Font weight (100-900)
+    pub font_weight: Option<crate::div::FontWeight>,
+    /// Text decoration (underline, line-through, etc.)
+    pub text_decoration: Option<TextDecoration>,
+    /// Line height multiplier
+    pub line_height: Option<f32>,
+    /// Text alignment (left, center, right)
+    pub text_align: Option<crate::div::TextAlign>,
+    /// Letter spacing in pixels
+    pub letter_spacing: Option<f32>,
     /// Skew X angle in degrees
     pub skew_x: Option<f32>,
     /// Skew Y angle in degrees
@@ -340,6 +372,24 @@ pub struct ElementStyle {
     pub placeholder_color: Option<Color>,
     /// Accent color for form controls (checkmarks, radio dots)
     pub accent_color: Option<Color>,
+
+    // =========================================================================
+    // Scrollbar Properties
+    // =========================================================================
+    /// Scrollbar thumb and track colors (CSS scrollbar-color: thumb track)
+    pub scrollbar_color: Option<(Color, Color)>,
+    /// Scrollbar width mode (CSS scrollbar-width: auto|thin|none)
+    pub scrollbar_width: Option<ScrollbarWidth>,
+
+    // =========================================================================
+    // SVG Properties
+    // =========================================================================
+    /// SVG fill color
+    pub fill: Option<Color>,
+    /// SVG stroke color
+    pub stroke: Option<Color>,
+    /// SVG stroke width in pixels
+    pub stroke_width: Option<f32>,
 
     /// CSS position (static, relative, absolute)
     pub position: Option<StylePosition>,
@@ -1024,6 +1074,11 @@ impl ElementStyle {
             text_color: other.text_color.or(self.text_color),
             font_size: other.font_size.or(self.font_size),
             text_shadow: other.text_shadow.or(self.text_shadow),
+            font_weight: other.font_weight.or(self.font_weight),
+            text_decoration: other.text_decoration.or(self.text_decoration),
+            line_height: other.line_height.or(self.line_height),
+            text_align: other.text_align.or(self.text_align),
+            letter_spacing: other.letter_spacing.or(self.letter_spacing),
             skew_x: other.skew_x.or(self.skew_x),
             skew_y: other.skew_y.or(self.skew_y),
             transform_origin: other.transform_origin.or(self.transform_origin),
@@ -1076,6 +1131,13 @@ impl ElementStyle {
             selection_color: other.selection_color.or(self.selection_color),
             placeholder_color: other.placeholder_color.or(self.placeholder_color),
             accent_color: other.accent_color.or(self.accent_color),
+            // Scrollbar
+            scrollbar_color: other.scrollbar_color.or(self.scrollbar_color),
+            scrollbar_width: other.scrollbar_width.or(self.scrollbar_width),
+            // SVG
+            fill: other.fill.or(self.fill),
+            stroke: other.stroke.or(self.stroke),
+            stroke_width: other.stroke_width.or(self.stroke_width),
             position: other.position.or(self.position),
             top: other.top.or(self.top),
             right: other.right.or(self.right),

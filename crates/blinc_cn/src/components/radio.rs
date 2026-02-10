@@ -150,12 +150,8 @@ impl RadioGroup {
                 let sanitized = option.value.replace(' ', "-");
                 format!("{group_id}-{sanitized}")
             });
-            options_container = options_container.child(build_radio_button(
-                &config,
-                option,
-                theme,
-                button_css_id,
-            ));
+            options_container =
+                options_container.child(build_radio_button(&config, option, theme, button_css_id));
         }
 
         // If there's a label, wrap everything

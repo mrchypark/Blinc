@@ -2306,7 +2306,11 @@ impl ElementBuilder for Scroll {
     }
 
     fn element_type_id(&self) -> ElementTypeId {
-        ElementTypeId::Div // Scroll is a specialized div
+        ElementTypeId::Div
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("scroll")
     }
 
     fn event_handlers(&self) -> Option<&EventHandlers> {

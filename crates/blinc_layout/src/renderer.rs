@@ -111,6 +111,8 @@ pub struct TextData {
     pub font_family: crate::div::FontFamily,
     /// Word spacing in pixels (0.0 = normal)
     pub word_spacing: f32,
+    /// Letter spacing in pixels (0.0 = normal)
+    pub letter_spacing: f32,
     /// Font ascender in pixels (distance from baseline to top)
     pub ascender: f32,
     /// Whether text has strikethrough decoration
@@ -202,6 +204,9 @@ pub struct StyledTextData {
 pub struct SvgData {
     pub source: String,
     pub tint: Option<Color>,
+    pub fill: Option<Color>,
+    pub stroke: Option<Color>,
+    pub stroke_width: Option<f32>,
 }
 
 /// Image data for rendering
@@ -1231,6 +1236,12 @@ impl RenderTree {
                 .register_classes(node_id, classes.to_vec());
         }
 
+        // Register semantic element type for CSS type selector matching
+        if let Some(type_name) = element.semantic_type_name() {
+            self.element_registry
+                .register_element_type(node_id, type_name.to_string());
+        }
+
         // Bind ScrollRef if present (for scroll containers)
         if let Some(scroll_ref) = element.bound_scroll_ref() {
             self.register_scroll_ref(node_id, scroll_ref);
@@ -1313,6 +1324,7 @@ impl RenderTree {
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        letter_spacing: info.letter_spacing,
                         ascender: info.ascender,
                         strikethrough: info.strikethrough,
                         underline: info.underline,
@@ -1326,6 +1338,9 @@ impl RenderTree {
                     ElementType::Svg(SvgData {
                         source: info.source,
                         tint: info.tint,
+                        fill: info.fill,
+                        stroke: info.stroke,
+                        stroke_width: info.stroke_width,
                     })
                 } else {
                     ElementType::Div
@@ -1452,6 +1467,12 @@ impl RenderTree {
         if !classes.is_empty() {
             self.element_registry
                 .register_classes(node_id, classes.to_vec());
+        }
+
+        // Register semantic element type for CSS type selector matching
+        if let Some(type_name) = element.semantic_type_name() {
+            self.element_registry
+                .register_element_type(node_id, type_name.to_string());
         }
 
         // Bind ScrollRef if present (for scroll containers)
@@ -1615,6 +1636,7 @@ impl RenderTree {
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        letter_spacing: info.letter_spacing,
                         ascender: info.ascender,
                         strikethrough: info.strikethrough,
                         underline: info.underline,
@@ -1628,6 +1650,9 @@ impl RenderTree {
                     ElementType::Svg(SvgData {
                         source: info.source,
                         tint: info.tint,
+                        fill: info.fill,
+                        stroke: info.stroke,
+                        stroke_width: info.stroke_width,
                     })
                 } else {
                     ElementType::Div
@@ -1747,6 +1772,12 @@ impl RenderTree {
                 .register_classes(node_id, classes.to_vec());
         }
 
+        // Register semantic element type for CSS type selector matching
+        if let Some(type_name) = element.semantic_type_name() {
+            self.element_registry
+                .register_element_type(node_id, type_name.to_string());
+        }
+
         // Bind ScrollRef if present (for scroll containers)
         if let Some(scroll_ref) = element.bound_scroll_ref() {
             self.register_scroll_ref(node_id, scroll_ref);
@@ -1790,6 +1821,7 @@ impl RenderTree {
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        letter_spacing: info.letter_spacing,
                         ascender: info.ascender,
                         strikethrough: info.strikethrough,
                         underline: info.underline,
@@ -1803,6 +1835,9 @@ impl RenderTree {
                     ElementType::Svg(SvgData {
                         source: info.source,
                         tint: info.tint,
+                        fill: info.fill,
+                        stroke: info.stroke,
+                        stroke_width: info.stroke_width,
                     })
                 } else {
                     ElementType::Div
@@ -1888,6 +1923,7 @@ impl RenderTree {
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        letter_spacing: info.letter_spacing,
                         ascender: info.ascender,
                         strikethrough: info.strikethrough,
                         underline: info.underline,
@@ -1933,6 +1969,9 @@ impl RenderTree {
                     ElementType::Svg(SvgData {
                         source: info.source,
                         tint: info.tint,
+                        fill: info.fill,
+                        stroke: info.stroke,
+                        stroke_width: info.stroke_width,
                     })
                 } else {
                     ElementType::Div
@@ -4527,6 +4566,36 @@ impl RenderTree {
         if let Some(fs) = style.font_size {
             props.font_size = Some(fs);
         }
+        // Font weight
+        if let Some(fw) = style.font_weight {
+            props.font_weight = Some(fw);
+        }
+        // Text decoration
+        if let Some(td) = style.text_decoration {
+            props.text_decoration = Some(td);
+        }
+        // Line height
+        if let Some(lh) = style.line_height {
+            props.line_height = Some(lh);
+        }
+        // Text align
+        if let Some(ta) = style.text_align {
+            props.text_align = Some(ta);
+        }
+        // Letter spacing
+        if let Some(ls) = style.letter_spacing {
+            props.letter_spacing = Some(ls);
+        }
+        // SVG properties
+        if let Some(fill) = style.fill {
+            props.fill = Some([fill.r, fill.g, fill.b, fill.a]);
+        }
+        if let Some(stroke) = style.stroke {
+            props.stroke = Some([stroke.r, stroke.g, stroke.b, stroke.a]);
+        }
+        if let Some(sw) = style.stroke_width {
+            props.stroke_width = Some(sw);
+        }
         // Transform origin
         if let Some(to) = style.transform_origin {
             props.transform_origin = Some(to);
@@ -5251,6 +5320,12 @@ impl RenderTree {
     ) -> bool {
         for part in &compound.parts {
             match part {
+                SelectorPart::Type(type_name) => {
+                    let node_type = self.element_registry.get_element_type(node_id);
+                    if node_type.as_deref() != Some(type_name.as_str()) {
+                        return false;
+                    }
+                }
                 SelectorPart::Id(id) => {
                     let node_id_str = self.element_registry.get_id(node_id);
                     if node_id_str.as_deref() != Some(id.as_str()) {
@@ -5268,7 +5343,7 @@ impl RenderTree {
                         ElementState::Active => pressed,
                         ElementState::Focus => focused,
                         ElementState::Disabled => false, // TODO: track disabled state
-                        ElementState::Checked => false,  // checked state managed by widget callbacks
+                        ElementState::Checked => false, // checked state managed by widget callbacks
                     };
                     if !matches {
                         return false;
@@ -5371,6 +5446,27 @@ impl RenderTree {
     ///
     /// Walks the selector chain right-to-left (target element first),
     /// checking combinators against the ancestor chain.
+    /// Calculate CSS specificity for a complex selector as (ids, classes, types).
+    /// Used for sorting: lower specificity rules apply first, higher ones override.
+    fn selector_specificity(selector: &ComplexSelector) -> (u32, u32, u32) {
+        let (mut ids, mut classes, mut types) = (0u32, 0u32, 0u32);
+        for (compound, _) in &selector.segments {
+            for part in &compound.parts {
+                match part {
+                    SelectorPart::Id(_) => ids += 1,
+                    SelectorPart::Class(_)
+                    | SelectorPart::State(_)
+                    | SelectorPart::PseudoClass(_)
+                    | SelectorPart::Not(_)
+                    | SelectorPart::Is(_) => classes += 1,
+                    SelectorPart::Type(_) => types += 1,
+                    SelectorPart::Universal | SelectorPart::PseudoElement(_) => {}
+                }
+            }
+        }
+        (ids, classes, types)
+    }
+
     fn complex_selector_matches(
         &self,
         selector: &ComplexSelector,
@@ -5574,10 +5670,17 @@ impl RenderTree {
             }
         }
 
-        // Re-apply all base (non-state) complex rules first for reset nodes
-        // so that base class styles are always present
-        for (selector, style) in complex_rules {
-            if !selector.has_state() {
+        // Re-apply all base (non-state) complex rules for reset nodes,
+        // sorted by specificity so type < class < id.
+        {
+            let mut base_rules: Vec<&(ComplexSelector, crate::element_style::ElementStyle)> =
+                complex_rules
+                    .iter()
+                    .filter(|(selector, _)| !selector.has_state())
+                    .collect();
+            base_rules.sort_by_key(|(selector, _)| Self::selector_specificity(selector));
+
+            for (selector, style) in &base_rules {
                 for &node_id in &prev_affected {
                     if self.complex_selector_matches(
                         selector,
@@ -5594,19 +5697,33 @@ impl RenderTree {
             }
         }
 
+        // Re-apply simple ID rules on top (highest specificity)
+        if let Some(stylesheet) = &self.stylesheet {
+            let stylesheet = stylesheet.clone();
+            for &node_id in &prev_affected {
+                if let Some(element_id) = self.element_registry.get_id(node_id) {
+                    if let Some(base_style) = stylesheet.get(&element_id) {
+                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                            Self::apply_element_style_to_props(&mut render_node.props, base_style);
+                        }
+                    }
+                }
+            }
+        }
+
         let mut any_applied = false;
 
         for (selector, style) in complex_rules {
-            // Only state-dependent rules need the full treatment here;
-            // base rules for non-previously-affected nodes are handled below
+            // Base (non-state) rules are already applied:
+            //   - At tree build time by apply_stylesheet_base_styles()
+            //   - For prev_affected (leaving-state) nodes in the reset section above
+            // Only state-dependent rules (:hover, :active, :focus, etc.) need per-frame matching.
             let is_state_rule = selector.has_state();
+            if !is_state_rule {
+                continue;
+            }
 
             for &node_id in &all_node_ids {
-                // For base rules on nodes that were just reset above, skip (already applied)
-                if !is_state_rule && prev_affected.contains(&node_id) {
-                    continue;
-                }
-
                 if self.complex_selector_matches(
                     selector,
                     node_id,
@@ -6930,6 +7047,40 @@ impl RenderTree {
             None => return,
         };
 
+        // CSS specificity order: type(0,0,1) < class(0,1,0) < id(1,0,0)
+        // Apply complex base rules FIRST (lower specificity: type, class selectors)
+        // sorted by ascending specificity so higher-specificity rules overwrite lower.
+        // Then apply simple ID rules LAST (highest specificity, always override).
+        let complex_rules = stylesheet.complex_rules();
+        if !complex_rules.is_empty() {
+            let all_node_ids: Vec<LayoutNodeId> = self.render_nodes.keys().copied().collect();
+            let empty_set = std::collections::HashSet::new();
+
+            // Collect non-state rules and sort by specificity (ascending)
+            let mut base_rules: Vec<&(
+                crate::css_parser::ComplexSelector,
+                crate::element_style::ElementStyle,
+            )> = complex_rules
+                .iter()
+                .filter(|(selector, _)| !selector.has_state())
+                .collect();
+            base_rules.sort_by_key(|(selector, _)| Self::selector_specificity(selector));
+
+            for (selector, style) in base_rules {
+                for &node_id in &all_node_ids {
+                    if self
+                        .complex_selector_matches(selector, node_id, &empty_set, &empty_set, None)
+                    {
+                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                            Self::apply_element_style_to_props(&mut render_node.props, style);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply simple ID rules LAST — #id has highest specificity and overrides
+        // type/class selectors applied above.
         let registered_ids: Vec<(String, LayoutNodeId)> = self
             .element_registry
             .all_ids()
@@ -6941,33 +7092,6 @@ impl RenderTree {
             if let Some(base_style) = stylesheet.get(element_id) {
                 if let Some(render_node) = self.render_nodes.get_mut(node_id) {
                     Self::apply_element_style_to_props(&mut render_node.props, base_style);
-                }
-            }
-        }
-
-        // Apply complex base rules (non-state selectors like .class, structural pseudos)
-        // Must iterate ALL render nodes (not just those with IDs) since .class selectors
-        // can match elements without explicit IDs.
-        let complex_rules = stylesheet.complex_rules();
-        if !complex_rules.is_empty() {
-            let all_node_ids: Vec<LayoutNodeId> = self.render_nodes.keys().copied().collect();
-
-            // For base styles, no interaction state is active
-            let empty_set = std::collections::HashSet::new();
-
-            for (selector, style) in complex_rules {
-                // Skip selectors that require state — they'll be applied in apply_stylesheet_state_styles
-                if selector.has_state() {
-                    continue;
-                }
-                for &node_id in &all_node_ids {
-                    if self
-                        .complex_selector_matches(selector, node_id, &empty_set, &empty_set, None)
-                    {
-                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
-                            Self::apply_element_style_to_props(&mut render_node.props, style);
-                        }
-                    }
                 }
             }
         }

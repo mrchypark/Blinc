@@ -3426,6 +3426,8 @@ pub struct TextRenderInfo {
     pub font_family: FontFamily,
     /// Word spacing in pixels (0.0 = normal)
     pub word_spacing: f32,
+    /// Letter spacing in pixels (0.0 = normal)
+    pub letter_spacing: f32,
     /// Font ascender in pixels (distance from baseline to top)
     /// Used for accurate baseline alignment across different fonts
     pub ascender: f32,
@@ -3488,6 +3490,9 @@ pub struct StyledTextRenderInfo {
 pub struct SvgRenderInfo {
     pub source: String,
     pub tint: Option<blinc_core::Color>,
+    pub fill: Option<blinc_core::Color>,
+    pub stroke: Option<blinc_core::Color>,
+    pub stroke_width: Option<f32>,
 }
 
 /// Image render data extracted from element
@@ -3681,6 +3686,14 @@ pub trait ElementBuilder {
     /// needs to recalculate scroll when width changes), it returns a callback that
     /// will be invoked when the bounds differ from the previous layout.
     fn layout_bounds_callback(&self) -> Option<crate::renderer::LayoutBoundsCallback> {
+        None
+    }
+
+    /// Semantic HTML-like tag name for CSS type selectors (e.g., "button", "a", "ul")
+    ///
+    /// Widgets override this to declare their semantic type, enabling global CSS
+    /// rules like `button { background: blue; }` to match all instances.
+    fn semantic_type_name(&self) -> Option<&'static str> {
         None
     }
 

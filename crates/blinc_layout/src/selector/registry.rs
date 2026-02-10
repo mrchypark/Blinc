@@ -39,6 +39,8 @@ pub struct ElementRegistry {
     sibling_counts: RwLock<HashMap<LayoutNodeId, usize>>,
     /// Ordered children for each parent (for sibling combinators + / ~ and :empty)
     children: RwLock<HashMap<LayoutNodeId, Vec<LayoutNodeId>>>,
+    /// Semantic element type for CSS type selector matching (e.g., "button", "a", "ul")
+    element_types: RwLock<HashMap<LayoutNodeId, String>>,
 }
 
 impl std::fmt::Debug for ElementRegistry {
@@ -78,6 +80,7 @@ impl ElementRegistry {
             child_indices: RwLock::new(HashMap::new()),
             sibling_counts: RwLock::new(HashMap::new()),
             children: RwLock::new(HashMap::new()),
+            element_types: RwLock::new(HashMap::new()),
         }
     }
 
@@ -127,6 +130,18 @@ impl ElementRegistry {
                 map.insert(node_id, classes);
             }
         }
+    }
+
+    /// Register a semantic element type for CSS type selector matching
+    pub fn register_element_type(&self, node_id: LayoutNodeId, type_name: String) {
+        if let Ok(mut types) = self.element_types.write() {
+            types.insert(node_id, type_name);
+        }
+    }
+
+    /// Get the semantic element type for a node
+    pub fn get_element_type(&self, node_id: LayoutNodeId) -> Option<String> {
+        self.element_types.read().ok()?.get(&node_id).cloned()
     }
 
     /// Register a child's index within its parent and sibling count
@@ -274,6 +289,9 @@ impl ElementRegistry {
         }
         if let Ok(mut children) = self.children.write() {
             children.clear();
+        }
+        if let Ok(mut types) = self.element_types.write() {
+            types.clear();
         }
         // Note: bounds_cache is NOT cleared here - it's cleared separately
         // via clear_bounds() when layout is recomputed

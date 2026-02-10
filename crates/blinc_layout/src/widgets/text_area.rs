@@ -2595,6 +2595,10 @@ impl ElementBuilder for TextArea {
         crate::div::ElementTypeId::Div
     }
 
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("textarea")
+    }
+
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
         ElementBuilder::event_handlers(&self.inner)
     }

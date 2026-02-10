@@ -1972,6 +1972,10 @@ impl ElementBuilder for TextInput {
         crate::div::ElementTypeId::Div
     }
 
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("input")
+    }
+
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
         self.inner.event_handlers()
     }

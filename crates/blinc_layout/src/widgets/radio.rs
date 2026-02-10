@@ -224,14 +224,13 @@ fn build_radio_button(
                     .unwrap_or_else(|| theme.color(ColorToken::BorderSecondary)),
                 hover_border_color: cfg_hover_border_color
                     .unwrap_or_else(|| theme.color(ColorToken::Primary)),
-                label_color: cfg_label_color
-                    .unwrap_or_else(|| {
-                        if option_disabled {
-                            theme.color(ColorToken::TextTertiary)
-                        } else {
-                            theme.color(ColorToken::TextPrimary)
-                        }
-                    }),
+                label_color: cfg_label_color.unwrap_or_else(|| {
+                    if option_disabled {
+                        theme.color(ColorToken::TextTertiary)
+                    } else {
+                        theme.color(ColorToken::TextPrimary)
+                    }
+                }),
                 opacity: None,
                 background: None,
             };
@@ -305,7 +304,11 @@ fn build_radio_button(
                 .items_center()
                 .cursor_pointer()
                 .child(circle)
-                .child(text(&option_label).size(cfg_label_font_size).color(overrides.label_color));
+                .child(
+                    text(&option_label)
+                        .size(cfg_label_font_size)
+                        .color(overrides.label_color),
+                );
 
             if let Some(opacity) = overrides.opacity {
                 visual = visual.opacity(opacity);
@@ -405,6 +408,10 @@ impl ElementBuilder for RadioGroup {
 
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         self.inner.element_type_id()
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("radio")
     }
 
     fn layout_style(&self) -> Option<&taffy::Style> {
@@ -554,6 +561,10 @@ impl ElementBuilder for RadioGroupBuilder {
 
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         self.get_or_build().element_type_id()
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("radio")
     }
 
     fn layout_style(&self) -> Option<&taffy::Style> {

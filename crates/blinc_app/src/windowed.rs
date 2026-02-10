@@ -1282,7 +1282,16 @@ impl WindowedContext {
     /// Stylesheets are visual-only: they update render props on existing nodes
     /// and trigger redraws. They never cause tree rebuilds.
     pub fn add_css(&mut self, css: &str) {
-        match blinc_layout::css_parser::Stylesheet::parse(css) {
+        // Seed parser with theme variables + any previously defined CSS variables
+        let mut external_vars = blinc_theme::ThemeState::try_get()
+            .map(|t| t.to_css_variable_map())
+            .unwrap_or_default();
+        if let Some(existing) = &self.stylesheet {
+            for (k, v) in existing.variables() {
+                external_vars.insert(k.clone(), v.clone());
+            }
+        }
+        match blinc_layout::css_parser::Stylesheet::parse_with_variables(css, &external_vars) {
             Ok(sheet) => self.add_stylesheet(sheet),
             Err(e) => {
                 tracing::warn!("Failed to parse CSS: {}", e);

@@ -94,6 +94,8 @@ struct TextElement {
     font_family: FontFamily,
     /// Word spacing in pixels (0.0 = normal)
     word_spacing: f32,
+    /// Letter spacing in pixels (0.0 = normal)
+    letter_spacing: f32,
     /// Z-index for rendering order (higher = on top)
     z_index: u32,
     /// Font ascender in pixels (distance from baseline to top)
@@ -148,8 +150,14 @@ struct SvgElement {
     y: f32,
     width: f32,
     height: f32,
-    /// Tint color to apply to SVG fill/stroke
+    /// Tint color to apply to SVG fill/stroke (from CSS `color`)
     tint: Option<blinc_core::Color>,
+    /// CSS `fill` override for SVG
+    fill: Option<blinc_core::Color>,
+    /// CSS `stroke` override for SVG
+    stroke: Option<blinc_core::Color>,
+    /// CSS `stroke-width` override for SVG
+    stroke_width: Option<f32>,
     /// Clip bounds from parent scroll container (x, y, width, height)
     clip_bounds: Option<[f32; 4]>,
     /// Motion opacity inherited from parent motion container
@@ -318,6 +326,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 Ok(mut glyphs) => {
                     tracing::trace!(
@@ -1172,10 +1181,24 @@ impl RenderContext {
             ctx.push_opacity(svg.motion_opacity);
         }
 
-        // Render the SVG with optional tint color override
-        if let Some(tint) = svg.tint {
-            // Render with tint - we need to modify the SVG commands
-            self.render_svg_with_tint(ctx, &doc, svg.x, svg.y, svg.width, svg.height, tint);
+        // Render the SVG with optional CSS overrides
+        let has_css_overrides = svg.tint.is_some()
+            || svg.fill.is_some()
+            || svg.stroke.is_some()
+            || svg.stroke_width.is_some();
+        if has_css_overrides {
+            self.render_svg_with_overrides(
+                ctx,
+                &doc,
+                svg.x,
+                svg.y,
+                svg.width,
+                svg.height,
+                svg.tint,
+                svg.fill,
+                svg.stroke,
+                svg.stroke_width,
+            );
         } else {
             doc.render_fit(ctx, Rect::new(svg.x, svg.y, svg.width, svg.height));
         }
@@ -1191,9 +1214,9 @@ impl RenderContext {
         }
     }
 
-    /// Render an SVG with a tint color applied to all fills and strokes
+    /// Render an SVG with CSS overrides for fill, stroke, stroke-width, and tint
     #[allow(clippy::too_many_arguments)]
-    fn render_svg_with_tint(
+    fn render_svg_with_overrides(
         &self,
         ctx: &mut GpuPaintContext,
         doc: &SvgDocument,
@@ -1201,7 +1224,10 @@ impl RenderContext {
         y: f32,
         width: f32,
         height: f32,
-        tint: blinc_core::Color,
+        tint: Option<blinc_core::Color>,
+        fill: Option<blinc_core::Color>,
+        stroke: Option<blinc_core::Color>,
+        stroke_width: Option<f32>,
     ) {
         use blinc_svg::SvgDrawCommand;
 
@@ -1217,24 +1243,41 @@ impl RenderContext {
         let offset_y = y + (height - scaled_height) / 2.0;
 
         let commands = doc.commands();
-        let tint_brush = Brush::Solid(tint);
 
         for cmd in commands {
             match cmd {
-                SvgDrawCommand::FillPath { path, brush: _ } => {
+                SvgDrawCommand::FillPath { path, brush } => {
                     let scaled = scale_and_translate_path(&path, offset_x, offset_y, scale);
-                    ctx.fill_path(&scaled, tint_brush.clone());
+                    // Priority: tint > fill > original brush
+                    let fill_brush = if let Some(t) = tint {
+                        Brush::Solid(t)
+                    } else if let Some(f) = fill {
+                        Brush::Solid(f)
+                    } else {
+                        brush.clone()
+                    };
+                    ctx.fill_path(&scaled, fill_brush);
                 }
                 SvgDrawCommand::StrokePath {
                     path,
-                    stroke,
-                    brush: _,
+                    stroke: orig_stroke,
+                    brush,
                 } => {
                     let scaled = scale_and_translate_path(&path, offset_x, offset_y, scale);
-                    let scaled_stroke = Stroke::new(stroke.width * scale)
-                        .with_cap(stroke.cap)
-                        .with_join(stroke.join);
-                    ctx.stroke_path(&scaled, &scaled_stroke, tint_brush.clone());
+                    // Apply stroke-width override or scale original
+                    let sw = stroke_width.unwrap_or(orig_stroke.width) * scale;
+                    let scaled_stroke = Stroke::new(sw)
+                        .with_cap(orig_stroke.cap)
+                        .with_join(orig_stroke.join);
+                    // Priority: tint > stroke > original brush
+                    let stroke_brush = if let Some(t) = tint {
+                        Brush::Solid(t)
+                    } else if let Some(s) = stroke {
+                        Brush::Solid(s)
+                    } else {
+                        brush.clone()
+                    };
+                    ctx.stroke_path(&scaled, &scaled_stroke, stroke_brush);
                 }
             }
         }
@@ -1280,34 +1323,150 @@ impl RenderContext {
             let raster_width = ((svg.width * scale_factor).ceil() as u32).max(1);
             let raster_height = ((svg.height * scale_factor).ceil() as u32).max(1);
 
-            // Compute cache key: hash of (svg_source, width, height, scale, tint)
+            // Compute cache key: hash of (svg_source, width, height, scale, tint, fill, stroke, stroke_width)
             let cache_key = {
                 let mut hasher = DefaultHasher::new();
                 svg.source.hash(&mut hasher);
                 raster_width.hash(&mut hasher);
                 raster_height.hash(&mut hasher);
-                // Include tint in cache key (hash as bits to handle f32)
                 if let Some(tint) = &svg.tint {
                     tint.r.to_bits().hash(&mut hasher);
                     tint.g.to_bits().hash(&mut hasher);
                     tint.b.to_bits().hash(&mut hasher);
                     tint.a.to_bits().hash(&mut hasher);
                 }
+                if let Some(fill) = &svg.fill {
+                    1u8.hash(&mut hasher);
+                    fill.r.to_bits().hash(&mut hasher);
+                    fill.g.to_bits().hash(&mut hasher);
+                    fill.b.to_bits().hash(&mut hasher);
+                    fill.a.to_bits().hash(&mut hasher);
+                }
+                if let Some(stroke) = &svg.stroke {
+                    2u8.hash(&mut hasher);
+                    stroke.r.to_bits().hash(&mut hasher);
+                    stroke.g.to_bits().hash(&mut hasher);
+                    stroke.b.to_bits().hash(&mut hasher);
+                    stroke.a.to_bits().hash(&mut hasher);
+                }
+                if let Some(sw) = &svg.stroke_width {
+                    3u8.hash(&mut hasher);
+                    sw.to_bits().hash(&mut hasher);
+                }
                 hasher.finish()
             };
+
+            // Build SVG source with inline attribute overrides for fill/stroke/stroke-width.
+            // Uses inline attributes on the root <svg> element (SVG presentation attributes
+            // inherit to children) AND on individual shape elements for overriding explicit attrs.
+            let effective_source =
+                if svg.fill.is_some() || svg.stroke.is_some() || svg.stroke_width.is_some() {
+                    fn color_val(c: blinc_core::Color) -> String {
+                        if c.a < 1.0 {
+                            format!(
+                                "rgba({},{},{},{})",
+                                (c.r * 255.0) as u8,
+                                (c.g * 255.0) as u8,
+                                (c.b * 255.0) as u8,
+                                c.a
+                            )
+                        } else {
+                            format!(
+                                "#{:02x}{:02x}{:02x}",
+                                (c.r * 255.0) as u8,
+                                (c.g * 255.0) as u8,
+                                (c.b * 255.0) as u8
+                            )
+                        }
+                    }
+
+                    // Build attribute string to inject into the root <svg> tag
+                    let mut svg_attrs = String::new();
+                    if let Some(fill) = svg.fill {
+                        svg_attrs.push_str(&format!(r#" fill="{}""#, color_val(fill)));
+                    }
+                    if let Some(stroke) = svg.stroke {
+                        svg_attrs.push_str(&format!(r#" stroke="{}""#, color_val(stroke)));
+                    }
+                    if let Some(sw) = svg.stroke_width {
+                        svg_attrs.push_str(&format!(r#" stroke-width="{}""#, sw));
+                    }
+
+                    // Insert attributes into the opening <svg tag, before the closing >
+                    let mut modified = svg.source.clone();
+                    if !svg_attrs.is_empty() {
+                        if let Some(pos) = modified.find('>') {
+                            // Check if it's a self-closing tag like <svg ... />
+                            let insert_pos = if pos > 0 && modified.as_bytes()[pos - 1] == b'/' {
+                                pos - 1
+                            } else {
+                                pos
+                            };
+                            modified.insert_str(insert_pos, &svg_attrs);
+                        }
+                    }
+
+                    // Also override fill/stroke on individual shape elements
+                    // to handle SVGs that have explicit attributes on paths
+                    let shape_tags = [
+                        "<path",
+                        "<circle",
+                        "<rect",
+                        "<polygon",
+                        "<line",
+                        "<ellipse",
+                        "<polyline",
+                    ];
+                    for tag in &shape_tags {
+                        let mut search_from = 0;
+                        while let Some(tag_start) = modified[search_from..].find(tag) {
+                            let abs_start = search_from + tag_start + tag.len();
+                            if let Some(close) = modified[abs_start..].find('>') {
+                                let abs_close = abs_start + close;
+                                let is_self_close =
+                                    abs_close > 0 && modified.as_bytes()[abs_close - 1] == b'/';
+                                let insert_at = if is_self_close {
+                                    abs_close - 1
+                                } else {
+                                    abs_close
+                                };
+                                // Build per-element attributes
+                                let mut elem_attrs = String::new();
+                                if let Some(fill) = svg.fill {
+                                    elem_attrs.push_str(&format!(r#" fill="{}""#, color_val(fill)));
+                                }
+                                if let Some(stroke) = svg.stroke {
+                                    elem_attrs
+                                        .push_str(&format!(r#" stroke="{}""#, color_val(stroke)));
+                                }
+                                if let Some(sw) = svg.stroke_width {
+                                    elem_attrs.push_str(&format!(r#" stroke-width="{}""#, sw));
+                                }
+                                modified.insert_str(insert_at, &elem_attrs);
+                                search_from = insert_at + elem_attrs.len() + 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    std::borrow::Cow::Owned(modified)
+                } else {
+                    std::borrow::Cow::Borrowed(&svg.source)
+                };
 
             // Check cache or rasterize on miss
             if self.rasterized_svg_cache.get(&cache_key).is_none() {
                 // Rasterize the SVG
                 let rasterized = if let Some(tint) = svg.tint {
                     RasterizedSvg::from_str_with_tint(
-                        &svg.source,
+                        &effective_source,
                         raster_width,
                         raster_height,
                         tint,
                     )
                 } else {
-                    RasterizedSvg::from_str(&svg.source, raster_width, raster_height)
+                    RasterizedSvg::from_str(&effective_source, raster_width, raster_height)
                 };
 
                 let rasterized = match rasterized {
@@ -1729,6 +1888,10 @@ impl RenderContext {
                         measured_width: scaled_measured_width,
                         font_family: text_data.font_family.clone(),
                         word_spacing: text_data.word_spacing,
+                        letter_spacing: render_node
+                            .props
+                            .letter_spacing
+                            .unwrap_or(text_data.letter_spacing),
                         z_index: *z_layer,
                         ascender: text_data.ascender * effective_motion_scale.1 * scale,
                         strikethrough: text_data.strikethrough,
@@ -1784,7 +1947,23 @@ impl RenderContext {
                         y: scaled_y,
                         width: scaled_width,
                         height: scaled_height,
-                        tint: svg_data.tint,
+                        tint: render_node
+                            .props
+                            .text_color
+                            .map(|c| blinc_core::Color::rgba(c[0], c[1], c[2], c[3]))
+                            .or(svg_data.tint),
+                        // CSS fill/stroke override builder fill/stroke
+                        fill: render_node
+                            .props
+                            .fill
+                            .map(|c| blinc_core::Color::rgba(c[0], c[1], c[2], c[3]))
+                            .or(svg_data.fill),
+                        stroke: render_node
+                            .props
+                            .stroke
+                            .map(|c| blinc_core::Color::rgba(c[0], c[1], c[2], c[3]))
+                            .or(svg_data.stroke),
+                        stroke_width: render_node.props.stroke_width.or(svg_data.stroke_width),
                         clip_bounds: scaled_clip,
                         motion_opacity: effective_motion_opacity,
                     });
@@ -2011,6 +2190,7 @@ impl RenderContext {
                             measured_width: segment_width,
                             font_family: styled_data.font_family.clone(),
                             word_spacing: 0.0,
+                            letter_spacing: render_node.props.letter_spacing.unwrap_or(0.0),
                             z_index: *z_layer,
                             ascender: scaled_ascender * effective_motion_scale.1, // Scale ascender with motion
                             strikethrough,
@@ -2313,6 +2493,7 @@ impl RenderContext {
                     font_weight,
                     text.italic,
                     layout_height,
+                    text.letter_spacing,
                 ) {
                     if let Some(clip) = text.clip_bounds {
                         for glyph in &mut shadow_glyphs {
@@ -2363,6 +2544,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 Ok(mut glyphs) => {
                     tracing::trace!(
@@ -2788,6 +2970,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 let mut glyphs = glyphs;
                 if let Some(clip) = text.clip_bounds {

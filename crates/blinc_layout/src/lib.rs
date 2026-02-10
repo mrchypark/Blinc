@@ -269,12 +269,12 @@ pub mod prelude {
         // Cursor blink timing (for use by app layer)
         elapsed_ms,
         has_focused_text_input,
+        // Radio group widget - ready-to-use
+        radio_group,
         // Text area widget - ready-to-use
         text_area,
         text_area_state,
         text_area_state_with_placeholder,
-        // Radio group widget - ready-to-use
-        radio_group,
         // Text input widget - ready-to-use
         text_input,
         text_input_state,

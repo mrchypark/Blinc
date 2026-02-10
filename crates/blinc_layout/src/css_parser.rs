@@ -561,6 +561,8 @@ pub enum StructuralPseudo {
 /// A single part of a compound selector
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SelectorPart {
+    /// Element type selector (e.g., button, a, ul, input)
+    Type(String),
     /// #id selector
     Id(String),
     /// .class selector
@@ -1352,6 +1354,79 @@ impl Stylesheet {
         }
     }
 
+    /// Parse CSS with pre-seeded external variables (e.g. from theme or prior stylesheets).
+    ///
+    /// `var(--name)` references in the CSS will resolve against both `:root` variables
+    /// defined in this CSS and the provided external variables. CSS-defined variables
+    /// take precedence over external ones.
+    #[allow(clippy::result_large_err)]
+    pub fn parse_with_variables(
+        css: &str,
+        external_vars: &HashMap<String, String>,
+    ) -> Result<Self, ParseError> {
+        let result = Self::parse_with_errors_and_variables(css, external_vars);
+        result.log_diagnostics();
+        if result.has_errors() {
+            Err(result
+                .errors
+                .into_iter()
+                .find(|e| e.severity == Severity::Error)
+                .unwrap())
+        } else {
+            Ok(result.stylesheet)
+        }
+    }
+
+    /// Parse CSS with external variables and full error collection.
+    pub fn parse_with_errors_and_variables(
+        css: &str,
+        external_vars: &HashMap<String, String>,
+    ) -> CssParseResult {
+        let mut errors: Vec<ParseError> = Vec::new();
+
+        match parse_stylesheet_with_errors(css, &mut errors, external_vars).finish() {
+            Ok((remaining, parsed)) => {
+                let remaining = remaining.trim();
+                if !remaining.is_empty() {
+                    let (line, column, fragment) = calculate_position(css, remaining);
+                    errors.push(ParseError {
+                        severity: Severity::Warning,
+                        message: format!("Unparsed content remaining ({} chars)", remaining.len()),
+                        line,
+                        column,
+                        fragment,
+                        contexts: vec![],
+                        property: None,
+                        value: None,
+                    });
+                }
+
+                let mut stylesheet = Stylesheet::new();
+                stylesheet.variables = parsed.variables;
+                for (id, style) in parsed.rules {
+                    stylesheet.styles.insert(id, style);
+                }
+                stylesheet.complex_rules = parsed.complex_rules;
+                for keyframes in parsed.keyframes {
+                    stylesheet
+                        .keyframes
+                        .insert(keyframes.name.clone(), keyframes);
+                }
+
+                CssParseResult { stylesheet, errors }
+            }
+            Err(e) => {
+                let parse_error = ParseError::from_verbose(css, e);
+                errors.push(parse_error);
+
+                CssParseResult {
+                    stylesheet: Stylesheet::new(),
+                    errors,
+                }
+            }
+        }
+    }
+
     /// Parse CSS text into a stylesheet
     ///
     /// Parse errors are logged via tracing at DEBUG level with full context.
@@ -1590,6 +1665,11 @@ impl Stylesheet {
     /// Get the number of variables defined
     pub fn variable_count(&self) -> usize {
         self.variables.len()
+    }
+
+    /// Get all CSS variables as a reference to the internal map
+    pub fn variables(&self) -> &HashMap<String, String> {
+        &self.variables
     }
 
     /// Resolve a var() reference to its value
@@ -2034,6 +2114,24 @@ fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
     let mut remaining = input;
 
     loop {
+        // Type selector: bare identifier like button, a, ul (must be first part)
+        if parts.is_empty()
+            && !remaining.is_empty()
+            && remaining
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+            && !remaining.starts_with(':')
+        {
+            let end = remaining
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+                .unwrap_or(remaining.len());
+            let type_name = &remaining[..end];
+            parts.push(SelectorPart::Type(type_name.to_lowercase()));
+            remaining = &remaining[end..];
+            continue;
+        }
+
         if remaining.starts_with('#') {
             // ID selector
             let (rest, _) = char('#')(remaining)?;
@@ -2665,8 +2763,9 @@ fn try_as_simple_selector(compound: &CompoundSelector) -> Option<String> {
                 }
                 pseudo_element = Some(name.as_str());
             }
-            // If there are classes, structural pseudos, universal, :not(), or :is(), it's not simple
-            SelectorPart::Class(_)
+            // If there are type selectors, classes, structural pseudos, universal, :not(), or :is(), it's not simple
+            SelectorPart::Type(_)
+            | SelectorPart::Class(_)
             | SelectorPart::PseudoClass(_)
             | SelectorPart::Universal
             | SelectorPart::Not(_)
@@ -2813,6 +2912,58 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.font_size = Some(px);
             }
         }
+        "font-weight" => {
+            style.font_weight = parse_font_weight(value);
+        }
+        "text-decoration" | "text-decoration-line" => {
+            style.text_decoration = parse_text_decoration(value);
+        }
+        "line-height" => {
+            if let Some(val) = parse_length_value(value) {
+                style.line_height = Some(val);
+            } else if let Ok(val) = value.trim().parse::<f32>() {
+                style.line_height = Some(val);
+            }
+        }
+        "text-align" => {
+            style.text_align = parse_text_align(value);
+        }
+        "letter-spacing" => {
+            if let Some(px) = parse_length_value(value) {
+                style.letter_spacing = Some(px);
+            }
+        }
+        "fill" => {
+            if value.trim().eq_ignore_ascii_case("none") {
+                style.fill = Some(Color::TRANSPARENT);
+            } else if let Some(color) = parse_color(value) {
+                style.fill = Some(color);
+            }
+        }
+        "stroke" => {
+            if let Some(color) = parse_color(value) {
+                style.stroke = Some(color);
+            }
+        }
+        "stroke-width" => {
+            if let Some(px) = parse_length_value(value) {
+                style.stroke_width = Some(px);
+            }
+        }
+        "scrollbar-color" => {
+            let parts: Vec<&str> = value.split_whitespace().collect();
+            if parts.len() == 2 {
+                if let (Some(thumb), Some(track)) = (parse_color(parts[0]), parse_color(parts[1])) {
+                    style.scrollbar_color = Some((thumb, track));
+                }
+            }
+        }
+        "scrollbar-width" => match value.trim() {
+            "auto" => style.scrollbar_width = Some(crate::element_style::ScrollbarWidth::Auto),
+            "thin" => style.scrollbar_width = Some(crate::element_style::ScrollbarWidth::Thin),
+            "none" => style.scrollbar_width = Some(crate::element_style::ScrollbarWidth::None),
+            _ => {}
+        },
         "border-radius" => {
             if let Some(radius) = parse_radius(value) {
                 style.corner_radius = Some(radius);
@@ -3347,6 +3498,84 @@ fn apply_property_with_errors(
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
+        "font-weight" => {
+            if let Some(fw) = parse_font_weight(value) {
+                style.font_weight = Some(fw);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "text-decoration" | "text-decoration-line" => {
+            if let Some(td) = parse_text_decoration(value) {
+                style.text_decoration = Some(td);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "line-height" => {
+            if let Some(val) = parse_length_value(value) {
+                style.line_height = Some(val);
+            } else if let Ok(val) = value.trim().parse::<f32>() {
+                style.line_height = Some(val);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "text-align" => {
+            if let Some(ta) = parse_text_align(value) {
+                style.text_align = Some(ta);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "letter-spacing" => {
+            if let Some(px) = parse_length_value(value) {
+                style.letter_spacing = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "fill" => {
+            if value.trim().eq_ignore_ascii_case("none") {
+                style.fill = Some(Color::TRANSPARENT);
+            } else if let Some(color) = parse_color(value) {
+                style.fill = Some(color);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "stroke" => {
+            if let Some(color) = parse_color(value) {
+                style.stroke = Some(color);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "stroke-width" => {
+            if let Some(px) = parse_length_value(value) {
+                style.stroke_width = Some(px);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "scrollbar-color" => {
+            let parts: Vec<&str> = value.split_whitespace().collect();
+            if parts.len() == 2 {
+                if let (Some(thumb), Some(track)) = (parse_color(parts[0]), parse_color(parts[1])) {
+                    style.scrollbar_color = Some((thumb, track));
+                } else {
+                    errors.push(ParseError::invalid_value(name, value, line, column));
+                }
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "scrollbar-width" => match value.trim() {
+            "auto" => style.scrollbar_width = Some(crate::element_style::ScrollbarWidth::Auto),
+            "thin" => style.scrollbar_width = Some(crate::element_style::ScrollbarWidth::Thin),
+            "none" => style.scrollbar_width = Some(crate::element_style::ScrollbarWidth::None),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
         "border-radius" => {
             if let Some(radius) = parse_radius(value) {
                 style.corner_radius = Some(radius);
@@ -5058,6 +5287,42 @@ fn parse_css_spacing(input: &str) -> Option<SpacingRect> {
 // ============================================================================
 // Color Parsing
 // ============================================================================
+
+fn parse_font_weight(value: &str) -> Option<crate::div::FontWeight> {
+    use crate::div::FontWeight;
+    match value.trim().to_lowercase().as_str() {
+        "100" | "thin" => Some(FontWeight::Thin),
+        "200" | "extra-light" | "extralight" => Some(FontWeight::ExtraLight),
+        "300" | "light" => Some(FontWeight::Light),
+        "400" | "normal" => Some(FontWeight::Normal),
+        "500" | "medium" => Some(FontWeight::Medium),
+        "600" | "semi-bold" | "semibold" => Some(FontWeight::SemiBold),
+        "700" | "bold" => Some(FontWeight::Bold),
+        "800" | "extra-bold" | "extrabold" => Some(FontWeight::ExtraBold),
+        "900" | "black" => Some(FontWeight::Black),
+        _ => None,
+    }
+}
+
+fn parse_text_decoration(value: &str) -> Option<crate::element_style::TextDecoration> {
+    use crate::element_style::TextDecoration;
+    match value.trim().to_lowercase().as_str() {
+        "none" => Some(TextDecoration::None),
+        "underline" => Some(TextDecoration::Underline),
+        "line-through" => Some(TextDecoration::LineThrough),
+        _ => None,
+    }
+}
+
+fn parse_text_align(value: &str) -> Option<crate::div::TextAlign> {
+    use crate::div::TextAlign;
+    match value.trim().to_lowercase().as_str() {
+        "left" | "start" => Some(TextAlign::Left),
+        "center" => Some(TextAlign::Center),
+        "right" | "end" => Some(TextAlign::Right),
+        _ => None,
+    }
+}
 
 fn parse_color(input: &str) -> Option<Color> {
     let input = input.trim();

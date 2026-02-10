@@ -64,6 +64,8 @@ pub struct Text {
     measured_width: f32,
     /// Word spacing in pixels (0.0 = normal)
     word_spacing: f32,
+    /// Letter spacing in pixels (0.0 = normal)
+    letter_spacing: f32,
     /// Measured ascender from font metrics (distance from baseline to top)
     ascender: f32,
     /// Whether text has strikethrough decoration
@@ -76,6 +78,8 @@ pub struct Text {
     cursor: Option<crate::element::CursorStyle>,
     /// Element ID for CSS selector matching and programmatic queries
     element_id: Option<String>,
+    /// Semantic type name for CSS type selectors (e.g., "h1", "p", "span")
+    semantic_type: Option<&'static str>,
 }
 
 impl Text {
@@ -107,12 +111,14 @@ impl Text {
             line_height: 1.2,     // standard line height
             measured_width: 0.0,  // will be set by update_size_estimate
             word_spacing: 0.0,    // normal word spacing
+            letter_spacing: 0.0,  // normal letter spacing
             ascender: 14.0 * 0.8, // will be set by update_size_estimate
             strikethrough: false,
             underline: false,
             pointer_events_none: false,
             cursor: Some(crate::element::CursorStyle::Text), // Text cursor by default
             element_id: None,
+            semantic_type: None,
         };
         text.update_size_estimate();
         text
@@ -121,6 +127,12 @@ impl Text {
     /// Set the element ID for CSS selector matching and programmatic queries
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.element_id = Some(id.into());
+        self
+    }
+
+    /// Set the semantic type for CSS type selector matching (e.g., "h1", "p", "span")
+    pub fn semantic_type(mut self, name: &'static str) -> Self {
+        self.semantic_type = Some(name);
         self
     }
 
@@ -386,6 +398,12 @@ impl Text {
         self
     }
 
+    /// Set letter spacing in pixels (space between characters)
+    pub fn letter_spacing(mut self, spacing: f32) -> Self {
+        self.letter_spacing = spacing;
+        self
+    }
+
     /// Set the render layer
     pub fn layer(mut self, layer: RenderLayer) -> Self {
         self.render_layer = layer;
@@ -605,6 +623,14 @@ impl ElementBuilder for Text {
         ElementTypeId::Text
     }
 
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        self.semantic_type
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.element_id.as_deref()
+    }
+
     fn text_render_info(&self) -> Option<TextRenderInfo> {
         Some(TextRenderInfo {
             content: self.content.clone(),
@@ -619,14 +645,11 @@ impl ElementBuilder for Text {
             measured_width: self.measured_width,
             font_family: self.font_family.clone(),
             word_spacing: self.word_spacing,
+            letter_spacing: self.letter_spacing,
             ascender: self.ascender,
             strikethrough: self.strikethrough,
             underline: self.underline,
         })
-    }
-
-    fn element_id(&self) -> Option<&str> {
-        self.element_id.as_deref()
     }
 
     fn layout_style(&self) -> Option<&taffy::Style> {

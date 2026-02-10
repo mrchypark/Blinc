@@ -26,7 +26,6 @@
 //! ```
 
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 
 use blinc_core::Color;
 use blinc_theme::{ColorToken, ThemeState};
@@ -82,12 +81,12 @@ impl Default for LinkConfig {
     }
 }
 
-type LinkClickHandler = Arc<dyn Fn(&str, &crate::event_handler::EventContext) + Send + Sync>;
-
 /// A hyperlink widget
 pub struct Link {
     inner: Div,
     url: String,
+    css_element_id: Option<String>,
+    css_classes: Vec<String>,
 }
 
 impl Link {
@@ -121,7 +120,12 @@ impl Link {
                 open_url(&url_for_click);
             });
 
-        Self { inner, url }
+        Self {
+            inner,
+            url,
+            css_element_id: None,
+            css_classes: Vec::new(),
+        }
     }
 
     /// Set a custom click handler (receives URL and event context)
@@ -154,7 +158,12 @@ impl Link {
                 handler(&url_for_click, ctx);
             });
 
-        Self { inner, url }
+        Self {
+            inner,
+            url,
+            css_element_id: None,
+            css_classes: Vec::new(),
+        }
     }
 
     /// Set the text color
@@ -197,16 +206,24 @@ impl Link {
         &self.url
     }
 
+    /// Set the element ID for CSS selector targeting
+    pub fn id(mut self, id: &str) -> Self {
+        self.css_element_id = Some(id.to_string());
+        self
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: &str) -> Self {
+        self.css_classes.push(name.to_string());
+        self
+    }
+
     /// Helper to rebuild the link with a modified config
-    fn rebuild_with_config<F>(self, modify: F) -> Self
-    where
-        F: FnOnce(&mut LinkConfig),
-    {
-        // Extract text content from inner (we need to rebuild anyway)
-        // For simplicity, we'll extract from URL since we have it
-        // Get the label from the text child if possible
+    fn rebuild_with_config(self, modify: impl FnOnce(&mut LinkConfig)) -> Self {
         let label = self.extract_label();
         let url = self.url;
+        let css_element_id = self.css_element_id;
+        let css_classes = self.css_classes;
 
         let mut config = LinkConfig::default();
         modify(&mut config);
@@ -220,7 +237,6 @@ impl Link {
             text_element = text_element.underline();
         }
 
-        // Default click handler opens URL in system browser
         let url_for_click = url.clone();
         let inner = div()
             .child(text_element)
@@ -229,7 +245,12 @@ impl Link {
                 open_url(&url_for_click);
             });
 
-        Self { inner, url }
+        Self {
+            inner,
+            url,
+            css_element_id,
+            css_classes,
+        }
     }
 
     /// Extract label text from the inner structure
@@ -261,7 +282,6 @@ impl DerefMut for Link {
 
 impl ElementBuilder for Link {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        // Simply build the inner div - it already has all properties set
         self.inner.build(tree)
     }
 
@@ -277,8 +297,19 @@ impl ElementBuilder for Link {
         self.inner.element_type_id()
     }
 
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("a")
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.css_element_id.as_deref()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        &self.css_classes
+    }
+
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
-        // Delegate to inner's event_handlers implementation
         ElementBuilder::event_handlers(&self.inner)
     }
 
