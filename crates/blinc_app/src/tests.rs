@@ -289,6 +289,11 @@ fn test_tessellated_path_stroke_is_visible() {
             .h_full(),
         );
 
+    // Optional artifact for local debugging.
+    if std::env::var_os("BLINC_TEST_WRITE_ARTIFACTS").is_some() {
+        render_to_png(&mut app, "debug_canvas_polyline", &ui, 240, 180);
+    }
+
     let img = render_to_image(&mut app, &ui, 240, 180);
 
     // Count "blue-ish" pixels. Thresholds are conservative to be robust to AA.
@@ -337,9 +342,6 @@ fn test_compact_polyline_is_visible() {
             .w_full()
             .h_full(),
         );
-
-    // Persist an artifact for local debugging when this test fails.
-    render_to_png(&mut app, "debug_canvas_polyline", &ui, 240, 180);
 
     let img = render_to_image(&mut app, &ui, 240, 180);
 
