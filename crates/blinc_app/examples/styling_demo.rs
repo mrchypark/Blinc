@@ -975,6 +975,84 @@ fn main() -> Result<()> {
                 animation: outline-pulse 2500ms ease-in-out infinite;
             }
 
+            /* --- Form Input Styling (Phase 6) --- */
+
+            /* Base input style */
+            #demo-input {
+                background: #1e293b;
+                border-color: #475569;
+                border-width: 2px;
+                border-radius: 8px;
+                color: #f1f5f9;
+                caret-color: #60a5fa;
+            }
+            #demo-input:hover {
+                border-color: #64748b;
+                background: #283548;
+            }
+            #demo-input:focus {
+                border-color: #3b82f6;
+                background: #1e293b;
+                outline: 2px solid rgba(59, 130, 246, 0.4);
+                outline-offset: 2px;
+            }
+            #demo-input::placeholder {
+                color: #64748b;
+            }
+
+            /* Accent-colored input */
+            #accent-input {
+                background: #fefce8;
+                border-color: #eab308;
+                border-width: 2px;
+                border-radius: 12px;
+                color: #713f12;
+                caret-color: #ca8a04;
+            }
+            #accent-input:hover {
+                border-color: #facc15;
+                background: #fef9c3;
+            }
+            #accent-input:focus {
+                border-color: #eab308;
+                outline: 2px solid rgba(234, 179, 8, 0.4);
+                outline-offset: 2px;
+            }
+            #accent-input::placeholder {
+                color: #a16207;
+            }
+
+            /* Disabled input */
+            #disabled-input {
+                background: #1e293b;
+                border-color: #334155;
+                border-width: 1px;
+                border-radius: 8px;
+                color: #64748b;
+                opacity: 0.5;
+            }
+
+            /* Text area with CSS styling */
+            #demo-textarea {
+                background: #1e293b;
+                border-color: #475569;
+                border-width: 2px;
+                border-radius: 8px;
+                color: #f1f5f9;
+                caret-color: #a78bfa;
+            }
+            #demo-textarea:hover {
+                border-color: #64748b;
+            }
+            #demo-textarea:focus {
+                border-color: #8b5cf6;
+                outline: 2px solid rgba(139, 92, 246, 0.4);
+                outline-offset: 2px;
+            }
+            #demo-textarea::placeholder {
+                color: #64748b;
+            }
+
             "#,
             );
             css_loaded = true;
@@ -1027,6 +1105,8 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(text_shadow_section())
                     // Outline (Phase 5)
                     .child(outline_section())
+                    // Form Input CSS Styling (Phase 6)
+                    .child(form_input_section())
                     // CSS Stylesheet integration
                     .child(css_stylesheet_section())
                     .child(css_hover_section())
@@ -2642,6 +2722,102 @@ fn outline_section() -> impl ElementBuilder {
                                 .justify_center()
                                 .items_center()
                                 .child(text("Animated").size(14.0).color(Color::WHITE)),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// FORM INPUT CSS STYLING SECTION
+// ============================================================================
+
+fn form_input_section() -> impl ElementBuilder {
+    use std::sync::OnceLock;
+
+    static INPUT_DATA: OnceLock<SharedTextInputState> = OnceLock::new();
+    static ACCENT_DATA: OnceLock<SharedTextInputState> = OnceLock::new();
+    static DISABLED_DATA: OnceLock<SharedTextInputState> = OnceLock::new();
+    static TEXTAREA_DATA: OnceLock<SharedTextAreaState> = OnceLock::new();
+
+    let input_data =
+        INPUT_DATA.get_or_init(|| text_input_state_with_placeholder("Type something..."));
+    let accent_data =
+        ACCENT_DATA.get_or_init(|| text_input_state_with_placeholder("Accent styled..."));
+    let disabled_data =
+        DISABLED_DATA.get_or_init(|| text_input_state_with_placeholder("Cannot edit"));
+    let textarea_data = TEXTAREA_DATA
+        .get_or_init(|| text_area_state_with_placeholder("Write your thoughts here..."));
+
+    section_container()
+        .child(section_title("Form Input CSS Styling"))
+        .child(section_description(
+            "TextInput and TextArea styled via CSS selectors. Supports :hover, :focus, ::placeholder, caret-color, and outline.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(20.0)
+                // 1. CSS-styled text input
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#demo-input { background: #1e293b; border-color: #475569; caret-color: #60a5fa; }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(16.0)
+                                .items_center()
+                                .child(
+                                    text_input(input_data)
+                                        .id("demo-input")
+                                        .w(300.0),
+                                )
+                                .child(
+                                    text("Hover and click to see :hover / :focus / outline transitions")
+                                        .size(12.0)
+                                        .color(Color::rgba(0.5, 0.5, 0.5, 1.0)),
+                                ),
+                        ),
+                )
+                // 2. Accent-colored input
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#accent-input { background: #fefce8; border-color: #eab308; caret-color: #ca8a04; }"))
+                        .child(
+                            text_input(accent_data)
+                                .id("accent-input")
+                                .w(300.0),
+                        ),
+                )
+                // 3. Disabled input
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#disabled-input { opacity: 0.5; } + .disabled(true)"))
+                        .child(
+                            text_input(disabled_data)
+                                .id("disabled-input")
+                                .w(300.0)
+                                .disabled(true),
+                        ),
+                )
+                // 4. CSS-styled text area
+                .child(
+                    div()
+                        .flex_col()
+                        .w_full()
+                        .h_fit()
+                        .gap(8.0)
+                        .child(code_label("#demo-textarea { caret-color: #a78bfa; } :focus { outline + border-color: #8b5cf6; }"))
+                        .child(
+                            text_area(textarea_data)
+                                .id("demo-textarea")
+                                .w(400.0)
+                                .h(120.0),
                         ),
                 ),
         )

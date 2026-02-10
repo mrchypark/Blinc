@@ -2930,6 +2930,16 @@ impl WindowedApp {
                             // Combines stable tree structure with dynamic render state
                             // =========================================================
 
+                            // Sync text input/textarea focus to EventRouter so CSS :focus matching works
+                            {
+                                let text_focus = blinc_layout::widgets::text_input::focused_text_input_node_id()
+                                    .or_else(blinc_layout::widgets::text_input::focused_text_area_node_id);
+                                let current_focus = windowed_ctx.event_router.focused();
+                                if text_focus != current_focus {
+                                    windowed_ctx.event_router.set_focus(text_focus);
+                                }
+                            }
+
                             // Apply CSS state styles (:hover, :active, :focus) from stylesheet
                             // This also detects property changes and starts new transitions
                             if let Some(ref mut tree) = render_tree {

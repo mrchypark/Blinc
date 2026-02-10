@@ -329,6 +329,16 @@ pub struct ElementStyle {
     /// Outline offset in pixels (gap between border and outline)
     pub outline_offset: Option<f32>,
 
+    // =========================================================================
+    // Form Element Properties
+    // =========================================================================
+    /// Caret (cursor) color for text inputs
+    pub caret_color: Option<Color>,
+    /// Text selection highlight color
+    pub selection_color: Option<Color>,
+    /// Placeholder text color (applied via ::placeholder pseudo-element)
+    pub placeholder_color: Option<Color>,
+
     /// CSS position (static, relative, absolute)
     pub position: Option<StylePosition>,
     /// Top inset in pixels (for positioned elements)
@@ -1059,6 +1069,10 @@ impl ElementStyle {
             outline_width: other.outline_width.or(self.outline_width),
             outline_color: other.outline_color.or(self.outline_color),
             outline_offset: other.outline_offset.or(self.outline_offset),
+            // Form element properties
+            caret_color: other.caret_color.or(self.caret_color),
+            selection_color: other.selection_color.or(self.selection_color),
+            placeholder_color: other.placeholder_color.or(self.placeholder_color),
             position: other.position.or(self.position),
             top: other.top.or(self.top),
             right: other.right.or(self.right),

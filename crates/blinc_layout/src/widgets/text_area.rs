@@ -18,6 +18,7 @@ use blinc_core::Color;
 use blinc_theme::{ColorToken, ThemeState};
 
 use crate::canvas::canvas;
+use crate::css_parser::{active_stylesheet, ElementState, Stylesheet};
 use crate::div::{div, Div, ElementBuilder};
 use crate::element::RenderProps;
 use crate::stateful::{
@@ -44,6 +45,163 @@ impl TextPosition {
     pub fn new(line: usize, column: usize) -> Self {
         Self { line, column }
     }
+}
+
+// =============================================================================
+// CSS Override Resolution
+// =============================================================================
+
+/// Apply CSS stylesheet overrides to a TextAreaConfig.
+fn apply_css_overrides_textarea(
+    cfg: &mut TextAreaConfig,
+    stylesheet: &Stylesheet,
+    element_id: &str,
+    visual: &TextFieldState,
+) {
+    // 1. Apply base style
+    if let Some(base) = stylesheet.get(element_id) {
+        apply_style_to_textarea_config(cfg, base, visual);
+    }
+
+    // 2. Layer state-specific style
+    let state = match visual {
+        TextFieldState::Hovered | TextFieldState::FocusedHovered => Some(ElementState::Hover),
+        TextFieldState::Focused => Some(ElementState::Focus),
+        TextFieldState::Disabled => Some(ElementState::Disabled),
+        TextFieldState::Idle => None,
+    };
+    if matches!(visual, TextFieldState::FocusedHovered) {
+        if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
+            apply_style_to_textarea_config(cfg, focus_style, visual);
+        }
+    }
+    if let Some(s) = state {
+        if let Some(state_style) = stylesheet.get_with_state(element_id, s) {
+            apply_style_to_textarea_config(cfg, state_style, visual);
+        }
+    }
+
+    // 3. Apply ::placeholder style
+    if let Some(placeholder_style) = stylesheet.get_placeholder_style(element_id) {
+        if let Some(color) = placeholder_style.text_color {
+            cfg.placeholder_color = color;
+        }
+        if let Some(color) = placeholder_style.placeholder_color {
+            cfg.placeholder_color = color;
+        }
+    }
+}
+
+fn apply_style_to_textarea_config(
+    cfg: &mut TextAreaConfig,
+    style: &crate::element_style::ElementStyle,
+    visual: &TextFieldState,
+) {
+    if let Some(blinc_core::Brush::Solid(color)) = style.background.as_ref() {
+        match visual {
+            TextFieldState::Idle => cfg.bg_color = *color,
+            TextFieldState::Hovered => cfg.hover_bg_color = *color,
+            TextFieldState::Focused | TextFieldState::FocusedHovered => {
+                cfg.focused_bg_color = *color;
+            }
+            TextFieldState::Disabled => {}
+        }
+    }
+    if let Some(color) = style.border_color {
+        match visual {
+            TextFieldState::Idle => cfg.border_color = color,
+            TextFieldState::Hovered => cfg.hover_border_color = color,
+            TextFieldState::Focused | TextFieldState::FocusedHovered => {
+                cfg.focused_border_color = color;
+            }
+            TextFieldState::Disabled => {}
+        }
+    }
+    if let Some(w) = style.border_width {
+        cfg.border_width = w;
+    }
+    if let Some(cr) = style.corner_radius {
+        cfg.corner_radius = cr.top_left;
+    }
+    if let Some(color) = style.text_color {
+        cfg.text_color = color;
+    }
+    if let Some(size) = style.font_size {
+        cfg.font_size = size;
+    }
+    if let Some(color) = style.caret_color {
+        cfg.cursor_color = color;
+    }
+    if let Some(color) = style.selection_color {
+        cfg.selection_color = color;
+    }
+    if let Some(color) = style.placeholder_color {
+        cfg.placeholder_color = color;
+    }
+}
+
+/// Extract outline properties from stylesheet for the current state.
+fn extract_outline_from_textarea_stylesheet(
+    stylesheet: &Stylesheet,
+    element_id: &str,
+    visual: &TextFieldState,
+) -> Option<(f32, Color, f32)> {
+    let mut width = None;
+    let mut color = None;
+    let mut offset = None;
+
+    if let Some(base) = stylesheet.get(element_id) {
+        if let Some(w) = base.outline_width {
+            width = Some(w);
+        }
+        if let Some(c) = base.outline_color {
+            color = Some(c);
+        }
+        if let Some(o) = base.outline_offset {
+            offset = Some(o);
+        }
+    }
+
+    let state = match visual {
+        TextFieldState::Hovered | TextFieldState::FocusedHovered => Some(ElementState::Hover),
+        TextFieldState::Focused => Some(ElementState::Focus),
+        TextFieldState::Disabled => Some(ElementState::Disabled),
+        TextFieldState::Idle => None,
+    };
+    if matches!(visual, TextFieldState::FocusedHovered) {
+        if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
+            if let Some(w) = focus_style.outline_width {
+                width = Some(w);
+            }
+            if let Some(c) = focus_style.outline_color {
+                color = Some(c);
+            }
+            if let Some(o) = focus_style.outline_offset {
+                offset = Some(o);
+            }
+        }
+    }
+    if let Some(s) = state {
+        if let Some(state_style) = stylesheet.get_with_state(element_id, s) {
+            if let Some(w) = state_style.outline_width {
+                width = Some(w);
+            }
+            if let Some(c) = state_style.outline_color {
+                color = Some(c);
+            }
+            if let Some(o) = state_style.outline_offset {
+                offset = Some(o);
+            }
+        }
+    }
+
+    width.map(|w| {
+        (
+            w,
+            color.unwrap_or(Color::rgba(0.23, 0.51, 0.97, 0.5)),
+            offset.unwrap_or(0.0),
+        )
+    })
 }
 
 /// TextArea configuration
@@ -226,6 +384,8 @@ pub struct TextAreaState {
     pub(crate) change_signal_id: Option<SignalId>,
     /// Layout bounds storage - updated after layout to get actual rendered dimensions
     pub layout_bounds_storage: crate::renderer::LayoutBoundsStorage,
+    /// CSS element ID for stylesheet matching (set via TextArea::id())
+    pub(crate) css_element_id: Option<String>,
 }
 
 impl std::fmt::Debug for TextAreaState {
@@ -268,6 +428,7 @@ impl Default for TextAreaState {
             change_version: Arc::new(AtomicU64::new(0)),
             change_signal_id: None,
             layout_bounds_storage: Arc::new(Mutex::new(None)),
+            css_element_id: None,
         }
     }
 }
@@ -1280,8 +1441,24 @@ impl TextArea {
 
             shared.state_callback = Some(Arc::new(
                 move |visual: &TextFieldState, container: &mut Div| {
-                    let cfg = config_for_callback.lock().unwrap().clone();
+                    let mut cfg = config_for_callback.lock().unwrap().clone();
                     let mut data_guard = data_for_callback.lock().unwrap();
+
+                    // Apply CSS stylesheet overrides if element has an ID
+                    let css_outline = if let Some(ref element_id) = data_guard.css_element_id {
+                        if let Some(stylesheet) = active_stylesheet() {
+                            apply_css_overrides_textarea(&mut cfg, &stylesheet, element_id, visual);
+                            extract_outline_from_textarea_stylesheet(
+                                &stylesheet,
+                                element_id,
+                                visual,
+                            )
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
 
                     // Sync visual state to data so it matches the FSM
                     data_guard.visual = *visual;
@@ -1315,13 +1492,16 @@ impl TextArea {
                     };
 
                     // Apply visual styling directly to the container (preserves fixed dimensions)
-                    // Note: Don't use set_padding_x/set_padding_y - use explicit spacers like TextInput
-                    // This ensures proper visual separation from rounded corners
-                    // Note: Don't use set_overflow_clip() here - let the Scroll handle clipping
-                    // The outer container just provides visual styling (bg, border, rounded)
                     container.set_bg(bg);
                     container.set_border(cfg.border_width, border);
                     container.set_rounded(cfg.corner_radius);
+
+                    // Apply CSS outline if specified
+                    if let Some((width, color, offset)) = css_outline {
+                        container.outline_width = width;
+                        container.outline_color = Some(color);
+                        container.outline_offset = offset;
+                    }
 
                     // Build content wrapper with explicit padding spacers (like TextInput)
                     let content = TextArea::build_content(
@@ -2172,6 +2352,25 @@ impl TextArea {
         self
     }
 
+    /// Set the CSS element ID for stylesheet matching
+    ///
+    /// When set, the TextArea will query the active stylesheet for
+    /// styles matching `#id`, `#id:hover`, `#id:focus`, `#id:disabled`,
+    /// and `#id::placeholder`.
+    pub fn id(mut self, id: &str) -> Self {
+        if let Ok(mut d) = self.state.lock() {
+            d.css_element_id = Some(id.to_string());
+        }
+        self.inner = std::mem::take(&mut self.inner).id(id);
+        self
+    }
+
+    /// Add a CSS class name for selector matching
+    pub fn class(mut self, name: &str) -> Self {
+        self.inner = std::mem::take(&mut self.inner).class(name);
+        self
+    }
+
     pub fn border(mut self, width: f32, color: blinc_core::Color) -> Self {
         self.inner = std::mem::take(&mut self.inner).border(width, color);
         self
@@ -2370,12 +2569,14 @@ pub fn text_area(state: &SharedTextAreaState) -> TextArea {
 
 impl ElementBuilder for TextArea {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        // Set base render props for incremental updates
+        // Set base render props and layout style for incremental updates
         // Note: callback and handlers are registered in new() so they're available for incremental diff
+        // base_style must be updated here because on_state() captures it before .w()/.h() are applied
         {
             let shared_state = self.inner.shared_state();
             let mut shared = shared_state.lock().unwrap();
             shared.base_render_props = Some(self.inner.inner_render_props());
+            shared.base_style = self.inner.inner_layout_style();
         }
 
         // Build the inner Stateful

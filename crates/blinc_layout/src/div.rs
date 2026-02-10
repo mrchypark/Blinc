@@ -411,6 +411,12 @@ pub struct Div {
     pub(crate) is_sticky: bool,
     /// Sticky top threshold
     pub(crate) sticky_top: Option<f32>,
+    /// Outline width in pixels
+    pub(crate) outline_width: f32,
+    /// Outline color
+    pub(crate) outline_color: Option<Color>,
+    /// Outline offset in pixels (gap between border and outline)
+    pub(crate) outline_offset: f32,
     /// CSS z-index for stacking order
     pub(crate) z_index: i32,
     /// Scroll physics for overflow:scroll containers
@@ -468,6 +474,9 @@ impl Div {
             op_3d: None,
             blend_3d: None,
             clip_path: None,
+            outline_width: 0.0,
+            outline_color: None,
+            outline_offset: 0.0,
             is_fixed: false,
             is_sticky: false,
             sticky_top: None,
@@ -517,6 +526,9 @@ impl Div {
             op_3d: None,
             blend_3d: None,
             clip_path: None,
+            outline_width: 0.0,
+            outline_color: None,
+            outline_offset: 0.0,
             is_fixed: false,
             is_sticky: false,
             sticky_top: None,
@@ -2499,6 +2511,24 @@ impl Div {
         self
     }
 
+    /// Set outline width in pixels
+    pub fn outline_width(mut self, width: f32) -> Self {
+        self.outline_width = width;
+        self
+    }
+
+    /// Set outline color
+    pub fn outline_color(mut self, color: Color) -> Self {
+        self.outline_color = Some(color);
+        self
+    }
+
+    /// Set outline offset in pixels (gap between border and outline)
+    pub fn outline_offset(mut self, offset: f32) -> Self {
+        self.outline_offset = offset;
+        self
+    }
+
     /// Set left border only (useful for blockquotes)
     ///
     /// If a uniform border was previously set, other sides will inherit from it.
@@ -3755,6 +3785,9 @@ impl ElementBuilder for Div {
             op_3d: self.op_3d,
             blend_3d: self.blend_3d,
             clip_path: self.clip_path.clone(),
+            outline_color: self.outline_color,
+            outline_width: self.outline_width,
+            outline_offset: self.outline_offset,
             is_fixed: self.is_fixed,
             is_sticky: self.is_sticky,
             sticky_top: self.sticky_top,

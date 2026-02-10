@@ -49,6 +49,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use blinc_core::{
     Brush, ClipLength, ClipPath, Color, CornerRadius, Gradient, GradientSpace, GradientStop, Point,
@@ -570,6 +571,8 @@ pub enum SelectorPart {
     Not(Box<CompoundSelector>),
     /// :is(selector, ...) / :where(selector, ...) — matches if any inner selector matches
     Is(Vec<CompoundSelector>),
+    /// ::placeholder, ::selection, etc. — pseudo-elements
+    PseudoElement(String),
 }
 
 /// Combinator between compound selectors
@@ -1430,6 +1433,16 @@ impl Stylesheet {
         self.styles.get(&key)
     }
 
+    /// Get the ::placeholder pseudo-element style for an element ID
+    ///
+    /// Looks up `#id::placeholder` in the stylesheet. The `color` property
+    /// in a `::placeholder` block maps to `text_color` on the returned style,
+    /// and `placeholder-color` maps directly.
+    pub fn get_placeholder_style(&self, id: &str) -> Option<&ElementStyle> {
+        let key = format!("{}::placeholder", id);
+        self.styles.get(&key)
+    }
+
     /// Get all styles for an element, including state variants
     ///
     /// Returns a tuple of (base_style, state_styles) where state_styles is a Vec
@@ -1821,6 +1834,30 @@ impl Stylesheet {
 }
 
 // ============================================================================
+// Global Active Stylesheet
+// ============================================================================
+
+static ACTIVE_STYLESHEET: RwLock<Option<Arc<Stylesheet>>> = RwLock::new(None);
+
+/// Set the active stylesheet for form widget CSS override resolution.
+///
+/// Called automatically when `set_stylesheet_arc()` is invoked on the RenderTree.
+/// This allows TextInput/TextArea state_callbacks to query the current stylesheet
+/// without needing a direct reference to the RenderTree.
+pub fn set_active_stylesheet(stylesheet: Arc<Stylesheet>) {
+    if let Ok(mut guard) = ACTIVE_STYLESHEET.write() {
+        *guard = Some(stylesheet);
+    }
+}
+
+/// Get the currently active stylesheet, if any.
+///
+/// Used by form widget state_callbacks to resolve CSS overrides.
+pub fn active_stylesheet() -> Option<Arc<Stylesheet>> {
+    ACTIVE_STYLESHEET.read().ok()?.clone()
+}
+
+// ============================================================================
 // Nom Parsers with VerboseError for diagnostics
 // ============================================================================
 
@@ -2008,6 +2045,12 @@ fn parse_compound_selector(input: &str) -> ParseResult<CompoundSelector> {
             // Universal selector
             remaining = &remaining[1..];
             parts.push(SelectorPart::Universal);
+        } else if remaining.starts_with("::") {
+            // Pseudo-element (::placeholder, ::selection, etc.)
+            let rest = &remaining[2..];
+            let (rest, name) = identifier::<VerboseError<&str>>(rest)?;
+            parts.push(SelectorPart::PseudoElement(name.to_string()));
+            remaining = rest;
         } else if remaining.starts_with(':') {
             // Pseudo-class (state or structural)
             let (rest, _) = char(':')(remaining)?;
@@ -2595,6 +2638,7 @@ where
 fn try_as_simple_selector(compound: &CompoundSelector) -> Option<String> {
     let mut id = None;
     let mut state = None;
+    let mut pseudo_element = None;
 
     for part in &compound.parts {
         match part {
@@ -2610,6 +2654,12 @@ fn try_as_simple_selector(compound: &CompoundSelector) -> Option<String> {
                 }
                 state = Some(s);
             }
+            SelectorPart::PseudoElement(name) => {
+                if pseudo_element.is_some() {
+                    return None; // Multiple pseudo-elements
+                }
+                pseudo_element = Some(name.as_str());
+            }
             // If there are classes, structural pseudos, universal, :not(), or :is(), it's not simple
             SelectorPart::Class(_)
             | SelectorPart::PseudoClass(_)
@@ -2620,9 +2670,19 @@ fn try_as_simple_selector(compound: &CompoundSelector) -> Option<String> {
     }
 
     let id = id?; // Must have an ID to be a simple selector
-    match state {
-        Some(s) => Some(format!("{}:{}", id, s)),
-        None => Some(id.to_string()),
+
+    // Can't have both state and pseudo-element
+    if state.is_some() && pseudo_element.is_some() {
+        return None;
+    }
+
+    if let Some(pe) = pseudo_element {
+        Some(format!("{}::{}", id, pe))
+    } else {
+        match state {
+            Some(s) => Some(format!("{}:{}", id, s)),
+            None => Some(id.to_string()),
+        }
     }
 }
 
@@ -3180,6 +3240,21 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
             }
             if value.trim() == "none" {
                 style.outline_width = Some(0.0);
+            }
+        }
+        "caret-color" => {
+            if let Some(color) = parse_color(value) {
+                style.caret_color = Some(color);
+            }
+        }
+        "selection-color" => {
+            if let Some(color) = parse_color(value) {
+                style.selection_color = Some(color);
+            }
+        }
+        "placeholder-color" => {
+            if let Some(color) = parse_color(value) {
+                style.placeholder_color = Some(color);
             }
         }
         "position" => match value.trim() {
@@ -3792,6 +3867,27 @@ fn apply_property_with_errors(
             }
             if value.trim() == "none" {
                 style.outline_width = Some(0.0);
+            }
+        }
+        "caret-color" => {
+            if let Some(color) = parse_color(value) {
+                style.caret_color = Some(color);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "selection-color" => {
+            if let Some(color) = parse_color(value) {
+                style.selection_color = Some(color);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "placeholder-color" => {
+            if let Some(color) = parse_color(value) {
+                style.placeholder_color = Some(color);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
         "position" => match value.trim() {

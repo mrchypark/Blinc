@@ -4259,6 +4259,8 @@ impl RenderTree {
 
     /// Set a shared stylesheet reference
     pub fn set_stylesheet_arc(&mut self, stylesheet: Arc<Stylesheet>) {
+        // Also update the global stylesheet for form widget CSS override resolution
+        crate::css_parser::set_active_stylesheet(Arc::clone(&stylesheet));
         self.stylesheet = Some(stylesheet);
     }
 
@@ -5352,6 +5354,12 @@ impl RenderTree {
                     if !matches {
                         return false;
                     }
+                }
+                SelectorPart::PseudoElement(_) => {
+                    // Pseudo-elements like ::placeholder are handled at the rule storage level
+                    // (stored with key "id::placeholder"), not during runtime matching.
+                    // If we encounter one here, it doesn't match element nodes.
+                    return false;
                 }
             }
         }
