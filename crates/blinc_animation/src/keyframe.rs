@@ -207,6 +207,14 @@ pub struct KeyframeProperties {
     /// filter: blur(px)
     pub filter_blur: Option<f32>,
 
+    // --- Backdrop filter (glass material) ---
+    /// backdrop-filter: blur(px)
+    pub backdrop_blur: Option<f32>,
+    /// backdrop-filter saturation multiplier (1.0 = normal)
+    pub backdrop_saturation: Option<f32>,
+    /// backdrop-filter brightness multiplier (1.0 = normal)
+    pub backdrop_brightness: Option<f32>,
+
     // --- Layout properties (require layout recomputation) ---
     /// Width in pixels
     pub width: Option<f32>,
@@ -430,6 +438,10 @@ impl KeyframeProperties {
             filter_saturate: lerp_opt(self.filter_saturate, other.filter_saturate, t),
             filter_hue_rotate: lerp_opt(self.filter_hue_rotate, other.filter_hue_rotate, t),
             filter_blur: lerp_opt(self.filter_blur, other.filter_blur, t),
+            // Backdrop filter
+            backdrop_blur: lerp_opt(self.backdrop_blur, other.backdrop_blur, t),
+            backdrop_saturation: lerp_opt(self.backdrop_saturation, other.backdrop_saturation, t),
+            backdrop_brightness: lerp_opt(self.backdrop_brightness, other.backdrop_brightness, t),
             // Layout
             width: lerp_opt(self.width, other.width, t),
             height: lerp_opt(self.height, other.height, t),

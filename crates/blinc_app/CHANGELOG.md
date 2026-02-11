@@ -27,10 +27,12 @@ All notable changes to `blinc_app` will be documented in this file.
 
 - CSS filter hover demo (`.filter-card:hover` with brightness, saturate, contrast)
 - Filter blur & drop-shadow demos (static blur, hover transition, keyframe animation, combo)
+- Backdrop-filter animation demos (static blur, hover transition, blur+saturate combo, keyframe pulse)
 - `:is()` / `:where()` / `*-of-type` selector demos
 
 ### Fixed
 
+- Backdrop-filter demo parent containers now include `rounded(12.0)` so glass corner radius is visible against page background
 - CSS animation ticking moved to synchronous main-thread execution to eliminate phase jitter caused by background-thread timing misalignment
 - Mid-frame transition redraw: transitions created during `apply_complex_selector_styles` now properly trigger frame requests (prevents stalled hover-leave animations)
 - iOS runner cleanup for platform trait consistency
