@@ -1320,6 +1320,10 @@ pub struct PathBatch {
 /// A draw call for a sub-range of indices within a [`PathBatch`], with clip state.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PathDraw {
+    /// Z-layer index for interleaved rendering (used by Stack for proper z-ordering).
+    ///
+    /// This is a CPU-side ordering key only; it is not part of the shader uniforms.
+    pub z_layer: u32,
     pub index_start: u32,
     pub index_count: u32,
     /// Clip bounds: (x, y, width, height) or (cx, cy, rx, ry)
@@ -1341,6 +1345,7 @@ impl PathBatch {
         if let Some(last) = self.draws.last_mut() {
             let last_end = last.index_start.saturating_add(last.index_count);
             if last_end == draw.index_start
+                && last.z_layer == draw.z_layer
                 && last.clip_bounds == draw.clip_bounds
                 && last.clip_radius == draw.clip_radius
                 && last.clip_type == draw.clip_type
@@ -1614,6 +1619,11 @@ impl PrimitiveBatch {
 
     /// Add tessellated path geometry to the batch
     pub fn push_path(&mut self, tessellated: crate::path::TessellatedPath) {
+        self.push_path_at_z(0, tessellated);
+    }
+
+    /// Add tessellated path geometry to the batch at a given z-layer.
+    pub fn push_path_at_z(&mut self, z_layer: u32, tessellated: crate::path::TessellatedPath) {
         if tessellated.is_empty() {
             return;
         }
@@ -1626,6 +1636,7 @@ impl PrimitiveBatch {
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
         let index_count = self.paths.indices.len() as u32 - index_start;
         self.paths.push_draw(PathDraw {
+            z_layer,
             index_start,
             index_count,
             clip_bounds: PATH_NO_CLIP_BOUNDS,
@@ -1636,6 +1647,15 @@ impl PrimitiveBatch {
 
     /// Add tessellated path geometry to the foreground batch
     pub fn push_foreground_path(&mut self, tessellated: crate::path::TessellatedPath) {
+        self.push_foreground_path_at_z(0, tessellated);
+    }
+
+    /// Add tessellated path geometry to the foreground batch at a given z-layer.
+    pub fn push_foreground_path_at_z(
+        &mut self,
+        z_layer: u32,
+        tessellated: crate::path::TessellatedPath,
+    ) {
         if tessellated.is_empty() {
             return;
         }
@@ -1647,6 +1667,7 @@ impl PrimitiveBatch {
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
         let index_count = self.foreground_paths.indices.len() as u32 - index_start;
         self.foreground_paths.push_draw(PathDraw {
+            z_layer,
             index_start,
             index_count,
             clip_bounds: PATH_NO_CLIP_BOUNDS,
@@ -1663,6 +1684,18 @@ impl PrimitiveBatch {
         clip_radius: [f32; 4],
         clip_type: ClipType,
     ) {
+        self.push_path_with_clip_at_z(0, tessellated, clip_bounds, clip_radius, clip_type);
+    }
+
+    /// Add tessellated path geometry with clip data to the batch at a given z-layer.
+    pub fn push_path_with_clip_at_z(
+        &mut self,
+        z_layer: u32,
+        tessellated: crate::path::TessellatedPath,
+        clip_bounds: [f32; 4],
+        clip_radius: [f32; 4],
+        clip_type: ClipType,
+    ) {
         if tessellated.is_empty() {
             return;
         }
@@ -1676,6 +1709,7 @@ impl PrimitiveBatch {
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
         let index_count = self.paths.indices.len() as u32 - index_start;
         self.paths.push_draw(PathDraw {
+            z_layer,
             index_start,
             index_count,
             clip_bounds,
@@ -1692,6 +1726,24 @@ impl PrimitiveBatch {
         clip_radius: [f32; 4],
         clip_type: ClipType,
     ) {
+        self.push_foreground_path_with_clip_at_z(
+            0,
+            tessellated,
+            clip_bounds,
+            clip_radius,
+            clip_type,
+        );
+    }
+
+    /// Add tessellated path geometry with clip data to the foreground batch at a given z-layer.
+    pub fn push_foreground_path_with_clip_at_z(
+        &mut self,
+        z_layer: u32,
+        tessellated: crate::path::TessellatedPath,
+        clip_bounds: [f32; 4],
+        clip_radius: [f32; 4],
+        clip_type: ClipType,
+    ) {
         if tessellated.is_empty() {
             return;
         }
@@ -1703,6 +1755,7 @@ impl PrimitiveBatch {
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
         let index_count = self.foreground_paths.indices.len() as u32 - index_start;
         self.foreground_paths.push_draw(PathDraw {
+            z_layer,
             index_start,
             index_count,
             clip_bounds,
@@ -1714,6 +1767,26 @@ impl PrimitiveBatch {
     /// Add tessellated path geometry with clip data and brush info to the batch
     pub fn push_path_with_brush_info(
         &mut self,
+        tessellated: crate::path::TessellatedPath,
+        clip_bounds: [f32; 4],
+        clip_radius: [f32; 4],
+        clip_type: ClipType,
+        brush_info: &crate::path::PathBrushInfo,
+    ) {
+        self.push_path_with_brush_info_at_z(
+            0,
+            tessellated,
+            clip_bounds,
+            clip_radius,
+            clip_type,
+            brush_info,
+        );
+    }
+
+    /// Add tessellated path geometry with clip data and brush info to the batch at a given z-layer.
+    pub fn push_path_with_brush_info_at_z(
+        &mut self,
+        z_layer: u32,
         tessellated: crate::path::TessellatedPath,
         clip_bounds: [f32; 4],
         clip_radius: [f32; 4],
@@ -1750,6 +1823,7 @@ impl PrimitiveBatch {
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
         let index_count = self.paths.indices.len() as u32 - index_start;
         self.paths.push_draw(PathDraw {
+            z_layer,
             index_start,
             index_count,
             clip_bounds,
@@ -1761,6 +1835,26 @@ impl PrimitiveBatch {
     /// Add tessellated path geometry with clip data and brush info to the foreground batch
     pub fn push_foreground_path_with_brush_info(
         &mut self,
+        tessellated: crate::path::TessellatedPath,
+        clip_bounds: [f32; 4],
+        clip_radius: [f32; 4],
+        clip_type: ClipType,
+        brush_info: &crate::path::PathBrushInfo,
+    ) {
+        self.push_foreground_path_with_brush_info_at_z(
+            0,
+            tessellated,
+            clip_bounds,
+            clip_radius,
+            clip_type,
+            brush_info,
+        );
+    }
+
+    /// Add tessellated path geometry with clip data and brush info to the foreground batch at a given z-layer.
+    pub fn push_foreground_path_with_brush_info_at_z(
+        &mut self,
+        z_layer: u32,
         tessellated: crate::path::TessellatedPath,
         clip_bounds: [f32; 4],
         clip_radius: [f32; 4],
@@ -1796,6 +1890,7 @@ impl PrimitiveBatch {
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
         let index_count = self.foreground_paths.indices.len() as u32 - index_start;
         self.foreground_paths.push_draw(PathDraw {
+            z_layer,
             index_start,
             index_count,
             clip_bounds,
@@ -1856,12 +1951,29 @@ impl PrimitiveBatch {
 
     /// Get the maximum z_layer used by primitives in this batch
     pub fn max_z_layer(&self) -> u32 {
-        self.primitives
+        let prim_max = self
+            .primitives
             .iter()
             .chain(self.foreground_primitives.iter())
             .map(|p| p.z_layer())
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        let line_max = self
+            .line_segments
+            .iter()
+            .chain(self.foreground_line_segments.iter())
+            .map(|l| l.z_layer())
+            .max()
+            .unwrap_or(0);
+        let path_max = self
+            .paths
+            .draws
+            .iter()
+            .chain(self.foreground_paths.draws.iter())
+            .map(|d| d.z_layer)
+            .max()
+            .unwrap_or(0);
+        prim_max.max(line_max).max(path_max)
     }
 
     /// Filter primitives by z_layer, returning a new batch with only matching primitives

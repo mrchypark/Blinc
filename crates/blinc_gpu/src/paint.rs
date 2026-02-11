@@ -60,6 +60,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
 static DEBUG_POLYLINE_LOGS: AtomicU32 = AtomicU32::new(0);
+static DEBUG_WARM_PRIM_LOGS: AtomicU32 = AtomicU32::new(0);
 const NO_CLIP_BOUNDS: [f32; 4] = [-10000.0, -10000.0, 100000.0, 100000.0];
 const NO_CLIP_RADIUS: [f32; 4] = [0.0; 4];
 
@@ -1345,7 +1346,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
             if self.is_foreground {
-                self.batch.push_foreground_path_with_brush_info(
+                self.batch.push_foreground_path_with_brush_info_at_z(
+                    self.z_layer(),
                     tessellated,
                     clip_bounds,
                     clip_radius,
@@ -1353,7 +1355,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                     &brush_info,
                 );
             } else {
-                self.batch.push_path_with_brush_info(
+                self.batch.push_path_with_brush_info_at_z(
+                    self.z_layer(),
                     tessellated,
                     clip_bounds,
                     clip_radius,
@@ -1391,7 +1394,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
             if self.is_foreground {
-                self.batch.push_foreground_path_with_brush_info(
+                self.batch.push_foreground_path_with_brush_info_at_z(
+                    self.z_layer(),
                     tessellated,
                     clip_bounds,
                     clip_radius,
@@ -1399,7 +1403,8 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                     &brush_info,
                 );
             } else {
-                self.batch.push_path_with_brush_info(
+                self.batch.push_path_with_brush_info_at_z(
+                    self.z_layer(),
                     tessellated,
                     clip_bounds,
                     clip_radius,
@@ -1636,6 +1641,47 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 self.z_layer,
             ],
         };
+
+        if std::env::var_os("BLINC_DEBUG_WARM_PRIMS").is_some() {
+            let is_warm = primitive.color[0] > 0.7
+                && (primitive.color[0] - primitive.color[2]) > 0.3
+                && primitive.color[3] > 0.5;
+            if is_warm {
+                let n = DEBUG_WARM_PRIM_LOGS.fetch_add(1, Ordering::Relaxed);
+                if n < 12 {
+                    tracing::info!(
+                        "warm_prim[{n}]: fg={} z={} rect=({:.2},{:.2},{:.2},{:.2}) tx=({:.2},{:.2},{:.2},{:.2}) color=({:.3},{:.3},{:.3},{:.3}) clip_type={:?} clip=({:.2},{:.2},{:.2},{:.2}) filter_a=({:.2},{:.2},{:.2},{:.2}) filter_b=({:.2},{:.2},{:.2},{:.2})",
+                        self.is_foreground,
+                        self.z_layer,
+                        rect.x(),
+                        rect.y(),
+                        rect.width(),
+                        rect.height(),
+                        transformed.x(),
+                        transformed.y(),
+                        transformed.width(),
+                        transformed.height(),
+                        primitive.color[0],
+                        primitive.color[1],
+                        primitive.color[2],
+                        primitive.color[3],
+                        clip_type,
+                        clip_bounds[0],
+                        clip_bounds[1],
+                        clip_bounds[2],
+                        clip_bounds[3],
+                        self.current_filter_a[0],
+                        self.current_filter_a[1],
+                        self.current_filter_a[2],
+                        self.current_filter_a[3],
+                        self.current_filter_b[0],
+                        self.current_filter_b[1],
+                        self.current_filter_b[2],
+                        self.current_filter_b[3],
+                    );
+                }
+            }
+        }
 
         if self.is_foreground {
             self.batch.push_foreground(primitive);

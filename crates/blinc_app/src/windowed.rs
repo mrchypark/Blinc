@@ -45,6 +45,461 @@ use blinc_platform::{
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
 
+// -----------------------------------------------------------------------------
+// Optional windowed e2e (desktop)
+// -----------------------------------------------------------------------------
+//
+// We can't rely on OS-level screenshots in CI (or on machines without Screen
+// Recording permission). For deterministic macOS e2e we optionally read back the
+// rendered swapchain frame (requires SurfaceConfiguration.usage COPY_SRC) and
+// validate pixels directly.
+//
+// Enabled via env vars:
+// - BLINC_E2E_CAPTURE_PATH=/tmp/out.png   (write PNG; can be a directory too)
+// - BLINC_E2E_EXPECT=blueish|warm         (assert minimal pixels in main panel)
+// - BLINC_E2E_TRIGGER_PATH=/tmp/trigger   (optional: only capture when this file exists)
+// - BLINC_E2E_MAX_CAPTURES=2              (optional: number of captures before exiting)
+// - BLINC_E2E_EXIT=0|false                (optional: keep running after captures)
+// - BLINC_E2E_SCRIPT=gallery_sidebar_click_after_scroll (optional: internal input simulation)
+// - BLINC_E2E_SCRIPT_EXIT=0|false          (optional: keep running after script)
+//
+// Note: this is intentionally minimal and only runs once per process.
+
+fn e2e_is_enabled() -> bool {
+    std::env::var_os("BLINC_E2E_CAPTURE_PATH").is_some()
+        || std::env::var_os("BLINC_E2E_EXPECT").is_some()
+}
+
+fn e2e_exit_after() -> bool {
+    if let Ok(v) = std::env::var("BLINC_E2E_EXIT") {
+        let v = v.trim().to_ascii_lowercase();
+        return !(v.is_empty() || v == "0" || v == "false" || v == "no");
+    }
+    e2e_is_enabled()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum E2eScript {
+    GallerySidebarClickAfterScroll,
+}
+
+fn e2e_script() -> Option<E2eScript> {
+    let v = std::env::var("BLINC_E2E_SCRIPT").ok()?;
+    match v.trim().to_ascii_lowercase().as_str() {
+        "gallery_sidebar_click_after_scroll" | "gallery-sidebar-click-after-scroll" => {
+            Some(E2eScript::GallerySidebarClickAfterScroll)
+        }
+        _ => None,
+    }
+}
+
+fn e2e_script_exit_after(script_enabled: bool) -> bool {
+    if !script_enabled {
+        return false;
+    }
+    if let Ok(v) = std::env::var("BLINC_E2E_SCRIPT_EXIT") {
+        let v = v.trim().to_ascii_lowercase();
+        return !(v.is_empty() || v == "0" || v == "false" || v == "no");
+    }
+    true
+}
+
+fn read_keyed_state<T: Clone + Send + 'static>(
+    hooks: &SharedHookState,
+    reactive: &SharedReactiveGraph,
+    key: &str,
+) -> Option<T> {
+    let state_key = StateKey::from_string::<T>(key);
+    let raw_id = hooks.lock().ok()?.get(&state_key)?;
+    let signal_id = SignalId::from_raw(raw_id);
+    let signal: Signal<T> = Signal::from_id(signal_id);
+    reactive.lock().ok()?.get(signal)
+}
+
+fn e2e_find_hit_point_with_id_prefix(
+    tree: &RenderTree,
+    router: &EventRouter,
+    window_w: f32,
+    window_h: f32,
+    x_max: f32,
+    id_prefix: &str,
+) -> Option<(f32, f32, String)> {
+    let x0 = 6.0;
+    let y0 = 6.0;
+    let x1 = x_max.min(window_w - 6.0);
+    let y1 = (window_h - 6.0).max(y0);
+    let step = 8.0;
+
+    let mut y = y0;
+    while y <= y1 {
+        let mut x = x0;
+        while x <= x1 {
+            if let Some(hit) = router.hit_test(tree, x, y) {
+                if let Some(id) = tree.element_registry().get_id(hit.node) {
+                    if id.starts_with(id_prefix) {
+                        return Some((x, y, id.to_string()));
+                    }
+                }
+            }
+            x += step;
+        }
+        y += step;
+    }
+    None
+}
+
+fn e2e_find_hit_point_with_exact_id(
+    tree: &RenderTree,
+    router: &EventRouter,
+    window_w: f32,
+    window_h: f32,
+    x_max: f32,
+    exact_id: &str,
+) -> Option<(f32, f32)> {
+    let x0 = 6.0;
+    let y0 = 6.0;
+    let x1 = x_max.min(window_w - 6.0);
+    let y1 = (window_h - 6.0).max(y0);
+    let step = 8.0;
+
+    let mut y = y0;
+    while y <= y1 {
+        let mut x = x0;
+        while x <= x1 {
+            if let Some(hit) = router.hit_test(tree, x, y) {
+                if let Some(id) = tree.element_registry().get_id(hit.node) {
+                    if id == exact_id {
+                        return Some((x, y));
+                    }
+                }
+            }
+            x += step;
+        }
+        y += step;
+    }
+    None
+}
+
+fn e2e_max_captures() -> usize {
+    std::env::var("BLINC_E2E_MAX_CAPTURES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v >= 1)
+        .unwrap_or(1)
+}
+
+fn e2e_trigger_path() -> Option<std::path::PathBuf> {
+    std::env::var("BLINC_E2E_TRIGGER_PATH")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+fn e2e_capture_on_start(trigger: Option<&std::path::PathBuf>) -> bool {
+    if let Ok(v) = std::env::var("BLINC_E2E_CAPTURE_ON_START") {
+        let v = v.trim().to_ascii_lowercase();
+        return !(v.is_empty() || v == "0" || v == "false" || v == "no");
+    }
+    // If an explicit trigger path is configured, default to trigger-only.
+    trigger.is_none()
+}
+
+fn e2e_output_path(base: &std::path::Path, capture_index: usize) -> std::path::PathBuf {
+    // capture_index is 1-based.
+    if base.is_dir() {
+        return base.join(format!("capture-{capture_index}.png"));
+    }
+
+    if capture_index <= 1 {
+        return base.to_path_buf();
+    }
+
+    let file_name = base
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("capture.png");
+    let (stem, ext) = match file_name.rsplit_once('.') {
+        Some((s, e)) => (s.to_string(), format!(".{e}")),
+        None => (file_name.to_string(), String::new()),
+    };
+    let new_name = format!("{stem}-{capture_index}{ext}");
+    base.with_file_name(new_name)
+}
+
+fn padded_bytes_per_row(width: u32) -> u32 {
+    let unpadded = width * 4;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    ((unpadded + align - 1) / align) * align
+}
+
+fn bgra_or_rgba_to_rgba(
+    format: wgpu::TextureFormat,
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Option<Vec<u8>> {
+    let bytes_per_row = padded_bytes_per_row(width) as usize;
+    let expected = bytes_per_row
+        .checked_mul(height as usize)
+        .unwrap_or(usize::MAX);
+    if bytes.len() < expected {
+        return None;
+    }
+
+    let mut out = vec![0u8; (width as usize) * (height as usize) * 4];
+    for y in 0..height as usize {
+        let row_start = y * bytes_per_row;
+        let row_end = row_start + (width as usize) * 4;
+        let row = &bytes[row_start..row_end];
+        let dst = &mut out[y * (width as usize) * 4..(y + 1) * (width as usize) * 4];
+
+        match format {
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => {
+                for x in 0..width as usize {
+                    let i = x * 4;
+                    // BGRA -> RGBA
+                    dst[i] = row[i + 2];
+                    dst[i + 1] = row[i + 1];
+                    dst[i + 2] = row[i];
+                    dst[i + 3] = row[i + 3];
+                }
+            }
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => {
+                dst.copy_from_slice(row);
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+fn e2e_save_png_minimal_rgba(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::Write;
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320u32 & mask);
+            }
+        }
+        !crc
+    }
+
+    fn write_chunk(file: &mut File, typ: &[u8; 4], data: &[u8]) -> std::io::Result<()> {
+        file.write_all(&(data.len() as u32).to_be_bytes())?;
+        file.write_all(typ)?;
+        file.write_all(data)?;
+        let mut crc_data = Vec::with_capacity(typ.len() + data.len());
+        crc_data.extend_from_slice(typ);
+        crc_data.extend_from_slice(data);
+        file.write_all(&crc32(&crc_data).to_be_bytes())?;
+        Ok(())
+    }
+
+    fn adler32_rgba(rgba: &[u8], width: u32, height: u32) -> u32 {
+        let mut a: u32 = 1;
+        let mut b: u32 = 0;
+        let mod_adler: u32 = 65521;
+
+        let row_len = width as usize * 4;
+        for y in 0..height as usize {
+            // Each scanline begins with a single filter byte (0 = None).
+            a = (a + 0) % mod_adler;
+            b = (b + a) % mod_adler;
+            let row = &rgba[y * row_len..(y + 1) * row_len];
+            for &byte in row {
+                a = (a + byte as u32) % mod_adler;
+                b = (b + a) % mod_adler;
+            }
+        }
+        (b << 16) | a
+    }
+
+    let mut file = File::create(path)?;
+
+    // PNG signature
+    file.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])?;
+
+    // IHDR
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.push(8); // bit depth
+    ihdr.push(6); // color type RGBA
+    ihdr.push(0); // compression
+    ihdr.push(0); // filter
+    ihdr.push(0); // interlace
+    write_chunk(&mut file, b"IHDR", &ihdr)?;
+
+    // IDAT: uncompressed deflate blocks
+    let mut idat = Vec::new();
+    let scanline_len = width as usize * 4 + 1;
+    idat.push(0x78);
+    idat.push(0x01);
+
+    for y in 0..height as usize {
+        let is_last = y + 1 == height as usize;
+        let bfinal = if is_last { 1u8 } else { 0u8 };
+
+        let row_start = y * (width as usize) * 4;
+        let row_end = row_start + (width as usize) * 4;
+
+        let mut scanline = Vec::with_capacity(scanline_len);
+        scanline.push(0); // filter: none
+        scanline.extend_from_slice(&rgba[row_start..row_end]);
+
+        idat.push(bfinal); // BFINAL + BTYPE=00
+        let len = scanline.len() as u16;
+        idat.extend_from_slice(&len.to_le_bytes());
+        idat.extend_from_slice(&(!len).to_le_bytes());
+        idat.extend_from_slice(&scanline);
+    }
+
+    let adler = adler32_rgba(rgba, width, height);
+    idat.extend_from_slice(&adler.to_be_bytes());
+
+    write_chunk(&mut file, b"IDAT", &idat)?;
+    write_chunk(&mut file, b"IEND", &[])?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum E2eExpect {
+    Blueish,
+    Warm,
+}
+
+fn e2e_expect() -> Option<E2eExpect> {
+    let v = std::env::var("BLINC_E2E_EXPECT").ok()?;
+    match v.trim().to_ascii_lowercase().as_str() {
+        "blue" | "blueish" | "line" => Some(E2eExpect::Blueish),
+        "warm" | "heat" | "heatmap" => Some(E2eExpect::Warm),
+        _ => None,
+    }
+}
+
+fn e2e_threshold(expect: E2eExpect, w: u32, h: u32, total_samples: usize) -> usize {
+    // Use a threshold proportional to window size so it scales across Retina/non-Retina.
+    // These are intentionally conservative: we mostly want to catch “nothing rendered”.
+    let area = (w as u64).saturating_mul(h as u64).max(1);
+    match expect {
+        E2eExpect::Blueish => {
+            // Line: the stroke is thin, but should still appear across a wide span.
+            // Require at least ~0.03% of sampled points to be “colored”.
+            (total_samples / 3000)
+                .max(10)
+                .min((area / 50_000) as usize + 20)
+        }
+        E2eExpect::Warm => {
+            // Heatmap fills a lot of area; expect more colored pixels.
+            (total_samples / 800).max(30)
+        }
+    }
+}
+
+fn e2e_count_pixels(rgba: &[u8], w: u32, h: u32) -> (usize, usize, usize) {
+    // Returns (blueish, warm, total_samples).
+    if w == 0 || h == 0 {
+        return (0, 0, 0);
+    }
+
+    let iw = w as i32;
+    let ih = h as i32;
+
+    // Sample the main content area, avoiding sidebar/tabs where selection
+    // colors could cause false positives.
+    //
+    // Important: `w`/`h` are physical pixels. On Retina macOS they are typically 2x the
+    // logical window size, so we prefer a logical-size hint when available.
+    let narrow = std::env::var("BLINC_WINDOW_SIZE")
+        .ok()
+        .and_then(|v| v.trim().split_once('x').map(|(a, _b)| a.trim().to_string()))
+        .and_then(|w| w.parse::<i32>().ok())
+        .map(|logical_w| logical_w < 900)
+        .unwrap_or(iw < 900);
+    // In narrow layouts we have the tabs row on top; the plot starts lower.
+    let x0 = if narrow {
+        (iw as f32 * 0.06)
+    } else {
+        (iw as f32 * 0.33)
+    } as i32;
+    let x1 = (iw as f32 * 0.97) as i32;
+    let y0 = if narrow {
+        (ih as f32 * 0.42) as i32
+    } else {
+        (ih as f32 * 0.24) as i32
+    };
+    // In narrow layouts, the chart can sit very close to the bottom edge (e.g. heatmap),
+    // so we sample a little lower to avoid false negatives.
+    let y1 = if narrow {
+        (ih as f32 * 0.98) as i32
+    } else {
+        (ih as f32 * 0.92) as i32
+    };
+
+    let step_x = ((x1 - x0) / 120).max(4);
+    let step_y = ((y1 - y0) / 80).max(4);
+
+    let mut blue = 0usize;
+    let mut warm = 0usize;
+    let mut total = 0usize;
+
+    let row_bytes = w as usize * 4;
+    for y in (y0.max(0)..y1.min(ih)).step_by(step_y as usize) {
+        let row = (y as usize) * row_bytes;
+
+        // For multi-line charts the “signal” is thin and multi-colored. A coarse grid
+        // can miss it; scan a subset of columns per row instead of sampling just a few points.
+        for x in (x0.max(0)..x1.min(iw)).step_by(2) {
+            total += 1;
+            let idx = row + (x as usize) * 4;
+            if idx + 4 > rgba.len() {
+                continue;
+            }
+            let r = rgba[idx] as f32 / 255.0;
+            let g = rgba[idx + 1] as f32 / 255.0;
+            let b = rgba[idx + 2] as f32 / 255.0;
+            let a = rgba[idx + 3] as f32 / 255.0;
+
+            if a >= 0.8 {
+                // “Blueish” is really “non-background, colored stroke” in the main plot.
+                // Use a broader heuristic:
+                // - not too dark
+                // - noticeable chroma (channel spread) OR strong blue dominance
+                let mx = r.max(g).max(b);
+                let mn = r.min(g).min(b);
+                let spread = mx - mn;
+                let colored = (mx > 0.22 && spread > 0.08) || (b > 0.35 && (b - r.max(g)) > 0.10);
+                if colored {
+                    blue += 1;
+                }
+                // Warm heatmap pixels skew red/yellow: high (r,g), lower b.
+                // Keep this tolerant; we mainly want to catch “heatmap disappeared”.
+                if (r > 0.50)
+                    && (g > 0.18)
+                    && (b < 0.60)
+                    && (r - b > 0.18)
+                    && (g - b > 0.10)
+                {
+                    warm += 1;
+                }
+            }
+        }
+    }
+
+    (blue, warm, total)
+}
+
 /// Shared animation scheduler for the application (thread-safe)
 pub type SharedAnimationScheduler = Arc<Mutex<AnimationScheduler>>;
 
@@ -1843,6 +2298,21 @@ impl WindowedApp {
             OverlayContext::init(Arc::clone(&overlays));
         }
 
+        let e2e_enabled = e2e_is_enabled();
+        let e2e_expect = e2e_expect();
+        let e2e_capture_path = std::env::var("BLINC_E2E_CAPTURE_PATH")
+            .ok()
+            .map(std::path::PathBuf::from);
+        let e2e_trigger_path = e2e_trigger_path();
+        let e2e_capture_on_start = e2e_capture_on_start(e2e_trigger_path.as_ref());
+        let e2e_max_captures = e2e_max_captures();
+        let e2e_exit = e2e_exit_after();
+        let mut e2e_captures_done: usize = 0;
+
+        let e2e_script = e2e_script();
+        let e2e_script_exit = e2e_script_exit_after(e2e_script.is_some());
+        let mut e2e_script_ran: bool = false;
+
         event_loop
             .run(move |event, window| {
                 match event {
@@ -1857,7 +2327,12 @@ impl WindowedApp {
                                     // Use the same texture format that the renderer's pipelines use
                                     let format = blinc_app.texture_format();
                                     let config = wgpu::SurfaceConfiguration {
-                                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                                            | if e2e_enabled {
+                                                wgpu::TextureUsages::COPY_SRC
+                                            } else {
+                                                wgpu::TextureUsages::empty()
+                                            },
                                         format,
                                         width,
                                         height,
@@ -2128,6 +2603,25 @@ impl WindowedApp {
                                         let lx = x / scale;
                                         let ly = y / scale;
                                         let btn = convert_mouse_button(button);
+
+                                        if std::env::var_os("BLINC_DEBUG_HIT").is_some() {
+                                            if let Some(hit) = router.hit_test(tree, lx, ly) {
+                                                let id = tree.element_registry().get_id(hit.node);
+                                                tracing::info!(
+                                                    "debug_hit: down pos=({:.1}, {:.1}) node={:?} id={:?}",
+                                                    lx,
+                                                    ly,
+                                                    hit.node,
+                                                    id
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    "debug_hit: down pos=({:.1}, {:.1}) node=None",
+                                                    lx,
+                                                    ly
+                                                );
+                                            }
+                                        }
 
                                         // Check for backdrop clicks (dismisses overlays)
                                         // This still needs special handling because backdrop clicks should
@@ -3002,6 +3496,172 @@ impl WindowedApp {
                             // is already ready at that point.
 
                             // =========================================================
+                            // Optional internal e2e scripts (deterministic input simulation)
+                            // =========================================================
+                            if !e2e_script_ran {
+                                if let Some(script) = e2e_script {
+                                    if let Some(ref mut tree) = render_tree {
+                                        if windowed_ctx.rebuild_count > 0 {
+                                            // Only run once per process after the first build is complete.
+                                            e2e_script_ran = true;
+                                            match script {
+                                                E2eScript::GallerySidebarClickAfterScroll => {
+                                                    let router = &mut windowed_ctx.event_router;
+                                                    let window_w = windowed_ctx.width;
+                                                    let window_h = windowed_ctx.height;
+
+                                                    let selected_before: Option<usize> =
+                                                        read_keyed_state(&hooks, &reactive, "charts_gallery_selected");
+                                                    tracing::info!(
+                                                        "e2e_script: gallery_sidebar_click_after_scroll selected_before={:?}",
+                                                        selected_before
+                                                    );
+
+                                                    let x_search_max = 360.0;
+                                                    let Some((probe_x, probe_y, probe_id)) =
+                                                        e2e_find_hit_point_with_id_prefix(
+                                                            tree,
+                                                            router,
+                                                            window_w,
+                                                            window_h,
+                                                            x_search_max,
+                                                            "charts_gallery_sidebar_item_",
+                                                        )
+                                                    else {
+                                                        eprintln!(
+                                                            "e2e script error: could not find sidebar hit point (prefix='charts_gallery_sidebar_item_')"
+                                                        );
+                                                        std::process::exit(1);
+                                                    };
+                                                    tracing::info!(
+                                                        "e2e_script: probe=({:.1}, {:.1}) hit_id={}",
+                                                        probe_x,
+                                                        probe_y,
+                                                        probe_id
+                                                    );
+
+                                                    let Some(sidebar_scroll_node) =
+                                                        tree.query_by_id("charts_gallery_sidebar_scroll")
+                                                    else {
+                                                        eprintln!(
+                                                            "e2e script error: missing element id 'charts_gallery_sidebar_scroll'"
+                                                        );
+                                                        std::process::exit(1);
+                                                    };
+
+                                                    let target_index: usize = std::env::var(
+                                                        "BLINC_E2E_GALLERY_TARGET_INDEX",
+                                                    )
+                                                    .ok()
+                                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                                                    .unwrap_or(8);
+                                                    let target_id = format!(
+                                                        "charts_gallery_sidebar_item_{}",
+                                                        target_index
+                                                    );
+
+                                                    let mut click_point: Option<(f32, f32)> = None;
+                                                    for _ in 0..180 {
+                                                        if let Some((x, y)) = e2e_find_hit_point_with_exact_id(
+                                                            tree,
+                                                            router,
+                                                            window_w,
+                                                            window_h,
+                                                            x_search_max,
+                                                            &target_id,
+                                                        ) {
+                                                            click_point = Some((x, y));
+                                                            break;
+                                                        }
+                                                        // Scroll down (content moves up).
+                                                        tree.dispatch_scroll_event(
+                                                            sidebar_scroll_node,
+                                                            probe_x,
+                                                            probe_y,
+                                                            0.0,
+                                                            -72.0,
+                                                        );
+                                                    }
+
+                                                    let Some((click_x, click_y)) = click_point else {
+                                                        eprintln!(
+                                                            "e2e script error: failed to scroll to target id '{target_id}'"
+                                                        );
+                                                        std::process::exit(1);
+                                                    };
+
+                                                    // Simulate click at a point that actually hits the target.
+                                                    tracing::info!(
+                                                        "e2e_script: target_id={} click=({:.1}, {:.1})",
+                                                        target_id,
+                                                        click_x,
+                                                        click_y
+                                                    );
+                                                    let mut down_events = router.on_mouse_down(
+                                                        tree,
+                                                        click_x,
+                                                        click_y,
+                                                        MouseButton::Left,
+                                                    );
+                                                    down_events.extend(router.on_mouse_up(
+                                                        tree,
+                                                        click_x,
+                                                        click_y,
+                                                        MouseButton::Left,
+                                                    ));
+                                                    for (node, event_type) in down_events {
+                                                        let (bx, by, bw, bh) = router
+                                                            .get_node_bounds(node)
+                                                            .unwrap_or((0.0, 0.0, 0.0, 0.0));
+                                                        tree.dispatch_event_full(
+                                                            node,
+                                                            event_type,
+                                                            click_x,
+                                                            click_y,
+                                                            click_x - bx,
+                                                            click_y - by,
+                                                            bx,
+                                                            by,
+                                                            bw,
+                                                            bh,
+                                                            0.0,
+                                                            0.0,
+                                                            1.0,
+                                                        );
+                                                    }
+
+                                                    let selected_after: Option<usize> =
+                                                        read_keyed_state(&hooks, &reactive, "charts_gallery_selected");
+                                                    tracing::info!(
+                                                        "e2e_script: gallery_sidebar_click_after_scroll selected_after={:?} expected={}",
+                                                        selected_after,
+                                                        target_index
+                                                    );
+                                                    if selected_after != Some(target_index) {
+                                                        eprintln!(
+                                                            "e2e script error: click did not update selection (got {:?}, expected {})",
+                                                            selected_after,
+                                                            target_index
+                                                        );
+                                                        std::process::exit(1);
+                                                    }
+
+                                                    println!(
+                                                        "e2e script ok: gallery_sidebar_click_after_scroll target_index={}",
+                                                        target_index
+                                                    );
+
+                                                    if e2e_script_exit {
+                                                        std::process::exit(0);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // =========================================================
                             // PHASE 3: Tick animations and dynamic render state
                             // This must happen AFTER tree rebuild so motions are initialized
                             // =========================================================
@@ -3088,6 +3748,169 @@ impl WindowedApp {
                                 }
                             }
 
+                            // Optional: capture + validate rendered pixels for e2e.
+                            //
+                            // This avoids relying on OS-level screenshots (which can be black in CI
+                            // or require Screen Recording permission). Captures are read back from
+                            // the swapchain frame via COPY_SRC.
+                            if e2e_enabled && e2e_captures_done < e2e_max_captures {
+                                let mut should_capture = false;
+                                let mut consumed_trigger = false;
+
+                                if e2e_capture_on_start && e2e_captures_done == 0 {
+                                    should_capture = true;
+                                } else if let Some(ref trigger) = e2e_trigger_path {
+                                    if trigger.exists() {
+                                        should_capture = true;
+                                        consumed_trigger = true;
+                                    }
+                                }
+
+                                if should_capture && render_tree.is_some() {
+                                    let capture_index = e2e_captures_done + 1; // 1-based
+
+                                    let width = windowed_ctx.physical_width as u32;
+                                    let height = windowed_ctx.physical_height as u32;
+                                    let bytes_per_row = padded_bytes_per_row(width);
+                                    let buffer_size = (bytes_per_row as u64) * (height as u64);
+
+                                    let buffer = blinc_app.device().create_buffer(&wgpu::BufferDescriptor {
+                                        label: Some("blinc_e2e_readback"),
+                                        size: buffer_size,
+                                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                                        mapped_at_creation: false,
+                                    });
+
+                                    let mut encoder =
+                                        blinc_app.device().create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                            label: Some("blinc_e2e_copy_encoder"),
+                                        });
+
+                                    encoder.copy_texture_to_buffer(
+                                        wgpu::ImageCopyTexture {
+                                            texture: &frame.texture,
+                                            mip_level: 0,
+                                            origin: wgpu::Origin3d::ZERO,
+                                            aspect: wgpu::TextureAspect::All,
+                                        },
+                                        wgpu::ImageCopyBuffer {
+                                            buffer: &buffer,
+                                            layout: wgpu::ImageDataLayout {
+                                                offset: 0,
+                                                bytes_per_row: Some(bytes_per_row),
+                                                rows_per_image: Some(height),
+                                            },
+                                        },
+                                        wgpu::Extent3d {
+                                            width,
+                                            height,
+                                            depth_or_array_layers: 1,
+                                        },
+                                    );
+
+                                    blinc_app.queue().submit(std::iter::once(encoder.finish()));
+
+                                    let buffer_slice = buffer.slice(..);
+                                    let (tx, rx) = std::sync::mpsc::channel();
+                                    buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+                                        tx.send(result).ok();
+                                    });
+                                    blinc_app.device().poll(wgpu::Maintain::Wait);
+                                    if let Err(e) = rx
+                                        .recv()
+                                        .unwrap_or(Err(wgpu::BufferAsyncError))
+                                    {
+                                        eprintln!("e2e error: failed to map readback buffer: {e}");
+                                        std::process::exit(1);
+                                    }
+
+                                    let data = buffer_slice.get_mapped_range();
+                                    let Some(rgba) =
+                                        bgra_or_rgba_to_rgba(config.format, &data, width, height)
+                                    else {
+                                        eprintln!(
+                                            "e2e error: unsupported surface format for readback: {:?}",
+                                            config.format
+                                        );
+                                        std::process::exit(1);
+                                    };
+                                    drop(data);
+                                    buffer.unmap();
+
+                                    let out_path = e2e_capture_path
+                                        .as_ref()
+                                        .map(|base| e2e_output_path(base, capture_index));
+                                    if let Some(path) = out_path.as_ref() {
+                                        let parent: Option<&std::path::Path> = if path.is_dir() {
+                                            Some(path.as_path())
+                                        } else {
+                                            path.parent()
+                                        };
+                                        if let Some(parent) = parent {
+                                            let _ = std::fs::create_dir_all(parent);
+                                        }
+                                        if let Err(e) =
+                                            e2e_save_png_minimal_rgba(&rgba, width, height, path)
+                                        {
+                                            eprintln!(
+                                                "e2e error: failed to write png {}: {e}",
+                                                path.display()
+                                            );
+                                            std::process::exit(1);
+                                        }
+                                    }
+
+                                    let (blue, warm, total) = e2e_count_pixels(&rgba, width, height);
+
+                                    if let Some(expect) = e2e_expect {
+                                        let threshold = e2e_threshold(expect, width, height, total);
+                                        match expect {
+                                            E2eExpect::Blueish => {
+                                                if blue < threshold {
+                                                    eprintln!(
+                                                        "e2e error: expected colored line pixels, got blue={blue} (threshold={threshold}, total={total})"
+                                                    );
+                                                    if let Some(path) = out_path.as_ref() {
+                                                        eprintln!("e2e png: {}", path.display());
+                                                    }
+                                                    std::process::exit(1);
+                                                }
+                                            }
+                                            E2eExpect::Warm => {
+                                                if warm < threshold {
+                                                    eprintln!(
+                                                        "e2e error: expected warm heatmap pixels, got warm={warm} (threshold={threshold}, total={total})"
+                                                    );
+                                                    if let Some(path) = out_path.as_ref() {
+                                                        eprintln!("e2e png: {}", path.display());
+                                                    }
+                                                    std::process::exit(1);
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if consumed_trigger {
+                                        if let Some(ref trigger) = e2e_trigger_path {
+                                            let _ = std::fs::remove_file(trigger);
+                                        }
+                                    }
+
+                                    e2e_captures_done += 1;
+                                    println!(
+                                        "e2e ok: capture={} {}x{} blue={} warm={} total={}",
+                                        capture_index, width, height, blue, warm, total
+                                    );
+                                    if let Some(path) = out_path.as_ref() {
+                                        println!("e2e png: {}", path.display());
+                                    }
+
+                                    if e2e_exit && e2e_captures_done >= e2e_max_captures {
+                                        std::process::exit(0);
+                                    }
+                                }
+                            }
+
                             // =========================================================
                             // PHASE 4b: Overlay state management (overlays now in main tree)
                             // Overlays are composed into the main tree via build_overlay_layer()
@@ -3145,7 +3968,20 @@ impl WindowedApp {
                                     .as_ref()
                                     .map_or(true, |t| t.css_transitions_empty());
 
-                            if needs_animation_redraw || needs_cursor_redraw || needs_motion_redraw || scroll_animating || needs_overlay_redraw || theme_animating || css_needs_redraw {
+                            let needs_e2e_redraw = e2e_enabled
+                                && e2e_captures_done < e2e_max_captures
+                                && ((e2e_capture_on_start && e2e_captures_done == 0)
+                                    || e2e_trigger_path.is_some());
+
+                            if needs_animation_redraw
+                                || needs_cursor_redraw
+                                || needs_motion_redraw
+                                || scroll_animating
+                                || needs_overlay_redraw
+                                || theme_animating
+                                || css_needs_redraw
+                                || needs_e2e_redraw
+                            {
                                 // Request another frame to render updated animation values
                                 // For cursor blink, also re-request continuous redraw for next frame
                                 if needs_cursor_redraw {

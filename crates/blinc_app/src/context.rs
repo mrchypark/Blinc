@@ -2409,13 +2409,19 @@ impl RenderContext {
         let mut batch = ctx.take_batch();
         if std::env::var_os("BLINC_DEBUG_BATCHES").is_some() {
             tracing::info!(
-                "motion_batch: prims={} fg_prims={} lines={} fg_lines={} glass={} glyphs={} max_z={}",
+                "motion_batch: prims={} fg_prims={} lines={} fg_lines={} glass={} glyphs={} paths(v/i)={}/{} fg_paths(v/i)={}/{} layer_cmds={} layer_fx={} max_z={}",
                 batch.primitives.len(),
                 batch.foreground_primitives.len(),
                 batch.line_segments.len(),
                 batch.foreground_line_segments.len(),
                 batch.glass_primitives.len(),
                 batch.glyphs.len(),
+                batch.paths.vertices.len(),
+                batch.paths.indices.len(),
+                batch.foreground_paths.vertices.len(),
+                batch.foreground_paths.indices.len(),
+                batch.layer_commands.len(),
+                batch.has_layer_effects(),
                 batch.max_z_layer(),
             );
         }
@@ -2832,10 +2838,8 @@ impl RenderContext {
 
                 // First pass: render z_layer=0 primitives with clear
                 let z0_primitives = batch.primitives_for_layer(0);
-                // Create a temporary batch for z=0 (include paths - they don't have z-layer support)
                 let mut z0_batch = PrimitiveBatch::new();
                 z0_batch.primitives = z0_primitives;
-                z0_batch.paths = batch.paths.clone();
                 self.renderer
                     .render_with_clear(target, &z0_batch, [0.0, 0.0, 0.0, 1.0]);
 
@@ -2847,10 +2851,15 @@ impl RenderContext {
                     line_range_i += 1;
                 }
 
-                // Render paths with MSAA for smooth edges on curved shapes like notch
-                if use_msaa_overlay && z0_batch.has_paths() {
-                    self.renderer
-                        .render_paths_overlay_msaa(target, &z0_batch, self.sample_count);
+                let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+                if has_paths {
+                    // Upload path buffers once; then draw per z-layer to preserve Stack ordering.
+                    self.renderer.prepare_path_batch(&batch.paths);
+                    self.renderer.render_path_batch_overlay_for_layer_prepared(
+                        target,
+                        &batch.paths,
+                        0,
+                    );
                 }
 
                 if !batch.image_draws.is_empty() {
@@ -2886,6 +2895,15 @@ impl RenderContext {
                         line_range_i += 1;
                     }
 
+                    // Render paths for this layer
+                    if has_paths {
+                        self.renderer.render_path_batch_overlay_for_layer_prepared(
+                            target,
+                            &batch.paths,
+                            z,
+                        );
+                    }
+
                     // Render images for this layer
                     if let Some(layer_images) = images_by_layer.get(&z) {
                         self.render_images_ref(target, layer_images);
@@ -2907,6 +2925,28 @@ impl RenderContext {
                 if !batch.foreground_line_segments.is_empty() {
                     self.renderer
                         .render_line_segments_overlay(target, &batch.foreground_line_segments);
+                }
+
+                // Render foreground paths on top (for .foreground() canvases).
+                // (These may still have z-layer info, so preserve ordering within the foreground batch.)
+                let has_foreground_paths = !batch.foreground_paths.vertices.is_empty()
+                    && !batch.foreground_paths.indices.is_empty();
+                if has_foreground_paths {
+                    self.renderer.prepare_path_batch(&batch.foreground_paths);
+                    let max_fg_z = batch
+                        .foreground_paths
+                        .draws
+                        .iter()
+                        .map(|d| d.z_layer)
+                        .max()
+                        .unwrap_or(0);
+                    for z in 0..=max_fg_z {
+                        self.renderer.render_path_batch_overlay_for_layer_prepared(
+                            target,
+                            &batch.foreground_paths,
+                            z,
+                        );
+                    }
                 }
 
                 if !batch.foreground_image_draws.is_empty() {
