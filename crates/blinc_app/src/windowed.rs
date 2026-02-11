@@ -426,18 +426,18 @@ impl WindowedContext {
         use blinc_core::reactive::SignalId;
 
         let state_key = StateKey::from_string::<T>(key);
-        let mut hooks = self.hooks.lock().unwrap();
+        // IMPORTANT: Do not execute `init()` while holding internal locks.
+        // Otherwise, `init()` may call ctx.use_* / State::get() and deadlock.
+        let existing_raw_id = { self.hooks.lock().unwrap().get(&state_key) };
 
-        // Check if we have an existing signal with this key
-        let signal = if let Some(raw_id) = hooks.get(&state_key) {
-            // Reconstruct the signal from stored ID
+        let signal = if let Some(raw_id) = existing_raw_id {
             let signal_id = SignalId::from_raw(raw_id);
             Signal::from_id(signal_id)
         } else {
-            // First time - create a new signal and store it
-            let signal = self.reactive.lock().unwrap().create_signal(init());
+            let initial = init();
+            let signal = self.reactive.lock().unwrap().create_signal(initial);
             let raw_id = signal.id().to_raw();
-            hooks.insert(state_key, raw_id);
+            self.hooks.lock().unwrap().insert(state_key, raw_id);
             signal
         };
 
@@ -481,18 +481,17 @@ impl WindowedContext {
         use blinc_core::reactive::SignalId;
 
         let state_key = StateKey::from_string::<T>(key);
-        let mut hooks = self.hooks.lock().unwrap();
+        // Same locking rule as `use_state_keyed`: run `init()` lock-free.
+        let existing_raw_id = { self.hooks.lock().unwrap().get(&state_key) };
 
-        // Check if we have an existing signal with this key
-        if let Some(raw_id) = hooks.get(&state_key) {
-            // Reconstruct the signal from stored ID
+        if let Some(raw_id) = existing_raw_id {
             let signal_id = SignalId::from_raw(raw_id);
             Signal::from_id(signal_id)
         } else {
-            // First time - create a new signal and store it
-            let signal = self.reactive.lock().unwrap().create_signal(init());
+            let initial = init();
+            let signal = self.reactive.lock().unwrap().create_signal(initial);
             let raw_id = signal.id().to_raw();
-            hooks.insert(state_key, raw_id);
+            self.hooks.lock().unwrap().insert(state_key, raw_id);
             signal
         }
     }
@@ -1492,6 +1491,65 @@ impl AnimationContext for WindowedContext {
 
     fn use_animated_timeline_for<K: Hash>(&self, key: K) -> SharedAnimatedTimeline {
         WindowedContext::use_animated_timeline_for(self, key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_ctx() -> WindowedContext {
+        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(AnimationScheduler::new()));
+        let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
+        let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
+        let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
+        let element_registry: SharedElementRegistry =
+            Arc::new(blinc_layout::selector::ElementRegistry::new());
+        let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
+
+        WindowedContext {
+            width: 100.0,
+            height: 100.0,
+            scale_factor: 1.0,
+            physical_width: 100.0,
+            physical_height: 100.0,
+            focused: true,
+            rebuild_count: 0,
+            event_router: EventRouter::new(),
+            animations,
+            ref_dirty_flag,
+            reactive,
+            hooks,
+            overlay_manager: overlay_manager(),
+            had_visible_overlays: false,
+            element_registry,
+            ready_callbacks,
+            stylesheet: None,
+        }
+    }
+
+    #[test]
+    fn test_use_state_keyed_init_can_call_use_state_keyed_without_deadlock() {
+        let ctx = make_test_ctx();
+
+        let outer: State<i32> = ctx.use_state_keyed("outer", || {
+            let inner: State<i32> = ctx.use_state_keyed("inner", || 10);
+            inner.get() + 5
+        });
+
+        assert_eq!(outer.get(), 15);
+    }
+
+    #[test]
+    fn test_use_signal_keyed_init_can_call_use_state_keyed_without_deadlock() {
+        let ctx = make_test_ctx();
+
+        let sig: Signal<i32> = ctx.use_signal_keyed("sig", || {
+            let inner: State<i32> = ctx.use_state_keyed("inner2", || 7);
+            inner.get() * 2
+        });
+
+        assert_eq!(ctx.get(sig), Some(14));
     }
 }
 

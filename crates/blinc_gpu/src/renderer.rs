@@ -34,6 +34,17 @@ fn env_usize(name: &str) -> Option<usize> {
         .and_then(|v| v.trim().parse::<usize>().ok())
 }
 
+const fn align256(v: u64) -> u64 {
+    (v + 255) & !255
+}
+
+const PATH_UNIFORM_SIZE: u64 = std::mem::size_of::<PathUniforms>() as u64;
+const PATH_UNIFORM_STRIDE: u64 = align256(PATH_UNIFORM_SIZE);
+
+fn has_path_geometry(paths: &crate::primitives::PathBatch) -> bool {
+    !paths.vertices.is_empty() && !paths.indices.is_empty()
+}
+
 fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     // Default wgpu limits include `max_buffer_size = 256 MiB`.
     // This is conservative and may be smaller than what the hardware supports.
@@ -883,6 +894,56 @@ struct BindGroupLayouts {
 }
 
 impl GpuRenderer {
+    fn merged_paths_for_msaa(
+        a: &crate::primitives::PathBatch,
+        b: &crate::primitives::PathBatch,
+    ) -> Option<crate::primitives::PathBatch> {
+        if !has_path_geometry(a) && !has_path_geometry(b) {
+            return None;
+        }
+        if !has_path_geometry(b) {
+            return Some(a.clone());
+        }
+        if !has_path_geometry(a) {
+            return Some(b.clone());
+        }
+
+        // Merge into one batch so MSAA render paths can draw everything in a single pass.
+        // Note: brush metadata is still batch-wide; when both batches use conflicting
+        // advanced brush features simultaneously, this will pick a "best effort" merge.
+        let mut out = a.clone();
+        let base_vertex = out.vertices.len() as u32;
+        let base_index = out.indices.len() as u32;
+
+        out.vertices.extend_from_slice(&b.vertices);
+        out.indices
+            .extend(b.indices.iter().copied().map(|i| i + base_vertex));
+        out.draws.extend(b.draws.iter().map(|d| {
+            let mut dd = *d;
+            dd.index_start = dd.index_start.saturating_add(base_index);
+            dd
+        }));
+
+        out.use_gradient_texture |= b.use_gradient_texture;
+        if out.gradient_stops.is_none() && b.gradient_stops.is_some() {
+            out.gradient_stops = b.gradient_stops.clone();
+        }
+        out.use_image_texture |= b.use_image_texture;
+        if out.image_source.is_none() && b.image_source.is_some() {
+            out.image_source = b.image_source.clone();
+        }
+        if !out.use_image_texture && b.use_image_texture {
+            out.image_uv_bounds = b.image_uv_bounds;
+        }
+        out.use_glass_effect |= b.use_glass_effect;
+        if !out.use_glass_effect && b.use_glass_effect {
+            out.glass_params = b.glass_params;
+            out.glass_tint = b.glass_tint;
+        }
+
+        Some(out)
+    }
+
     /// Get the preferred backend for the current platform
     ///
     /// Using the primary backend instead of all backends reduces memory usage
@@ -915,10 +976,12 @@ impl GpuRenderer {
         }
     }
 
-    /// Safely write primitives to buffer, truncating if necessary to prevent overflow
-    fn write_primitives_safe(&self, primitives: &[GpuPrimitive]) {
+    /// Safely write primitives to buffer, truncating if necessary to prevent overflow.
+    ///
+    /// Returns the number of primitives written (after truncation).
+    fn write_primitives_safe(&self, primitives: &[GpuPrimitive]) -> usize {
         if primitives.is_empty() {
-            return;
+            return 0;
         }
         let max_primitives = self.config.max_primitives;
         let primitives_to_write = if primitives.len() > max_primitives {
@@ -936,6 +999,7 @@ impl GpuRenderer {
             0,
             bytemuck::cast_slice(primitives_to_write),
         );
+        primitives_to_write.len()
     }
 
     /// Safely write line segments to buffer, truncating if necessary to prevent overflow
@@ -1675,8 +1739,8 @@ impl GpuRenderer {
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(PATH_UNIFORM_SIZE),
                     },
                     count: None,
                 },
@@ -2664,7 +2728,9 @@ impl GpuRenderer {
 
         let path_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Path Uniforms Buffer"),
-            size: std::mem::size_of::<PathUniforms>() as u64,
+            // Dynamic offsets require 256-byte alignment. Allocate one stride by default;
+            // we grow this buffer on demand based on the number of path draw calls.
+            size: PATH_UNIFORM_STRIDE.max(256),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -2798,7 +2864,11 @@ impl GpuRenderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: buffers.path_uniforms.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &buffers.path_uniforms,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(PATH_UNIFORM_SIZE),
+                    }),
                 },
                 // Gradient texture (binding 1)
                 wgpu::BindGroupEntry {
@@ -3179,6 +3249,83 @@ impl GpuRenderer {
             }
         }
 
+        if std::env::var_os("BLINC_DEBUG_PATH_BOUNDS").is_some()
+            && !batch.paths.vertices.is_empty()
+            && !batch.paths.indices.is_empty()
+        {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static LOGS: AtomicU32 = AtomicU32::new(0);
+            let n = LOGS.fetch_add(1, Ordering::Relaxed);
+            if n < 3 {
+                let mut min_x = f32::INFINITY;
+                let mut min_y = f32::INFINITY;
+                let mut max_x = f32::NEG_INFINITY;
+                let mut max_y = f32::NEG_INFINITY;
+                let vp_w = self.viewport_size.0 as f32;
+                let vp_h = self.viewport_size.1 as f32;
+                let mut in_vp = 0usize;
+                for v in &batch.paths.vertices {
+                    min_x = min_x.min(v.position[0]);
+                    min_y = min_y.min(v.position[1]);
+                    max_x = max_x.max(v.position[0]);
+                    max_y = max_y.max(v.position[1]);
+                    if v.position[0].is_finite()
+                        && v.position[1].is_finite()
+                        && v.position[0] >= 0.0
+                        && v.position[0] <= vp_w
+                        && v.position[1] >= 0.0
+                        && v.position[1] <= vp_h
+                    {
+                        in_vp += 1;
+                    }
+                }
+
+                let draws = batch.paths.draws.len();
+                let first = batch.paths.draws.first().copied();
+                tracing::info!(
+                    "paths: draws={} v_bounds=({:.2},{:.2})..({:.2},{:.2}) v_in_viewport={} first_draw={:?}",
+                    draws,
+                    min_x,
+                    min_y,
+                    max_x,
+                    max_y,
+                    in_vp,
+                    first
+                );
+
+                // Also compute bounds for the first draw's index range to validate clipping.
+                if let Some(d) = first {
+                    let start = d.index_start as usize;
+                    let end = (d.index_start + d.index_count) as usize;
+                    if start < end && end <= batch.paths.indices.len() {
+                        let mut dmin_x = f32::INFINITY;
+                        let mut dmin_y = f32::INFINITY;
+                        let mut dmax_x = f32::NEG_INFINITY;
+                        let mut dmax_y = f32::NEG_INFINITY;
+                        for &idx in &batch.paths.indices[start..end] {
+                            let vi = idx as usize;
+                            if let Some(v) = batch.paths.vertices.get(vi) {
+                                dmin_x = dmin_x.min(v.position[0]);
+                                dmin_y = dmin_y.min(v.position[1]);
+                                dmax_x = dmax_x.max(v.position[0]);
+                                dmax_y = dmax_y.max(v.position[1]);
+                            }
+                        }
+                        tracing::info!(
+                            "paths: first_draw_i_bounds=({:.2},{:.2})..({:.2},{:.2}) clip_bounds={:?} clip_radius={:?} clip_type={}",
+                            dmin_x,
+                            dmin_y,
+                            dmax_x,
+                            dmax_y,
+                            d.clip_bounds,
+                            d.clip_radius,
+                            d.clip_type
+                        );
+                    }
+                }
+            }
+        }
+
         // Update uniforms
         let uniforms = Uniforms {
             viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
@@ -3188,7 +3335,7 @@ impl GpuRenderer {
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         // Update primitives buffer (with safety limit to prevent buffer overflow)
-        self.write_primitives_safe(&batch.primitives);
+        let prim_count = self.write_primitives_safe(&batch.primitives);
 
         // Update line segments buffer
         let line_count = self.write_line_segments_safe(&batch.line_segments);
@@ -3198,10 +3345,13 @@ impl GpuRenderer {
         // When active_glyph_atlas is set, rebind uses the real atlas automatically.
         self.update_aux_data_buffer(batch);
 
-        // Update path buffers if we have path geometry
-        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        // Update path buffers if we have background path geometry.
+        let has_paths = has_path_geometry(&batch.paths);
+        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
+        let has_foreground_primitives = !batch.foreground_primitives.is_empty();
+        let has_foreground_lines = !batch.foreground_line_segments.is_empty();
         if has_paths {
-            self.update_path_buffers(batch);
+            self.update_path_buffers(&batch.paths);
         }
 
         // Create command encoder
@@ -3234,11 +3384,11 @@ impl GpuRenderer {
             });
 
             // Render SDF primitives
-            if !batch.primitives.is_empty() {
+            if prim_count > 0 {
                 render_pass.set_pipeline(&self.pipelines.sdf);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
                 // 6 vertices per quad (2 triangles), one instance per primitive
-                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+                render_pass.draw(0..6, 0..prim_count as u32);
             }
 
             // Render compact line segments
@@ -3250,15 +3400,65 @@ impl GpuRenderer {
 
             // Render paths
             if has_paths {
-                if let (Some(vb), Some(ib)) =
-                    (&self.buffers.path_vertices, &self.buffers.path_indices)
-                {
-                    render_pass.set_pipeline(&self.pipelines.path);
-                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
-                    render_pass.set_vertex_buffer(0, vb.slice(..));
-                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
-                }
+                render_pass.set_pipeline(&self.pipelines.path);
+                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
+            }
+        }
+
+        // Foreground layer (rendered after the main pass; required for `set_foreground_layer(true)`).
+        //
+        // Note: this is distinct from RenderContext's background/foreground batches. Within a
+        // single PrimitiveBatch, `foreground_*` entries must render *after* the main content.
+        if has_foreground_primitives || has_foreground_lines || has_foreground_paths {
+            // Reuse the same buffers: background has already been drawn.
+            let fg_prim_count = if has_foreground_primitives {
+                self.write_primitives_safe(&batch.foreground_primitives)
+            } else {
+                0
+            };
+            let fg_line_count = if has_foreground_lines {
+                self.write_line_segments_safe(&batch.foreground_line_segments)
+            } else {
+                0
+            };
+            if has_foreground_paths {
+                self.update_path_buffers(&batch.foreground_paths);
+            }
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blinc Foreground Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            if fg_prim_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.sdf);
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                render_pass.draw(0..6, 0..fg_prim_count as u32);
+            }
+
+            if fg_line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..fg_line_count as u32);
+            }
+
+            if has_foreground_paths {
+                render_pass.set_pipeline(&self.pipelines.path);
+                self.draw_path_batch(
+                    &mut render_pass,
+                    &batch.foreground_paths,
+                    &self.bind_groups.path,
+                );
             }
         }
 
@@ -3487,7 +3687,10 @@ impl GpuRenderer {
             .map(|(_, p)| *p)
             .collect();
 
-        if included_primitives.is_empty() && batch.paths.vertices.is_empty() {
+        if included_primitives.is_empty()
+            && !has_path_geometry(&batch.paths)
+            && !has_path_geometry(&batch.foreground_paths)
+        {
             // Just clear the target
             let mut encoder = self
                 .device
@@ -3530,19 +3733,14 @@ impl GpuRenderer {
         // Update auxiliary data buffer
         self.update_aux_data_buffer(batch);
 
-        // Update primitives buffer with filtered primitives
-        if !included_primitives.is_empty() {
-            self.queue.write_buffer(
-                &self.buffers.primitives,
-                0,
-                bytemuck::cast_slice(&included_primitives),
-            );
-        }
+        // Update primitives buffer with filtered primitives (bounded by buffer capacity)
+        let prim_count = self.write_primitives_safe(&included_primitives);
 
-        // Update path buffers if we have path geometry
-        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        // Update path buffers if we have background paths.
+        let has_paths = has_path_geometry(&batch.paths);
+        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
         if has_paths {
-            self.update_path_buffers(batch);
+            self.update_path_buffers(&batch.paths);
         }
 
         // Create command encoder
@@ -3575,24 +3773,43 @@ impl GpuRenderer {
             });
 
             // Render SDF primitives (filtered)
-            if !included_primitives.is_empty() {
+            if prim_count > 0 {
                 render_pass.set_pipeline(&self.pipelines.sdf);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..included_primitives.len() as u32);
+                render_pass.draw(0..6, 0..prim_count as u32);
             }
 
             // Render paths (always rendered - path filtering would be more complex)
             if has_paths {
-                if let (Some(vb), Some(ib)) =
-                    (&self.buffers.path_vertices, &self.buffers.path_indices)
-                {
-                    render_pass.set_pipeline(&self.pipelines.path);
-                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
-                    render_pass.set_vertex_buffer(0, vb.slice(..));
-                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
-                }
+                render_pass.set_pipeline(&self.pipelines.path);
+                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
             }
+        }
+
+        if has_foreground_paths {
+            self.update_path_buffers(&batch.foreground_paths);
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Filtered Foreground Path Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.path);
+            self.draw_path_batch(
+                &mut render_pass,
+                &batch.foreground_paths,
+                &self.bind_groups.path,
+            );
         }
 
         // Submit commands
@@ -3680,11 +3897,59 @@ impl GpuRenderer {
         });
     }
 
+    /// Recreate the path bind group (needed when the path uniforms buffer is resized).
+    fn rebind_path_bind_group(&mut self) {
+        self.bind_groups.path = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Path Bind Group (rebound)"),
+            layout: &self.bind_group_layouts.path,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.buffers.path_uniforms,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(PATH_UNIFORM_SIZE),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.gradient_texture_cache.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.gradient_texture_cache.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self._placeholder_path_image_view,
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
+                },
+                // Backdrop texture placeholder (binding 5). The glass path pass creates
+                // a dedicated bind group when a real backdrop is required.
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self._placeholder_path_image_view,
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
+                },
+            ],
+        });
+    }
+
     /// Update path vertex and index buffers
-    fn update_path_buffers(&mut self, batch: &PrimitiveBatch) {
+    fn update_path_buffers(&mut self, paths: &crate::primitives::PathBatch) {
         // Upload gradient texture if needed for multi-stop gradients
-        if batch.paths.use_gradient_texture {
-            if let Some(ref stops) = batch.paths.gradient_stops {
+        if paths.use_gradient_texture {
+            if let Some(ref stops) = paths.gradient_stops {
                 self.gradient_texture_cache.upload_stops(
                     &self.queue,
                     stops,
@@ -3693,32 +3958,60 @@ impl GpuRenderer {
             }
         }
 
-        // Update path uniforms with clip data and brush metadata from batch
-        let path_uniforms = PathUniforms {
-            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
-            clip_bounds: batch.paths.clip_bounds,
-            clip_radius: batch.paths.clip_radius,
-            clip_type: batch.paths.clip_type,
-            use_gradient_texture: if batch.paths.use_gradient_texture {
-                1
-            } else {
-                0
-            },
-            use_image_texture: if batch.paths.use_image_texture { 1 } else { 0 },
-            use_glass_effect: if batch.paths.use_glass_effect { 1 } else { 0 },
-            image_uv_bounds: batch.paths.image_uv_bounds,
-            glass_params: batch.paths.glass_params,
-            glass_tint: batch.paths.glass_tint,
-            ..PathUniforms::default()
-        };
-        self.queue.write_buffer(
-            &self.buffers.path_uniforms,
-            0,
-            bytemuck::bytes_of(&path_uniforms),
-        );
+        // Ensure uniforms buffer can hold all per-draw clip states.
+        let draw_count = paths.draws.len().max(1) as u64;
+        let required_uniform_bytes = PATH_UNIFORM_STRIDE.saturating_mul(draw_count);
+        if self.buffers.path_uniforms.size() < required_uniform_bytes {
+            self.buffers.path_uniforms = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Path Uniforms Buffer (resized)"),
+                size: required_uniform_bytes,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.rebind_path_bind_group();
+        }
+
+        // Pack per-draw uniforms at 256-byte aligned offsets.
+        let mut packed = vec![0u8; required_uniform_bytes as usize];
+        if paths.draws.is_empty() {
+            // Backward-compatible fallback: a single draw with default uniforms.
+            let u = PathUniforms {
+                viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
+                use_gradient_texture: if paths.use_gradient_texture { 1 } else { 0 },
+                use_image_texture: if paths.use_image_texture { 1 } else { 0 },
+                use_glass_effect: if paths.use_glass_effect { 1 } else { 0 },
+                image_uv_bounds: paths.image_uv_bounds,
+                glass_params: paths.glass_params,
+                glass_tint: paths.glass_tint,
+                ..PathUniforms::default()
+            };
+            let bytes = bytemuck::bytes_of(&u);
+            packed[0..bytes.len()].copy_from_slice(bytes);
+        } else {
+            for (i, d) in paths.draws.iter().enumerate() {
+                let u = PathUniforms {
+                    viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
+                    clip_bounds: d.clip_bounds,
+                    clip_radius: d.clip_radius,
+                    clip_type: d.clip_type,
+                    use_gradient_texture: if paths.use_gradient_texture { 1 } else { 0 },
+                    use_image_texture: if paths.use_image_texture { 1 } else { 0 },
+                    use_glass_effect: if paths.use_glass_effect { 1 } else { 0 },
+                    image_uv_bounds: paths.image_uv_bounds,
+                    glass_params: paths.glass_params,
+                    glass_tint: paths.glass_tint,
+                    ..PathUniforms::default()
+                };
+                let offset = (PATH_UNIFORM_STRIDE * i as u64) as usize;
+                let bytes = bytemuck::bytes_of(&u);
+                packed[offset..offset + bytes.len()].copy_from_slice(bytes);
+            }
+        }
+        self.queue
+            .write_buffer(&self.buffers.path_uniforms, 0, &packed);
 
         // Create or recreate vertex buffer if needed
-        let vertex_size = (std::mem::size_of::<PathVertex>() * batch.paths.vertices.len()) as u64;
+        let vertex_size = (std::mem::size_of::<PathVertex>() * paths.vertices.len()) as u64;
         let need_new_vertex_buffer = match &self.buffers.path_vertices {
             Some(buf) => buf.size() < vertex_size,
             None => true,
@@ -3735,11 +4028,11 @@ impl GpuRenderer {
 
         if let Some(vb) = &self.buffers.path_vertices {
             self.queue
-                .write_buffer(vb, 0, bytemuck::cast_slice(&batch.paths.vertices));
+                .write_buffer(vb, 0, bytemuck::cast_slice(&paths.vertices));
         }
 
         // Create or recreate index buffer if needed
-        let index_size = (std::mem::size_of::<u32>() * batch.paths.indices.len()) as u64;
+        let index_size = (std::mem::size_of::<u32>() * paths.indices.len()) as u64;
         let need_new_index_buffer = match &self.buffers.path_indices {
             Some(buf) => buf.size() < index_size,
             None => true,
@@ -3756,7 +4049,45 @@ impl GpuRenderer {
 
         if let Some(ib) = &self.buffers.path_indices {
             self.queue
-                .write_buffer(ib, 0, bytemuck::cast_slice(&batch.paths.indices));
+                .write_buffer(ib, 0, bytemuck::cast_slice(&paths.indices));
+        }
+    }
+
+    fn draw_path_batch(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        paths: &crate::primitives::PathBatch,
+        bind_group: &wgpu::BindGroup,
+    ) {
+        if paths.vertices.is_empty() || paths.indices.is_empty() {
+            return;
+        }
+        let Some(vb) = &self.buffers.path_vertices else {
+            return;
+        };
+        let Some(ib) = &self.buffers.path_indices else {
+            return;
+        };
+
+        render_pass.set_vertex_buffer(0, vb.slice(..));
+        render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+
+        if paths.draws.is_empty() {
+            // Backward-compatible fallback: treat as a single draw with offset 0.
+            render_pass.set_bind_group(0, bind_group, &[0]);
+            render_pass.draw_indexed(0..paths.indices.len() as u32, 0, 0..1);
+            return;
+        }
+
+        for (i, d) in paths.draws.iter().enumerate() {
+            if d.index_count == 0 {
+                continue;
+            }
+            let start = d.index_start;
+            let end = d.index_start.saturating_add(d.index_count);
+            let offset = (PATH_UNIFORM_STRIDE.saturating_mul(i as u64)) as u32;
+            render_pass.set_bind_group(0, bind_group, &[offset]);
+            render_pass.draw_indexed(start..end, 0, 0..1);
         }
     }
 
@@ -3783,12 +4114,13 @@ impl GpuRenderer {
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         // Update primitives buffer (using safe write to prevent overflow)
-        self.write_primitives_safe(&batch.primitives);
+        let prim_count = self.write_primitives_safe(&batch.primitives);
 
-        // Update path buffers if we have path geometry
-        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        // Update path buffers if we have background path geometry.
+        let has_paths = has_path_geometry(&batch.paths);
+        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
         if has_paths {
-            self.update_path_buffers(batch);
+            self.update_path_buffers(&batch.paths);
         }
 
         // Create command encoder
@@ -3821,24 +4153,44 @@ impl GpuRenderer {
             });
 
             // Render SDF primitives
-            if !batch.primitives.is_empty() {
+            if prim_count > 0 {
                 render_pass.set_pipeline(&self.pipelines.sdf);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+                render_pass.draw(0..6, 0..prim_count as u32);
             }
 
             // Render paths
             if has_paths {
-                if let (Some(vb), Some(ib)) =
-                    (&self.buffers.path_vertices, &self.buffers.path_indices)
-                {
-                    render_pass.set_pipeline(&self.pipelines.path);
-                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
-                    render_pass.set_vertex_buffer(0, vb.slice(..));
-                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
-                }
+                render_pass.set_pipeline(&self.pipelines.path);
+                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
             }
+        }
+
+        // Foreground paths: preserve layered rendering semantics in MSAA path too.
+        if has_foreground_paths {
+            self.update_path_buffers(&batch.foreground_paths);
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blinc MSAA Foreground Path Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: msaa_target,
+                    resolve_target: Some(resolve_target),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.path);
+            self.draw_path_batch(
+                &mut render_pass,
+                &batch.foreground_paths,
+                &self.bind_groups.path,
+            );
         }
 
         // Submit commands
@@ -4044,7 +4396,7 @@ impl GpuRenderer {
         );
 
         // Update buffers
-        self.write_primitives_safe(&batch.primitives);
+        let prim_count = self.write_primitives_safe(&batch.primitives);
         let line_count = self.write_line_segments_safe(&batch.line_segments);
 
         // Create command encoder
@@ -4071,10 +4423,10 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            if !batch.primitives.is_empty() {
+            if prim_count > 0 {
                 render_pass.set_pipeline(&self.pipelines.sdf);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+                render_pass.draw(0..6, 0..prim_count as u32);
             }
 
             if line_count > 0 {
@@ -4114,7 +4466,7 @@ impl GpuRenderer {
         self.update_aux_data_buffer(batch);
 
         // Update primitives buffer
-        self.write_primitives_safe(&batch.primitives);
+        let bg_prim_count = self.write_primitives_safe(&batch.primitives);
         let bg_line_count = self.write_line_segments_safe(&batch.line_segments);
 
         // Split glass primitives into simple and liquid for separate rendering
@@ -4244,10 +4596,10 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            if !batch.primitives.is_empty() {
+            if bg_prim_count > 0 {
                 render_pass.set_pipeline(&self.pipelines.sdf);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+                render_pass.draw(0..6, 0..bg_prim_count as u32);
             }
 
             if bg_line_count > 0 {
@@ -4280,10 +4632,10 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            if !batch.primitives.is_empty() {
+            if bg_prim_count > 0 {
                 render_pass.set_pipeline(&self.pipelines.sdf);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+                render_pass.draw(0..6, 0..bg_prim_count as u32);
             }
 
             if bg_line_count > 0 {
@@ -4343,7 +4695,7 @@ impl GpuRenderer {
         // This requires a separate submission because we need to overwrite the primitives buffer
         if !batch.foreground_primitives.is_empty() || !batch.foreground_line_segments.is_empty() {
             // Upload foreground primitives/lines to the buffers
-            self.write_primitives_safe(&batch.foreground_primitives);
+            let fg_prim_count = self.write_primitives_safe(&batch.foreground_primitives);
             let fg_line_count = self.write_line_segments_safe(&batch.foreground_line_segments);
 
             let mut encoder = self
@@ -4367,10 +4719,10 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            if !batch.foreground_primitives.is_empty() {
+            if fg_prim_count > 0 {
                 render_pass.set_pipeline(&self.pipelines.sdf);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..batch.foreground_primitives.len() as u32);
+                render_pass.draw(0..6, 0..fg_prim_count as u32);
             }
 
             if fg_line_count > 0 {
@@ -4385,20 +4737,17 @@ impl GpuRenderer {
 
         // Pass 5: Render paths (SVGs) on top of glass
         // Paths are tessellated geometry that need their own pipeline
-        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
-        if has_paths {
-            // Update path buffers (creates/resizes as needed)
-            self.update_path_buffers(batch);
+        let has_paths = has_path_geometry(&batch.paths);
+        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
+        if has_paths || has_foreground_paths {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Blinc Glass Path Encoder"),
+                });
 
-            // Render paths
-            if let (Some(vb), Some(ib)) = (&self.buffers.path_vertices, &self.buffers.path_indices)
-            {
-                let mut encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("Blinc Glass Path Encoder"),
-                        });
-
+            if has_paths {
+                self.update_path_buffers(&batch.paths);
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Glass Path Render Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -4416,14 +4765,35 @@ impl GpuRenderer {
 
                 // Use overlay path pipeline (1x sampled, no MSAA)
                 render_pass.set_pipeline(&self.pipelines.path_overlay);
-                render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
-                render_pass.set_vertex_buffer(0, vb.slice(..));
-                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
-
-                drop(render_pass);
-                self.queue.submit(std::iter::once(encoder.finish()));
+                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
             }
+
+            if has_foreground_paths {
+                self.update_path_buffers(&batch.foreground_paths);
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Glass Foreground Path Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                render_pass.set_pipeline(&self.pipelines.path_overlay);
+                self.draw_path_batch(
+                    &mut render_pass,
+                    &batch.foreground_paths,
+                    &self.bind_groups.path,
+                );
+            }
+
+            self.queue.submit(std::iter::once(encoder.finish()));
         }
     }
 
@@ -4464,23 +4834,20 @@ impl GpuRenderer {
         // Update auxiliary data buffer
         self.update_aux_data_buffer(batch);
 
-        // Update primitives buffer
-        if !batch.primitives.is_empty() {
-            self.queue.write_buffer(
-                &self.buffers.primitives,
-                0,
-                bytemuck::cast_slice(&batch.primitives),
-            );
-        }
+        // Update primitives buffer (bounded by buffer capacity)
+        let prim_count = self.write_primitives_safe(&batch.primitives);
 
         // Update line segments buffer
         let line_count = self.write_line_segments_safe(&batch.line_segments);
 
-        // Update path buffers if we have path geometry
-        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        // Update path buffers if we have background path geometry.
+        let has_paths = has_path_geometry(&batch.paths);
+        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
         if has_paths {
-            self.update_path_buffers(batch);
+            self.update_path_buffers(&batch.paths);
         }
+        let has_foreground_primitives = !batch.foreground_primitives.is_empty();
+        let has_foreground_lines = !batch.foreground_line_segments.is_empty();
 
         // Create command encoder
         let mut encoder = self
@@ -4508,15 +4875,8 @@ impl GpuRenderer {
 
             // Render paths first (they're typically backgrounds)
             if has_paths {
-                if let (Some(vb), Some(ib)) =
-                    (&self.buffers.path_vertices, &self.buffers.path_indices)
-                {
-                    render_pass.set_pipeline(&self.pipelines.path_overlay);
-                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
-                    render_pass.set_vertex_buffer(0, vb.slice(..));
-                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
-                }
+                render_pass.set_pipeline(&self.pipelines.path_overlay);
+                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
             }
 
             // Render compact line segments
@@ -4527,10 +4887,63 @@ impl GpuRenderer {
             }
 
             // Render SDF primitives using overlay pipeline
-            if !batch.primitives.is_empty() {
+            if prim_count > 0 {
                 render_pass.set_pipeline(&self.pipelines.sdf_overlay);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+                render_pass.draw(0..6, 0..prim_count as u32);
+            }
+        }
+
+        // Foreground overlay pass (`set_foreground_layer(true)` inside this overlay batch).
+        if has_foreground_primitives || has_foreground_lines || has_foreground_paths {
+            let fg_prim_count = if has_foreground_primitives {
+                self.write_primitives_safe(&batch.foreground_primitives)
+            } else {
+                0
+            };
+            let fg_line_count = if has_foreground_lines {
+                self.write_line_segments_safe(&batch.foreground_line_segments)
+            } else {
+                0
+            };
+            if has_foreground_paths {
+                self.update_path_buffers(&batch.foreground_paths);
+            }
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blinc Foreground Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            if fg_line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..fg_line_count as u32);
+            }
+
+            if fg_prim_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.sdf_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                render_pass.draw(0..6, 0..fg_prim_count as u32);
+            }
+
+            if has_foreground_paths {
+                render_pass.set_pipeline(&self.pipelines.path_overlay);
+                self.draw_path_batch(
+                    &mut render_pass,
+                    &batch.foreground_paths,
+                    &self.bind_groups.path,
+                );
             }
         }
 
@@ -4635,23 +5048,20 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update primitives buffer
-        if !batch.primitives.is_empty() {
-            self.queue.write_buffer(
-                &self.buffers.primitives,
-                0,
-                bytemuck::cast_slice(&batch.primitives),
-            );
-        }
+        // Update primitives buffer (bounded by buffer capacity)
+        let prim_count = self.write_primitives_safe(&batch.primitives);
 
         // Update line segments buffer
         let line_count = self.write_line_segments_safe(&batch.line_segments);
 
-        // Update path buffers if we have path geometry
-        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        // Update path buffers if we have background path geometry.
+        let has_paths = has_path_geometry(&batch.paths);
+        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
         if has_paths {
-            self.update_path_buffers(batch);
+            self.update_path_buffers(&batch.paths);
         }
+        let has_foreground_primitives = !batch.foreground_primitives.is_empty();
+        let has_foreground_lines = !batch.foreground_line_segments.is_empty();
 
         // Create command encoder
         let mut encoder = self
@@ -4679,15 +5089,8 @@ impl GpuRenderer {
 
             // Render paths first
             if has_paths {
-                if let (Some(vb), Some(ib)) =
-                    (&self.buffers.path_vertices, &self.buffers.path_indices)
-                {
-                    render_pass.set_pipeline(&self.pipelines.path_overlay);
-                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
-                    render_pass.set_vertex_buffer(0, vb.slice(..));
-                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
-                }
+                render_pass.set_pipeline(&self.pipelines.path_overlay);
+                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
             }
 
             // Render compact line segments
@@ -4698,10 +5101,63 @@ impl GpuRenderer {
             }
 
             // Render SDF primitives
-            if !batch.primitives.is_empty() {
+            if prim_count > 0 {
                 render_pass.set_pipeline(&self.pipelines.sdf_overlay);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+                render_pass.draw(0..6, 0..prim_count as u32);
+            }
+        }
+
+        // Foreground overlay pass (`set_foreground_layer(true)` inside this overlay batch).
+        if has_foreground_primitives || has_foreground_lines || has_foreground_paths {
+            let fg_prim_count = if has_foreground_primitives {
+                self.write_primitives_safe(&batch.foreground_primitives)
+            } else {
+                0
+            };
+            let fg_line_count = if has_foreground_lines {
+                self.write_line_segments_safe(&batch.foreground_line_segments)
+            } else {
+                0
+            };
+            if has_foreground_paths {
+                self.update_path_buffers(&batch.foreground_paths);
+            }
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blinc Foreground Overlay Simple Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            if fg_line_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.lines_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
+                render_pass.draw(0..6, 0..fg_line_count as u32);
+            }
+
+            if fg_prim_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.sdf_overlay);
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                render_pass.draw(0..6, 0..fg_prim_count as u32);
+            }
+
+            if has_foreground_paths {
+                render_pass.set_pipeline(&self.pipelines.path_overlay);
+                self.draw_path_batch(
+                    &mut render_pass,
+                    &batch.foreground_paths,
+                    &self.bind_groups.path,
+                );
             }
         }
 
@@ -4732,12 +5188,8 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update primitives buffer
-        self.queue.write_buffer(
-            &self.buffers.primitives,
-            0,
-            bytemuck::cast_slice(primitives),
-        );
+        // Update primitives buffer (bounded by buffer capacity)
+        let prim_count = self.write_primitives_safe(primitives);
 
         // Create command encoder
         let mut encoder = self
@@ -4766,7 +5218,7 @@ impl GpuRenderer {
             // Render SDF primitives
             render_pass.set_pipeline(&self.pipelines.sdf_overlay);
             render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-            render_pass.draw(0..6, 0..primitives.len() as u32);
+            render_pass.draw(0..6, 0..prim_count as u32);
         }
 
         // Submit commands
@@ -4844,21 +5296,21 @@ impl GpuRenderer {
     /// This renders paths on top of existing content without clearing.
     /// Used for z-layered rendering where paths need to be rendered separately.
     pub fn render_paths_overlay(&mut self, target: &wgpu::TextureView, batch: &PrimitiveBatch) {
-        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
-        if !has_paths {
+        let has_paths = has_path_geometry(&batch.paths);
+        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
+        if !has_paths && !has_foreground_paths {
             return;
         }
 
-        // Update path buffers
-        self.update_path_buffers(batch);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Blinc Paths Overlay Encoder"),
+            });
 
-        // Render paths
-        if let (Some(vb), Some(ib)) = (&self.buffers.path_vertices, &self.buffers.path_indices) {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Blinc Paths Overlay Encoder"),
-                });
+        // Background paths
+        if has_paths {
+            self.update_path_buffers(&batch.paths);
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Paths Overlay Pass"),
@@ -4877,14 +5329,37 @@ impl GpuRenderer {
 
             // Use overlay path pipeline (1x sampled)
             render_pass.set_pipeline(&self.pipelines.path_overlay);
-            render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
-            render_pass.set_vertex_buffer(0, vb.slice(..));
-            render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
-
-            drop(render_pass);
-            self.queue.submit(std::iter::once(encoder.finish()));
+            self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
         }
+
+        // Foreground paths
+        if has_foreground_paths {
+            self.update_path_buffers(&batch.foreground_paths);
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Foreground Paths Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.path_overlay);
+            self.draw_path_batch(
+                &mut render_pass,
+                &batch.foreground_paths,
+                &self.bind_groups.path,
+            );
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
     }
 
     /// Render SDF primitives with unified text rendering (text as primitives)
@@ -4921,6 +5396,7 @@ impl GpuRenderer {
         sample_count: u32,
     ) {
         if batch.paths.vertices.is_empty()
+            && batch.foreground_paths.vertices.is_empty()
             && batch.primitives.is_empty()
             && batch.line_segments.is_empty()
         {
@@ -5060,23 +5536,15 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update primitives buffer
-        if !batch.primitives.is_empty() {
-            self.queue.write_buffer(
-                &self.buffers.primitives,
-                0,
-                bytemuck::cast_slice(&batch.primitives),
-            );
-        }
+        // Update primitives buffer (bounded by buffer capacity)
+        let prim_count = self.write_primitives_safe(&batch.primitives);
 
-        // Update path buffers
-        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        // Update path buffers (background only; foreground may be rendered in a second MSAA pass).
+        let has_paths = has_path_geometry(&batch.paths);
+        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
         if has_paths {
-            self.update_path_buffers(batch);
+            self.update_path_buffers(&batch.paths);
         }
-
-        // Get references to the cached textures (after mutable borrows are done)
-        let cached = self.cached_msaa.as_ref().unwrap();
 
         let mut encoder = self
             .device
@@ -5087,6 +5555,7 @@ impl GpuRenderer {
         // Pass 1: Render to MSAA texture with resolve
         // Use cached MSAA pipelines for sample_count > 1, otherwise fall back to base pipelines
         {
+            let cached = self.cached_msaa.as_ref().unwrap();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Overlay MSAA Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -5116,27 +5585,21 @@ impl GpuRenderer {
 
             // Render paths using MSAA pipeline
             if has_paths {
-                if let (Some(vb), Some(ib)) =
-                    (&self.buffers.path_vertices, &self.buffers.path_indices)
-                {
-                    render_pass.set_pipeline(path_pipeline);
-                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
-                    render_pass.set_vertex_buffer(0, vb.slice(..));
-                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
-                }
+                render_pass.set_pipeline(path_pipeline);
+                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
             }
 
             // Render SDF primitives using MSAA pipeline
-            if !batch.primitives.is_empty() {
+            if prim_count > 0 {
                 render_pass.set_pipeline(sdf_pipeline);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..batch.primitives.len() as u32);
+                render_pass.draw(0..6, 0..prim_count as u32);
             }
         }
 
         // Pass 2: Blend resolved texture onto target using cached resources
         {
+            let cached = self.cached_msaa.as_ref().unwrap();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Overlay Blend Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -5157,12 +5620,84 @@ impl GpuRenderer {
             render_pass.draw(0..3, 0..1); // Fullscreen triangle
         }
 
+        // Optional: Foreground paths rendered in a separate MSAA+composite pass so they land on top.
+        if has_foreground_paths {
+            self.update_path_buffers(&batch.foreground_paths);
+
+            // Pass 3: MSAA render foreground paths to resolve texture
+            {
+                let cached = self.cached_msaa.as_ref().unwrap();
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Overlay MSAA Foreground Paths Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &cached.msaa_view,
+                        resolve_target: Some(&cached.resolve_view),
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Discard,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                let path_pipeline = if sample_count > 1 {
+                    if let Some(ref msaa) = self.msaa_pipelines {
+                        &msaa.path
+                    } else {
+                        &self.pipelines.path
+                    }
+                } else {
+                    &self.pipelines.path
+                };
+
+                render_pass.set_pipeline(path_pipeline);
+                self.draw_path_batch(
+                    &mut render_pass,
+                    &batch.foreground_paths,
+                    &self.bind_groups.path,
+                );
+            }
+
+            // Pass 4: Composite (load existing target, blend foreground on top)
+            {
+                let cached = self.cached_msaa.as_ref().unwrap();
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Overlay Foreground Blend Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                render_pass.set_pipeline(&self.pipelines.composite_overlay);
+                render_pass.set_bind_group(0, &cached.composite_bind_group, &[]);
+                render_pass.draw(0..3, 0..1);
+            }
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Foreground primitives (set_foreground_layer) should land on top of the MSAA composite.
+        if !batch.foreground_primitives.is_empty() {
+            self.render_primitives_overlay(target, &batch.foreground_primitives);
+        }
 
         // Render compact line segments after the MSAA composite.
         // (Lines are geometry and typically look acceptable without MSAA here.)
         if !batch.line_segments.is_empty() {
             self.render_line_segments_overlay(target, &batch.line_segments);
+        }
+        if !batch.foreground_line_segments.is_empty() {
+            self.render_line_segments_overlay(target, &batch.foreground_line_segments);
         }
     }
 
@@ -5176,9 +5711,10 @@ impl GpuRenderer {
         batch: &PrimitiveBatch,
         sample_count: u32,
     ) {
-        if batch.paths.vertices.is_empty() || batch.paths.indices.is_empty() {
+        let merged = Self::merged_paths_for_msaa(&batch.paths, &batch.foreground_paths);
+        let Some(merged) = merged else {
             return;
-        }
+        };
 
         // Ensure we have MSAA pipelines for this sample count
         let need_new_pipelines = match &self.msaa_pipelines {
@@ -5314,7 +5850,7 @@ impl GpuRenderer {
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         // Update path buffers
-        self.update_path_buffers(batch);
+        self.update_path_buffers(&merged);
 
         // Get references to the cached textures
         let cached = self.cached_msaa.as_ref().unwrap();
@@ -5353,14 +5889,8 @@ impl GpuRenderer {
                 &self.pipelines.path
             };
 
-            if let (Some(vb), Some(ib)) = (&self.buffers.path_vertices, &self.buffers.path_indices)
-            {
-                render_pass.set_pipeline(path_pipeline);
-                render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
-                render_pass.set_vertex_buffer(0, vb.slice(..));
-                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
-            }
+            render_pass.set_pipeline(path_pipeline);
+            self.draw_path_batch(&mut render_pass, &merged, &self.bind_groups.path);
         }
 
         // Pass 2: Blend resolved texture onto target
@@ -6788,7 +7318,6 @@ impl GpuRenderer {
         }
 
         // Extract the primitive range
-        let primitive_count = end_idx - start_idx;
         let primitives = &batch.primitives[start_idx..end_idx];
 
         if primitives.is_empty() {
@@ -6803,12 +7332,11 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Write primitive range to buffer
-        self.queue.write_buffer(
-            &self.buffers.primitives,
-            0,
-            bytemuck::cast_slice(primitives),
-        );
+        // Write primitive range to buffer (bounded by buffer capacity)
+        let primitive_count = self.write_primitives_safe(primitives) as u32;
+        if primitive_count == 0 {
+            return;
+        }
 
         // Create command encoder
         let mut encoder = self
@@ -6841,7 +7369,7 @@ impl GpuRenderer {
 
             render_pass.set_pipeline(&self.pipelines.sdf);
             render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-            render_pass.draw(0..6, 0..primitive_count as u32);
+            render_pass.draw(0..6, 0..primitive_count);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -6926,12 +7454,10 @@ impl GpuRenderer {
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         // Write offset primitives to buffer and capture count for draw call
-        let primitive_count = offset_primitives.len() as u32;
-        self.queue.write_buffer(
-            &self.buffers.primitives,
-            0,
-            bytemuck::cast_slice(&offset_primitives),
-        );
+        let primitive_count = self.write_primitives_safe(&offset_primitives) as u32;
+        if primitive_count == 0 {
+            return (layer_texture, content_size);
+        }
         drop(offset_primitives); // Free Vec immediately - data is now on GPU
 
         // Create command encoder

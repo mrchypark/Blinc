@@ -1294,12 +1294,11 @@ pub struct PathBatch {
     pub vertices: Vec<crate::path::PathVertex>,
     /// Indices for all paths in this batch
     pub indices: Vec<u32>,
-    /// Clip bounds for this batch: (x, y, width, height) or (cx, cy, rx, ry)
-    pub clip_bounds: [f32; 4],
-    /// Clip corner radii for this batch
-    pub clip_radius: [f32; 4],
-    /// Clip type for this batch: 0=none, 1=rect, 2=circle, 3=ellipse
-    pub clip_type: u32,
+    /// Draw ranges for paths in this batch.
+    ///
+    /// This is required because clipping is stateful: different paths may be
+    /// rendered under different clip regions.
+    pub draws: Vec<PathDraw>,
     /// Whether to use gradient texture (for >2 stop gradients)
     pub use_gradient_texture: bool,
     /// Gradient stops for texture rasterization (when use_gradient_texture is true)
@@ -1316,6 +1315,42 @@ pub struct PathBatch {
     pub glass_params: [f32; 4],
     /// Glass tint color (RGBA)
     pub glass_tint: [f32; 4],
+}
+
+/// A draw call for a sub-range of indices within a [`PathBatch`], with clip state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PathDraw {
+    pub index_start: u32,
+    pub index_count: u32,
+    /// Clip bounds: (x, y, width, height) or (cx, cy, rx, ry)
+    pub clip_bounds: [f32; 4],
+    /// Clip corner radii (rounded rect) or (rx, ry, 0, 0) for ellipse
+    pub clip_radius: [f32; 4],
+    /// Clip type: 0=none, 1=rect, 2=circle, 3=ellipse
+    pub clip_type: u32,
+}
+
+const PATH_NO_CLIP_BOUNDS: [f32; 4] = [-10000.0, -10000.0, 100000.0, 100000.0];
+const PATH_NO_CLIP_RADIUS: [f32; 4] = [0.0; 4];
+
+impl PathBatch {
+    fn push_draw(&mut self, draw: PathDraw) {
+        if draw.index_count == 0 {
+            return;
+        }
+        if let Some(last) = self.draws.last_mut() {
+            let last_end = last.index_start.saturating_add(last.index_count);
+            if last_end == draw.index_start
+                && last.clip_bounds == draw.clip_bounds
+                && last.clip_radius == draw.clip_radius
+                && last.clip_type == draw.clip_type
+            {
+                last.index_count = last.index_count.saturating_add(draw.index_count);
+                return;
+            }
+        }
+        self.draws.push(draw);
+    }
 }
 
 /// Commands for layer operations during rendering
@@ -1584,10 +1619,19 @@ impl PrimitiveBatch {
         }
         // Offset indices by current vertex count
         let base_vertex = self.paths.vertices.len() as u32;
+        let index_start = self.paths.indices.len() as u32;
         self.paths.vertices.extend(tessellated.vertices);
         self.paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.paths.indices.len() as u32 - index_start;
+        self.paths.push_draw(PathDraw {
+            index_start,
+            index_count,
+            clip_bounds: PATH_NO_CLIP_BOUNDS,
+            clip_radius: PATH_NO_CLIP_RADIUS,
+            clip_type: ClipType::None as u32,
+        });
     }
 
     /// Add tessellated path geometry to the foreground batch
@@ -1596,10 +1640,19 @@ impl PrimitiveBatch {
             return;
         }
         let base_vertex = self.foreground_paths.vertices.len() as u32;
+        let index_start = self.foreground_paths.indices.len() as u32;
         self.foreground_paths.vertices.extend(tessellated.vertices);
         self.foreground_paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.foreground_paths.indices.len() as u32 - index_start;
+        self.foreground_paths.push_draw(PathDraw {
+            index_start,
+            index_count,
+            clip_bounds: PATH_NO_CLIP_BOUNDS,
+            clip_radius: PATH_NO_CLIP_RADIUS,
+            clip_type: ClipType::None as u32,
+        });
     }
 
     /// Add tessellated path geometry with clip data to the batch
@@ -1613,17 +1666,22 @@ impl PrimitiveBatch {
         if tessellated.is_empty() {
             return;
         }
-        // Update clip data on the batch (last path's clip wins)
-        self.paths.clip_bounds = clip_bounds;
-        self.paths.clip_radius = clip_radius;
-        self.paths.clip_type = clip_type as u32;
 
         // Offset indices by current vertex count
         let base_vertex = self.paths.vertices.len() as u32;
+        let index_start = self.paths.indices.len() as u32;
         self.paths.vertices.extend(tessellated.vertices);
         self.paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.paths.indices.len() as u32 - index_start;
+        self.paths.push_draw(PathDraw {
+            index_start,
+            index_count,
+            clip_bounds,
+            clip_radius,
+            clip_type: clip_type as u32,
+        });
     }
 
     /// Add tessellated path geometry with clip data to the foreground batch
@@ -1637,16 +1695,20 @@ impl PrimitiveBatch {
         if tessellated.is_empty() {
             return;
         }
-        // Update clip data on the batch (last path's clip wins)
-        self.foreground_paths.clip_bounds = clip_bounds;
-        self.foreground_paths.clip_radius = clip_radius;
-        self.foreground_paths.clip_type = clip_type as u32;
-
         let base_vertex = self.foreground_paths.vertices.len() as u32;
+        let index_start = self.foreground_paths.indices.len() as u32;
         self.foreground_paths.vertices.extend(tessellated.vertices);
         self.foreground_paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.foreground_paths.indices.len() as u32 - index_start;
+        self.foreground_paths.push_draw(PathDraw {
+            index_start,
+            index_count,
+            clip_bounds,
+            clip_radius,
+            clip_type: clip_type as u32,
+        });
     }
 
     /// Add tessellated path geometry with clip data and brush info to the batch
@@ -1661,11 +1723,6 @@ impl PrimitiveBatch {
         if tessellated.is_empty() {
             return;
         }
-
-        // Update clip data
-        self.paths.clip_bounds = clip_bounds;
-        self.paths.clip_radius = clip_radius;
-        self.paths.clip_type = clip_type as u32;
 
         // Update brush metadata
         self.paths.use_gradient_texture = brush_info.needs_gradient_texture;
@@ -1686,10 +1743,19 @@ impl PrimitiveBatch {
 
         // Offset indices by current vertex count
         let base_vertex = self.paths.vertices.len() as u32;
+        let index_start = self.paths.indices.len() as u32;
         self.paths.vertices.extend(tessellated.vertices);
         self.paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.paths.indices.len() as u32 - index_start;
+        self.paths.push_draw(PathDraw {
+            index_start,
+            index_count,
+            clip_bounds,
+            clip_radius,
+            clip_type: clip_type as u32,
+        });
     }
 
     /// Add tessellated path geometry with clip data and brush info to the foreground batch
@@ -1704,11 +1770,6 @@ impl PrimitiveBatch {
         if tessellated.is_empty() {
             return;
         }
-
-        // Update clip data
-        self.foreground_paths.clip_bounds = clip_bounds;
-        self.foreground_paths.clip_radius = clip_radius;
-        self.foreground_paths.clip_type = clip_type as u32;
 
         // Update brush metadata
         self.foreground_paths.use_gradient_texture = brush_info.needs_gradient_texture;
@@ -1728,10 +1789,19 @@ impl PrimitiveBatch {
         ];
 
         let base_vertex = self.foreground_paths.vertices.len() as u32;
+        let index_start = self.foreground_paths.indices.len() as u32;
         self.foreground_paths.vertices.extend(tessellated.vertices);
         self.foreground_paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.foreground_paths.indices.len() as u32 - index_start;
+        self.foreground_paths.push_draw(PathDraw {
+            index_start,
+            index_count,
+            clip_bounds,
+            clip_radius,
+            clip_type: clip_type as u32,
+        });
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1837,25 +1907,53 @@ impl PrimitiveBatch {
         self.foreground_image_draws
             .extend(other.foreground_image_draws);
 
-        // Merge paths with index offset
+        // Merge paths with vertex+index offset (and preserve per-draw clip metadata).
+        let mut other_paths = other.paths;
         let base_vertex = self.paths.vertices.len() as u32;
-        self.paths.vertices.extend(other.paths.vertices);
+        let base_index = self.paths.indices.len() as u32;
+        self.paths.vertices.extend(other_paths.vertices);
         self.paths
             .indices
-            .extend(other.paths.indices.iter().map(|i| i + base_vertex));
+            .extend(other_paths.indices.into_iter().map(|i| i + base_vertex));
+        for mut d in other_paths.draws.drain(..) {
+            d.index_start = d.index_start.saturating_add(base_index);
+            self.paths.push_draw(d);
+        }
+        // Preserve legacy "last brush wins" semantics for batch-wide metadata.
+        self.paths.use_gradient_texture = other_paths.use_gradient_texture;
+        self.paths.gradient_stops = other_paths.gradient_stops;
+        self.paths.use_image_texture = other_paths.use_image_texture;
+        self.paths.image_source = other_paths.image_source;
+        self.paths.image_uv_bounds = other_paths.image_uv_bounds;
+        self.paths.use_glass_effect = other_paths.use_glass_effect;
+        self.paths.glass_params = other_paths.glass_params;
+        self.paths.glass_tint = other_paths.glass_tint;
 
         // Merge foreground paths
+        let mut other_fg_paths = other.foreground_paths;
         let fg_base_vertex = self.foreground_paths.vertices.len() as u32;
+        let fg_base_index = self.foreground_paths.indices.len() as u32;
         self.foreground_paths
             .vertices
-            .extend(other.foreground_paths.vertices);
+            .extend(other_fg_paths.vertices);
         self.foreground_paths.indices.extend(
-            other
-                .foreground_paths
+            other_fg_paths
                 .indices
-                .iter()
+                .into_iter()
                 .map(|i| i + fg_base_vertex),
         );
+        for mut d in other_fg_paths.draws.drain(..) {
+            d.index_start = d.index_start.saturating_add(fg_base_index);
+            self.foreground_paths.push_draw(d);
+        }
+        self.foreground_paths.use_gradient_texture = other_fg_paths.use_gradient_texture;
+        self.foreground_paths.gradient_stops = other_fg_paths.gradient_stops;
+        self.foreground_paths.use_image_texture = other_fg_paths.use_image_texture;
+        self.foreground_paths.image_source = other_fg_paths.image_source;
+        self.foreground_paths.image_uv_bounds = other_fg_paths.image_uv_bounds;
+        self.foreground_paths.use_glass_effect = other_fg_paths.use_glass_effect;
+        self.foreground_paths.glass_params = other_fg_paths.glass_params;
+        self.foreground_paths.glass_tint = other_fg_paths.glass_tint;
 
         // Merge layer commands with offset primitive indices
         for mut entry in other.layer_commands {

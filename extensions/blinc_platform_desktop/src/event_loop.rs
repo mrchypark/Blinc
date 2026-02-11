@@ -38,8 +38,22 @@ pub struct DesktopEventLoop {
 impl DesktopEventLoop {
     /// Create a new desktop event loop
     pub fn new(config: WindowConfig) -> Result<Self, PlatformError> {
-        let event_loop =
-            WinitEventLoop::new().map_err(|e| PlatformError::EventLoop(e.to_string()))?;
+        // NOTE(macos): Explicitly set activation policy to Regular so the window behaves like a
+        // normal app window (shows up in window lists, focus/activation works, and automation
+        // tools can detect it). Without this, non-bundled binaries can behave like UI-less helpers.
+        let event_loop = {
+            let mut builder = WinitEventLoop::builder();
+
+            #[cfg(target_os = "macos")]
+            {
+                use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+                builder.with_activation_policy(ActivationPolicy::Regular);
+            }
+
+            builder
+                .build()
+                .map_err(|e| PlatformError::EventLoop(e.to_string()))?
+        };
 
         let wake_proxy = WakeProxy {
             proxy: event_loop.create_proxy(),

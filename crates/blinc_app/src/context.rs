@@ -529,6 +529,10 @@ impl RenderContext {
                     self.renderer
                         .render_line_segments_overlay(target, &fg_batch.line_segments);
                 }
+                if !fg_batch.foreground_line_segments.is_empty() {
+                    self.renderer
+                        .render_line_segments_overlay(target, &fg_batch.foreground_line_segments);
+                }
 
                 // Render paths with MSAA for smooth edges (paths are not included in unified primitives)
                 if use_msaa_overlay && fg_batch.has_paths() {
@@ -630,6 +634,10 @@ impl RenderContext {
                 if !fg_batch.line_segments.is_empty() {
                     self.renderer
                         .render_line_segments_overlay(target, &fg_batch.line_segments);
+                }
+                if !fg_batch.foreground_line_segments.is_empty() {
+                    self.renderer
+                        .render_line_segments_overlay(target, &fg_batch.foreground_line_segments);
                 }
 
                 // Render paths with MSAA for smooth edges (paths are not included in unified primitives)
