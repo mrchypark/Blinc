@@ -1,5 +1,7 @@
 //! Desktop event loop implementation using winit
 
+use std::time::{Duration, Instant};
+
 use crate::input;
 use crate::window::DesktopWindow;
 use blinc_platform::{
@@ -10,6 +12,20 @@ use winit::event::{StartCause, WindowEvent as WinitWindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop as WinitEventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::WindowId;
+
+// If the platform doesn't send `TouchPhase::Ended` promptly for wheel/trackpad,
+// synthesize `ScrollEnd` after a short inactivity window.
+const SCROLL_END_DEBOUNCE: Duration = Duration::from_millis(36);
+
+fn should_emit_synthetic_scroll_end(
+    scroll_end_pending: bool,
+    elapsed_since_last_scroll: Option<Duration>,
+) -> bool {
+    scroll_end_pending
+        && elapsed_since_last_scroll
+            .map(|elapsed| elapsed >= SCROLL_END_DEBOUNCE)
+            .unwrap_or(false)
+}
 
 /// Proxy for waking up the event loop from another thread
 ///
@@ -98,6 +114,8 @@ where
     handler: F,
     modifiers: ModifiersState,
     mouse_position: (f32, f32),
+    last_scroll_event_at: Option<Instant>,
+    scroll_end_pending: bool,
     should_exit: bool,
 }
 
@@ -112,6 +130,8 @@ where
             handler,
             modifiers: ModifiersState::empty(),
             mouse_position: (0.0, 0.0),
+            last_scroll_event_at: None,
+            scroll_end_pending: false,
             should_exit: false,
         }
     }
@@ -242,6 +262,8 @@ where
                 };
                 let input_event = input::scroll_event(dx, dy, phase);
                 self.handle_event(Event::Input(input_event));
+                self.last_scroll_event_at = Some(Instant::now());
+                self.scroll_end_pending = true;
 
                 // If scroll gesture ended or momentum ended, send a scroll end event
                 if matches!(
@@ -249,6 +271,8 @@ where
                     winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
                 ) {
                     self.handle_event(Event::Input(input::scroll_end_event()));
+                    self.last_scroll_event_at = None;
+                    self.scroll_end_pending = false;
                 }
             }
 
@@ -294,6 +318,18 @@ where
         }
     }
 
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let elapsed_since_last_scroll = self.last_scroll_event_at.map(|last| last.elapsed());
+        if should_emit_synthetic_scroll_end(self.scroll_end_pending, elapsed_since_last_scroll) {
+            self.handle_event(Event::Input(input::scroll_end_event()));
+            self.last_scroll_event_at = None;
+            self.scroll_end_pending = false;
+            if let Some(ref window) = self.window {
+                window.request_redraw();
+            }
+        }
+    }
+
     fn memory_warning(&mut self, _event_loop: &ActiveEventLoop) {
         self.handle_event(Event::Lifecycle(LifecycleEvent::LowMemory));
     }
@@ -303,5 +339,32 @@ where
         if let Some(ref window) = self.window {
             window.request_redraw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_emit_synthetic_scroll_end, SCROLL_END_DEBOUNCE};
+    use std::time::Duration;
+
+    #[test]
+    fn synthetic_scroll_end_requires_pending_and_elapsed_threshold() {
+        assert!(!should_emit_synthetic_scroll_end(
+            false,
+            Some(SCROLL_END_DEBOUNCE)
+        ));
+        assert!(!should_emit_synthetic_scroll_end(true, None));
+        assert!(!should_emit_synthetic_scroll_end(
+            true,
+            Some(SCROLL_END_DEBOUNCE - Duration::from_millis(1))
+        ));
+        assert!(should_emit_synthetic_scroll_end(
+            true,
+            Some(SCROLL_END_DEBOUNCE)
+        ));
+        assert!(should_emit_synthetic_scroll_end(
+            true,
+            Some(SCROLL_END_DEBOUNCE + Duration::from_millis(1))
+        ));
     }
 }
