@@ -321,23 +321,23 @@ struct GalleryModels {
 
 impl GalleryModels {
     fn new(config: &GalleryConfig) -> Self {
-let line_seed = config.seed_for_index(ChartKind::Line as usize);
-let multi_seed = config.seed_for_index(ChartKind::MultiLine as usize);
-let bar_seed = config.seed_for_index(ChartKind::Bar as usize);
-let hist_seed = config.seed_for_index(ChartKind::Histogram as usize);
-let scatter_seed = config.seed_for_index(ChartKind::Scatter as usize);
-let candle_seed = config.seed_for_index(ChartKind::Candlestick as usize);
-let heat_seed = config.seed_for_index(ChartKind::Heatmap as usize);
-let stacked_seed = config.seed_for_index(ChartKind::StackedArea as usize);
-let density_seed = config.seed_for_index(ChartKind::DensityMap as usize);
-let contour_seed = config.seed_for_index(ChartKind::Contour as usize);
-let stats_seed = config.seed_for_index(ChartKind::Statistics as usize);
-let hierarchy_seed = config.seed_for_index(ChartKind::Hierarchy as usize);
-let network_seed = config.seed_for_index(ChartKind::Network as usize);
-let polar_seed = config.seed_for_index(ChartKind::Polar as usize);
-let gauge_seed = config.seed_for_index(ChartKind::Gauge as usize);
-let funnel_seed = config.seed_for_index(ChartKind::Funnel as usize);
-let geo_seed = config.seed_for_index(ChartKind::Geo as usize);
+        let line_seed = config.seed_for_index(ChartKind::Line as usize);
+        let multi_seed = config.seed_for_index(ChartKind::MultiLine as usize);
+        let bar_seed = config.seed_for_index(ChartKind::Bar as usize);
+        let hist_seed = config.seed_for_index(ChartKind::Histogram as usize);
+        let scatter_seed = config.seed_for_index(ChartKind::Scatter as usize);
+        let candle_seed = config.seed_for_index(ChartKind::Candlestick as usize);
+        let heat_seed = config.seed_for_index(ChartKind::Heatmap as usize);
+        let stacked_seed = config.seed_for_index(ChartKind::StackedArea as usize);
+        let density_seed = config.seed_for_index(ChartKind::DensityMap as usize);
+        let contour_seed = config.seed_for_index(ChartKind::Contour as usize);
+        let stats_seed = config.seed_for_index(ChartKind::Statistics as usize);
+        let hierarchy_seed = config.seed_for_index(ChartKind::Hierarchy as usize);
+        let network_seed = config.seed_for_index(ChartKind::Network as usize);
+        let polar_seed = config.seed_for_index(ChartKind::Polar as usize);
+        let gauge_seed = config.seed_for_index(ChartKind::Gauge as usize);
+        let funnel_seed = config.seed_for_index(ChartKind::Funnel as usize);
+        let geo_seed = config.seed_for_index(ChartKind::Geo as usize);
 
         let line_series = make_series(config.line_n, line_seed)
             .expect("failed to create line series (x must be sorted)");
