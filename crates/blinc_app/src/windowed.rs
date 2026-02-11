@@ -485,12 +485,7 @@ fn e2e_count_pixels(rgba: &[u8], w: u32, h: u32) -> (usize, usize, usize) {
                 }
                 // Warm heatmap pixels skew red/yellow: high (r,g), lower b.
                 // Keep this tolerant; we mainly want to catch “heatmap disappeared”.
-                if (r > 0.50)
-                    && (g > 0.18)
-                    && (b < 0.60)
-                    && (r - b > 0.18)
-                    && (g - b > 0.10)
-                {
+                if (r > 0.50) && (g > 0.18) && (b < 0.60) && (r - b > 0.18) && (g - b > 0.10) {
                     warm += 1;
                 }
             }

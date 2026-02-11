@@ -1745,17 +1745,14 @@ mod tests {
             );
         }
 
-        let ui = div()
-            .w(200.0)
-            .h(200.0)
-            .child(
-                div()
-                    .id("scroll")
-                    .w_full()
-                    .h_full()
-                    .overflow_y_scroll()
-                    .child(list),
-            );
+        let ui = div().w(200.0).h(200.0).child(
+            div()
+                .id("scroll")
+                .w_full()
+                .h_full()
+                .overflow_y_scroll()
+                .child(list),
+        );
 
         let mut tree = RenderTree::from_element(&ui);
         tree.compute_layout(200.0, 200.0);
@@ -1870,17 +1867,14 @@ mod tests {
             );
         }
 
-        let ui = div()
-            .w(200.0)
-            .h(200.0)
-            .child(
-                div()
-                    .id("scroll")
-                    .w_full()
-                    .h_full()
-                    .overflow_y_scroll()
-                    .child(list),
-            );
+        let ui = div().w(200.0).h(200.0).child(
+            div()
+                .id("scroll")
+                .w_full()
+                .h_full()
+                .overflow_y_scroll()
+                .child(list),
+        );
 
         let mut tree = RenderTree::from_element(&ui);
         tree.compute_layout(200.0, 200.0);
