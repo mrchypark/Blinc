@@ -4109,7 +4109,7 @@ impl GpuRenderer {
         }
     }
 
-    /// Upload path buffers/uniforms for a given [`PathBatch`] without drawing.
+    /// Upload path buffers/uniforms for a given [`crate::primitives::PathBatch`] without drawing.
     ///
     /// Note: Path buffers are shared; preparing a different `PathBatch` will overwrite
     /// the currently prepared path buffers.

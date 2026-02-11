@@ -22,11 +22,26 @@ const ITEMS: &[(&str, &str)] = &[
     ("Scatter / Bubble", "Scatter points (capped primitives)"),
     ("Candlestick", "OHLC candles (screen-binned)"),
     ("Heatmap", "2D grid heatmap (screen-sampled)"),
-    ("Area (stacked)", "Aligned stacked area / streamgraph (pan/zoom/brush)"),
-    ("Density map / patch_map", "2D histogram density (pan/zoom/brush)"),
-    ("Contour / Isobands", "Marching-squares contours (pan/zoom/brush)"),
-    ("Boxplot / Violin / Error bands", "Boxplot per group (pan/zoom/brush)"),
-    ("Treemap / Sunburst / Icicle / Packing", "Hierarchy layouts (hover)"),
+    (
+        "Area (stacked)",
+        "Aligned stacked area / streamgraph (pan/zoom/brush)",
+    ),
+    (
+        "Density map / patch_map",
+        "2D histogram density (pan/zoom/brush)",
+    ),
+    (
+        "Contour / Isobands",
+        "Marching-squares contours (pan/zoom/brush)",
+    ),
+    (
+        "Boxplot / Violin / Error bands",
+        "Boxplot per group (pan/zoom/brush)",
+    ),
+    (
+        "Treemap / Sunburst / Icicle / Packing",
+        "Hierarchy layouts (hover)",
+    ),
     ("Graph / Sankey / Chord", "Network layouts (pan/zoom/hover)"),
     ("Parallel / Polar / Radar", "Radar chart (hover)"),
     ("Gauge / Funnel / Streamgraph", "Gauge + funnel"),
@@ -179,43 +194,64 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
             ctx.query("charts_gallery_tabs").on_ready(|b| {
                 tracing::info!(
                     "charts_gallery_demo: tabs bounds x={:.1} y={:.1} w={:.1} h={:.1}",
-                    b.x, b.y, b.width, b.height
+                    b.x,
+                    b.y,
+                    b.width,
+                    b.height
                 );
             });
             ctx.query("charts_gallery_main").on_ready(|b| {
                 tracing::info!(
                     "charts_gallery_demo: main bounds x={:.1} y={:.1} w={:.1} h={:.1}",
-                    b.x, b.y, b.width, b.height
+                    b.x,
+                    b.y,
+                    b.width,
+                    b.height
                 );
             });
             ctx.query("charts_gallery_canvas").on_ready(|b| {
                 tracing::info!(
                     "charts_gallery_demo: canvas bounds x={:.1} y={:.1} w={:.1} h={:.1}",
-                    b.x, b.y, b.width, b.height
+                    b.x,
+                    b.y,
+                    b.width,
+                    b.height
                 );
             });
             ctx.query("charts_gallery_sidebar").on_ready(|b| {
                 tracing::info!(
                     "charts_gallery_demo: sidebar bounds x={:.1} y={:.1} w={:.1} h={:.1}",
-                    b.x, b.y, b.width, b.height
+                    b.x,
+                    b.y,
+                    b.width,
+                    b.height
                 );
             });
             ctx.query("charts_gallery_sidebar_scroll").on_ready(|b| {
                 tracing::info!(
                     "charts_gallery_demo: sidebar_scroll bounds x={:.1} y={:.1} w={:.1} h={:.1}",
-                    b.x, b.y, b.width, b.height
+                    b.x,
+                    b.y,
+                    b.width,
+                    b.height
                 );
             });
             ctx.query("charts_gallery_sidebar_item_0").on_ready(|b| {
                 tracing::info!(
                     "charts_gallery_demo: sidebar_item_0 bounds x={:.1} y={:.1} w={:.1} h={:.1}",
-                    b.x, b.y, b.width, b.height
+                    b.x,
+                    b.y,
+                    b.width,
+                    b.height
                 );
             });
             ctx.query("charts_gallery_sidebar_item_10").on_ready(|b| {
                 tracing::info!(
                     "charts_gallery_demo: sidebar_item_10 bounds x={:.1} y={:.1} w={:.1} h={:.1}",
-                    b.x, b.y, b.width, b.height
+                    b.x,
+                    b.y,
+                    b.width,
+                    b.height
                 );
             });
         }
@@ -316,13 +352,13 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                                     .rounded(10.0)
                                     .bg(bg)
                                     .child(
-                                    text(title)
-                                        .size(12.0)
-                                        .weight(FontWeight::Medium)
-                                        .color(fg)
-                                        .no_wrap()
-                                        .pointer_events_none(),
-                                )
+                                        text(title)
+                                            .size(12.0)
+                                            .weight(FontWeight::Medium)
+                                            .color(fg)
+                                            .no_wrap()
+                                            .pointer_events_none(),
+                                    )
                             })
                             .on_click(move |_| {
                                 selected_for_click.set(i);
@@ -402,13 +438,13 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             .rounded(999.0)
                             .bg(bg)
                             .child(
-                            text(title)
-                                .size(12.0)
-                                .weight(FontWeight::Medium)
-                                .color(fg)
-                                .no_wrap()
-                                .pointer_events_none(),
-                        )
+                                text(title)
+                                    .size(12.0)
+                                    .weight(FontWeight::Medium)
+                                    .color(fg)
+                                    .no_wrap()
+                                    .pointer_events_none(),
+                            )
                     })
                     .on_click(move |_| {
                         selected_for_click.set(i);
@@ -466,9 +502,25 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             .overflow_clip()
                             .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
                             .child_box(chart_for(
-                                idx, m.line, m.multi, m.area, m.bar, m.hist, m.scatter, m.candle,
-                                m.heat, m.stacked_area, m.density, m.contour, m.stats, m.hierarchy,
-                                m.network, m.polar, m.gauge, m.funnel, m.geo,
+                                idx,
+                                m.line,
+                                m.multi,
+                                m.area,
+                                m.bar,
+                                m.hist,
+                                m.scatter,
+                                m.candle,
+                                m.heat,
+                                m.stacked_area,
+                                m.density,
+                                m.contour,
+                                m.stats,
+                                m.hierarchy,
+                                m.network,
+                                m.polar,
+                                m.gauge,
+                                m.funnel,
+                                m.geo,
                             )),
                     )
             })
@@ -705,7 +757,11 @@ fn make_density_points(n: usize) -> Vec<Point> {
     for i in 0..n {
         let t = i as f32 * 0.0025;
         // Two-lobe mixture with gentle warp (deterministic).
-        let (cx, cy) = if i % 2 == 0 { (0.4, 0.55) } else { (0.62, 0.45) };
+        let (cx, cy) = if i % 2 == 0 {
+            (0.4, 0.55)
+        } else {
+            (0.62, 0.45)
+        };
         let dx = (t * 3.1).sin() * 0.22 + (t * 0.17).cos() * 0.08;
         let dy = (t * 2.7).cos() * 0.18 + (t * 0.13).sin() * 0.07;
         let x = cx + dx + (t * 0.9).sin() * 0.03;

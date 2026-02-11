@@ -63,8 +63,17 @@ All notable changes to `blinc_gpu` will be documented in this file.
 - 3D transient state management with `clear_3d()` reset
 - `set_css_filter()` / `clear_css_filter()` for per-element CSS filter state
 
+#### Glass Backdrop Blur
+
+- Golden-angle spiral blur for simple glass shader (72 samples, 6 rings × 12) replacing 5×5 box blur
+- CSS-spec-correct sigma: blur radius = standard deviation (was `radius × 0.5`, producing half-strength blur)
+- Sampling extent increased to 2.5× sigma with linear ring spacing for proper Gaussian kernel coverage
+- Consistent blur algorithm across both liquid glass (GLASS_SHADER) and simple glass (SIMPLE_GLASS_SHADER) pipelines
+
 ### Fixed
 
+- Simple glass shader pixelation: replaced crude 25-sample box blur with 72-sample golden-angle spiral, eliminating visible grid artifacts
+- Glass blur intensity too weak: corrected Gaussian sigma from `radius * 0.5` to `radius` per CSS spec (blur radius = standard deviation)
 - `set_css_filter` and `clear_css_filter` now properly override the `DrawContext` trait (previously only defined as inherent methods, causing no-op dispatch via `&mut dyn DrawContext`)
 - Clippy warnings across image.rs, particles.rs, path.rs, primitives.rs, renderer.rs, text.rs
 
