@@ -2057,7 +2057,7 @@ impl OverlayManagerInner {
         let mut positions = Vec::new();
         let mut y_offset = margin;
 
-        for (_i, toast) in toasts.iter().take(self.max_toasts).enumerate() {
+        for toast in toasts.iter().take(self.max_toasts) {
             // Estimate toast height (will be refined after layout)
             let estimated_height = toast.cached_size.map(|(_, h)| h).unwrap_or(60.0);
 
@@ -2869,7 +2869,7 @@ mod tests {
         let mgr = overlay_manager();
 
         // Add a modal
-        let handle = mgr.lock().unwrap().add(OverlayConfig::modal(), || div());
+        let handle = mgr.lock().unwrap().add(OverlayConfig::modal(), div);
 
         assert!(mgr.lock().unwrap().has_visible_overlays());
 
@@ -2887,7 +2887,7 @@ mod tests {
         // Add modal with dismiss_on_escape
         let _handle = {
             let mut m = mgr.lock().unwrap();
-            let h = m.add(OverlayConfig::modal(), || div());
+            let h = m.add(OverlayConfig::modal(), div);
             // Manually transition to Open state
             if let Some(o) = m.overlays.get_mut(&h) {
                 o.state = OverlayState::Open;

@@ -66,7 +66,7 @@ fn create_test_texture(
 fn padded_bytes_per_row(width: u32) -> u32 {
     let unpadded = width * 4;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    ((unpadded + align - 1) / align) * align
+    unpadded.div_ceil(align) * align
 }
 
 /// Read back a rendered texture into an RGBA image (BGRA->RGBA conversion).
@@ -503,8 +503,10 @@ fn test_foreground_tessellated_path_stroke_is_visible() {
 #[test]
 fn test_foreground_tessellated_path_stroke_is_visible_no_msaa() {
     // Isolate the non-MSAA render path (render_with_clear + foreground paths).
-    let mut config = BlincConfig::default();
-    config.sample_count = 1;
+    let config = BlincConfig {
+        sample_count: 1,
+        ..Default::default()
+    };
     let mut app = BlincApp::with_config(config).expect("gpu init");
 
     let ui = div()

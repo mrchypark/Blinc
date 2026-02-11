@@ -704,7 +704,7 @@ mod tests {
         let mut tree = LayoutTree::new();
         let list = ul().child(li().child(div())).child(li().child(div()));
         list.build(&mut tree);
-        assert!(tree.len() > 0);
+        assert!(!tree.is_empty());
     }
 
     #[test]
@@ -713,7 +713,7 @@ mod tests {
         let mut tree = LayoutTree::new();
         let list = ol().child(li().child(div())).child(li().child(div()));
         list.build(&mut tree);
-        assert!(tree.len() > 0);
+        assert!(!tree.is_empty());
     }
 
     #[test]
@@ -722,7 +722,7 @@ mod tests {
         let mut tree = LayoutTree::new();
         let item = task_item(true).child(div());
         item.build(&mut tree);
-        assert!(tree.len() > 0);
+        assert!(!tree.is_empty());
     }
 
     #[test]

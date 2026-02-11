@@ -230,7 +230,7 @@ fn e2e_output_path(base: &std::path::Path, capture_index: usize) -> std::path::P
 fn padded_bytes_per_row(width: u32) -> u32 {
     let unpadded = width * 4;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    ((unpadded + align - 1) / align) * align
+    unpadded.div_ceil(align) * align
 }
 
 fn bgra_or_rgba_to_rgba(
@@ -240,9 +240,7 @@ fn bgra_or_rgba_to_rgba(
     height: u32,
 ) -> Option<Vec<u8>> {
     let bytes_per_row = padded_bytes_per_row(width) as usize;
-    let expected = bytes_per_row
-        .checked_mul(height as usize)
-        .unwrap_or(usize::MAX);
+    let expected = bytes_per_row.saturating_mul(height as usize);
     if bytes.len() < expected {
         return None;
     }
@@ -314,7 +312,7 @@ fn e2e_save_png_minimal_rgba(
         let row_len = width as usize * 4;
         for y in 0..height as usize {
             // Each scanline begins with a single filter byte (0 = None).
-            a = (a + 0) % mod_adler;
+            a %= mod_adler;
             b = (b + a) % mod_adler;
             let row = &rgba[y * row_len..(y + 1) * row_len];
             for &byte in row {
@@ -1941,65 +1939,6 @@ impl AnimationContext for WindowedContext {
 
     fn use_animated_timeline_for<K: Hash>(&self, key: K) -> SharedAnimatedTimeline {
         WindowedContext::use_animated_timeline_for(self, key)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_test_ctx() -> WindowedContext {
-        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(AnimationScheduler::new()));
-        let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
-        let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
-        let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
-        let element_registry: SharedElementRegistry =
-            Arc::new(blinc_layout::selector::ElementRegistry::new());
-        let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
-
-        WindowedContext {
-            width: 100.0,
-            height: 100.0,
-            scale_factor: 1.0,
-            physical_width: 100.0,
-            physical_height: 100.0,
-            focused: true,
-            rebuild_count: 0,
-            event_router: EventRouter::new(),
-            animations,
-            ref_dirty_flag,
-            reactive,
-            hooks,
-            overlay_manager: overlay_manager(),
-            had_visible_overlays: false,
-            element_registry,
-            ready_callbacks,
-            stylesheet: None,
-        }
-    }
-
-    #[test]
-    fn test_use_state_keyed_init_can_call_use_state_keyed_without_deadlock() {
-        let ctx = make_test_ctx();
-
-        let outer: State<i32> = ctx.use_state_keyed("outer", || {
-            let inner: State<i32> = ctx.use_state_keyed("inner", || 10);
-            inner.get() + 5
-        });
-
-        assert_eq!(outer.get(), 15);
-    }
-
-    #[test]
-    fn test_use_signal_keyed_init_can_call_use_state_keyed_without_deadlock() {
-        let ctx = make_test_ctx();
-
-        let sig: Signal<i32> = ctx.use_signal_keyed("sig", || {
-            let inner: State<i32> = ctx.use_state_keyed("inner2", || 7);
-            inner.get() * 2
-        });
-
-        assert_eq!(ctx.get(sig), Some(14));
     }
 }
 
@@ -4070,4 +4009,63 @@ where
         ..Default::default()
     };
     WindowedApp::run(config, ui_builder)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_ctx() -> WindowedContext {
+        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(AnimationScheduler::new()));
+        let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
+        let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
+        let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
+        let element_registry: SharedElementRegistry =
+            Arc::new(blinc_layout::selector::ElementRegistry::new());
+        let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
+
+        WindowedContext {
+            width: 100.0,
+            height: 100.0,
+            scale_factor: 1.0,
+            physical_width: 100.0,
+            physical_height: 100.0,
+            focused: true,
+            rebuild_count: 0,
+            event_router: EventRouter::new(),
+            animations,
+            ref_dirty_flag,
+            reactive,
+            hooks,
+            overlay_manager: overlay_manager(),
+            had_visible_overlays: false,
+            element_registry,
+            ready_callbacks,
+            stylesheet: None,
+        }
+    }
+
+    #[test]
+    fn test_use_state_keyed_init_can_call_use_state_keyed_without_deadlock() {
+        let ctx = make_test_ctx();
+
+        let outer: State<i32> = ctx.use_state_keyed("outer", || {
+            let inner: State<i32> = ctx.use_state_keyed("inner", || 10);
+            inner.get() + 5
+        });
+
+        assert_eq!(outer.get(), 15);
+    }
+
+    #[test]
+    fn test_use_signal_keyed_init_can_call_use_state_keyed_without_deadlock() {
+        let ctx = make_test_ctx();
+
+        let sig: Signal<i32> = ctx.use_signal_keyed("sig", || {
+            let inner: State<i32> = ctx.use_state_keyed("inner2", || 7);
+            inner.get() * 2
+        });
+
+        assert_eq!(ctx.get(sig), Some(14));
+    }
 }

@@ -204,10 +204,11 @@ pub fn android_main() {
 
 #[cfg(test)]
 mod tests {
+    use super::android_main;
+
     // Tests run on host, not on Android
     #[test]
     fn test_placeholder() {
-        // Android-specific code can't be tested on host
-        assert!(true);
+        android_main();
     }
 }

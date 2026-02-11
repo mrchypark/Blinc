@@ -1641,8 +1641,8 @@ fn tabs_section(ctx: &WindowedContext) -> impl ElementBuilder {
                                     ctx.use_state_keyed("small_tab", || "a".to_string());
                                 cn::tabs(&small_tab)
                                     .size(cn::TabsSize::Small)
-                                    .tab("a", "First", || div())
-                                    .tab("b", "Second", || div())
+                                    .tab("a", "First", div)
+                                    .tab("b", "Second", div)
                             }),
                     )
                     .child(
@@ -1655,8 +1655,8 @@ fn tabs_section(ctx: &WindowedContext) -> impl ElementBuilder {
                                     ctx.use_state_keyed("large_tab", || "x".to_string());
                                 cn::tabs(&large_tab)
                                     .size(cn::TabsSize::Large)
-                                    .tab("x", "Overview", || div())
-                                    .tab("y", "Details", || div())
+                                    .tab("x", "Overview", div)
+                                    .tab("y", "Details", div)
                             }),
                     ),
             ),

@@ -461,12 +461,8 @@ mod tests {
     fn test_div_animate() {
         use crate::div::div;
 
-        let _d = div()
+        let _ = div()
             .w(100.0)
             .animate(|a| a.opacity(0.5, 1.0).scale(0.8, 1.0));
-
-        // The initial values should be applied
-        // (We can't easily test this without accessing private fields)
-        assert!(true);
     }
 }

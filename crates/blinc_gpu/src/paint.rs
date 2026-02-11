@@ -2193,12 +2193,14 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         };
 
         // Build full layout options so canvas text honors letter spacing and line height.
-        let mut layout_options = blinc_text::LayoutOptions::default();
-        layout_options.anchor = anchor;
-        layout_options.alignment = alignment;
-        layout_options.line_break = blinc_text::LineBreakMode::None; // no wrap for canvas text
-        layout_options.letter_spacing = style.letter_spacing;
-        layout_options.line_height = style.line_height;
+        let layout_options = blinc_text::LayoutOptions {
+            anchor,
+            alignment,
+            line_break: blinc_text::LineBreakMode::None, // no wrap for canvas text
+            letter_spacing: style.letter_spacing,
+            line_height: style.line_height,
+            ..Default::default()
+        };
 
         // Now borrow text_ctx and prepare glyphs
         let text_ctx = self.text_ctx.as_mut().unwrap();

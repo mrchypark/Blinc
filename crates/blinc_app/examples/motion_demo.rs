@@ -129,7 +129,7 @@ fn single_element_demo() -> Div {
 
 /// Demo 2: Staggered list (forward direction)
 fn stagger_forward_demo() -> Div {
-    let items = vec!["Item 1", "Item 2", "Item 3", "Item 4", "Item 5"];
+    let items = ["Item 1", "Item 2", "Item 3", "Item 4", "Item 5"];
 
     demo_card("Stagger Forward", "delay: 300ms").child(
         motion()
@@ -141,7 +141,7 @@ fn stagger_forward_demo() -> Div {
 
 /// Demo 3: Staggered list (reverse direction)
 fn stagger_reverse_demo() -> Div {
-    let items = vec!["Item 1", "Item 2", "Item 3", "Item 4", "Item 5"];
+    let items = ["Item 1", "Item 2", "Item 3", "Item 4", "Item 5"];
 
     demo_card("Stagger Reverse", "delay: 300ms").child(
         motion()
@@ -153,7 +153,7 @@ fn stagger_reverse_demo() -> Div {
 
 /// Demo 4: Staggered list (from center)
 fn stagger_center_demo() -> Div {
-    let items = vec!["Item 1", "Item 2", "Item 3", "Item 4", "Item 5"];
+    let items = ["Item 1", "Item 2", "Item 3", "Item 4", "Item 5"];
 
     demo_card("Stagger Center", "delay: 300ms").child(
         motion()
@@ -274,7 +274,7 @@ fn pull_to_refresh_demo(ctx: &WindowedContext) -> Div {
                 let state = pull_state_move.lock().unwrap().state;
                 if state == PullState::Pulling || state == PullState::Armed {
                     let start_y = *drag_start_move.lock().unwrap();
-                    let delta_y = (ctx.mouse_y - start_y).max(0.0).min(MAX_PULL);
+                    let delta_y = (ctx.mouse_y - start_y).clamp(0.0, MAX_PULL);
 
                     // Content follows drag directly
                     content_offset_on_move

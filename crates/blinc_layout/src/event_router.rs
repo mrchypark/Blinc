@@ -1040,22 +1040,17 @@ impl EventRouter {
     fn collect_all_nodes(&self, tree: &RenderTree) -> HashSet<LayoutNodeId> {
         let mut nodes = HashSet::new();
         if let Some(root) = tree.root() {
-            self.collect_nodes_recursive(tree, root, &mut nodes);
+            Self::collect_nodes_recursive(tree, root, &mut nodes);
         }
         nodes
     }
 
     /// Recursively collect node IDs
-    fn collect_nodes_recursive(
-        &self,
-        tree: &RenderTree,
-        node: LayoutNodeId,
-        nodes: &mut HashSet<LayoutNodeId>,
-    ) {
+    fn collect_nodes_recursive(tree: &RenderTree, node: LayoutNodeId, nodes: &mut HashSet<LayoutNodeId>) {
         nodes.insert(node);
         let children = tree.layout().children(node);
         for child in children {
-            self.collect_nodes_recursive(tree, child, nodes);
+            Self::collect_nodes_recursive(tree, child, nodes);
         }
     }
 
