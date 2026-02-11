@@ -3,50 +3,299 @@
 //! Run with:
 //! `cargo run -p blinc_app --example charts_gallery_demo --features windowed`
 //!
-//! This demo is a living gallery: every chart candidate gets at least one section.
-//! Some sections are placeholders until their dedicated chart types land.
+//! This demo is a living gallery for every chart in `blinc_charts`.
+//! It also includes control buttons for runtime reconfiguration and seeded data randomization.
 
 use blinc_app::demos::charts_gallery::{layout_mode, parse_initial_selected, LayoutMode};
 use blinc_app::prelude::*;
 use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_charts::prelude::*;
-use blinc_core::{Brush, Color, DrawContext, Point, Rect, TextStyle};
+use blinc_core::{Color, Point, State};
 use blinc_layout::prelude::{ButtonState, NoState};
 
-const ITEMS: &[(&str, &str)] = &[
-    ("Line", "Ultra-large time series line"),
-    ("Multi-line", "Many series with gap breaks"),
-    ("Area", "Single-series area fill"),
-    ("Bar / Stacked bar", "Stacked bars (screen-binned)"),
-    ("Histogram", "Pre-binned histogram"),
-    ("Scatter / Bubble", "Scatter points (capped primitives)"),
-    ("Candlestick", "OHLC candles (screen-binned)"),
-    ("Heatmap", "2D grid heatmap (screen-sampled)"),
-    (
-        "Area (stacked)",
-        "Aligned stacked area / streamgraph (pan/zoom/brush)",
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChartKind {
+    Line,
+    MultiLine,
+    Area,
+    Bar,
+    Histogram,
+    Scatter,
+    Candlestick,
+    Heatmap,
+    StackedArea,
+    DensityMap,
+    Contour,
+    Statistics,
+    Hierarchy,
+    Network,
+    Polar,
+    Gauge,
+    Funnel,
+    Geo,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ChartEntry {
+    kind: ChartKind,
+    group: &'static str,
+    title: &'static str,
+    subtitle: &'static str,
+    usage: &'static str,
+    controls: &'static str,
+}
+
+const fn chart_entry(
+    kind: ChartKind,
+    group: &'static str,
+    title: &'static str,
+    subtitle: &'static str,
+    usage: &'static str,
+    controls: &'static str,
+) -> ChartEntry {
+    ChartEntry {
+        kind,
+        group,
+        title,
+        subtitle,
+        usage,
+        controls,
+    }
+}
+
+const ITEMS: &[ChartEntry] = &[
+    chart_entry(
+        ChartKind::Line,
+        "Time Series",
+        "Line",
+        "Ultra-large single time series",
+        "Best for trend + local anomaly checks over long ranges.",
+        "Try preset changes to compare downsampling quality/perf.",
     ),
-    (
-        "Density map / patch_map",
-        "2D histogram density (pan/zoom/brush)",
+    chart_entry(
+        ChartKind::MultiLine,
+        "Time Series",
+        "Multi-line",
+        "Many series with intentional gaps",
+        "Best for correlated-series comparisons and missing-data gaps.",
+        "Use randomize to regenerate phase offsets and gap patterns.",
     ),
-    (
-        "Contour / Isobands",
-        "Marching-squares contours (pan/zoom/brush)",
+    chart_entry(
+        ChartKind::Area,
+        "Time Series",
+        "Area",
+        "Single series area fill",
+        "Best for showing cumulative intensity and baseline distance.",
+        "Switch preset to tune sampling density.",
     ),
-    (
-        "Boxplot / Violin / Error bands",
-        "Boxplot per group (pan/zoom/brush)",
+    chart_entry(
+        ChartKind::Bar,
+        "Time Series",
+        "Bar",
+        "Screen-binned bars",
+        "Best for categorical/value magnitude over sequential buckets.",
+        "Use mode button to switch stacked/grouped rendering.",
     ),
-    (
-        "Treemap / Sunburst / Icicle / Packing",
-        "Hierarchy layouts (hover)",
+    chart_entry(
+        ChartKind::Histogram,
+        "Distribution",
+        "Histogram",
+        "Pre-binned value distribution",
+        "Best for quickly checking spread/skew/multi-modality.",
+        "Randomize regenerates the source distribution.",
     ),
-    ("Graph / Sankey / Chord", "Network layouts (pan/zoom/hover)"),
-    ("Parallel / Polar / Radar", "Radar chart (hover)"),
-    ("Gauge / Funnel / Streamgraph", "Gauge + funnel"),
-    ("Geo", "Shape rendering (pan/zoom/hover)"),
+    chart_entry(
+        ChartKind::Scatter,
+        "Distribution",
+        "Scatter",
+        "Point cloud with primitive cap",
+        "Best for dense trend + outlier exploration in sampled points.",
+        "Preset controls point budget to match hardware limits.",
+    ),
+    chart_entry(
+        ChartKind::Candlestick,
+        "Financial",
+        "Candlestick",
+        "OHLC candles with screen binning",
+        "Best for price-action inspection with open/high/low/close semantics.",
+        "Randomize regenerates volatility and drift profile.",
+    ),
+    chart_entry(
+        ChartKind::Heatmap,
+        "Field / Grid",
+        "Heatmap",
+        "2D scalar grid",
+        "Best for matrix-like intensity fields on fixed dimensions.",
+        "Preset controls max sampled cells in each axis.",
+    ),
+    chart_entry(
+        ChartKind::StackedArea,
+        "Field / Grid",
+        "Stacked Area",
+        "Aligned multi-series area",
+        "Best for part-to-whole temporal composition analysis.",
+        "Use mode button to switch Stacked vs Streamgraph.",
+    ),
+    chart_entry(
+        ChartKind::DensityMap,
+        "Field / Grid",
+        "Density Map",
+        "2D histogram density",
+        "Best for very dense scatter populations where raw points saturate.",
+        "Preset adjusts cell and point budgets for responsiveness.",
+    ),
+    chart_entry(
+        ChartKind::Contour,
+        "Field / Grid",
+        "Contour",
+        "Marching-squares isobands",
+        "Best for topology-level shape trends over scalar fields.",
+        "Preset changes contour level depth and segment budget.",
+    ),
+    chart_entry(
+        ChartKind::Statistics,
+        "Statistical",
+        "Statistics",
+        "Boxplot-like grouped summaries",
+        "Best for robust per-group distribution summaries.",
+        "Randomize regenerates group spread/shift patterns.",
+    ),
+    chart_entry(
+        ChartKind::Hierarchy,
+        "Structural",
+        "Hierarchy",
+        "Treemap / Icicle / Sunburst / Packing",
+        "Best for nested contribution analysis.",
+        "Cycle layout mode to compare structural readability.",
+    ),
+    chart_entry(
+        ChartKind::Network,
+        "Structural",
+        "Network",
+        "Graph / Sankey / Chord",
+        "Best for relationship flow and connectivity views.",
+        "Use mode button to switch topology projection.",
+    ),
+    chart_entry(
+        ChartKind::Polar,
+        "Specialized",
+        "Polar",
+        "Radar / Polar / Parallel",
+        "Best for dimension-wise profile comparisons.",
+        "Cycle mode for different radial/parallel framing.",
+    ),
+    chart_entry(
+        ChartKind::Gauge,
+        "Specialized",
+        "Gauge",
+        "Single KPI dial",
+        "Best for target-tracking single metric snapshots.",
+        "Randomize current updates value while keeping scale.",
+    ),
+    chart_entry(
+        ChartKind::Funnel,
+        "Specialized",
+        "Funnel",
+        "Stage conversion funnel",
+        "Best for conversion drop-off visualization.",
+        "Randomize current regenerates stage retention profile.",
+    ),
+    chart_entry(
+        ChartKind::Geo,
+        "Specialized",
+        "Geo",
+        "Shape/polyline map-like rendering",
+        "Best for path/region overlays with pan+zoom.",
+        "Randomize current perturbs coastline/island geometry.",
+    ),
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DataPreset {
+    Fast,
+    Balanced,
+    Detail,
+}
+
+impl DataPreset {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fast => "Fast",
+            Self::Balanced => "Balanced",
+            Self::Detail => "Detail",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Fast => Self::Balanced,
+            Self::Balanced => Self::Detail,
+            Self::Detail => Self::Fast,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct GalleryConfig {
+    line_n: usize,
+    initial_seed: u64,
+    base_seed: u64,
+    chart_salts: Vec<u64>,
+
+    preset: DataPreset,
+
+    bar_stacked: bool,
+    stacked_mode: StackedAreaMode,
+    hierarchy_mode: HierarchyMode,
+    network_mode: NetworkMode,
+    polar_mode: PolarChartMode,
+}
+
+impl GalleryConfig {
+    fn new(line_n: usize, item_count: usize) -> Self {
+        let seed = parse_env_seed().unwrap_or(0xC0DEC0DE_u64);
+        Self {
+            line_n,
+            initial_seed: seed,
+            base_seed: seed,
+            chart_salts: vec![0; item_count],
+            preset: DataPreset::Balanced,
+            bar_stacked: true,
+            stacked_mode: StackedAreaMode::Stacked,
+            hierarchy_mode: HierarchyMode::Treemap,
+            network_mode: NetworkMode::Graph,
+            polar_mode: PolarChartMode::Radar,
+        }
+    }
+
+    fn seed_for_index(&self, idx: usize) -> u64 {
+        let salt = self.chart_salts.get(idx).copied().unwrap_or_default();
+        splitmix64(self.base_seed ^ salt ^ ((idx as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)))
+    }
+
+    fn randomize_all(&mut self) {
+        self.base_seed = splitmix64(self.base_seed.wrapping_add(0xA076_1D64_78BD_642F));
+    }
+
+    fn randomize_chart(&mut self, idx: usize) {
+        if let Some(salt) = self.chart_salts.get_mut(idx) {
+            *salt =
+                splitmix64(salt.wrapping_add((idx as u64 + 1).wrapping_mul(0xBF58_476D_1CE4_E5B9)));
+        }
+    }
+
+    fn reset(&mut self) {
+        self.base_seed = self.initial_seed;
+        self.chart_salts.fill(0);
+
+        self.preset = DataPreset::Balanced;
+        self.bar_stacked = true;
+        self.stacked_mode = StackedAreaMode::Stacked;
+        self.hierarchy_mode = HierarchyMode::Treemap;
+        self.network_mode = NetworkMode::Graph;
+        self.polar_mode = PolarChartMode::Radar;
+    }
+}
 
 #[derive(Clone)]
 struct GalleryModels {
@@ -71,63 +320,113 @@ struct GalleryModels {
 }
 
 impl GalleryModels {
-    fn new(line_n: usize) -> Self {
-        // Keep this initializer pure and deterministic (no context access).
-        let line_series = make_series(line_n).expect("failed to create series (x must be sorted)");
+    fn new(config: &GalleryConfig) -> Self {
+        let line_seed = config.seed_for_index(ChartKind::Line as usize);
+        let multi_seed = config.seed_for_index(ChartKind::MultiLine as usize);
+        let bar_seed = config.seed_for_index(ChartKind::Bar as usize);
+        let hist_seed = config.seed_for_index(ChartKind::Histogram as usize);
+        let scatter_seed = config.seed_for_index(ChartKind::Scatter as usize);
+        let candle_seed = config.seed_for_index(ChartKind::Candlestick as usize);
+        let heat_seed = config.seed_for_index(ChartKind::Heatmap as usize);
+        let stacked_seed = config.seed_for_index(ChartKind::StackedArea as usize);
+        let density_seed = config.seed_for_index(ChartKind::DensityMap as usize);
+        let contour_seed = config.seed_for_index(ChartKind::Contour as usize);
+        let stats_seed = config.seed_for_index(ChartKind::Statistics as usize);
+        let hierarchy_seed = config.seed_for_index(ChartKind::Hierarchy as usize);
+        let network_seed = config.seed_for_index(ChartKind::Network as usize);
+        let polar_seed = config.seed_for_index(ChartKind::Polar as usize);
+        let gauge_seed = config.seed_for_index(ChartKind::Gauge as usize);
+        let funnel_seed = config.seed_for_index(ChartKind::Funnel as usize);
+        let geo_seed = config.seed_for_index(ChartKind::Geo as usize);
+
+        let line_series = make_series(config.line_n, line_seed)
+            .expect("failed to create line series (x must be sorted)");
 
         let line = LineChartHandle::new(LineChartModel::new(line_series.clone()));
         let area = AreaChartHandle::new(AreaChartModel::new(line_series.clone()));
-        let scatter = ScatterChartHandle::new(ScatterChartModel::new(line_series.clone()));
-
-        let multi = MultiLineChartHandle::new(
-            MultiLineChartModel::new(make_multi_series(64, 240))
-                .expect("multiline requires series"),
-        );
-        let bar = BarChartHandle::new(
-            BarChartModel::new(make_bar_series(3, 3_000)).expect("bar requires series"),
-        );
-        let hist =
-            HistogramChartHandle::new(HistogramChartModel::new(make_hist_values(100_000)).unwrap());
-        let candle = CandlestickChartHandle::new(CandlestickChartModel::new(
-            CandleSeries::new(make_candles(120_000)).expect("candles must be sorted"),
+        let scatter = ScatterChartHandle::new(ScatterChartModel::new(
+            make_series(config.line_n, scatter_seed).expect("scatter series"),
         ));
+
+        let mut multi_model = MultiLineChartModel::new(make_multi_series(72, 240, multi_seed))
+            .expect("multiline requires series");
+        multi_model.set_gap_dx(seed_range(multi_seed, 99, 4.0, 14.0));
+        let multi = MultiLineChartHandle::new(multi_model);
+
+        let mut bar_model =
+            BarChartModel::new(make_bar_series(4, 3_200, bar_seed)).expect("bar requires series");
+        bar_model.style.stacked = config.bar_stacked;
+        let bar = BarChartHandle::new(bar_model);
+
+        let hist = HistogramChartHandle::new(
+            HistogramChartModel::new(make_hist_values(100_000, hist_seed)).expect("hist values"),
+        );
+
+        let candle = CandlestickChartHandle::new(CandlestickChartModel::new(
+            CandleSeries::new(make_candles(120_000, candle_seed)).expect("candles must be sorted"),
+        ));
+
         let heat = HeatmapChartHandle::new(
-            HeatmapChartModel::new(320, 160, make_heat_values(320, 160)).expect("valid heatmap"),
+            HeatmapChartModel::new(320, 160, make_heat_values(320, 160, heat_seed))
+                .expect("valid heatmap"),
         );
 
-        let stacked_area = StackedAreaChartHandle::new(
-            StackedAreaChartModel::new(make_stacked_series(6, (line_n / 2).max(20_000)))
-                .expect("stacked area requires aligned series"),
-        );
+        let mut stacked_model = StackedAreaChartModel::new(make_stacked_series(
+            6,
+            (config.line_n / 2).max(20_000),
+            stacked_seed,
+        ))
+        .expect("stacked area requires aligned series");
+        stacked_model.style.mode = config.stacked_mode;
+        let stacked_area = StackedAreaChartHandle::new(stacked_model);
+
         let density = DensityMapChartHandle::new(
-            DensityMapChartModel::new(make_density_points((line_n / 2).max(60_000)))
-                .expect("density requires points"),
+            DensityMapChartModel::new(make_density_points(
+                (config.line_n / 2).max(60_000),
+                density_seed,
+            ))
+            .expect("density requires points"),
         );
-        let contour = ContourChartHandle::new(
-            ContourChartModel::new(240, 120, make_contour_values(240, 120)).expect("contour grid"),
-        );
-        let stats = StatisticsChartHandle::new(
-            StatisticsChartModel::new(make_statistics_groups(18, 600)).expect("stats groups"),
-        );
-        let hierarchy = HierarchyChartHandle::new(
-            HierarchyChartModel::new(make_hierarchy_tree()).expect("hierarchy tree"),
-        );
-        let network = NetworkChartHandle::new(
-            NetworkChartModel::new_graph(make_graph_labels(48), make_graph_edges(48))
-                .expect("network graph"),
-        );
-        let polar = PolarChartHandle::new(
-            PolarChartModel::new_radar(make_radar_dimensions(), make_radar_series())
-                .expect("radar data"),
-        );
-        let gauge =
-            GaugeChartHandle::new(GaugeChartModel::new(0.0, 100.0, 72.0).expect("gauge model"));
-        let funnel = FunnelChartHandle::new(
-            FunnelChartModel::new(make_funnel_stages()).expect("funnel stages"),
-        );
-        let geo = GeoChartHandle::new(GeoChartModel::new(make_geo_shapes()).expect("geo shapes"));
 
-        Self {
+        let contour = ContourChartHandle::new(
+            ContourChartModel::new(240, 120, make_contour_values(240, 120, contour_seed))
+                .expect("contour grid"),
+        );
+
+        let stats = StatisticsChartHandle::new(
+            StatisticsChartModel::new(make_statistics_groups(18, 600, stats_seed))
+                .expect("stats groups"),
+        );
+
+        let mut hierarchy_model =
+            HierarchyChartModel::new(make_hierarchy_tree(hierarchy_seed)).expect("hierarchy tree");
+        hierarchy_model.style.mode = config.hierarchy_mode;
+        let hierarchy = HierarchyChartHandle::new(hierarchy_model);
+
+        let network = NetworkChartHandle::new(
+            make_network_model(config.network_mode, network_seed).expect("network model"),
+        );
+
+        let mut polar_model =
+            PolarChartModel::new_radar(make_radar_dimensions(), make_radar_series(polar_seed))
+                .expect("radar data");
+        polar_model.mode = config.polar_mode;
+        polar_model.style.mode = config.polar_mode;
+        let polar = PolarChartHandle::new(polar_model);
+
+        let gauge_value = seed_range(gauge_seed, 12, 8.0, 96.0);
+        let gauge = GaugeChartHandle::new(
+            GaugeChartModel::new(0.0, 100.0, gauge_value).expect("gauge model"),
+        );
+
+        let funnel = FunnelChartHandle::new(
+            FunnelChartModel::new(make_funnel_stages(funnel_seed)).expect("funnel stages"),
+        );
+
+        let geo =
+            GeoChartHandle::new(GeoChartModel::new(make_geo_shapes(geo_seed)).expect("geo shapes"));
+
+        let mut models = Self {
             line,
             multi,
             area,
@@ -146,6 +445,148 @@ impl GalleryModels {
             gauge,
             funnel,
             geo,
+        };
+        models.apply_preset(config.preset);
+        models
+    }
+
+    fn apply_preset(&mut self, preset: DataPreset) {
+        let (
+            line_points,
+            area_points,
+            scatter_points,
+            multi_series,
+            multi_segments,
+            multi_points,
+            bar_bins,
+            candle_max,
+            heat_x,
+            heat_y,
+            density_x,
+            density_y,
+            density_points,
+            contour_segments,
+            contour_levels,
+            hierarchy_leaves,
+            network_nodes,
+            network_links,
+            polar_series,
+            geo_points,
+        ) = match preset {
+            DataPreset::Fast => (
+                2_500,
+                2_500,
+                1_600,
+                36,
+                10_000,
+                512,
+                2_000,
+                4_500,
+                80,
+                42,
+                72,
+                36,
+                80_000,
+                7_000,
+                vec![-0.4, 0.0, 0.4],
+                600,
+                96,
+                700,
+                6,
+                6_000,
+            ),
+            DataPreset::Balanced => (
+                8_000,
+                8_000,
+                4_000,
+                64,
+                22_000,
+                1_024,
+                8_000,
+                12_000,
+                128,
+                64,
+                128,
+                64,
+                180_000,
+                20_000,
+                vec![-0.6, -0.2, 0.2, 0.6],
+                2_000,
+                256,
+                2_000,
+                16,
+                20_000,
+            ),
+            DataPreset::Detail => (
+                20_000,
+                20_000,
+                7_000,
+                96,
+                40_000,
+                1_800,
+                18_000,
+                20_000,
+                160,
+                96,
+                160,
+                88,
+                250_000,
+                35_000,
+                vec![-0.8, -0.4, 0.0, 0.4, 0.8],
+                4_000,
+                512,
+                4_000,
+                20,
+                35_000,
+            ),
+        };
+
+        if let Ok(mut m) = self.line.0.lock() {
+            m.set_downsample_max_points(line_points);
+        }
+        if let Ok(mut m) = self.area.0.lock() {
+            m.set_downsample_max_points(area_points);
+        }
+        if let Ok(mut m) = self.scatter.0.lock() {
+            m.style.max_points = scatter_points.max(512);
+            m.set_max_points(scatter_points);
+        }
+        if let Ok(mut m) = self.multi.0.lock() {
+            m.style.max_series = multi_series;
+            m.style.max_total_segments = multi_segments;
+            m.style.max_points_per_series = multi_points;
+        }
+        if let Ok(mut m) = self.bar.0.lock() {
+            m.style.max_bins = bar_bins;
+        }
+        if let Ok(mut m) = self.candle.0.lock() {
+            m.style.max_candles = candle_max;
+        }
+        if let Ok(mut m) = self.heat.0.lock() {
+            m.style.max_cells_x = heat_x;
+            m.style.max_cells_y = heat_y;
+        }
+        if let Ok(mut m) = self.density.0.lock() {
+            m.style.max_cells_x = density_x;
+            m.style.max_cells_y = density_y;
+            m.style.max_points = density_points;
+        }
+        if let Ok(mut m) = self.contour.0.lock() {
+            m.style.max_segments = contour_segments;
+            m.style.levels = contour_levels;
+        }
+        if let Ok(mut m) = self.hierarchy.0.lock() {
+            m.style.max_leaves = hierarchy_leaves;
+        }
+        if let Ok(mut m) = self.network.0.lock() {
+            m.style.max_nodes = network_nodes;
+            m.style.max_links = network_links;
+        }
+        if let Ok(mut m) = self.polar.0.lock() {
+            m.style.max_series = polar_series;
+        }
+        if let Ok(mut m) = self.geo.0.lock() {
+            m.style.max_points = geo_points;
         }
     }
 }
@@ -257,7 +698,6 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         }
     }
 
-    // Core datasets (kept deterministic; no RNG needed).
     let line_n = std::env::var("BLINC_CHARTS_N")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -270,28 +710,50 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
     );
     let selected = ctx.use_state_keyed("charts_gallery_selected", move || initial_selected);
 
-    let models = ctx.use_state_keyed("charts_gallery_models", || GalleryModels::new(line_n));
+    let config = ctx.use_state_keyed("charts_gallery_config", move || {
+        GalleryConfig::new(line_n, ITEMS.len())
+    });
+
+    let models = {
+        let initial_cfg = config.try_get().expect("gallery config exists");
+        ctx.use_state_keyed("charts_gallery_models", move || {
+            GalleryModels::new(&initial_cfg)
+        })
+    };
 
     let layout = layout_mode(ctx.width, ctx.height);
     let dense = ctx.height < 460.0;
 
-    let header = div()
-        .flex_row()
-        .items_end()
-        .justify_between()
-        .child(
-            text("blinc_charts gallery")
-                .size(if dense { 18.0 } else { 24.0 })
-                .weight(FontWeight::Bold)
-                .color(Color::rgba(0.95, 0.96, 0.98, 1.0))
-                .no_wrap(),
-        )
-        .child(
-            text(format!("BLINC_CHARTS_N = {line_n}"))
-                .size(if dense { 10.0 } else { 12.0 })
-                .color(Color::rgba(0.70, 0.75, 0.82, 1.0))
-                .no_wrap(),
-        );
+    let header = {
+        let config_for_header = config.clone();
+        stateful::<NoState>()
+            .deps([config.signal_id()])
+            .on_state(move |_ctx| {
+                let cfg = config_for_header.try_get().expect("config exists");
+                div()
+                    .flex_row()
+                    .items_end()
+                    .justify_between()
+                    .child(
+                        text("blinc_charts gallery")
+                            .size(if dense { 18.0 } else { 24.0 })
+                            .weight(FontWeight::Bold)
+                            .color(Color::rgba(0.95, 0.96, 0.98, 1.0))
+                            .no_wrap(),
+                    )
+                    .child(
+                        text(format!(
+                            "N={} | preset={} | seed=0x{:08X}",
+                            cfg.line_n,
+                            cfg.preset.label(),
+                            cfg.base_seed as u32
+                        ))
+                        .size(if dense { 10.0 } else { 12.0 })
+                        .color(Color::rgba(0.70, 0.75, 0.82, 1.0))
+                        .no_wrap(),
+                    )
+            })
+    };
 
     let sidebar = {
         let selected_for_list = selected.clone();
@@ -299,7 +761,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
 
         div()
             .id("charts_gallery_sidebar")
-            .w(280.0)
+            .w(300.0)
             .h_full()
             .rounded(14.0)
             .bg(Color::rgba(0.04, 0.05, 0.07, 1.0))
@@ -315,11 +777,23 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
             )
             .child(div().h(1.0).bg(Color::rgba(1.0, 1.0, 1.0, 0.06)))
             .child({
-                // In a flex column, allow the scroll container to shrink below its content size.
-                // (Similar to CSS `min-height: 0` for scrollables inside flex.)
                 let mut list = div().flex_col().gap(6.0);
-                for (i, (title, _desc)) in ITEMS.iter().enumerate() {
-                    let title = *title;
+                let mut last_group: Option<&'static str> = None;
+
+                for (i, item) in ITEMS.iter().enumerate() {
+                    let item = *item;
+
+                    if last_group != Some(item.group) {
+                        last_group = Some(item.group);
+                        list = list.child(
+                            text(item.group)
+                                .size(10.0)
+                                .weight(FontWeight::SemiBold)
+                                .color(Color::rgba(0.58, 0.66, 0.76, 0.95)),
+                        );
+                    }
+
+                    let title = item.title;
                     let item_id = format!("charts_gallery_sidebar_item_{i}");
                     let selected_for_state = selected_for_list.clone();
                     let selected_for_click = selected_for_list.clone();
@@ -365,6 +839,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             }),
                     );
                 }
+
                 div()
                     .flex_1()
                     .min_h(0.0)
@@ -379,9 +854,6 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         let selected_for_list = selected.clone();
         let selected_signal = selected.signal_id();
 
-        // In narrow layout, the pill list can get tall and squeeze the plot area.
-        // When the window height is short, keep tabs to a single row (horizontal scroll)
-        // so the main chart remains visible.
         let compact_tabs = dense;
 
         let mut list = div()
@@ -395,17 +867,13 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
             .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.06));
 
         if compact_tabs {
-            // Keep tabs short in small-height windows so the chart stays visible.
-            // Use a fixed height to prevent accidental wrapping from consuming vertical space.
             list = list.max_h(52.0).overflow_x_scroll();
         } else {
-            // In taller layouts, show pills in multiple rows and allow vertical wheel scrolling
-            // so users can reach items beyond the first row.
             list = list.max_h(140.0).overflow_y_scroll().flex_wrap();
         }
 
-        for (i, (title, _desc)) in ITEMS.iter().enumerate() {
-            let title = *title;
+        for (i, item) in ITEMS.iter().enumerate() {
+            let title = item.title;
             let item_id = format!("charts_gallery_tab_item_{i}");
             let selected_for_state = selected_for_list.clone();
             let selected_for_click = selected_for_list.clone();
@@ -459,14 +927,20 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         let selected_for_main = selected.clone();
         let selected_signal = selected.signal_id();
 
-        let models = models.clone();
+        let config_for_main = config.clone();
+        let config_signal = config.signal_id();
+
+        let models_for_main = models.clone();
+        let models_signal = models.signal_id();
 
         stateful::<NoState>()
-            .deps([selected_signal])
+            .deps([selected_signal, config_signal, models_signal])
             .on_state(move |_ctx| {
                 let idx = selected_for_main.get();
-                let (title, desc) = ITEMS.get(idx).copied().unwrap_or(("Unknown", ""));
-                let m = models.try_get().expect("models exist");
+                let item = ITEMS.get(idx).copied().unwrap_or_else(|| ITEMS[0]);
+
+                let cfg = config_for_main.try_get().expect("config exists");
+                let m = models_for_main.try_get().expect("models exist");
 
                 div()
                     .id("charts_gallery_main")
@@ -483,17 +957,44 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             .flex_col()
                             .gap(2.0)
                             .child(
-                                text(title)
-                                    .size(16.0)
-                                    .weight(FontWeight::SemiBold)
-                                    .color(Color::rgba(0.92, 0.93, 0.95, 1.0)),
+                                div()
+                                    .flex_row()
+                                    .justify_between()
+                                    .child(
+                                        text(item.title)
+                                            .size(16.0)
+                                            .weight(FontWeight::SemiBold)
+                                            .color(Color::rgba(0.92, 0.93, 0.95, 1.0)),
+                                    )
+                                    .child(
+                                        text(item.group)
+                                            .size(10.0)
+                                            .weight(FontWeight::SemiBold)
+                                            .color(Color::rgba(0.57, 0.66, 0.78, 0.95)),
+                                    ),
                             )
                             .child(
-                                text(desc)
+                                text(item.subtitle)
                                     .size(12.0)
                                     .color(Color::rgba(0.68, 0.72, 0.78, 1.0)),
+                            )
+                            .child(
+                                text(format!(
+                                    "seed 0x{:08X} | preset {}",
+                                    cfg.seed_for_index(idx) as u32,
+                                    cfg.preset.label()
+                                ))
+                                .size(10.0)
+                                .color(Color::rgba(0.55, 0.60, 0.67, 1.0)),
                             ),
                     )
+                    .child(control_panel(
+                        idx,
+                        item,
+                        dense,
+                        config_for_main.clone(),
+                        models_for_main.clone(),
+                    ))
                     .child(
                         div()
                             .id("charts_gallery_canvas")
@@ -501,7 +1002,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             .rounded(14.0)
                             .overflow_clip()
                             .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                            .child_box(chart_for(idx, m)),
+                            .child_box(chart_for(item.kind, m)),
                     )
             })
     };
@@ -528,140 +1029,399 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
     }
 }
 
-fn chart_for(idx: usize, models: GalleryModels) -> Box<dyn ElementBuilder> {
-    match idx {
-        0 => Box::new(line_chart(models.line)),
-        1 => Box::new(multi_line_chart(models.multi)),
-        2 => Box::new(area_chart(models.area)),
-        3 => Box::new(bar_chart(models.bar)),
-        4 => Box::new(histogram_chart(models.hist)),
-        5 => Box::new(scatter_chart(models.scatter)),
-        6 => Box::new(candlestick_chart(models.candle)),
-        7 => Box::new(heatmap_chart(models.heat)),
-        8 => Box::new(stacked_area_chart(models.stacked_area)),
-        9 => Box::new(density_map_chart(models.density)),
-        10 => Box::new(contour_chart(models.contour)),
-        11 => Box::new(statistics_chart(models.stats)),
-        12 => Box::new(hierarchy_chart(models.hierarchy)),
-        13 => Box::new(network_chart(models.network)),
-        14 => Box::new(polar_chart(models.polar)),
-        15 => Box::new(
-            div()
-                .w_full()
-                .h_full()
-                .flex_row()
-                .gap(10.0)
-                .child(
-                    div()
-                        .flex_1()
-                        .h_full()
-                        .child_box(Box::new(gauge_chart(models.gauge))),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .h_full()
-                        .child_box(Box::new(funnel_chart(models.funnel))),
+fn control_panel(
+    idx: usize,
+    item: ChartEntry,
+    dense: bool,
+    config: State<GalleryConfig>,
+    models: State<GalleryModels>,
+) -> impl ElementBuilder {
+    let cfg = config.try_get().expect("config exists");
+
+    let mut row = div()
+        .flex_row()
+        .flex_wrap()
+        .gap(if dense { 4.0 } else { 6.0 })
+        .items_center();
+
+    {
+        let config_for_click = config.clone();
+        let models_for_click = models.clone();
+        row = row.child(action_chip("Randomize current", dense, false, move |_| {
+            config_for_click.update(|mut c| {
+                c.randomize_chart(idx);
+                c
+            });
+            refresh_models(&config_for_click, &models_for_click);
+        }));
+    }
+
+    {
+        let config_for_click = config.clone();
+        let models_for_click = models.clone();
+        row = row.child(action_chip("Randomize all", dense, false, move |_| {
+            config_for_click.update(|mut c| {
+                c.randomize_all();
+                c
+            });
+            refresh_models(&config_for_click, &models_for_click);
+        }));
+    }
+
+    {
+        let config_for_click = config.clone();
+        let models_for_click = models.clone();
+        row = row.child(action_chip(
+            format!("Preset: {}", cfg.preset.label()),
+            dense,
+            true,
+            move |_| {
+                config_for_click.update(|mut c| {
+                    c.preset = c.preset.next();
+                    c
+                });
+                refresh_models(&config_for_click, &models_for_click);
+            },
+        ));
+    }
+
+    {
+        let config_for_click = config.clone();
+        let models_for_click = models.clone();
+        row = row.child(action_chip("Reset view/style", dense, false, move |_| {
+            config_for_click.update(|mut c| {
+                c.reset();
+                c
+            });
+            refresh_models(&config_for_click, &models_for_click);
+        }));
+    }
+
+    match item.kind {
+        ChartKind::Bar => {
+            let config_for_click = config.clone();
+            let models_for_click = models.clone();
+            row = row.child(action_chip(
+                format!(
+                    "Bars: {}",
+                    if cfg.bar_stacked {
+                        "Stacked"
+                    } else {
+                        "Grouped"
+                    }
                 ),
-        ),
-        16 => Box::new(geo_chart(models.geo)),
-        _ => Box::new(todo_canvas("TODO: unknown index")),
+                dense,
+                true,
+                move |_| {
+                    config_for_click.update(|mut c| {
+                        c.bar_stacked = !c.bar_stacked;
+                        c
+                    });
+                    refresh_models(&config_for_click, &models_for_click);
+                },
+            ));
+        }
+        ChartKind::StackedArea => {
+            let config_for_click = config.clone();
+            let models_for_click = models.clone();
+            row = row.child(action_chip(
+                format!("Mode: {}", stacked_mode_label(cfg.stacked_mode)),
+                dense,
+                true,
+                move |_| {
+                    config_for_click.update(|mut c| {
+                        c.stacked_mode = next_stacked_mode(c.stacked_mode);
+                        c
+                    });
+                    refresh_models(&config_for_click, &models_for_click);
+                },
+            ));
+        }
+        ChartKind::Hierarchy => {
+            let config_for_click = config.clone();
+            let models_for_click = models.clone();
+            row = row.child(action_chip(
+                format!("Layout: {}", hierarchy_mode_label(cfg.hierarchy_mode)),
+                dense,
+                true,
+                move |_| {
+                    config_for_click.update(|mut c| {
+                        c.hierarchy_mode = next_hierarchy_mode(c.hierarchy_mode);
+                        c
+                    });
+                    refresh_models(&config_for_click, &models_for_click);
+                },
+            ));
+        }
+        ChartKind::Network => {
+            let config_for_click = config.clone();
+            let models_for_click = models.clone();
+            row = row.child(action_chip(
+                format!("Network: {}", network_mode_label(cfg.network_mode)),
+                dense,
+                true,
+                move |_| {
+                    config_for_click.update(|mut c| {
+                        c.network_mode = next_network_mode(c.network_mode);
+                        c
+                    });
+                    refresh_models(&config_for_click, &models_for_click);
+                },
+            ));
+        }
+        ChartKind::Polar => {
+            let config_for_click = config.clone();
+            let models_for_click = models.clone();
+            row = row.child(action_chip(
+                format!("Polar: {}", polar_mode_label(cfg.polar_mode)),
+                dense,
+                true,
+                move |_| {
+                    config_for_click.update(|mut c| {
+                        c.polar_mode = next_polar_mode(c.polar_mode);
+                        c
+                    });
+                    refresh_models(&config_for_click, &models_for_click);
+                },
+            ));
+        }
+        _ => {}
+    }
+
+    div()
+        .rounded(10.0)
+        .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.06))
+        .bg(Color::rgba(0.08, 0.09, 0.11, 0.68))
+        .p(if dense { 6.0 } else { 8.0 })
+        .flex_col()
+        .gap(if dense { 4.0 } else { 6.0 })
+        .child(
+            text(format!("Use case: {}", item.usage))
+                .size(11.0)
+                .color(Color::rgba(0.76, 0.81, 0.88, 0.95)),
+        )
+        .child(
+            text(format!("Tip: {}", item.controls))
+                .size(10.0)
+                .color(Color::rgba(0.62, 0.69, 0.77, 0.95)),
+        )
+        .child(row)
+}
+
+fn action_chip<F>(
+    label: impl Into<String>,
+    dense: bool,
+    active: bool,
+    on_click: F,
+) -> impl ElementBuilder
+where
+    F: Fn(&blinc_layout::event_handler::EventContext) + Send + Sync + 'static,
+{
+    let label = label.into();
+    stateful::<ButtonState>()
+        .initial(ButtonState::Idle)
+        .on_state(move |ctx| {
+            let bg = if active {
+                Color::rgba(0.20, 0.35, 0.60, 0.50)
+            } else {
+                match ctx.state() {
+                    ButtonState::Idle => Color::rgba(1.0, 1.0, 1.0, 0.03),
+                    ButtonState::Hovered => Color::rgba(1.0, 1.0, 1.0, 0.07),
+                    ButtonState::Pressed => Color::rgba(1.0, 1.0, 1.0, 0.10),
+                    ButtonState::Disabled => Color::rgba(1.0, 1.0, 1.0, 0.02),
+                }
+            };
+            let border = if active {
+                Color::rgba(0.55, 0.75, 1.0, 0.45)
+            } else {
+                Color::rgba(1.0, 1.0, 1.0, 0.08)
+            };
+            div()
+                .px(if dense { 7.0 } else { 10.0 })
+                .py(if dense { 4.0 } else { 6.0 })
+                .rounded(999.0)
+                .bg(bg)
+                .border(1.0, border)
+                .child(
+                    text(label.clone())
+                        .size(if dense { 10.0 } else { 11.0 })
+                        .weight(FontWeight::Medium)
+                        .color(Color::rgba(0.89, 0.92, 0.96, 1.0))
+                        .no_wrap()
+                        .pointer_events_none(),
+                )
+        })
+        .on_click(on_click)
+}
+
+fn refresh_models(config: &State<GalleryConfig>, models: &State<GalleryModels>) {
+    if let Some(cfg) = config.try_get() {
+        models.set(GalleryModels::new(&cfg));
     }
 }
 
-fn todo_canvas(label: &'static str) -> impl ElementBuilder {
-    div()
-        .h(220.0)
-        .rounded(14.0)
-        .overflow_clip()
-        .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-        .child(
-            blinc_layout::canvas::canvas(move |ctx: &mut dyn DrawContext, bounds| {
-                ctx.fill_rect(
-                    Rect::new(0.0, 0.0, bounds.width, bounds.height),
-                    0.0.into(),
-                    Brush::Solid(Color::rgba(0.08, 0.09, 0.11, 1.0)),
-                );
-                let style = TextStyle::new(14.0).with_color(Color::rgba(1.0, 1.0, 1.0, 0.75));
-                ctx.draw_text(label, Point::new(14.0, 14.0), &style);
-            })
-            .w_full()
-            .h_full(),
-        )
+fn chart_for(kind: ChartKind, models: GalleryModels) -> Box<dyn ElementBuilder> {
+    match kind {
+        ChartKind::Line => Box::new(line_chart(models.line)),
+        ChartKind::MultiLine => Box::new(multi_line_chart(models.multi)),
+        ChartKind::Area => Box::new(area_chart(models.area)),
+        ChartKind::Bar => Box::new(bar_chart(models.bar)),
+        ChartKind::Histogram => Box::new(histogram_chart(models.hist)),
+        ChartKind::Scatter => Box::new(scatter_chart(models.scatter)),
+        ChartKind::Candlestick => Box::new(candlestick_chart(models.candle)),
+        ChartKind::Heatmap => Box::new(heatmap_chart(models.heat)),
+        ChartKind::StackedArea => Box::new(stacked_area_chart(models.stacked_area)),
+        ChartKind::DensityMap => Box::new(density_map_chart(models.density)),
+        ChartKind::Contour => Box::new(contour_chart(models.contour)),
+        ChartKind::Statistics => Box::new(statistics_chart(models.stats)),
+        ChartKind::Hierarchy => Box::new(hierarchy_chart(models.hierarchy)),
+        ChartKind::Network => Box::new(network_chart(models.network)),
+        ChartKind::Polar => Box::new(polar_chart(models.polar)),
+        ChartKind::Gauge => Box::new(gauge_chart(models.gauge)),
+        ChartKind::Funnel => Box::new(funnel_chart(models.funnel)),
+        ChartKind::Geo => Box::new(geo_chart(models.geo)),
+    }
 }
 
-fn make_series(n: usize) -> anyhow::Result<TimeSeriesF32> {
+fn parse_env_seed() -> Option<u64> {
+    let raw = std::env::var("BLINC_GALLERY_SEED").ok()?;
+    let v = raw.trim();
+    if let Some(hex) = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).ok()
+    } else {
+        v.parse::<u64>().ok()
+    }
+}
+
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+fn seed01(seed: u64, stream: u64) -> f32 {
+    let bits = (splitmix64(seed ^ stream.wrapping_mul(0x9E37_79B9_7F4A_7C15)) >> 40) as u32;
+    bits as f32 / 16_777_215.0
+}
+
+fn seed_range(seed: u64, stream: u64, lo: f32, hi: f32) -> f32 {
+    lo + (hi - lo) * seed01(seed, stream)
+}
+
+fn seed_signed(seed: u64, stream: u64, magnitude: f32) -> f32 {
+    (seed01(seed, stream) * 2.0 - 1.0) * magnitude
+}
+
+fn make_series(n: usize, seed: u64) -> anyhow::Result<TimeSeriesF32> {
     let mut x = Vec::with_capacity(n);
     let mut y = Vec::with_capacity(n);
+
+    let phase = seed_range(seed, 1, 0.0, std::f32::consts::TAU);
+    let f0 = seed_range(seed, 2, 0.82, 1.35);
+    let f1 = seed_range(seed, 3, 0.08, 0.22);
+    let noise = seed_range(seed, 4, 0.02, 0.07);
+
     for i in 0..n {
         let t = i as f32 * 0.001;
-        let v = (t * 1.0).sin() * 0.8 + (t * 0.13).sin() * 0.2 + (t.fract() - 0.5) * 0.05;
+        let v = (t * f0 + phase).sin() * 0.8
+            + (t * f1 + phase * 0.55).sin() * 0.2
+            + ((t * seed_range(seed, 5, 0.9, 1.3) + phase).fract() - 0.5) * noise;
         x.push(i as f32);
         y.push(v);
     }
     TimeSeriesF32::new(x, y)
 }
 
-fn make_multi_series(series_n: usize, points_n: usize) -> Vec<TimeSeriesF32> {
+fn make_multi_series(series_n: usize, points_n: usize, seed: u64) -> Vec<TimeSeriesF32> {
     let mut out = Vec::with_capacity(series_n);
+    let gap_every = seed_range(seed, 10, 28.0, 46.0).round() as usize;
+    let gap_jump = seed_range(seed, 11, 7.0, 13.0);
+
     for s in 0..series_n {
         let mut x = Vec::with_capacity(points_n);
         let mut y = Vec::with_capacity(points_n);
-        let phase = s as f32 * 0.37;
+
+        let phase = s as f32 * seed_range(seed, 12, 0.22, 0.51) + seed_range(seed, 13, 0.0, 2.0);
+        let f0 = seed_range(seed, 14 + s as u64, 0.04, 0.09);
+        let f1 = seed_range(seed, 400 + s as u64, 0.10, 0.24);
+
         let mut cur_x = 0.0f32;
         for i in 0..points_n {
-            // Force occasional gaps while keeping x sorted (monotonic).
-            cur_x += if i % 37 == 0 && i != 0 { 9.0 } else { 1.0 };
+            cur_x += if i % gap_every.max(3) == 0 && i != 0 {
+                gap_jump
+            } else {
+                1.0
+            };
             x.push(cur_x);
-            let t = i as f32 * 0.06;
-            let vv = (t + phase).sin() * 0.7 + (t * 0.17 + phase).sin() * 0.2;
-            y.push(vv);
+
+            let t = i as f32;
+            let vv = (t * f0 + phase).sin() * 0.72 + (t * f1 + phase * 1.8).sin() * 0.24;
+            y.push(vv + seed_signed(seed, 800 + i as u64 + (s as u64 * 17), 0.015));
         }
         out.push(TimeSeriesF32::new(x, y).expect("sorted by construction"));
     }
     out
 }
 
-fn make_bar_series(series_n: usize, n: usize) -> Vec<TimeSeriesF32> {
+fn make_bar_series(series_n: usize, n: usize, seed: u64) -> Vec<TimeSeriesF32> {
     let mut out = Vec::with_capacity(series_n);
     for s in 0..series_n {
         let mut x = Vec::with_capacity(n);
         let mut y = Vec::with_capacity(n);
-        let phase = s as f32 * 0.85;
+
+        let phase = s as f32 * seed_range(seed, 20, 0.5, 1.2);
+        let f0 = seed_range(seed, 21 + s as u64, 0.006, 0.018);
+        let f1 = seed_range(seed, 22 + s as u64, 0.022, 0.041);
+        let floor = seed_range(seed, 23, 0.04, 0.22);
+
         for i in 0..n {
-            let t = i as f32 * 0.01;
-            let v = ((t + phase).sin() * 0.5 + 0.6).max(0.0);
+            let t = i as f32;
+            let raw = (t * f0 + phase).sin() * 0.44 + (t * f1 + phase * 0.7).cos() * 0.22 + 0.58;
             x.push(i as f32);
-            y.push(v);
+            y.push(raw.max(floor));
         }
         out.push(TimeSeriesF32::new(x, y).expect("sorted by construction"));
     }
     out
 }
 
-fn make_hist_values(n: usize) -> Vec<f32> {
+fn make_hist_values(n: usize, seed: u64) -> Vec<f32> {
     let mut out = Vec::with_capacity(n);
-    // Two-lobe distribution (deterministic).
+    let phase = seed_range(seed, 30, 0.0, std::f32::consts::TAU);
+    let f0 = seed_range(seed, 31, 1.2, 2.3);
+    let f1 = seed_range(seed, 32, 0.6, 1.4);
+
     for i in 0..n {
         let t = i as f32 * 0.001;
-        let a = (t * 1.7).sin() * 0.6 + (t * 0.11).sin() * 0.15;
-        let b = (t * 0.9).cos() * 0.4;
-        out.push(a + b);
+        let a = (t * f0 + phase).sin() * 0.62 + (t * 0.11 + phase * 0.5).sin() * 0.14;
+        let b = (t * f1 + phase * 1.8).cos() * 0.36;
+        out.push(a + b + seed_signed(seed, 2000 + i as u64, 0.025));
     }
     out
 }
 
-fn make_candles(n: usize) -> Vec<Candle> {
+fn make_candles(n: usize, seed: u64) -> Vec<Candle> {
     let mut out = Vec::with_capacity(n);
-    let mut last = 0.0f32;
+    let mut last = seed_signed(seed, 40, 0.35);
+
+    let drift_scale = seed_range(seed, 41, 0.012, 0.034);
+    let noise_scale = seed_range(seed, 42, 0.018, 0.06);
+
     for i in 0..n {
         let t = i as f32 * 0.01;
-        let drift = (t * 0.23).sin() * 0.02;
-        let noise = (t * 1.7).sin() * 0.03 + (t * 2.1).cos() * 0.01;
+        let drift = (t * seed_range(seed, 43, 0.12, 0.28)).sin() * drift_scale;
+        let noise = (t * seed_range(seed, 44, 1.2, 2.4)).sin() * noise_scale
+            + (t * seed_range(seed, 45, 1.5, 2.8)).cos() * (noise_scale * 0.35);
+
         let close = last + drift + noise;
         let open = last;
-        let hi = open.max(close) + (t * 0.7).sin().abs() * 0.04;
-        let lo = open.min(close) - (t * 0.9).cos().abs() * 0.04;
+        let wick_amp = seed_range(seed, 46, 0.02, 0.07);
+        let hi =
+            open.max(close) + (t * 0.7 + seed_range(seed, 47, 0.0, 4.0)).sin().abs() * wick_amp;
+        let lo =
+            open.min(close) - (t * 0.9 + seed_range(seed, 48, 0.0, 4.0)).cos().abs() * wick_amp;
+
         out.push(Candle {
             x: i as f32,
             open,
@@ -669,28 +1429,36 @@ fn make_candles(n: usize) -> Vec<Candle> {
             low: lo,
             close,
         });
+
         last = close;
     }
     out
 }
 
-fn make_heat_values(w: usize, h: usize) -> Vec<f32> {
+fn make_heat_values(w: usize, h: usize, seed: u64) -> Vec<f32> {
     let mut out = vec![0.0f32; w * h];
-    let cx = (w as f32) * 0.55;
-    let cy = (h as f32) * 0.45;
+    let cx = (w as f32) * seed_range(seed, 50, 0.38, 0.66);
+    let cy = (h as f32) * seed_range(seed, 51, 0.30, 0.72);
+    let spread = seed_range(seed, 52, 24.0, 46.0);
+    let wx = seed_range(seed, 53, 9.0, 19.0);
+    let wy = seed_range(seed, 54, 8.0, 16.0);
+
     for y in 0..h {
         for x in 0..w {
             let dx = (x as f32 - cx) / (w as f32);
             let dy = (y as f32 - cy) / (h as f32);
             let r2 = dx * dx + dy * dy;
-            let v = (-r2 * 38.0).exp() + (dx * 18.0).sin() * (dy * 14.0).cos() * 0.15;
+            let v = (-r2 * spread).exp()
+                + (dx * wx + seed_range(seed, 55, 0.0, 3.0)).sin()
+                    * (dy * wy + seed_range(seed, 56, 0.0, 3.0)).cos()
+                    * 0.18;
             out[y * w + x] = v;
         }
     }
     out
 }
 
-fn make_stacked_series(series_n: usize, n: usize) -> Vec<TimeSeriesF32> {
+fn make_stacked_series(series_n: usize, n: usize, seed: u64) -> Vec<TimeSeriesF32> {
     let n = n.max(2);
     let mut x = Vec::with_capacity(n);
     for i in 0..n {
@@ -700,10 +1468,14 @@ fn make_stacked_series(series_n: usize, n: usize) -> Vec<TimeSeriesF32> {
     let mut out = Vec::with_capacity(series_n.max(1));
     for s in 0..series_n.max(1) {
         let mut y = Vec::with_capacity(n);
-        let phase = s as f32 * 0.7;
+        let phase = s as f32 * seed_range(seed, 60, 0.4, 1.1);
+        let f0 = seed_range(seed, 61 + s as u64, 0.006, 0.016);
+        let f1 = seed_range(seed, 62 + s as u64, 0.08, 0.23);
+        let base = seed_range(seed, 63, 0.8, 1.5);
+
         for i in 0..n {
-            let t = i as f32 * 0.01;
-            let v = (t + phase).sin() * 0.7 + (t * 0.17 + phase).sin() * 0.3 + 1.2;
+            let t = i as f32;
+            let v = (t * f0 + phase).sin() * 0.74 + (t * f1 + phase).sin() * 0.32 + base;
             y.push(v.max(0.0));
         }
         out.push(TimeSeriesF32::new(x.clone(), y).expect("sorted by construction"));
@@ -711,88 +1483,110 @@ fn make_stacked_series(series_n: usize, n: usize) -> Vec<TimeSeriesF32> {
     out
 }
 
-fn make_density_points(n: usize) -> Vec<Point> {
+fn make_density_points(n: usize, seed: u64) -> Vec<Point> {
     let n = n.max(1);
     let mut out = Vec::with_capacity(n);
+
+    let cx0 = seed_range(seed, 70, 0.32, 0.50);
+    let cy0 = seed_range(seed, 71, 0.42, 0.62);
+    let cx1 = seed_range(seed, 72, 0.52, 0.74);
+    let cy1 = seed_range(seed, 73, 0.35, 0.58);
+
     for i in 0..n {
         let t = i as f32 * 0.0025;
-        // Two-lobe mixture with gentle warp (deterministic).
-        let (cx, cy) = if i % 2 == 0 {
-            (0.4, 0.55)
-        } else {
-            (0.62, 0.45)
-        };
-        let dx = (t * 3.1).sin() * 0.22 + (t * 0.17).cos() * 0.08;
-        let dy = (t * 2.7).cos() * 0.18 + (t * 0.13).sin() * 0.07;
-        let x = cx + dx + (t * 0.9).sin() * 0.03;
-        let y = cy + dy + (t * 1.1).cos() * 0.03;
+        let (cx, cy) = if i % 2 == 0 { (cx0, cy0) } else { (cx1, cy1) };
+
+        let dx = (t * seed_range(seed, 74, 2.3, 3.8)).sin() * 0.22
+            + (t * seed_range(seed, 75, 0.12, 0.24)).cos() * 0.08;
+        let dy = (t * seed_range(seed, 76, 2.1, 3.5)).cos() * 0.18
+            + (t * seed_range(seed, 77, 0.10, 0.22)).sin() * 0.07;
+
+        let x = cx + dx + (t * seed_range(seed, 78, 0.8, 1.2)).sin() * 0.03;
+        let y = cy + dy + (t * seed_range(seed, 79, 0.9, 1.3)).cos() * 0.03;
         out.push(Point::new(x, y));
     }
     out
 }
 
-fn make_contour_values(w: usize, h: usize) -> Vec<f32> {
+fn make_contour_values(w: usize, h: usize, seed: u64) -> Vec<f32> {
     let mut out = vec![0.0f32; w * h];
-    let cx = (w as f32) * 0.62;
-    let cy = (h as f32) * 0.46;
+    let cx = (w as f32) * seed_range(seed, 80, 0.42, 0.72);
+    let cy = (h as f32) * seed_range(seed, 81, 0.30, 0.64);
+    let spread = seed_range(seed, 82, 22.0, 34.0);
+    let wx = seed_range(seed, 83, 10.0, 18.0);
+    let wy = seed_range(seed, 84, 8.0, 14.0);
+
     for y in 0..h {
         for x in 0..w {
             let dx = (x as f32 - cx) / (w as f32);
             let dy = (y as f32 - cy) / (h as f32);
             let r2 = dx * dx + dy * dy;
-            let bump = (-r2 * 28.0).exp();
-            let ripple = (dx * 14.0).sin() * (dy * 10.0).cos() * 0.25;
+            let bump = (-r2 * spread).exp();
+            let ripple = (dx * wx + seed_range(seed, 85, 0.0, 2.0)).sin()
+                * (dy * wy + seed_range(seed, 86, 0.0, 2.0)).cos()
+                * 0.25;
             out[y * w + x] = (bump + ripple) * 2.0 - 1.0;
         }
     }
     out
 }
 
-fn make_statistics_groups(groups_n: usize, points_per_group: usize) -> Vec<Vec<f32>> {
+fn make_statistics_groups(groups_n: usize, points_per_group: usize, seed: u64) -> Vec<Vec<f32>> {
     let groups_n = groups_n.max(1);
     let points_per_group = points_per_group.max(8);
+
     let mut out = Vec::with_capacity(groups_n);
     for g in 0..groups_n {
         let mut vals = Vec::with_capacity(points_per_group);
-        let shift = (g as f32) * 0.15;
-        let spread = 0.4 + (g as f32 * 0.03).sin().abs() * 0.25;
+        let shift = g as f32 * seed_range(seed, 90, 0.09, 0.20);
+        let spread = 0.30 + (g as f32 * seed_range(seed, 91, 0.02, 0.06)).sin().abs() * 0.35;
+
         for i in 0..points_per_group {
             let t = i as f32 * 0.07;
-            let v = (t + shift).sin() * spread + (t * 0.21 + shift).cos() * 0.15 + shift * 0.6;
+            let v = (t + shift).sin() * spread
+                + (t * seed_range(seed, 92, 0.15, 0.30) + shift).cos() * 0.18
+                + shift * 0.6
+                + seed_signed(seed, 3500 + (g as u64 * 400 + i as u64), 0.05);
             vals.push(v);
         }
+
         out.push(vals);
     }
     out
 }
 
-fn make_hierarchy_tree() -> HierarchyNode {
+fn make_hierarchy_tree(seed: u64) -> HierarchyNode {
+    let leaf = |name: &str, base: f32, stream: u64| {
+        let v = (base + seed_signed(seed, stream, base * 0.28)).max(0.2);
+        HierarchyNode::leaf(name, v)
+    };
+
     HierarchyNode::node(
         "root",
         vec![
             HierarchyNode::node(
                 "A",
                 vec![
-                    HierarchyNode::leaf("A-1", 6.0),
-                    HierarchyNode::leaf("A-2", 2.0),
-                    HierarchyNode::leaf("A-3", 4.0),
+                    leaf("A-1", 6.0, 100),
+                    leaf("A-2", 2.0, 101),
+                    leaf("A-3", 4.0, 102),
                 ],
             ),
             HierarchyNode::node(
                 "B",
                 vec![
-                    HierarchyNode::leaf("B-1", 3.0),
-                    HierarchyNode::leaf("B-2", 7.0),
-                    HierarchyNode::leaf("B-3", 1.5),
-                    HierarchyNode::leaf("B-4", 2.2),
+                    leaf("B-1", 3.0, 110),
+                    leaf("B-2", 7.0, 111),
+                    leaf("B-3", 1.5, 112),
+                    leaf("B-4", 2.2, 113),
                 ],
             ),
             HierarchyNode::node(
                 "C",
                 vec![
-                    HierarchyNode::leaf("C-1", 4.5),
-                    HierarchyNode::leaf("C-2", 1.2),
-                    HierarchyNode::leaf("C-3", 3.4),
+                    leaf("C-1", 4.5, 120),
+                    leaf("C-2", 1.2, 121),
+                    leaf("C-3", 3.4, 122),
                 ],
             ),
         ],
@@ -803,23 +1597,96 @@ fn make_graph_labels(n: usize) -> Vec<String> {
     (0..n).map(|i| format!("N{i}")).collect()
 }
 
-fn make_graph_edges(n: usize) -> Vec<(usize, usize)> {
+fn make_graph_edges(n: usize, seed: u64) -> Vec<(usize, usize)> {
     let n = n.max(2);
     let mut out = Vec::new();
-    // Ring
+
+    let jump_a = seed_range(seed, 130, 5.0, 11.0).round() as usize;
+    let jump_b = seed_range(seed, 131, 9.0, 17.0).round() as usize;
+
     for i in 0..n {
         out.push((i, (i + 1) % n));
     }
-    // Chords
+
     for i in 0..n {
         if i % 3 == 0 {
-            out.push((i, (i + 7) % n));
+            out.push((i, (i + jump_a.max(2)) % n));
         }
         if i % 5 == 0 {
-            out.push((i, (i + 13) % n));
+            out.push((i, (i + jump_b.max(3)) % n));
         }
     }
+
     out
+}
+
+fn make_sankey_links(n: usize, seed: u64) -> Vec<(usize, usize, f32)> {
+    let n = n.max(6);
+    let cols = 3usize;
+    let mut out = Vec::new();
+
+    for i in 0..n {
+        let col = i % cols;
+        if col + 1 >= cols {
+            continue;
+        }
+
+        let to_a = (i + 1).min(n - 1);
+        let to_b = (i + cols).min(n - 1);
+
+        let w1 = seed_range(seed, 200 + i as u64 * 2, 2.0, 9.0);
+        let w2 = seed_range(seed, 201 + i as u64 * 2, 1.0, 6.5);
+
+        if to_a != i {
+            out.push((i, to_a, w1));
+        }
+        if to_b != i && to_b != to_a {
+            out.push((i, to_b, w2));
+        }
+    }
+
+    if out.is_empty() {
+        out.push((0, 1, 3.0));
+        out.push((1, 2, 2.0));
+    }
+
+    out
+}
+
+fn make_chord_matrix(n: usize, seed: u64) -> Vec<Vec<f32>> {
+    let n = n.max(3);
+    let mut m = vec![vec![0.0f32; n]; n];
+
+    for i in 0..n {
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let t = ((i as f32 * 0.37) + (j as f32 * 0.23)) * seed_range(seed, 300, 0.8, 1.4)
+                + seed_range(seed, 301, 0.0, 2.5);
+            let w = (t.sin().abs() * seed_range(seed, 302, 2.0, 8.0)).max(0.0);
+            m[i][j] = if (i + j) % 3 == 0 { w } else { w * 0.55 };
+        }
+    }
+
+    m
+}
+
+fn make_network_model(mode: NetworkMode, seed: u64) -> anyhow::Result<NetworkChartModel> {
+    match mode {
+        NetworkMode::Graph => {
+            let n = 48;
+            NetworkChartModel::new_graph(make_graph_labels(n), make_graph_edges(n, seed))
+        }
+        NetworkMode::Sankey => {
+            let n = 21;
+            NetworkChartModel::new_sankey(make_graph_labels(n), make_sankey_links(n, seed))
+        }
+        NetworkMode::Chord => {
+            let n = 14;
+            NetworkChartModel::new_chord(make_graph_labels(n), make_chord_matrix(n, seed))
+        }
+    }
 }
 
 fn make_radar_dimensions() -> Vec<String> {
@@ -833,51 +1700,132 @@ fn make_radar_dimensions() -> Vec<String> {
     ]
 }
 
-fn make_radar_series() -> Vec<Vec<f32>> {
-    vec![
-        vec![0.72, 0.81, 0.42, 0.66, 0.58, 0.76],
-        vec![0.55, 0.62, 0.73, 0.51, 0.77, 0.48],
-        vec![0.83, 0.44, 0.61, 0.74, 0.46, 0.69],
-    ]
+fn make_radar_series(seed: u64) -> Vec<Vec<f32>> {
+    let mut series = Vec::new();
+    for s in 0..3 {
+        let mut row = Vec::new();
+        for d in 0..6 {
+            let base = 0.45 + (d as f32 * 0.08 + s as f32 * 0.13).sin() * 0.22;
+            let v = (base + seed_signed(seed, 400 + (s as u64 * 10 + d as u64), 0.18))
+                .clamp(0.05, 0.98);
+            row.push(v);
+        }
+        series.push(row);
+    }
+    series
 }
 
-fn make_funnel_stages() -> Vec<(String, f32)> {
-    vec![
-        ("Visits".into(), 12_500.0),
-        ("Signups".into(), 3_400.0),
-        ("Trials".into(), 1_250.0),
-        ("Paid".into(), 480.0),
-        ("Renew".into(), 320.0),
-    ]
+fn make_funnel_stages(seed: u64) -> Vec<(String, f32)> {
+    let mut current = seed_range(seed, 500, 10_000.0, 18_000.0);
+    let mut out = Vec::new();
+
+    let names = ["Visits", "Signups", "Trials", "Paid", "Renew"];
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            let retention = seed_range(seed, 501 + i as u64, 0.38, 0.76);
+            current *= retention;
+        }
+        out.push(((*name).to_string(), current.max(100.0)));
+    }
+
+    out
 }
 
-fn make_geo_shapes() -> Vec<Vec<Point>> {
-    // A couple of simple polygons/lines in arbitrary "geo" coords.
+fn make_geo_shapes(seed: u64) -> Vec<Vec<Point>> {
     let mut shapes = Vec::new();
 
-    // Coast-like polyline
     let mut coast = Vec::new();
+    let f0 = seed_range(seed, 600, 1.3, 2.0);
+    let f1 = seed_range(seed, 601, 3.4, 5.2);
+
     for i in 0..220 {
         let t = i as f32 / 219.0;
         let x = t * 10.0;
-        let y = (t * std::f32::consts::TAU * 1.7).sin() * 0.9
-            + (t * std::f32::consts::TAU * 4.3).sin() * 0.25;
+        let y = (t * std::f32::consts::TAU * f0).sin() * 0.9
+            + (t * std::f32::consts::TAU * f1).sin() * 0.25
+            + seed_signed(seed, 602 + i as u64, 0.04);
         coast.push(Point::new(x, y));
     }
     shapes.push(coast);
 
-    // Closed island polygon
     let mut island = Vec::new();
-    let cx = 6.8;
-    let cy = -1.6;
+    let cx = seed_range(seed, 610, 5.8, 7.4);
+    let cy = seed_range(seed, 611, -2.1, -1.0);
+    let rx = seed_range(seed, 612, 0.8, 1.6);
+    let ry = seed_range(seed, 613, 0.5, 0.9);
+
     for i in 0..=64 {
         let a = i as f32 / 64.0 * std::f32::consts::TAU;
         island.push(Point::new(
-            cx + a.cos() * 1.2,
-            cy + a.sin() * 0.7 + (a * 3.0).sin() * 0.08,
+            cx + a.cos() * rx,
+            cy + a.sin() * ry + (a * seed_range(seed, 614, 2.0, 4.0)).sin() * 0.08,
         ));
     }
     shapes.push(island);
 
     shapes
+}
+
+fn next_stacked_mode(mode: StackedAreaMode) -> StackedAreaMode {
+    match mode {
+        StackedAreaMode::Stacked => StackedAreaMode::Streamgraph,
+        StackedAreaMode::Streamgraph => StackedAreaMode::Stacked,
+    }
+}
+
+fn stacked_mode_label(mode: StackedAreaMode) -> &'static str {
+    match mode {
+        StackedAreaMode::Stacked => "Stacked",
+        StackedAreaMode::Streamgraph => "Streamgraph",
+    }
+}
+
+fn next_hierarchy_mode(mode: HierarchyMode) -> HierarchyMode {
+    match mode {
+        HierarchyMode::Treemap => HierarchyMode::Icicle,
+        HierarchyMode::Icicle => HierarchyMode::Sunburst,
+        HierarchyMode::Sunburst => HierarchyMode::Packing,
+        HierarchyMode::Packing => HierarchyMode::Treemap,
+    }
+}
+
+fn hierarchy_mode_label(mode: HierarchyMode) -> &'static str {
+    match mode {
+        HierarchyMode::Treemap => "Treemap",
+        HierarchyMode::Icicle => "Icicle",
+        HierarchyMode::Sunburst => "Sunburst",
+        HierarchyMode::Packing => "Packing",
+    }
+}
+
+fn next_network_mode(mode: NetworkMode) -> NetworkMode {
+    match mode {
+        NetworkMode::Graph => NetworkMode::Sankey,
+        NetworkMode::Sankey => NetworkMode::Chord,
+        NetworkMode::Chord => NetworkMode::Graph,
+    }
+}
+
+fn network_mode_label(mode: NetworkMode) -> &'static str {
+    match mode {
+        NetworkMode::Graph => "Graph",
+        NetworkMode::Sankey => "Sankey",
+        NetworkMode::Chord => "Chord",
+    }
+}
+
+fn next_polar_mode(mode: PolarChartMode) -> PolarChartMode {
+    match mode {
+        PolarChartMode::Radar => PolarChartMode::Polar,
+        PolarChartMode::Polar => PolarChartMode::Parallel,
+        PolarChartMode::Parallel => PolarChartMode::Radar,
+    }
+}
+
+fn polar_mode_label(mode: PolarChartMode) -> &'static str {
+    match mode {
+        PolarChartMode::Radar => "Radar",
+        PolarChartMode::Polar => "Polar",
+        PolarChartMode::Parallel => "Parallel",
+    }
 }

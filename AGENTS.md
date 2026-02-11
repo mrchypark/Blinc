@@ -21,6 +21,13 @@
   - Base branch is `main` (unless the user says otherwise)
   - Head repository/branch is the feature branch in `mrchypark/Blinc`
 
+## Formatting Gate (IMPORTANT)
+
+- Before commit/push/PR, ALWAYS run formatting:
+  - `cargo fmt --all`
+  - `cargo fmt --all -- --check`
+- Do not skip formatting even for small or single-file changes.
+
 ## Remote Safety (Optional)
 
 To reduce accidental pushes to upstream, you may disable the upstream push URL locally:
@@ -28,4 +35,3 @@ To reduce accidental pushes to upstream, you may disable the upstream push URL l
 ```sh
 git remote set-url --push upstream DISABLED
 ```
-
