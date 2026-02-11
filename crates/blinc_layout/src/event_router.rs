@@ -1726,4 +1726,214 @@ mod tests {
             assert!(captured.contains(&event_types::WINDOW_FOCUS));
         }
     }
+
+    #[test]
+    fn test_hit_test_respects_scroll_physics_offset() {
+        // Regression test: after scrolling a container, hit testing should target the
+        // visually-present child, not the pre-scroll position.
+        let item_h = 40.0;
+        let item_count = 20usize;
+
+        let mut list = div().flex_col().w_full();
+        for i in 0..item_count {
+            list = list.child(
+                div()
+                    .id(format!("item-{i}"))
+                    .w_full()
+                    .h(item_h)
+                    .flex_shrink_0(),
+            );
+        }
+
+        let ui = div()
+            .w(200.0)
+            .h(200.0)
+            .child(
+                div()
+                    .id("scroll")
+                    .w_full()
+                    .h_full()
+                    .overflow_y_scroll()
+                    .child(list),
+            );
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 200.0);
+
+        // Scroll down by 10 items (visual content moves up).
+        let scroll_id = tree
+            .element_registry()
+            .get("scroll")
+            .expect("scroll container id registered");
+        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 10.0));
+
+        let router = EventRouter::new();
+        let hit = router
+            .hit_test(&tree, 10.0, item_h / 2.0)
+            .expect("expected a hit");
+
+        let hit_id = tree
+            .element_registry()
+            .get_id(hit.node)
+            .expect("hit node should have an id");
+        assert_eq!(hit_id, "item-10");
+    }
+
+    #[test]
+    fn test_hit_test_scroll_container_not_occluded_by_stack_absolute_children() {
+        // Regression test: Stack uses absolutely positioned children. Those absolute layers
+        // must still be positioned within the Stack's containing block (not the window/root),
+        // otherwise they can erroneously occlude sibling UI like sidebars.
+        let item_h = 40.0;
+        let item_count = 30usize;
+
+        let mut list = div().flex_col().w_full();
+        for i in 0..item_count {
+            list = list.child(
+                div()
+                    .id(format!("item-{i}"))
+                    .w_full()
+                    .h(item_h)
+                    .flex_shrink_0(),
+            );
+        }
+
+        let sidebar = div().w(280.0).h_full().child(
+            div()
+                .id("scroll")
+                .w_full()
+                .h_full()
+                .overflow_y_scroll()
+                .child(list),
+        );
+
+        // Main panel uses Stack (absolute children). This should not affect hit-testing
+        // inside the sidebar column.
+        let main = div().flex_1().h_full().child(
+            stack()
+                .w_full()
+                .h_full()
+                .child(div().id("main-layer").w_full().h_full()),
+        );
+
+        let ui = div()
+            .w(1200.0)
+            .h(420.0)
+            .flex_row()
+            .child(sidebar)
+            .child(main);
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(1200.0, 420.0);
+
+        // Scroll down by 12 items (visual content moves up).
+        let scroll_id = tree
+            .element_registry()
+            .get("scroll")
+            .expect("scroll container id registered");
+        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 12.0));
+
+        // Click within sidebar column; should hit item-12 (top of the list viewport).
+        let router = EventRouter::new();
+        let hit = router
+            .hit_test(&tree, 10.0, item_h / 2.0)
+            .expect("expected a hit");
+
+        let hit_id = tree
+            .element_registry()
+            .get_id(hit.node)
+            .expect("hit node should have an id");
+        assert_eq!(hit_id, "item-12");
+    }
+
+    #[test]
+    fn test_click_after_scroll_targets_visually_present_item() {
+        use std::sync::{Arc, Mutex};
+
+        let item_h = 40.0;
+        let item_count = 20usize;
+
+        let clicks: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let mut list = div().flex_col().w_full();
+        for i in 0..item_count {
+            let clicks = Arc::clone(&clicks);
+            list = list.child(
+                Stateful::new(ButtonState::Idle)
+                    .id(&format!("item-{i}"))
+                    .w_full()
+                    .h(item_h)
+                    .flex_shrink_0()
+                    .on_click(move |_| {
+                        clicks.lock().unwrap().push(i);
+                    }),
+            );
+        }
+
+        let ui = div()
+            .w(200.0)
+            .h(200.0)
+            .child(
+                div()
+                    .id("scroll")
+                    .w_full()
+                    .h_full()
+                    .overflow_y_scroll()
+                    .child(list),
+            );
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 200.0);
+
+        // Scroll down by 10 items (visual content moves up).
+        let scroll_id = tree
+            .element_registry()
+            .get("scroll")
+            .expect("scroll container id registered");
+        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 10.0));
+
+        // Simulate a click in the top-left of the scroll viewport.
+        let (x, y) = (10.0, item_h / 2.0);
+        let mut router = EventRouter::new();
+
+        for (node, event_type) in router.on_mouse_down(&tree, x, y, MouseButton::Left) {
+            let (bx, by, bw, bh) = router.get_node_bounds(node).unwrap_or((0.0, 0.0, 0.0, 0.0));
+            tree.dispatch_event_full(
+                node,
+                event_type,
+                x,
+                y,
+                x - bx,
+                y - by,
+                bx,
+                by,
+                bw,
+                bh,
+                0.0,
+                0.0,
+                1.0,
+            );
+        }
+
+        for (node, event_type) in router.on_mouse_up(&tree, x, y, MouseButton::Left) {
+            let (bx, by, bw, bh) = router.get_node_bounds(node).unwrap_or((0.0, 0.0, 0.0, 0.0));
+            tree.dispatch_event_full(
+                node,
+                event_type,
+                x,
+                y,
+                x - bx,
+                y - by,
+                bx,
+                by,
+                bw,
+                bh,
+                0.0,
+                0.0,
+                1.0,
+            );
+        }
+
+        assert_eq!(clicks.lock().unwrap().as_slice(), &[10]);
+    }
 }

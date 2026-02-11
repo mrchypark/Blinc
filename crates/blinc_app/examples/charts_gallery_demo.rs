@@ -22,15 +22,15 @@ const ITEMS: &[(&str, &str)] = &[
     ("Scatter / Bubble", "Scatter points (capped primitives)"),
     ("Candlestick", "OHLC candles (screen-binned)"),
     ("Heatmap", "2D grid heatmap (screen-sampled)"),
-    ("Area (stacked)", "Placeholder"),
-    ("Density map / patch_map", "Placeholder"),
-    ("Contour / Isobands", "Placeholder"),
-    ("Boxplot / Violin / Error bands", "Placeholder"),
-    ("Treemap / Sunburst / Icicle / Packing", "Placeholder"),
-    ("Graph / Sankey / Chord", "Placeholder"),
-    ("Parallel / Polar / Radar", "Placeholder"),
-    ("Gauge / Funnel / Streamgraph", "Placeholder"),
-    ("Geo", "Placeholder"),
+    ("Area (stacked)", "Aligned stacked area / streamgraph (pan/zoom/brush)"),
+    ("Density map / patch_map", "2D histogram density (pan/zoom/brush)"),
+    ("Contour / Isobands", "Marching-squares contours (pan/zoom/brush)"),
+    ("Boxplot / Violin / Error bands", "Boxplot per group (pan/zoom/brush)"),
+    ("Treemap / Sunburst / Icicle / Packing", "Hierarchy layouts (hover)"),
+    ("Graph / Sankey / Chord", "Network layouts (pan/zoom/hover)"),
+    ("Parallel / Polar / Radar", "Radar chart (hover)"),
+    ("Gauge / Funnel / Streamgraph", "Gauge + funnel"),
+    ("Geo", "Shape rendering (pan/zoom/hover)"),
 ];
 
 #[derive(Clone)]
@@ -43,6 +43,16 @@ struct GalleryModels {
     scatter: ScatterChartHandle,
     candle: CandlestickChartHandle,
     heat: HeatmapChartHandle,
+    stacked_area: StackedAreaChartHandle,
+    density: DensityMapChartHandle,
+    contour: ContourChartHandle,
+    stats: StatisticsChartHandle,
+    hierarchy: HierarchyChartHandle,
+    network: NetworkChartHandle,
+    polar: PolarChartHandle,
+    gauge: GaugeChartHandle,
+    funnel: FunnelChartHandle,
+    geo: GeoChartHandle,
 }
 
 impl GalleryModels {
@@ -70,6 +80,38 @@ impl GalleryModels {
             HeatmapChartModel::new(320, 160, make_heat_values(320, 160)).expect("valid heatmap"),
         );
 
+        let stacked_area = StackedAreaChartHandle::new(
+            StackedAreaChartModel::new(make_stacked_series(6, (line_n / 2).max(20_000)))
+                .expect("stacked area requires aligned series"),
+        );
+        let density = DensityMapChartHandle::new(
+            DensityMapChartModel::new(make_density_points((line_n / 2).max(60_000)))
+                .expect("density requires points"),
+        );
+        let contour = ContourChartHandle::new(
+            ContourChartModel::new(240, 120, make_contour_values(240, 120)).expect("contour grid"),
+        );
+        let stats = StatisticsChartHandle::new(
+            StatisticsChartModel::new(make_statistics_groups(18, 600)).expect("stats groups"),
+        );
+        let hierarchy = HierarchyChartHandle::new(
+            HierarchyChartModel::new(make_hierarchy_tree()).expect("hierarchy tree"),
+        );
+        let network = NetworkChartHandle::new(
+            NetworkChartModel::new_graph(make_graph_labels(48), make_graph_edges(48))
+                .expect("network graph"),
+        );
+        let polar = PolarChartHandle::new(
+            PolarChartModel::new_radar(make_radar_dimensions(), make_radar_series())
+                .expect("radar data"),
+        );
+        let gauge =
+            GaugeChartHandle::new(GaugeChartModel::new(0.0, 100.0, 72.0).expect("gauge model"));
+        let funnel = FunnelChartHandle::new(
+            FunnelChartModel::new(make_funnel_stages()).expect("funnel stages"),
+        );
+        let geo = GeoChartHandle::new(GeoChartModel::new(make_geo_shapes()).expect("geo shapes"));
+
         Self {
             line,
             multi,
@@ -79,6 +121,16 @@ impl GalleryModels {
             scatter,
             candle,
             heat,
+            stacked_area,
+            density,
+            contour,
+            stats,
+            hierarchy,
+            network,
+            polar,
+            gauge,
+            funnel,
+            geo,
         }
     }
 }
@@ -88,10 +140,22 @@ fn main() -> Result<()> {
         .with_max_level(tracing::Level::INFO)
         .init();
 
+    let (mut width, mut height) = (1200u32, 840u32);
+    if let Ok(v) = std::env::var("BLINC_WINDOW_SIZE") {
+        if let Some((w, h)) = v.split_once('x') {
+            if let (Ok(w), Ok(h)) = (w.trim().parse::<u32>(), h.trim().parse::<u32>()) {
+                if w >= 320 && h >= 240 {
+                    width = w;
+                    height = h;
+                }
+            }
+        }
+    }
+
     let config = WindowConfig {
         title: "blinc_charts: Gallery".to_string(),
-        width: 1200,
-        height: 840,
+        width,
+        height,
         resizable: true,
         ..Default::default()
     };
@@ -100,6 +164,63 @@ fn main() -> Result<()> {
 }
 
 fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
+    if std::env::var_os("BLINC_DEBUG_GALLERY_CTX").is_some() {
+        tracing::info!(
+            "charts_gallery_demo: ctx.width={:.1} ctx.height={:.1} scale_factor={:.3}",
+            ctx.width,
+            ctx.height,
+            ctx.scale_factor
+        );
+    }
+    if std::env::var_os("BLINC_DEBUG_GALLERY_BOUNDS").is_some() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static REGISTERED: AtomicBool = AtomicBool::new(false);
+        if !REGISTERED.swap(true, Ordering::Relaxed) {
+            ctx.query("charts_gallery_tabs").on_ready(|b| {
+                tracing::info!(
+                    "charts_gallery_demo: tabs bounds x={:.1} y={:.1} w={:.1} h={:.1}",
+                    b.x, b.y, b.width, b.height
+                );
+            });
+            ctx.query("charts_gallery_main").on_ready(|b| {
+                tracing::info!(
+                    "charts_gallery_demo: main bounds x={:.1} y={:.1} w={:.1} h={:.1}",
+                    b.x, b.y, b.width, b.height
+                );
+            });
+            ctx.query("charts_gallery_canvas").on_ready(|b| {
+                tracing::info!(
+                    "charts_gallery_demo: canvas bounds x={:.1} y={:.1} w={:.1} h={:.1}",
+                    b.x, b.y, b.width, b.height
+                );
+            });
+            ctx.query("charts_gallery_sidebar").on_ready(|b| {
+                tracing::info!(
+                    "charts_gallery_demo: sidebar bounds x={:.1} y={:.1} w={:.1} h={:.1}",
+                    b.x, b.y, b.width, b.height
+                );
+            });
+            ctx.query("charts_gallery_sidebar_scroll").on_ready(|b| {
+                tracing::info!(
+                    "charts_gallery_demo: sidebar_scroll bounds x={:.1} y={:.1} w={:.1} h={:.1}",
+                    b.x, b.y, b.width, b.height
+                );
+            });
+            ctx.query("charts_gallery_sidebar_item_0").on_ready(|b| {
+                tracing::info!(
+                    "charts_gallery_demo: sidebar_item_0 bounds x={:.1} y={:.1} w={:.1} h={:.1}",
+                    b.x, b.y, b.width, b.height
+                );
+            });
+            ctx.query("charts_gallery_sidebar_item_10").on_ready(|b| {
+                tracing::info!(
+                    "charts_gallery_demo: sidebar_item_10 bounds x={:.1} y={:.1} w={:.1} h={:.1}",
+                    b.x, b.y, b.width, b.height
+                );
+            });
+        }
+    }
+
     // Core datasets (kept deterministic; no RNG needed).
     let line_n = std::env::var("BLINC_CHARTS_N")
         .ok()
@@ -116,6 +237,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
     let models = ctx.use_state_keyed("charts_gallery_models", || GalleryModels::new(line_n));
 
     let layout = layout_mode(ctx.width, ctx.height);
+    let dense = ctx.height < 460.0;
 
     let header = div()
         .flex_row()
@@ -123,14 +245,16 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         .justify_between()
         .child(
             text("blinc_charts gallery")
-                .size(24.0)
+                .size(if dense { 18.0 } else { 24.0 })
                 .weight(FontWeight::Bold)
-                .color(Color::rgba(0.95, 0.96, 0.98, 1.0)),
+                .color(Color::rgba(0.95, 0.96, 0.98, 1.0))
+                .no_wrap(),
         )
         .child(
             text(format!("BLINC_CHARTS_N = {line_n}"))
-                .size(12.0)
-                .color(Color::rgba(0.70, 0.75, 0.82, 1.0)),
+                .size(if dense { 10.0 } else { 12.0 })
+                .color(Color::rgba(0.70, 0.75, 0.82, 1.0))
+                .no_wrap(),
         );
 
     let sidebar = {
@@ -138,14 +262,15 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         let selected_signal = selected.signal_id();
 
         div()
+            .id("charts_gallery_sidebar")
             .w(280.0)
             .h_full()
             .rounded(14.0)
             .bg(Color::rgba(0.04, 0.05, 0.07, 1.0))
             .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.06))
-            .p(10.0)
+            .p(if dense { 4.0 } else { 10.0 })
             .flex_col()
-            .gap(8.0)
+            .gap(if dense { 3.0 } else { 8.0 })
             .child(
                 text("Charts")
                     .size(14.0)
@@ -159,6 +284,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                 let mut list = div().flex_col().gap(6.0);
                 for (i, (title, _desc)) in ITEMS.iter().enumerate() {
                     let title = *title;
+                    let item_id = format!("charts_gallery_sidebar_item_{i}");
                     let selected_for_state = selected_for_list.clone();
                     let selected_for_click = selected_for_list.clone();
 
@@ -183,7 +309,13 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                                 } else {
                                     Color::rgba(0.85, 0.88, 0.92, 0.90)
                                 };
-                                div().px(10.0).py(8.0).rounded(10.0).bg(bg).child(
+                                div()
+                                    .id(item_id.clone())
+                                    .px(10.0)
+                                    .py(8.0)
+                                    .rounded(10.0)
+                                    .bg(bg)
+                                    .child(
                                     text(title)
                                         .size(12.0)
                                         .weight(FontWeight::Medium)
@@ -201,6 +333,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .flex_1()
                     .min_h(0.0)
                     .w_full()
+                    .id("charts_gallery_sidebar_scroll")
                     .overflow_y_scroll()
                     .child(list)
             })
@@ -210,18 +343,34 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         let selected_for_list = selected.clone();
         let selected_signal = selected.signal_id();
 
+        // In narrow layout, the pill list can get tall and squeeze the plot area.
+        // When the window height is short, keep tabs to a single row (horizontal scroll)
+        // so the main chart remains visible.
+        let compact_tabs = dense;
+
         let mut list = div()
+            .id("charts_gallery_tabs")
             .w_full()
-            .overflow_x_scroll()
             .flex_row()
-            .gap(8.0)
-            .p(8.0)
+            .gap(if dense { 2.0 } else { 8.0 })
+            .p(if dense { 2.0 } else { 8.0 })
             .rounded(14.0)
             .bg(Color::rgba(0.04, 0.05, 0.07, 1.0))
             .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.06));
 
+        if compact_tabs {
+            // Keep tabs short in small-height windows so the chart stays visible.
+            // Use a fixed height to prevent accidental wrapping from consuming vertical space.
+            list = list.max_h(52.0).overflow_x_scroll();
+        } else {
+            // In taller layouts, show pills in multiple rows and allow vertical wheel scrolling
+            // so users can reach items beyond the first row.
+            list = list.max_h(140.0).overflow_y_scroll().flex_wrap();
+        }
+
         for (i, (title, _desc)) in ITEMS.iter().enumerate() {
             let title = *title;
+            let item_id = format!("charts_gallery_tab_item_{i}");
             let selected_for_state = selected_for_list.clone();
             let selected_for_click = selected_for_list.clone();
 
@@ -246,7 +395,13 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                         } else {
                             Color::rgba(0.85, 0.88, 0.92, 0.90)
                         };
-                        div().px(10.0).py(8.0).rounded(999.0).bg(bg).child(
+                        div()
+                            .id(item_id.clone())
+                            .px(if dense { 4.0 } else { 10.0 })
+                            .py(if dense { 3.0 } else { 8.0 })
+                            .rounded(999.0)
+                            .bg(bg)
+                            .child(
                             text(title)
                                 .size(12.0)
                                 .weight(FontWeight::Medium)
@@ -278,14 +433,15 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                 let m = models.try_get().expect("models exist");
 
                 div()
+                    .id("charts_gallery_main")
                     .flex_1()
                     .h_full()
                     .rounded(14.0)
                     .bg(Color::rgba(0.04, 0.05, 0.07, 1.0))
                     .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.06))
-                    .p(10.0)
+                    .p(if dense { 4.0 } else { 10.0 })
                     .flex_col()
-                    .gap(10.0)
+                    .gap(if dense { 3.0 } else { 10.0 })
                     .child(
                         div()
                             .flex_col()
@@ -304,13 +460,15 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     )
                     .child(
                         div()
+                            .id("charts_gallery_canvas")
                             .flex_1()
                             .rounded(14.0)
                             .overflow_clip()
                             .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
                             .child_box(chart_for(
                                 idx, m.line, m.multi, m.area, m.bar, m.hist, m.scatter, m.candle,
-                                m.heat,
+                                m.heat, m.stacked_area, m.density, m.contour, m.stats, m.hierarchy,
+                                m.network, m.polar, m.gauge, m.funnel, m.geo,
                             )),
                     )
             })
@@ -320,9 +478,9 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
         .w(ctx.width)
         .h(ctx.height)
         .bg(Color::rgba(0.06, 0.07, 0.09, 1.0))
-        .p(12.0)
+        .p(if dense { 3.0 } else { 12.0 })
         .flex_col()
-        .gap(12.0)
+        .gap(if dense { 3.0 } else { 12.0 })
         .child(header);
 
     match layout {
@@ -348,6 +506,16 @@ fn chart_for(
     scatter: ScatterChartHandle,
     candle: CandlestickChartHandle,
     heat: HeatmapChartHandle,
+    stacked_area: StackedAreaChartHandle,
+    density: DensityMapChartHandle,
+    contour: ContourChartHandle,
+    stats: StatisticsChartHandle,
+    hierarchy: HierarchyChartHandle,
+    network: NetworkChartHandle,
+    polar: PolarChartHandle,
+    gauge: GaugeChartHandle,
+    funnel: FunnelChartHandle,
+    geo: GeoChartHandle,
 ) -> Box<dyn ElementBuilder> {
     match idx {
         0 => Box::new(line_chart(line)),
@@ -358,7 +526,34 @@ fn chart_for(
         5 => Box::new(scatter_chart(scatter)),
         6 => Box::new(candlestick_chart(candle)),
         7 => Box::new(heatmap_chart(heat)),
-        _ => Box::new(todo_canvas("TODO: not implemented yet")),
+        8 => Box::new(stacked_area_chart(stacked_area)),
+        9 => Box::new(density_map_chart(density)),
+        10 => Box::new(contour_chart(contour)),
+        11 => Box::new(statistics_chart(stats)),
+        12 => Box::new(hierarchy_chart(hierarchy)),
+        13 => Box::new(network_chart(network)),
+        14 => Box::new(polar_chart(polar)),
+        15 => Box::new(
+            div()
+                .w_full()
+                .h_full()
+                .flex_row()
+                .gap(10.0)
+                .child(
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .child_box(Box::new(gauge_chart(gauge))),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .child_box(Box::new(funnel_chart(funnel))),
+                ),
+        ),
+        16 => Box::new(geo_chart(geo)),
+        _ => Box::new(todo_canvas("TODO: unknown index")),
     }
 }
 
@@ -481,4 +676,192 @@ fn make_heat_values(w: usize, h: usize) -> Vec<f32> {
         }
     }
     out
+}
+
+fn make_stacked_series(series_n: usize, n: usize) -> Vec<TimeSeriesF32> {
+    let n = n.max(2);
+    let mut x = Vec::with_capacity(n);
+    for i in 0..n {
+        x.push(i as f32);
+    }
+
+    let mut out = Vec::with_capacity(series_n.max(1));
+    for s in 0..series_n.max(1) {
+        let mut y = Vec::with_capacity(n);
+        let phase = s as f32 * 0.7;
+        for i in 0..n {
+            let t = i as f32 * 0.01;
+            let v = (t + phase).sin() * 0.7 + (t * 0.17 + phase).sin() * 0.3 + 1.2;
+            y.push(v.max(0.0));
+        }
+        out.push(TimeSeriesF32::new(x.clone(), y).expect("sorted by construction"));
+    }
+    out
+}
+
+fn make_density_points(n: usize) -> Vec<Point> {
+    let n = n.max(1);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = i as f32 * 0.0025;
+        // Two-lobe mixture with gentle warp (deterministic).
+        let (cx, cy) = if i % 2 == 0 { (0.4, 0.55) } else { (0.62, 0.45) };
+        let dx = (t * 3.1).sin() * 0.22 + (t * 0.17).cos() * 0.08;
+        let dy = (t * 2.7).cos() * 0.18 + (t * 0.13).sin() * 0.07;
+        let x = cx + dx + (t * 0.9).sin() * 0.03;
+        let y = cy + dy + (t * 1.1).cos() * 0.03;
+        out.push(Point::new(x, y));
+    }
+    out
+}
+
+fn make_contour_values(w: usize, h: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; w * h];
+    let cx = (w as f32) * 0.62;
+    let cy = (h as f32) * 0.46;
+    for y in 0..h {
+        for x in 0..w {
+            let dx = (x as f32 - cx) / (w as f32);
+            let dy = (y as f32 - cy) / (h as f32);
+            let r2 = dx * dx + dy * dy;
+            let bump = (-r2 * 28.0).exp();
+            let ripple = (dx * 14.0).sin() * (dy * 10.0).cos() * 0.25;
+            out[y * w + x] = (bump + ripple) * 2.0 - 1.0;
+        }
+    }
+    out
+}
+
+fn make_statistics_groups(groups_n: usize, points_per_group: usize) -> Vec<Vec<f32>> {
+    let groups_n = groups_n.max(1);
+    let points_per_group = points_per_group.max(8);
+    let mut out = Vec::with_capacity(groups_n);
+    for g in 0..groups_n {
+        let mut vals = Vec::with_capacity(points_per_group);
+        let shift = (g as f32) * 0.15;
+        let spread = 0.4 + (g as f32 * 0.03).sin().abs() * 0.25;
+        for i in 0..points_per_group {
+            let t = i as f32 * 0.07;
+            let v = (t + shift).sin() * spread + (t * 0.21 + shift).cos() * 0.15 + shift * 0.6;
+            vals.push(v);
+        }
+        out.push(vals);
+    }
+    out
+}
+
+fn make_hierarchy_tree() -> HierarchyNode {
+    HierarchyNode::node(
+        "root",
+        vec![
+            HierarchyNode::node(
+                "A",
+                vec![
+                    HierarchyNode::leaf("A-1", 6.0),
+                    HierarchyNode::leaf("A-2", 2.0),
+                    HierarchyNode::leaf("A-3", 4.0),
+                ],
+            ),
+            HierarchyNode::node(
+                "B",
+                vec![
+                    HierarchyNode::leaf("B-1", 3.0),
+                    HierarchyNode::leaf("B-2", 7.0),
+                    HierarchyNode::leaf("B-3", 1.5),
+                    HierarchyNode::leaf("B-4", 2.2),
+                ],
+            ),
+            HierarchyNode::node(
+                "C",
+                vec![
+                    HierarchyNode::leaf("C-1", 4.5),
+                    HierarchyNode::leaf("C-2", 1.2),
+                    HierarchyNode::leaf("C-3", 3.4),
+                ],
+            ),
+        ],
+    )
+}
+
+fn make_graph_labels(n: usize) -> Vec<String> {
+    (0..n).map(|i| format!("N{i}")).collect()
+}
+
+fn make_graph_edges(n: usize) -> Vec<(usize, usize)> {
+    let n = n.max(2);
+    let mut out = Vec::new();
+    // Ring
+    for i in 0..n {
+        out.push((i, (i + 1) % n));
+    }
+    // Chords
+    for i in 0..n {
+        if i % 3 == 0 {
+            out.push((i, (i + 7) % n));
+        }
+        if i % 5 == 0 {
+            out.push((i, (i + 13) % n));
+        }
+    }
+    out
+}
+
+fn make_radar_dimensions() -> Vec<String> {
+    vec![
+        "Quality".into(),
+        "Speed".into(),
+        "Cost".into(),
+        "Reliability".into(),
+        "Scale".into(),
+        "Latency".into(),
+    ]
+}
+
+fn make_radar_series() -> Vec<Vec<f32>> {
+    vec![
+        vec![0.72, 0.81, 0.42, 0.66, 0.58, 0.76],
+        vec![0.55, 0.62, 0.73, 0.51, 0.77, 0.48],
+        vec![0.83, 0.44, 0.61, 0.74, 0.46, 0.69],
+    ]
+}
+
+fn make_funnel_stages() -> Vec<(String, f32)> {
+    vec![
+        ("Visits".into(), 12_500.0),
+        ("Signups".into(), 3_400.0),
+        ("Trials".into(), 1_250.0),
+        ("Paid".into(), 480.0),
+        ("Renew".into(), 320.0),
+    ]
+}
+
+fn make_geo_shapes() -> Vec<Vec<Point>> {
+    // A couple of simple polygons/lines in arbitrary "geo" coords.
+    let mut shapes = Vec::new();
+
+    // Coast-like polyline
+    let mut coast = Vec::new();
+    for i in 0..220 {
+        let t = i as f32 / 219.0;
+        let x = t * 10.0;
+        let y = (t * std::f32::consts::TAU * 1.7).sin() * 0.9
+            + (t * std::f32::consts::TAU * 4.3).sin() * 0.25;
+        coast.push(Point::new(x, y));
+    }
+    shapes.push(coast);
+
+    // Closed island polygon
+    let mut island = Vec::new();
+    let cx = 6.8;
+    let cy = -1.6;
+    for i in 0..=64 {
+        let a = i as f32 / 64.0 * std::f32::consts::TAU;
+        island.push(Point::new(
+            cx + a.cos() * 1.2,
+            cy + a.sin() * 0.7 + (a * 3.0).sin() * 0.08,
+        ));
+    }
+    shapes.push(island);
+
+    shapes
 }

@@ -4059,6 +4059,16 @@ impl GpuRenderer {
         paths: &crate::primitives::PathBatch,
         bind_group: &wgpu::BindGroup,
     ) {
+        self.draw_path_batch_for_layer(render_pass, paths, None, bind_group);
+    }
+
+    fn draw_path_batch_for_layer(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        paths: &crate::primitives::PathBatch,
+        z_layer: Option<u32>,
+        bind_group: &wgpu::BindGroup,
+    ) {
         if paths.vertices.is_empty() || paths.indices.is_empty() {
             return;
         }
@@ -4074,8 +4084,11 @@ impl GpuRenderer {
 
         if paths.draws.is_empty() {
             // Backward-compatible fallback: treat as a single draw with offset 0.
-            render_pass.set_bind_group(0, bind_group, &[0]);
-            render_pass.draw_indexed(0..paths.indices.len() as u32, 0, 0..1);
+            // (No z-layer info in this legacy representation.)
+            if z_layer.unwrap_or(0) == 0 {
+                render_pass.set_bind_group(0, bind_group, &[0]);
+                render_pass.draw_indexed(0..paths.indices.len() as u32, 0, 0..1);
+            }
             return;
         }
 
@@ -4083,12 +4096,73 @@ impl GpuRenderer {
             if d.index_count == 0 {
                 continue;
             }
+            if let Some(z) = z_layer {
+                if d.z_layer != z {
+                    continue;
+                }
+            }
             let start = d.index_start;
             let end = d.index_start.saturating_add(d.index_count);
             let offset = (PATH_UNIFORM_STRIDE.saturating_mul(i as u64)) as u32;
             render_pass.set_bind_group(0, bind_group, &[offset]);
             render_pass.draw_indexed(start..end, 0, 0..1);
         }
+    }
+
+    /// Upload path buffers/uniforms for a given [`PathBatch`] without drawing.
+    ///
+    /// Note: Path buffers are shared; preparing a different `PathBatch` will overwrite
+    /// the currently prepared path buffers.
+    pub fn prepare_path_batch(&mut self, paths: &crate::primitives::PathBatch) {
+        self.update_path_buffers(paths);
+    }
+
+    /// Render only the path draws for a specific z-layer (overlay pass; no clear).
+    ///
+    /// Requires: `prepare_path_batch(paths)` must have been called with the same `paths`
+    /// earlier in the frame.
+    pub fn render_path_batch_overlay_for_layer_prepared(
+        &mut self,
+        target: &wgpu::TextureView,
+        paths: &crate::primitives::PathBatch,
+        z_layer: u32,
+    ) {
+        if paths.vertices.is_empty() || paths.indices.is_empty() {
+            return;
+        }
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Blinc Path Overlay Encoder"),
+            });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Blinc Path Overlay Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.path);
+            self.draw_path_batch_for_layer(
+                &mut render_pass,
+                paths,
+                Some(z_layer),
+                &self.bind_groups.path,
+            );
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
     }
 
     /// Render primitives with MSAA (multi-sample anti-aliasing)

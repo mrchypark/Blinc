@@ -5,10 +5,11 @@
 
 use crate::app::BlincConfig;
 use crate::prelude::*;
-use blinc_core::{Brush, DrawContext, Point, Rect, Stroke};
+use blinc_core::{Brush, DrawContext, Path as BlincPath, Point, Rect, Stroke};
 use blinc_gpu::GpuPaintContext;
 use image::{ImageBuffer, Rgba, RgbaImage};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// Test output directory
 const OUTPUT_DIR: &str = "test_output/blinc_app";
@@ -202,6 +203,25 @@ fn render_to_image(
     read_to_rgba_image(app.device(), app.queue(), &texture, width, height)
 }
 
+/// Render a UI element via the motion render path and return rendered pixels (RGBA).
+fn render_to_image_with_motion(
+    app: &mut BlincApp,
+    ui: &impl ElementBuilder,
+    width: u32,
+    height: u32,
+) -> RgbaImage {
+    let (texture, view) = create_test_texture(app.device(), width, height);
+    let mut tree = RenderTree::from_element(ui);
+    tree.compute_layout(width as f32, height as f32);
+
+    let scheduler = Arc::new(Mutex::new(blinc_animation::AnimationScheduler::new()));
+    let render_state = blinc_layout::RenderState::new(scheduler);
+
+    app.render_tree_with_motion(&tree, &render_state, &view, width, height)
+        .expect("Motion render failed");
+    read_to_rgba_image(app.device(), app.queue(), &texture, width, height)
+}
+
 #[test]
 fn test_simple_red_box() {
     require_gpu!(app);
@@ -259,6 +279,65 @@ fn test_svg_icon() {
         .child(svg(svg_source).size(100.0, 100.0));
 
     render_to_png(&mut app, "svg_icon", &ui, 200, 200);
+}
+
+#[test]
+fn test_stack_z_layer_renders_paths_above_layer_primitives() {
+    require_gpu!(app);
+
+    let (width, height) = (220u32, 180u32);
+    let line_path = BlincPath::new().move_to(20.0, 160.0).line_to(200.0, 20.0);
+    let stroke = Stroke::new(4.0);
+
+    // Stack child #1 (z=1) draws a covering primitive, then a stroked path.
+    // Regression test for the interleaved z-layer renderer: paths must respect z-layer.
+    let ui = stack()
+        .w(width as f32)
+        .h(height as f32)
+        .child(
+            div()
+                .w_full()
+                .h_full()
+                .bg(Color::rgba(0.08, 0.09, 0.12, 1.0)),
+        )
+        .child(
+            div()
+                .w_full()
+                .h_full()
+                .bg(Color::rgba(0.02, 0.02, 0.02, 1.0))
+                .child(
+                    canvas(move |ctx: &mut dyn DrawContext, _bounds| {
+                        ctx.stroke_path(
+                            &line_path,
+                            &stroke,
+                            Brush::Solid(Color::rgb(0.2, 0.6, 1.0)),
+                        );
+                    })
+                    .w(width as f32)
+                    .h(height as f32),
+                ),
+        );
+
+    let img = render_to_image_with_motion(&mut app, &ui, width, height);
+
+    // Heuristic: the stroked path must contribute noticeably bright blue pixels.
+    // Backgrounds are near-black, so `max_b` is a strong signal.
+    let mut max_b = 0u8;
+    let mut bright_blueish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a == 0 {
+            continue;
+        }
+        max_b = max_b.max(b);
+        if b > 150 && g > 60 && r < 160 {
+            bright_blueish += 1;
+        }
+    }
+    assert!(
+        max_b > 150 && bright_blueish > 0,
+        "expected bright blue pixels from stroked path; max_b={max_b} bright_blueish={bright_blueish}"
+    );
 }
 
 #[test]

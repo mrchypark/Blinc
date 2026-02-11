@@ -25,7 +25,19 @@ if ! command -v hs >/dev/null 2>&1; then
   exit 2
 fi
 
-if ! hs -c 'print("hs_ok")' >/dev/null 2>&1; then
+# Avoid hanging if Hammerspoon isn't running / IPC isn't configured.
+if ! hs -A -t 2 -c 'print("hs_ok")' >/dev/null 2>&1; then
+  if command -v open >/dev/null 2>&1; then
+    open -g -a Hammerspoon >/dev/null 2>&1 || true
+  fi
+  for _ in $(seq 1 40); do
+    if hs -A -t 2 -c 'print("hs_ok")' >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.25
+  done
+fi
+if ! hs -A -t 2 -c 'print("hs_ok")' >/dev/null 2>&1; then
   echo "error: Hammerspoon IPC is not available." >&2
   echo "Fix: add 'require(\"hs.ipc\")' to ~/.hammerspoon/init.lua and reload Hammerspoon once." >&2
   exit 2

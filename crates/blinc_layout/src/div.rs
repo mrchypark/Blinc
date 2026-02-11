@@ -1179,6 +1179,15 @@ impl Div {
         if other.cursor.is_some() {
             self.cursor = other.cursor;
         }
+        if other.pointer_events_none != default.pointer_events_none {
+            self.pointer_events_none = other.pointer_events_none;
+        }
+        if other.element_id.is_some() {
+            self.element_id = other.element_id;
+        }
+        if !other.classes.is_empty() {
+            self.classes = other.classes;
+        }
 
         // Merge children - if other has children, replace ours
         if !other.children.is_empty() {
@@ -2277,6 +2286,18 @@ impl Div {
             // Merge scroll handlers into existing event handlers
             self.event_handlers.merge(handlers);
             self.scroll_physics = Some(physics);
+
+            // Match `scroll()` widget defaults: lay out children at natural size
+            // by avoiding stretch/center alignment defaults when enabling scroll.
+            if self.style.align_items.is_none() {
+                self.style.align_items = Some(AlignItems::Start);
+            }
+            if self.style.justify_content.is_none() {
+                self.style.justify_content = Some(JustifyContent::Start);
+            }
+            if self.style.align_content.is_none() {
+                self.style.align_content = Some(taffy::AlignContent::Start);
+            }
         }
     }
 
