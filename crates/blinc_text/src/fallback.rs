@@ -35,6 +35,12 @@ pub struct WidthCorrector {
     corrected_width: f32,
 }
 
+impl Default for WidthCorrector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WidthCorrector {
     pub fn new() -> Self {
         Self {
@@ -440,7 +446,7 @@ pub fn fallback_bucket_key(c: char) -> u32 {
         0x0590..=0x05FF => BUCKET_HEBREW,
 
         // Cyrillic
-        0x0400..=0x04FF | 0x0500..=0x052F => BUCKET_CYRILLIC,
+        0x0400..=0x052F => BUCKET_CYRILLIC,
 
         // Greek
         0x0370..=0x03FF => BUCKET_GREEK,

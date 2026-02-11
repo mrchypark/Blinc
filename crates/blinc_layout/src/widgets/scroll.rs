@@ -2382,9 +2382,11 @@ mod tests {
 
     #[test]
     fn test_scroll_physics_basic() {
-        let mut physics = ScrollPhysics::default();
-        physics.viewport_height = 400.0;
-        physics.content_height = 1000.0;
+        let mut physics = ScrollPhysics {
+            viewport_height: 400.0,
+            content_height: 1000.0,
+            ..Default::default()
+        };
 
         assert_eq!(physics.min_offset_y(), 0.0);
         assert_eq!(physics.max_offset_y(), -600.0); // 1000 - 400
@@ -2397,9 +2399,11 @@ mod tests {
 
     #[test]
     fn test_scroll_physics_overscroll() {
-        let mut physics = ScrollPhysics::default();
-        physics.viewport_height = 400.0;
-        physics.content_height = 1000.0;
+        let mut physics = ScrollPhysics {
+            viewport_height: 400.0,
+            content_height: 1000.0,
+            ..Default::default()
+        };
 
         // Scroll past top (vertical)
         physics.apply_scroll_delta(0.0, 50.0);
@@ -2460,9 +2464,11 @@ mod tests {
 
     #[test]
     fn test_scroll_settling() {
-        let mut physics = ScrollPhysics::default();
-        physics.viewport_height = 400.0;
-        physics.content_height = 1000.0;
+        let mut physics = ScrollPhysics {
+            viewport_height: 400.0,
+            content_height: 1000.0,
+            ..Default::default()
+        };
 
         // Start scrolling (vertical)
         physics.apply_scroll_delta(0.0, -50.0);
@@ -2775,11 +2781,13 @@ mod tests {
 
     #[test]
     fn test_scrollbar_thumb_dimensions() {
-        let mut physics = ScrollPhysics::default();
-        physics.viewport_height = 400.0;
-        physics.content_height = 1000.0;
-        physics.viewport_width = 300.0;
-        physics.content_width = 600.0;
+        let physics = ScrollPhysics {
+            viewport_height: 400.0,
+            content_height: 1000.0,
+            viewport_width: 300.0,
+            content_width: 600.0,
+            ..Default::default()
+        };
 
         // Test vertical thumb
         let (thumb_height, thumb_y) = physics.thumb_dimensions_y();
@@ -2796,9 +2804,11 @@ mod tests {
 
     #[test]
     fn test_scrollbar_thumb_position_updates() {
-        let mut physics = ScrollPhysics::default();
-        physics.viewport_height = 400.0;
-        physics.content_height = 1000.0;
+        let mut physics = ScrollPhysics {
+            viewport_height: 400.0,
+            content_height: 1000.0,
+            ..Default::default()
+        };
 
         // At top
         physics.offset_y = 0.0;
@@ -2819,9 +2829,11 @@ mod tests {
 
     #[test]
     fn test_scrollbar_state_transitions() {
-        let mut physics = ScrollPhysics::default();
-        physics.viewport_height = 400.0;
-        physics.content_height = 1000.0;
+        let mut physics = ScrollPhysics {
+            viewport_height: 400.0,
+            content_height: 1000.0,
+            ..Default::default()
+        };
 
         // Initial state
         assert_eq!(physics.scrollbar_state, ScrollbarState::Idle);
@@ -2851,11 +2863,13 @@ mod tests {
 
     #[test]
     fn test_scrollbar_can_scroll() {
-        let mut physics = ScrollPhysics::default();
+        let mut physics = ScrollPhysics {
+            viewport_height: 400.0,
+            content_height: 300.0,
+            ..Default::default()
+        };
 
         // No content - can't scroll
-        physics.viewport_height = 400.0;
-        physics.content_height = 300.0;
         assert!(!physics.can_scroll_y());
 
         // More content than viewport - can scroll
@@ -2873,11 +2887,13 @@ mod tests {
 
     #[test]
     fn test_scrollbar_render_info() {
-        let mut physics = ScrollPhysics::default();
-        physics.viewport_height = 400.0;
-        physics.content_height = 1000.0;
-        physics.viewport_width = 300.0;
-        physics.content_width = 300.0; // No horizontal scroll
+        let physics = ScrollPhysics {
+            viewport_height: 400.0,
+            content_height: 1000.0,
+            viewport_width: 300.0,
+            content_width: 300.0, // No horizontal scroll
+            ..Default::default()
+        };
 
         let info = physics.scrollbar_render_info();
 

@@ -501,27 +501,7 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             .rounded(14.0)
                             .overflow_clip()
                             .border(1.0, Color::rgba(1.0, 1.0, 1.0, 0.08))
-                            .child_box(chart_for(
-                                idx,
-                                m.line,
-                                m.multi,
-                                m.area,
-                                m.bar,
-                                m.hist,
-                                m.scatter,
-                                m.candle,
-                                m.heat,
-                                m.stacked_area,
-                                m.density,
-                                m.contour,
-                                m.stats,
-                                m.hierarchy,
-                                m.network,
-                                m.polar,
-                                m.gauge,
-                                m.funnel,
-                                m.geo,
-                            )),
+                            .child_box(chart_for(idx, m)),
                     )
             })
     };
@@ -548,43 +528,23 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
     }
 }
 
-fn chart_for(
-    idx: usize,
-    line: LineChartHandle,
-    multi: MultiLineChartHandle,
-    area: AreaChartHandle,
-    bar: BarChartHandle,
-    hist: HistogramChartHandle,
-    scatter: ScatterChartHandle,
-    candle: CandlestickChartHandle,
-    heat: HeatmapChartHandle,
-    stacked_area: StackedAreaChartHandle,
-    density: DensityMapChartHandle,
-    contour: ContourChartHandle,
-    stats: StatisticsChartHandle,
-    hierarchy: HierarchyChartHandle,
-    network: NetworkChartHandle,
-    polar: PolarChartHandle,
-    gauge: GaugeChartHandle,
-    funnel: FunnelChartHandle,
-    geo: GeoChartHandle,
-) -> Box<dyn ElementBuilder> {
+fn chart_for(idx: usize, models: GalleryModels) -> Box<dyn ElementBuilder> {
     match idx {
-        0 => Box::new(line_chart(line)),
-        1 => Box::new(multi_line_chart(multi)),
-        2 => Box::new(area_chart(area)),
-        3 => Box::new(bar_chart(bar)),
-        4 => Box::new(histogram_chart(hist)),
-        5 => Box::new(scatter_chart(scatter)),
-        6 => Box::new(candlestick_chart(candle)),
-        7 => Box::new(heatmap_chart(heat)),
-        8 => Box::new(stacked_area_chart(stacked_area)),
-        9 => Box::new(density_map_chart(density)),
-        10 => Box::new(contour_chart(contour)),
-        11 => Box::new(statistics_chart(stats)),
-        12 => Box::new(hierarchy_chart(hierarchy)),
-        13 => Box::new(network_chart(network)),
-        14 => Box::new(polar_chart(polar)),
+        0 => Box::new(line_chart(models.line)),
+        1 => Box::new(multi_line_chart(models.multi)),
+        2 => Box::new(area_chart(models.area)),
+        3 => Box::new(bar_chart(models.bar)),
+        4 => Box::new(histogram_chart(models.hist)),
+        5 => Box::new(scatter_chart(models.scatter)),
+        6 => Box::new(candlestick_chart(models.candle)),
+        7 => Box::new(heatmap_chart(models.heat)),
+        8 => Box::new(stacked_area_chart(models.stacked_area)),
+        9 => Box::new(density_map_chart(models.density)),
+        10 => Box::new(contour_chart(models.contour)),
+        11 => Box::new(statistics_chart(models.stats)),
+        12 => Box::new(hierarchy_chart(models.hierarchy)),
+        13 => Box::new(network_chart(models.network)),
+        14 => Box::new(polar_chart(models.polar)),
         15 => Box::new(
             div()
                 .w_full()
@@ -595,16 +555,16 @@ fn chart_for(
                     div()
                         .flex_1()
                         .h_full()
-                        .child_box(Box::new(gauge_chart(gauge))),
+                        .child_box(Box::new(gauge_chart(models.gauge))),
                 )
                 .child(
                     div()
                         .flex_1()
                         .h_full()
-                        .child_box(Box::new(funnel_chart(funnel))),
+                        .child_box(Box::new(funnel_chart(models.funnel))),
                 ),
         ),
-        16 => Box::new(geo_chart(geo)),
+        16 => Box::new(geo_chart(models.geo)),
         _ => Box::new(todo_canvas("TODO: unknown index")),
     }
 }

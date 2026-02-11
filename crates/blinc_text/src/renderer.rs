@@ -68,6 +68,12 @@ struct ResolvedGlyphData {
     is_color: bool,
 }
 
+#[derive(Clone, Copy)]
+struct FallbackStyle {
+    weight: u16,
+    italic: bool,
+}
+
 struct RenderFallbackWalker<'a> {
     renderer: &'a mut TextRenderer,
     glyph_infos: &'a mut Vec<Option<ResolvedGlyphData>>,
@@ -214,8 +220,7 @@ impl TextRenderer {
         font_id: u32,
         font_size: f32,
         options: &LayoutOptions,
-        weight: u16,
-        italic: bool,
+        style: FallbackStyle,
     ) -> Result<(Vec<Option<ResolvedGlyphData>>, f32)> {
         let registry = Arc::clone(&self.font_registry);
         let mut gid_resolver = crate::fallback::FallbackGlyphIdResolver::new();
@@ -242,8 +247,8 @@ impl TextRenderer {
             layout,
             font,
             registry.as_ref(),
-            weight,
-            italic,
+            style.weight,
+            style.italic,
             &mut walker,
         )?;
 
@@ -514,8 +519,10 @@ impl TextRenderer {
             font_id,
             font_size,
             options,
-            resolved_weight,
-            resolved_italic,
+            FallbackStyle {
+                weight: resolved_weight,
+                italic: resolved_italic,
+            },
         )?;
 
         // Second pass: build glyph instances
@@ -619,8 +626,10 @@ impl TextRenderer {
             font_id,
             font_size,
             options,
-            requested_weight,
-            requested_italic,
+            FallbackStyle {
+                weight: requested_weight,
+                italic: requested_italic,
+            },
         )?;
 
         // Second pass: build glyph instances with per-glyph colors.

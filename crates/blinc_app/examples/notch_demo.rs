@@ -194,16 +194,16 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(menu_bar(&dropdown_state, menu_bar_bg))
                     // Dropdown layer - render until completely collapsed
                     .when(dropdown_height > 0.6, |s| {
-                        s.child(notched_dropdown(
-                            state.item,
+                        s.child(notched_dropdown(NotchedDropdownParams {
+                            active_item: state.item,
                             center_x,
-                            dropdown_width,
+                            width: dropdown_width,
                             opacity,
-                            dropdown_height,
+                            height: dropdown_height,
                             top_radius,
                             bottom_radius,
                             menu_bar_bg,
-                        ))
+                        }))
                     })
                     // Close dropdown when mouse leaves the entire menu + dropdown area
                     .on_hover_leave(move |_| {
@@ -340,7 +340,7 @@ fn stateful_icon_button(
 }
 
 /// The notched dropdown panel with collapse animation
-fn notched_dropdown(
+struct NotchedDropdownParams {
     active_item: Option<MenuItem>,
     center_x: f32,
     width: f32,
@@ -349,30 +349,32 @@ fn notched_dropdown(
     top_radius: f32,
     bottom_radius: f32,
     menu_bar_bg: Color,
-) -> Notch {
-    let content = dropdown_content(active_item);
+}
+
+fn notched_dropdown(params: NotchedDropdownParams) -> Notch {
+    let content = dropdown_content(params.active_item);
 
     // Position dropdown so it's centered on the icon position (using animated width)
-    let left = center_x - width / 2.0;
+    let left = params.center_x - params.width / 2.0;
 
     // Calculate height ratio for padding animation (0 when collapsed, 1 when fully open)
     let full_height = DROPDOWN_HEIGHT + NOTCH_RADIUS * 2.0;
-    let height_ratio = (height / full_height).clamp(0.0, 1.0);
+    let height_ratio = (params.height / full_height).clamp(0.0, 1.0);
 
     // Top concave radius stays full, bottom shrinks with height
     // Position at MENU_BAR_HEIGHT - top_radius so concave curves connect to menu bar
     notch()
-        .concave_top(top_radius)
-        .rounded_bottom(bottom_radius)
-        .bg(menu_bar_bg)
-        .opacity(opacity)
+        .concave_top(params.top_radius)
+        .rounded_bottom(params.bottom_radius)
+        .bg(params.menu_bar_bg)
+        .opacity(params.opacity)
         .absolute()
-        .top(MENU_BAR_HEIGHT - top_radius)
+        .top(MENU_BAR_HEIGHT - params.top_radius)
         .left(left)
-        .w(width)
-        .h(height) // Animated height for collapse effect
+        .w(params.width)
+        .h(params.height) // Animated height for collapse effect
         .overflow_clip()
-        .pt(top_radius + 12.0 * height_ratio) // Padding scales with height
+        .pt(params.top_radius + 12.0 * height_ratio) // Padding scales with height
         .pb(12.0 * height_ratio) // Animate to 0 when collapsed
         .px(16.0)
         // Always render content - it gets clipped by overflow_clip as height animates
