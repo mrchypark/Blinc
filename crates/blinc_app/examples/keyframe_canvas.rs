@@ -199,10 +199,10 @@ fn progress_bar_demo(ctx: &WindowedContext) -> Div {
     let timeline = ctx.use_animated_timeline();
 
     // Configure timeline on first use (closure only runs once, returns existing IDs after)
-    let entry_id = timeline.lock().unwrap().configure(|t| {
-        
-        t.add(0, 2000, 0.0, 1.0)
-    });
+    let entry_id = timeline
+        .lock()
+        .unwrap()
+        .configure(|t| t.add(0, 2000, 0.0, 1.0));
 
     let render_timeline = Arc::clone(&timeline);
     let click_timeline = Arc::clone(&timeline);

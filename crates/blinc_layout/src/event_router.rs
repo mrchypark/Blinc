@@ -1046,7 +1046,11 @@ impl EventRouter {
     }
 
     /// Recursively collect node IDs
-    fn collect_nodes_recursive(tree: &RenderTree, node: LayoutNodeId, nodes: &mut HashSet<LayoutNodeId>) {
+    fn collect_nodes_recursive(
+        tree: &RenderTree,
+        node: LayoutNodeId,
+        nodes: &mut HashSet<LayoutNodeId>,
+    ) {
         nodes.insert(node);
         let children = tree.layout().children(node);
         for child in children {
