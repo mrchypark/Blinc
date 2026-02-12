@@ -60,6 +60,40 @@ impl DebugServerConfig {
     }
 }
 
+#[cfg(unix)]
+fn secure_socket_parent_dir(socket_path: &PathBuf) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_stale_socket(socket_path: &PathBuf) -> io::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+
+    match std::fs::symlink_metadata(socket_path) {
+        Ok(meta) => {
+            if meta.file_type().is_socket() {
+                std::fs::remove_file(socket_path)
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!(
+                        "refusing to remove non-socket path at {}",
+                        socket_path.display()
+                    ),
+                ))
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Handle to a running debug server.
 pub struct ServerHandle {
     shutdown: Arc<AtomicBool>,
@@ -123,15 +157,17 @@ impl DebugServer {
     pub fn start(self) -> io::Result<ServerHandle> {
         let socket_path = self.config.socket_path();
 
-        // Ensure parent directory exists
-        if let Some(parent) = socket_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Remove existing socket file
         #[cfg(unix)]
         {
-            let _ = std::fs::remove_file(&socket_path);
+            secure_socket_parent_dir(&socket_path)?;
+            remove_stale_socket(&socket_path)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            if let Some(parent) = socket_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
         }
 
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -153,10 +189,12 @@ impl DebugServer {
 
     #[cfg(unix)]
     fn run_server(&self, socket_path: &PathBuf, shutdown: Arc<AtomicBool>) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::UnixListener;
         use std::time::Duration;
 
         let listener = UnixListener::bind(socket_path)?;
+        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
 
         tracing::info!("Debug server listening on {}", socket_path.display());
@@ -771,5 +809,24 @@ mod tests {
         );
         assert!(matches!(parsed[0], ClientCommand::Start));
         assert!(matches!(parsed[1], ClientCommand::Ping));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_remove_stale_socket_rejects_non_socket_path() {
+        let path = std::env::temp_dir().join(format!(
+            "blinc-stale-socket-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"not-a-socket").unwrap();
+
+        let result = remove_stale_socket(&path);
+        assert!(result.is_err(), "non-socket path should be rejected");
+
+        let _ = std::fs::remove_file(&path);
     }
 }
