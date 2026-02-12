@@ -291,6 +291,39 @@ impl ClientCommand {
     }
 }
 
+const MAX_COMMAND_FRAME_SIZE: usize = 1024 * 1024;
+
+enum StreamCommand {
+    Ready(ClientCommand),
+    Invalid,
+    Incomplete,
+}
+
+fn decode_next_stream_command(buffer: &mut Vec<u8>) -> StreamCommand {
+    if buffer.len() < 4 {
+        return StreamCommand::Incomplete;
+    }
+
+    let payload_len = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
+    if payload_len == 0 || payload_len > MAX_COMMAND_FRAME_SIZE {
+        buffer.clear();
+        return StreamCommand::Invalid;
+    }
+
+    let frame_len = 4 + payload_len;
+    if buffer.len() < frame_len {
+        return StreamCommand::Incomplete;
+    }
+
+    let payload = buffer[4..frame_len].to_vec();
+    buffer.drain(..frame_len);
+
+    match ClientCommand::from_bytes(&payload) {
+        Some(command) => StreamCommand::Ready(command),
+        None => StreamCommand::Invalid,
+    }
+}
+
 fn normalize_command(value: &str) -> String {
     value
         .chars()
@@ -438,6 +471,7 @@ fn handle_client(
 
     // Main loop: respond to commands and send state updates
     let mut buf = [0u8; 1024];
+    let mut pending = Vec::new();
     loop {
         // Check for incoming commands
         match stream.read(&mut buf) {
@@ -446,10 +480,21 @@ fn handle_client(
                 return Ok(());
             }
             Ok(n) => {
-                // Parse and handle command
-                if let Some(cmd) = ClientCommand::from_bytes(&buf[..n]) {
-                    let response = handle_command(cmd, &session);
-                    stream.write_all(&response.to_bytes())?;
+                pending.extend_from_slice(&buf[..n]);
+                loop {
+                    match decode_next_stream_command(&mut pending) {
+                        StreamCommand::Ready(cmd) => {
+                            let response = handle_command(cmd, &session);
+                            stream.write_all(&response.to_bytes())?;
+                        }
+                        StreamCommand::Invalid => {
+                            let error = ServerMessage::Error {
+                                message: "invalid command frame".to_string(),
+                            };
+                            stream.write_all(&error.to_bytes())?;
+                        }
+                        StreamCommand::Incomplete => break,
+                    }
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -499,14 +544,26 @@ fn handle_client_tcp(
     let mut last_paused = session.is_paused();
 
     let mut buf = [0u8; 1024];
+    let mut pending = Vec::new();
     loop {
         match stream.read(&mut buf) {
             Ok(0) => return Ok(()),
             Ok(n) => {
-                // Parse and handle command
-                if let Some(cmd) = ClientCommand::from_bytes(&buf[..n]) {
-                    let response = handle_command(cmd, &session);
-                    stream.write_all(&response.to_bytes())?;
+                pending.extend_from_slice(&buf[..n]);
+                loop {
+                    match decode_next_stream_command(&mut pending) {
+                        StreamCommand::Ready(cmd) => {
+                            let response = handle_command(cmd, &session);
+                            stream.write_all(&response.to_bytes())?;
+                        }
+                        StreamCommand::Invalid => {
+                            let error = ServerMessage::Error {
+                                message: "invalid command frame".to_string(),
+                            };
+                            stream.write_all(&error.to_bytes())?;
+                        }
+                        StreamCommand::Incomplete => break,
+                    }
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -655,5 +712,64 @@ mod tests {
             ClientCommand::from_bytes(&prefixed),
             Some(ClientCommand::Start)
         ));
+    }
+
+    #[test]
+    fn test_stream_partial_read_still_yields_command() {
+        let json = br#"{"type":"start"}"#;
+        let len = json.len() as u32;
+        let mut framed = Vec::new();
+        framed.extend_from_slice(&len.to_le_bytes());
+        framed.extend_from_slice(json);
+
+        let chunks = [&framed[..3], &framed[3..]];
+        let mut parsed = Vec::new();
+        let mut pending = Vec::new();
+        for chunk in chunks {
+            pending.extend_from_slice(chunk);
+            loop {
+                match decode_next_stream_command(&mut pending) {
+                    StreamCommand::Ready(cmd) => parsed.push(cmd),
+                    StreamCommand::Invalid => break,
+                    StreamCommand::Incomplete => break,
+                }
+            }
+        }
+
+        assert_eq!(
+            parsed.len(),
+            1,
+            "streamed command split across reads should still be parsed once"
+        );
+        assert!(matches!(parsed[0], ClientCommand::Start));
+    }
+
+    #[test]
+    fn test_stream_single_read_with_multiple_frames_parses_all_commands() {
+        let frame = |json: &[u8]| {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+            out.extend_from_slice(json);
+            out
+        };
+
+        let merged = [frame(br#"{"type":"start"}"#), frame(br#"{"type":"ping"}"#)].concat();
+        let mut parsed = Vec::new();
+        let mut pending = merged;
+        loop {
+            match decode_next_stream_command(&mut pending) {
+                StreamCommand::Ready(cmd) => parsed.push(cmd),
+                StreamCommand::Invalid => break,
+                StreamCommand::Incomplete => break,
+            }
+        }
+
+        assert_eq!(
+            parsed.len(),
+            2,
+            "multiple framed commands in one read should parse both commands"
+        );
+        assert!(matches!(parsed[0], ClientCommand::Start));
+        assert!(matches!(parsed[1], ClientCommand::Ping));
     }
 }

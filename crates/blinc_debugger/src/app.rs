@@ -96,65 +96,50 @@ impl AppState {
     }
 
     pub fn toggle_playback(&mut self) {
-        let player_arc = self.player.clone();
-        if let Some(player_arc) = player_arc {
-            if let Ok(mut player) = player_arc.lock() {
-                player.toggle();
-                self.timeline_state.playback_state = player.state();
-            }
-        }
+        self.with_player(|state, player| {
+            player.toggle();
+            state.timeline_state.playback_state = player.state();
+        });
     }
 
     pub fn step_back(&mut self) {
-        let player_arc = self.player.clone();
-        if let Some(player_arc) = player_arc {
-            if let Ok(mut player) = player_arc.lock() {
-                let update = player.step_back();
-                self.apply_frame_update(update);
-                self.timeline_state.position = player.position();
-                self.timeline_state.playback_state = player.state();
-            }
-        }
+        self.with_player(|state, player| {
+            let update = player.step_back();
+            state.apply_frame_update(update);
+            state.timeline_state.position = player.position();
+            state.timeline_state.playback_state = player.state();
+        });
     }
 
     pub fn step_forward(&mut self) {
-        let player_arc = self.player.clone();
-        if let Some(player_arc) = player_arc {
-            if let Ok(mut player) = player_arc.lock() {
-                let update = player.step();
-                self.apply_frame_update(update);
-                self.timeline_state.position = player.position();
-                self.timeline_state.playback_state = player.state();
-            }
-        }
+        self.with_player(|state, player| {
+            let update = player.step();
+            state.apply_frame_update(update);
+            state.timeline_state.position = player.position();
+            state.timeline_state.playback_state = player.state();
+        });
     }
 
     pub fn seek_normalized(&mut self, normalized: f32) {
-        let player_arc = self.player.clone();
-        if let Some(player_arc) = player_arc {
-            if let Ok(mut player) = player_arc.lock() {
-                let micros = (player.duration().as_micros() as f32 * normalized.clamp(0.0, 1.0))
-                    .round() as u64;
-                player.seek(Timestamp::from_micros(micros));
-                self.timeline_state.position = player.position();
-                self.timeline_state.playback_state = ReplayState::Paused;
-                self.current_snapshot = player
-                    .all_snapshots()
-                    .iter()
-                    .rfind(|s| s.timestamp <= player.position())
-                    .cloned();
-            }
-        }
+        self.with_player(|state, player| {
+            let micros =
+                (player.duration().as_micros() as f32 * normalized.clamp(0.0, 1.0)).round() as u64;
+            player.seek(Timestamp::from_micros(micros));
+            state.timeline_state.position = player.position();
+            state.timeline_state.playback_state = ReplayState::Paused;
+            state.current_snapshot = player
+                .all_snapshots()
+                .iter()
+                .rfind(|s| s.timestamp <= player.position())
+                .cloned();
+        });
     }
 
     pub fn set_playback_speed(&mut self, speed: f64) {
-        let player_arc = self.player.clone();
-        if let Some(player_arc) = player_arc {
-            if let Ok(mut player) = player_arc.lock() {
-                player.clock_mut().set_speed(speed);
-                self.timeline_state.speed = player.clock().speed();
-            }
-        }
+        self.with_player(|state, player| {
+            player.clock_mut().set_speed(speed);
+            state.timeline_state.speed = player.clock().speed();
+        });
     }
 
     fn apply_recording(&mut self, export: RecordingExport) {
@@ -214,6 +199,19 @@ impl AppState {
             }
         }
     }
+
+    fn with_player<F>(&mut self, action: F)
+    where
+        F: FnOnce(&mut Self, &mut ReplayPlayer),
+    {
+        let Some(player_arc) = self.player.clone() else {
+            return;
+        };
+        let Ok(mut player) = player_arc.lock() else {
+            return;
+        };
+        action(self, &mut player);
+    }
 }
 
 /// Shared application state for thread-safe access.
@@ -255,86 +253,33 @@ fn build_debugger_ui(ctx: &WindowedContext, app_state: &SharedAppState) -> impl 
     app_state.write().unwrap().tick();
     let state = app_state.read().unwrap();
 
-    let on_tree_select = {
-        let shared = app_state.clone();
-        Arc::new(move |id: String| {
-            if let Ok(mut state) = shared.write() {
-                state.selected_element_id = Some(id);
-            }
-        })
-    };
-
-    let on_toggle_bounds = {
-        let shared = app_state.clone();
-        Arc::new(move |value: bool| {
-            if let Ok(mut state) = shared.write() {
-                state.preview_config.show_bounds = value;
-            }
-        })
-    };
-
-    let on_toggle_cursor = {
-        let shared = app_state.clone();
-        Arc::new(move |value: bool| {
-            if let Ok(mut state) = shared.write() {
-                state.preview_config.show_cursor = value;
-            }
-        })
-    };
-
-    let on_zoom = {
-        let shared = app_state.clone();
-        Arc::new(move |value: f32| {
-            if let Ok(mut state) = shared.write() {
-                state.preview_config.zoom = value;
-            }
-        })
-    };
-
-    let on_step_back = {
-        let shared = app_state.clone();
-        Arc::new(move || {
-            if let Ok(mut state) = shared.write() {
-                state.step_back();
-            }
-        })
-    };
-
-    let on_play_pause = {
-        let shared = app_state.clone();
-        Arc::new(move || {
-            if let Ok(mut state) = shared.write() {
-                state.toggle_playback();
-            }
-        })
-    };
-
-    let on_step_forward = {
-        let shared = app_state.clone();
-        Arc::new(move || {
-            if let Ok(mut state) = shared.write() {
-                state.step_forward();
-            }
-        })
-    };
-
-    let on_seek = {
-        let shared = app_state.clone();
-        Arc::new(move |normalized: f32| {
-            if let Ok(mut state) = shared.write() {
-                state.seek_normalized(normalized);
-            }
-        })
-    };
-
-    let on_speed_change = {
-        let shared = app_state.clone();
-        Arc::new(move |speed: f64| {
-            if let Ok(mut state) = shared.write() {
-                state.set_playback_speed(speed);
-            }
-        })
-    };
+    let on_tree_select = make_state_callback(app_state, |state, id: String| {
+        state.selected_element_id = Some(id);
+    });
+    let on_toggle_bounds = make_state_callback(app_state, |state, value: bool| {
+        state.preview_config.show_bounds = value;
+    });
+    let on_toggle_cursor = make_state_callback(app_state, |state, value: bool| {
+        state.preview_config.show_cursor = value;
+    });
+    let on_zoom = make_state_callback(app_state, |state, value: f32| {
+        state.preview_config.zoom = value;
+    });
+    let on_step_back = make_state_callback0(app_state, |state| {
+        state.step_back();
+    });
+    let on_play_pause = make_state_callback0(app_state, |state| {
+        state.toggle_playback();
+    });
+    let on_step_forward = make_state_callback0(app_state, |state| {
+        state.step_forward();
+    });
+    let on_seek = make_state_callback(app_state, |state, normalized: f32| {
+        state.seek_normalized(normalized);
+    });
+    let on_speed_change = make_state_callback(app_state, |state, speed: f64| {
+        state.set_playback_speed(speed);
+    });
 
     div()
         .w(ctx.width)
@@ -395,23 +340,85 @@ fn write_len_prefixed<W: Write>(writer: &mut W, payload: &[u8]) -> Result<()> {
 fn request_export_from_server(addr: &str) -> Result<RecordingExport> {
     #[cfg(unix)]
     {
-        if !addr.contains(':') || addr.contains('/') {
-            let socket = if addr.contains('/') {
-                addr.to_string()
-            } else {
-                format!("/tmp/blinc/{addr}.sock")
-            };
-            use std::os::unix::net::UnixStream;
-            let mut stream = UnixStream::connect(&socket)
-                .with_context(|| format!("failed to connect to unix socket {socket}"))?;
-            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
-            return request_export_over_stream(&mut stream);
+        match resolve_connect_target(addr) {
+            ConnectTarget::Unix(socket) => {
+                return request_export_over_unix_socket(&socket)
+                    .with_context(|| format!("failed to connect to unix socket {socket}"));
+            }
+            ConnectTarget::Tcp(target) => {
+                return request_export_over_tcp(&target)
+                    .with_context(|| format!("failed to connect to tcp server {target}"));
+            }
         }
     }
 
-    let mut stream = std::net::TcpStream::connect(addr)
-        .with_context(|| format!("failed to connect to tcp server {addr}"))?;
+    request_export_over_tcp(addr).with_context(|| format!("failed to connect to tcp server {addr}"))
+}
+
+fn make_state_callback<T, F>(app_state: &SharedAppState, action: F) -> Arc<dyn Fn(T) + Send + Sync>
+where
+    T: Send + 'static,
+    F: Fn(&mut AppState, T) + Send + Sync + 'static,
+{
+    let shared = app_state.clone();
+    Arc::new(move |value: T| {
+        if let Ok(mut state) = shared.write() {
+            action(&mut state, value);
+        }
+    })
+}
+
+fn make_state_callback0<F>(app_state: &SharedAppState, action: F) -> Arc<dyn Fn() + Send + Sync>
+where
+    F: Fn(&mut AppState) + Send + Sync + 'static,
+{
+    let shared = app_state.clone();
+    Arc::new(move || {
+        if let Ok(mut state) = shared.write() {
+            action(&mut state);
+        }
+    })
+}
+
+#[cfg(unix)]
+enum ConnectTarget {
+    Unix(String),
+    Tcp(String),
+}
+
+#[cfg(unix)]
+fn resolve_connect_target(addr: &str) -> ConnectTarget {
+    use std::net::{SocketAddr, ToSocketAddrs};
+
+    if let Some(path) = addr.strip_prefix("unix:") {
+        return ConnectTarget::Unix(path.to_string());
+    }
+    if let Some(target) = addr.strip_prefix("tcp:") {
+        return ConnectTarget::Tcp(target.to_string());
+    }
+    if addr.contains('/') {
+        return ConnectTarget::Unix(addr.to_string());
+    }
+
+    if addr.parse::<SocketAddr>().is_ok() || addr.to_socket_addrs().is_ok() {
+        return ConnectTarget::Tcp(addr.to_string());
+    }
+
+    ConnectTarget::Unix(format!("/tmp/blinc/{addr}.sock"))
+}
+
+#[cfg(unix)]
+fn request_export_over_unix_socket(socket: &str) -> Result<RecordingExport> {
+    use std::os::unix::net::UnixStream;
+
+    let mut stream = UnixStream::connect(socket)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+    request_export_over_stream(&mut stream)
+}
+
+fn request_export_over_tcp(addr: &str) -> Result<RecordingExport> {
+    let mut stream = std::net::TcpStream::connect(addr)?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
     request_export_over_stream(&mut stream)
@@ -451,4 +458,49 @@ fn request_export_over_stream<S: Read + Write>(stream: &mut S) -> Result<Recordi
     }
 
     bail!("did not receive export payload from server")
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{resolve_connect_target, ConnectTarget};
+
+    #[test]
+    fn resolves_unix_scheme_address() {
+        assert!(matches!(
+            resolve_connect_target("unix:/tmp/blinc/test.sock"),
+            ConnectTarget::Unix(path) if path == "/tmp/blinc/test.sock"
+        ));
+    }
+
+    #[test]
+    fn resolves_tcp_scheme_address() {
+        assert!(matches!(
+            resolve_connect_target("tcp:127.0.0.1:7331"),
+            ConnectTarget::Tcp(target) if target == "127.0.0.1:7331"
+        ));
+    }
+
+    #[test]
+    fn resolves_unix_socket_path() {
+        assert!(matches!(
+            resolve_connect_target("/tmp/blinc/custom.sock"),
+            ConnectTarget::Unix(path) if path == "/tmp/blinc/custom.sock"
+        ));
+    }
+
+    #[test]
+    fn resolves_ip_socket_addr_as_tcp() {
+        assert!(matches!(
+            resolve_connect_target("127.0.0.1:7331"),
+            ConnectTarget::Tcp(target) if target == "127.0.0.1:7331"
+        ));
+    }
+
+    #[test]
+    fn resolves_app_name_to_default_socket_path() {
+        assert!(matches!(
+            resolve_connect_target("my_app"),
+            ConnectTarget::Unix(path) if path == "/tmp/blinc/my_app.sock"
+        ));
+    }
 }
