@@ -82,12 +82,14 @@ impl AppState {
                 let update = player.update();
                 self.apply_frame_update(update);
             } else {
-                self.current_snapshot = player
+                if let Some(snapshot) = player
                     .all_snapshots()
                     .iter()
                     .rfind(|s| s.timestamp <= player.position())
                     .cloned()
-                    .or_else(|| self.current_snapshot.take());
+                {
+                    self.current_snapshot = Some(snapshot);
+                }
             }
 
             self.timeline_state.position = player.position();
@@ -457,15 +459,15 @@ fn request_export_over_unix_socket(socket: &str) -> Result<RecordingExport> {
     use std::os::unix::net::UnixStream;
 
     let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     request_export_over_stream(&mut stream)
 }
 
 fn request_export_over_tcp(addr: &str) -> Result<RecordingExport> {
     let mut stream = std::net::TcpStream::connect(addr)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     request_export_over_stream(&mut stream)
 }
 

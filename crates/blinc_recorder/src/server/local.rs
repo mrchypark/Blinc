@@ -432,7 +432,13 @@ impl ServerMessage {
             ServerMessage::Pong => json!({ "type": "pong" }),
         };
 
-        let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| b"{}".to_vec());
+        let bytes = match serde_json::to_vec(&payload) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::error!("failed to serialize ServerMessage payload: {}", e);
+                b"{\"type\":\"error\",\"message\":\"serialization failure\"}".to_vec()
+            }
+        };
         let len = bytes.len() as u32;
         let mut result = Vec::with_capacity(4 + bytes.len());
         result.extend_from_slice(&len.to_le_bytes());
