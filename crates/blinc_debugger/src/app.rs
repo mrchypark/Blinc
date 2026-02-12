@@ -18,6 +18,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+const MAX_NETWORK_PAYLOAD_BYTES: usize = 100 * 1024 * 1024;
+const MAX_SERVER_MESSAGES_TO_PARSE: usize = 32;
+
 /// Application state
 #[derive(Default)]
 pub struct AppState {
@@ -325,6 +328,13 @@ fn read_len_prefixed<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf)?;
     let len = u32::from_le_bytes(len_buf) as usize;
+    if len > MAX_NETWORK_PAYLOAD_BYTES {
+        bail!(
+            "payload size {} exceeds maximum allowed {}",
+            len,
+            MAX_NETWORK_PAYLOAD_BYTES
+        );
+    }
     let mut payload = vec![0u8; len];
     reader.read_exact(&mut payload)?;
     Ok(payload)
@@ -435,7 +445,7 @@ fn request_export_over_stream<S: Read + Write>(stream: &mut S) -> Result<Recordi
     let bytes = serde_json::to_vec(&request)?;
     write_len_prefixed(stream, &bytes)?;
 
-    for _ in 0..32 {
+    for _ in 0..MAX_SERVER_MESSAGES_TO_PARSE {
         let payload = read_len_prefixed(stream)?;
         let value: serde_json::Value = serde_json::from_slice(&payload)?;
         match value.get("type").and_then(|v| v.as_str()) {
@@ -462,7 +472,10 @@ fn request_export_over_stream<S: Read + Write>(stream: &mut S) -> Result<Recordi
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{resolve_connect_target, ConnectTarget};
+    use super::{
+        read_len_prefixed, resolve_connect_target, ConnectTarget, MAX_NETWORK_PAYLOAD_BYTES,
+    };
+    use std::io::Cursor;
 
     #[test]
     fn resolves_unix_scheme_address() {
@@ -502,5 +515,24 @@ mod tests {
             resolve_connect_target("my_app"),
             ConnectTarget::Unix(path) if path == "/tmp/blinc/my_app.sock"
         ));
+    }
+
+    #[test]
+    fn rejects_payload_larger_than_limit() {
+        let len = (MAX_NETWORK_PAYLOAD_BYTES as u32) + 1;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&len.to_le_bytes());
+        let mut cursor = Cursor::new(frame);
+
+        let err = read_len_prefixed(&mut cursor).expect_err("oversized payload must be rejected");
+        let expected = format!(
+            "payload size {} exceeds maximum allowed {}",
+            MAX_NETWORK_PAYLOAD_BYTES + 1,
+            MAX_NETWORK_PAYLOAD_BYTES
+        );
+        assert!(
+            err.to_string().contains(&expected),
+            "unexpected error: {err}"
+        );
     }
 }

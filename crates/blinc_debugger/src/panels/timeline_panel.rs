@@ -61,6 +61,9 @@ struct BuiltTimelinePanel {
 }
 
 impl BuiltTimelinePanel {
+    const TRACK_WIDTH: f32 = 740.0;
+    const EVENT_MARKER_WIDTH: f32 = 3.0;
+
     fn from_config(config: &TimelinePanelConfig) -> Self {
         let theme = ThemeState::get();
 
@@ -215,7 +218,7 @@ impl BuiltTimelinePanel {
                     .min(0.0)
                     .max(1.0)
                     .size(SliderSize::Small)
-                    .w(740.0)
+                    .w(Self::TRACK_WIDTH)
                     .on_change(move |value| {
                         if let Some(cb) = &on_seek {
                             cb(value.clamp(0.0, 1.0));
@@ -236,14 +239,17 @@ impl BuiltTimelinePanel {
             theme.color(ColorToken::Warning),
         ];
 
-        let mut track = div().w(740.0).h(16.0).relative();
+        let mut track = div().w(Self::TRACK_WIDTH).h(16.0).relative();
         for (idx, pos) in positions.iter().enumerate() {
             track = track.child(
                 div()
                     .absolute()
-                    .left((pos * 740.0).clamp(0.0, 737.0))
+                    .left(
+                        (pos * Self::TRACK_WIDTH)
+                            .clamp(0.0, Self::TRACK_WIDTH - Self::EVENT_MARKER_WIDTH),
+                    )
                     .top(2.0)
-                    .w(3.0)
+                    .w(Self::EVENT_MARKER_WIDTH)
                     .h(12.0)
                     .rounded(1.5)
                     .bg(colors[idx % colors.len()]),
@@ -255,7 +261,7 @@ impl BuiltTimelinePanel {
     fn time_labels(duration: Timestamp) -> Div {
         let theme = ThemeState::get();
         div()
-            .w(740.0)
+            .w(Self::TRACK_WIDTH)
             .h(14.0)
             .flex_row()
             .justify_between()
