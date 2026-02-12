@@ -488,7 +488,7 @@ impl IOSRenderContext {
                 tree.apply_all_css_animation_props();
                 tree.apply_all_css_transition_props();
                 if tree.apply_animated_layout_props() {
-                    tree.compute_layout(self.width, self.height);
+                    tree.compute_layout(self.windowed_ctx.width, self.windowed_ctx.height);
                 }
             }
             self.last_frame_time_ms = current_time;
@@ -1128,7 +1128,7 @@ pub extern "C" fn blinc_tick_animations(ctx: *mut IOSRenderContext) -> bool {
                 tree.apply_all_css_animation_props();
                 tree.apply_all_css_transition_props();
                 if tree.apply_animated_layout_props() {
-                    tree.compute_layout(ctx.width, ctx.height);
+                    tree.compute_layout(ctx.windowed_ctx.width, ctx.windowed_ctx.height);
                 }
             }
             ctx.last_frame_time_ms = current_time;

@@ -966,7 +966,9 @@ impl AndroidApp {
                         needs_redraw_next_frame = true;
                         // Apply animated layout properties and recompute layout if needed
                         if tree.apply_animated_layout_props() {
-                            tree.compute_layout(ctx.width, ctx.height);
+                            if let Some(ref windowed_ctx) = ctx {
+                                tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                            }
                         }
                     }
                 }
