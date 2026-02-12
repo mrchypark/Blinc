@@ -5,6 +5,7 @@
 
 use crate::{RecordingExport, SharedRecordingSession};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,6 +57,40 @@ impl DebugServerConfig {
         {
             PathBuf::from(format!(r"\\.\pipe\blinc\{}", self.app_name))
         }
+    }
+}
+
+#[cfg(unix)]
+fn secure_socket_parent_dir(socket_path: &PathBuf) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_stale_socket(socket_path: &PathBuf) -> io::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+
+    match std::fs::symlink_metadata(socket_path) {
+        Ok(meta) => {
+            if meta.file_type().is_socket() {
+                std::fs::remove_file(socket_path)
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!(
+                        "refusing to remove non-socket path at {}",
+                        socket_path.display()
+                    ),
+                ))
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -122,15 +157,17 @@ impl DebugServer {
     pub fn start(self) -> io::Result<ServerHandle> {
         let socket_path = self.config.socket_path();
 
-        // Ensure parent directory exists
-        if let Some(parent) = socket_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Remove existing socket file
         #[cfg(unix)]
         {
-            let _ = std::fs::remove_file(&socket_path);
+            secure_socket_parent_dir(&socket_path)?;
+            remove_stale_socket(&socket_path)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            if let Some(parent) = socket_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
         }
 
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -152,10 +189,12 @@ impl DebugServer {
 
     #[cfg(unix)]
     fn run_server(&self, socket_path: &PathBuf, shutdown: Arc<AtomicBool>) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::UnixListener;
         use std::time::Duration;
 
         let listener = UnixListener::bind(socket_path)?;
+        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
 
         tracing::info!("Debug server listening on {}", socket_path.display());
@@ -171,8 +210,9 @@ impl DebugServer {
 
                     // Handle client in a new thread
                     let session = self.session.clone();
+                    let app_name = self.config.app_name.clone();
                     thread::spawn(move || {
-                        if let Err(e) = handle_client(stream, session) {
+                        if let Err(e) = handle_client(stream, session, app_name) {
                             tracing::debug!("Client disconnected: {}", e);
                         }
                     });
@@ -213,8 +253,9 @@ impl DebugServer {
                     }
 
                     let session = self.session.clone();
+                    let app_name = self.config.app_name.clone();
                     thread::spawn(move || {
-                        if let Err(e) = handle_client_tcp(stream, session) {
+                        if let Err(e) = handle_client_tcp(stream, session, app_name) {
                             tracing::debug!("Client disconnected: {}", e);
                         }
                     });
@@ -269,30 +310,64 @@ impl ClientCommand {
             data
         };
 
-        // Try to parse as JSON
-        let s = std::str::from_utf8(json_data).ok()?;
-
-        // Simple JSON parsing for command type
-        if s.contains("\"start\"") || s.contains("\"Start\"") {
-            Some(ClientCommand::Start)
-        } else if s.contains("\"pause\"") || s.contains("\"Pause\"") {
-            Some(ClientCommand::Pause)
-        } else if s.contains("\"resume\"") || s.contains("\"Resume\"") {
-            Some(ClientCommand::Resume)
-        } else if s.contains("\"stop\"") || s.contains("\"Stop\"") {
-            Some(ClientCommand::Stop)
-        } else if s.contains("\"reset\"") || s.contains("\"Reset\"") {
-            Some(ClientCommand::Reset)
-        } else if s.contains("\"request_export\"") || s.contains("\"RequestExport\"") {
-            Some(ClientCommand::RequestExport)
-        } else if s.contains("\"request_stats\"") || s.contains("\"RequestStats\"") {
-            Some(ClientCommand::RequestStats)
-        } else if s.contains("\"ping\"") || s.contains("\"Ping\"") {
-            Some(ClientCommand::Ping)
-        } else {
-            None
+        let value: serde_json::Value = serde_json::from_slice(json_data).ok()?;
+        let raw = value
+            .get("type")
+            .or_else(|| value.get("command"))
+            .and_then(|v| v.as_str())?;
+        match normalize_command(raw).as_str() {
+            "start" => Some(ClientCommand::Start),
+            "pause" => Some(ClientCommand::Pause),
+            "resume" => Some(ClientCommand::Resume),
+            "stop" => Some(ClientCommand::Stop),
+            "reset" => Some(ClientCommand::Reset),
+            "requestexport" => Some(ClientCommand::RequestExport),
+            "requeststats" => Some(ClientCommand::RequestStats),
+            "ping" => Some(ClientCommand::Ping),
+            _ => None,
         }
     }
+}
+
+const MAX_COMMAND_FRAME_SIZE: usize = 1024 * 1024;
+
+enum StreamCommand {
+    Ready(ClientCommand),
+    Invalid,
+    Incomplete,
+}
+
+fn decode_next_stream_command(buffer: &mut Vec<u8>) -> StreamCommand {
+    if buffer.len() < 4 {
+        return StreamCommand::Incomplete;
+    }
+
+    let payload_len = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
+    if payload_len == 0 || payload_len > MAX_COMMAND_FRAME_SIZE {
+        buffer.clear();
+        return StreamCommand::Invalid;
+    }
+
+    let frame_len = 4 + payload_len;
+    if buffer.len() < frame_len {
+        return StreamCommand::Incomplete;
+    }
+
+    let payload = buffer[4..frame_len].to_vec();
+    buffer.drain(..frame_len);
+
+    match ClientCommand::from_bytes(&payload) {
+        Some(command) => StreamCommand::Ready(command),
+        None => StreamCommand::Invalid,
+    }
+}
+
+fn normalize_command(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| *c != '_' && *c != '-')
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 /// Message types sent to clients.
@@ -325,57 +400,49 @@ pub enum ServerMessage {
 impl ServerMessage {
     /// Serialize message to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
-        // Simple format: 4-byte length prefix + JSON payload
-        let json = match self {
+        // 4-byte length prefix + JSON payload.
+        let payload = match self {
             ServerMessage::Hello {
                 app_name,
                 protocol_version,
             } => {
-                format!(
-                    r#"{{"type":"hello","app_name":"{}","protocol_version":{}}}"#,
-                    app_name, protocol_version
-                )
+                json!({ "type": "hello", "app_name": app_name, "protocol_version": protocol_version })
             }
-            ServerMessage::Export(export) => {
-                format!(
-                    r#"{{"type":"export","total_events":{},"total_snapshots":{}}}"#,
-                    export.stats.total_events, export.stats.total_snapshots
-                )
-            }
+            ServerMessage::Export(export) => json!({ "type": "export", "export": export }),
             ServerMessage::StateChange {
                 is_recording,
                 is_paused,
             } => {
-                format!(
-                    r#"{{"type":"state_change","is_recording":{},"is_paused":{}}}"#,
-                    is_recording, is_paused
-                )
+                json!({ "type": "state_change", "is_recording": is_recording, "is_paused": is_paused })
             }
             ServerMessage::Stats {
                 total_events,
                 total_snapshots,
                 events_dropped,
                 snapshots_dropped,
-            } => {
-                format!(
-                    r#"{{"type":"stats","total_events":{},"total_snapshots":{},"events_dropped":{},"snapshots_dropped":{}}}"#,
-                    total_events, total_snapshots, events_dropped, snapshots_dropped
-                )
-            }
-            ServerMessage::Ack { command } => {
-                format!(r#"{{"type":"ack","command":"{}"}}"#, command)
-            }
-            ServerMessage::Error { message } => {
-                format!(r#"{{"type":"error","message":"{}"}}"#, message)
-            }
-            ServerMessage::Pong => r#"{"type":"pong"}"#.to_string(),
+            } => json!({
+                "type": "stats",
+                "total_events": total_events,
+                "total_snapshots": total_snapshots,
+                "events_dropped": events_dropped,
+                "snapshots_dropped": snapshots_dropped
+            }),
+            ServerMessage::Ack { command } => json!({ "type": "ack", "command": command }),
+            ServerMessage::Error { message } => json!({ "type": "error", "message": message }),
+            ServerMessage::Pong => json!({ "type": "pong" }),
         };
 
-        let bytes = json.as_bytes();
+        let bytes = match serde_json::to_vec(&payload) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::error!("failed to serialize ServerMessage payload: {}", e);
+                b"{\"type\":\"error\",\"message\":\"serialization failure\"}".to_vec()
+            }
+        };
         let len = bytes.len() as u32;
         let mut result = Vec::with_capacity(4 + bytes.len());
         result.extend_from_slice(&len.to_le_bytes());
-        result.extend_from_slice(bytes);
+        result.extend_from_slice(&bytes);
         result
     }
 }
@@ -428,6 +495,7 @@ fn handle_command(cmd: ClientCommand, session: &Arc<SharedRecordingSession>) -> 
 fn handle_client(
     mut stream: std::os::unix::net::UnixStream,
     session: Arc<SharedRecordingSession>,
+    app_name: String,
 ) -> io::Result<()> {
     use std::time::Duration;
 
@@ -436,7 +504,7 @@ fn handle_client(
 
     // Send hello message
     let hello = ServerMessage::Hello {
-        app_name: "blinc_app".to_string(),
+        app_name,
         protocol_version: 1,
     };
     stream.write_all(&hello.to_bytes())?;
@@ -447,6 +515,7 @@ fn handle_client(
 
     // Main loop: respond to commands and send state updates
     let mut buf = [0u8; 1024];
+    let mut pending = Vec::new();
     loop {
         // Check for incoming commands
         match stream.read(&mut buf) {
@@ -455,10 +524,21 @@ fn handle_client(
                 return Ok(());
             }
             Ok(n) => {
-                // Parse and handle command
-                if let Some(cmd) = ClientCommand::from_bytes(&buf[..n]) {
-                    let response = handle_command(cmd, &session);
-                    stream.write_all(&response.to_bytes())?;
+                pending.extend_from_slice(&buf[..n]);
+                loop {
+                    match decode_next_stream_command(&mut pending) {
+                        StreamCommand::Ready(cmd) => {
+                            let response = handle_command(cmd, &session);
+                            stream.write_all(&response.to_bytes())?;
+                        }
+                        StreamCommand::Invalid => {
+                            let error = ServerMessage::Error {
+                                message: "invalid command frame".to_string(),
+                            };
+                            stream.write_all(&error.to_bytes())?;
+                        }
+                        StreamCommand::Incomplete => break,
+                    }
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -490,6 +570,7 @@ fn handle_client(
 fn handle_client_tcp(
     mut stream: std::net::TcpStream,
     session: Arc<SharedRecordingSession>,
+    app_name: String,
 ) -> io::Result<()> {
     use std::time::Duration;
 
@@ -497,7 +578,7 @@ fn handle_client_tcp(
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
     let hello = ServerMessage::Hello {
-        app_name: "blinc_app".to_string(),
+        app_name,
         protocol_version: 1,
     };
     stream.write_all(&hello.to_bytes())?;
@@ -507,14 +588,26 @@ fn handle_client_tcp(
     let mut last_paused = session.is_paused();
 
     let mut buf = [0u8; 1024];
+    let mut pending = Vec::new();
     loop {
         match stream.read(&mut buf) {
             Ok(0) => return Ok(()),
             Ok(n) => {
-                // Parse and handle command
-                if let Some(cmd) = ClientCommand::from_bytes(&buf[..n]) {
-                    let response = handle_command(cmd, &session);
-                    stream.write_all(&response.to_bytes())?;
+                pending.extend_from_slice(&buf[..n]);
+                loop {
+                    match decode_next_stream_command(&mut pending) {
+                        StreamCommand::Ready(cmd) => {
+                            let response = handle_command(cmd, &session);
+                            stream.write_all(&response.to_bytes())?;
+                        }
+                        StreamCommand::Invalid => {
+                            let error = ServerMessage::Error {
+                                message: "invalid command frame".to_string(),
+                            };
+                            stream.write_all(&error.to_bytes())?;
+                        }
+                        StreamCommand::Incomplete => break,
+                    }
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -584,6 +677,35 @@ mod tests {
     }
 
     #[test]
+    fn test_export_message_contains_full_payload() {
+        use crate::{RecordedEvent, RecordingConfig, Timestamp, TimestampedEvent};
+
+        let export = RecordingExport {
+            config: RecordingConfig::minimal(),
+            events: vec![TimestampedEvent::new(
+                Timestamp::from_micros(1),
+                RecordedEvent::WindowFocus(true),
+            )],
+            snapshots: vec![],
+            stats: Default::default(),
+        };
+
+        let msg = ServerMessage::Export(export);
+        let bytes = msg.to_bytes();
+        let len = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let payload = std::str::from_utf8(&bytes[4..4 + len]).unwrap();
+
+        assert!(
+            payload.contains("\"events\""),
+            "export payload should include events field, got: {payload}"
+        );
+        assert!(
+            payload.contains("\"config\""),
+            "export payload should include config field, got: {payload}"
+        );
+    }
+
+    #[test]
     fn test_command_parsing() {
         // Test parsing various command formats
         let start_cmd = br#"{"type":"start"}"#;
@@ -634,5 +756,83 @@ mod tests {
             ClientCommand::from_bytes(&prefixed),
             Some(ClientCommand::Start)
         ));
+    }
+
+    #[test]
+    fn test_stream_partial_read_still_yields_command() {
+        let json = br#"{"type":"start"}"#;
+        let len = json.len() as u32;
+        let mut framed = Vec::new();
+        framed.extend_from_slice(&len.to_le_bytes());
+        framed.extend_from_slice(json);
+
+        let chunks = [&framed[..3], &framed[3..]];
+        let mut parsed = Vec::new();
+        let mut pending = Vec::new();
+        for chunk in chunks {
+            pending.extend_from_slice(chunk);
+            loop {
+                match decode_next_stream_command(&mut pending) {
+                    StreamCommand::Ready(cmd) => parsed.push(cmd),
+                    StreamCommand::Invalid => break,
+                    StreamCommand::Incomplete => break,
+                }
+            }
+        }
+
+        assert_eq!(
+            parsed.len(),
+            1,
+            "streamed command split across reads should still be parsed once"
+        );
+        assert!(matches!(parsed[0], ClientCommand::Start));
+    }
+
+    #[test]
+    fn test_stream_single_read_with_multiple_frames_parses_all_commands() {
+        let frame = |json: &[u8]| {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+            out.extend_from_slice(json);
+            out
+        };
+
+        let merged = [frame(br#"{"type":"start"}"#), frame(br#"{"type":"ping"}"#)].concat();
+        let mut parsed = Vec::new();
+        let mut pending = merged;
+        loop {
+            match decode_next_stream_command(&mut pending) {
+                StreamCommand::Ready(cmd) => parsed.push(cmd),
+                StreamCommand::Invalid => break,
+                StreamCommand::Incomplete => break,
+            }
+        }
+
+        assert_eq!(
+            parsed.len(),
+            2,
+            "multiple framed commands in one read should parse both commands"
+        );
+        assert!(matches!(parsed[0], ClientCommand::Start));
+        assert!(matches!(parsed[1], ClientCommand::Ping));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_remove_stale_socket_rejects_non_socket_path() {
+        let path = std::env::temp_dir().join(format!(
+            "blinc-stale-socket-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"not-a-socket").unwrap();
+
+        let result = remove_stale_socket(&path);
+        assert!(result.is_err(), "non-socket path should be rejected");
+
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -42,7 +42,7 @@ use crate::renderer::RenderTree;
 use crate::tree::LayoutNodeId;
 
 #[cfg(feature = "recorder")]
-use crate::recorder_bridge::{self, RecorderEventData, RecorderMouseButton};
+use crate::recorder_bridge::{self, RecorderEventData, RecorderModifiers, RecorderMouseButton};
 
 /// Mouse button identifier (matches platform)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -53,6 +53,15 @@ pub enum MouseButton {
     Back,
     Forward,
     Other(u16),
+}
+
+/// Keyboard modifier key state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputModifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub meta: bool,
 }
 
 /// Result of a hit test
@@ -137,6 +146,12 @@ pub struct EventRouter {
     drag_delta_x: f32,
     drag_delta_y: f32,
 
+    /// Last known keyboard modifier state.
+    modifiers: InputModifiers,
+
+    /// Keys currently pressed (used to detect key-repeat).
+    pressed_keys: HashSet<u32>,
+
     /// Bounds for each ancestor from the last hit test
     /// Maps node_id.to_raw() to (x, y, width, height)
     last_hit_ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
@@ -173,6 +188,8 @@ impl EventRouter {
             drag_start_y: 0.0,
             drag_delta_x: 0.0,
             drag_delta_y: 0.0,
+            modifiers: InputModifiers::default(),
+            pressed_keys: HashSet::new(),
             last_hit_ancestor_bounds: std::collections::HashMap::new(),
         }
     }
@@ -548,7 +565,7 @@ impl EventRouter {
         tree: &RenderTree,
         x: f32,
         y: f32,
-        _button: MouseButton,
+        button: MouseButton,
     ) -> Vec<(LayoutNodeId, u32)> {
         self.mouse_x = x;
         self.mouse_y = y;
@@ -590,7 +607,8 @@ impl EventRouter {
                 recorder_bridge::record_event(RecorderEventData::MouseDown {
                     x,
                     y,
-                    button: RecorderMouseButton::from(_button),
+                    button: RecorderMouseButton::from(button),
+                    modifiers: self.recorder_modifiers(),
                     target_element: Some(format!("{:?}", hit.node)),
                 });
             }
@@ -628,7 +646,7 @@ impl EventRouter {
         _tree: &RenderTree,
         x: f32,
         y: f32,
-        _button: MouseButton,
+        button: MouseButton,
     ) -> Vec<(LayoutNodeId, u32)> {
         self.mouse_x = x;
         self.mouse_y = y;
@@ -660,7 +678,8 @@ impl EventRouter {
                 recorder_bridge::record_event(RecorderEventData::MouseUp {
                     x,
                     y,
-                    button: RecorderMouseButton::from(_button),
+                    button: RecorderMouseButton::from(button),
+                    modifiers: self.recorder_modifiers(),
                     target_element: Some(format!("{:?}", target)),
                 });
 
@@ -669,7 +688,8 @@ impl EventRouter {
                     recorder_bridge::record_event(RecorderEventData::Click {
                         x,
                         y,
-                        button: RecorderMouseButton::from(_button),
+                        button: RecorderMouseButton::from(button),
+                        modifiers: self.recorder_modifiers(),
                         target_element: Some(format!("{:?}", target)),
                     });
                 }
@@ -763,8 +783,38 @@ impl EventRouter {
     ///
     /// Emits KEY_DOWN to the focused element.
     pub fn on_key_down(&mut self, key_code: u32) -> Option<(LayoutNodeId, u32)> {
+        self.on_key_down_with_modifiers(
+            key_code,
+            self.modifiers.shift,
+            self.modifiers.ctrl,
+            self.modifiers.alt,
+            self.modifiers.meta,
+        )
+    }
+
+    /// Handle key press with explicit modifier state.
+    ///
+    /// This updates router-level modifier tracking so recorder mouse events can
+    /// include current modifier keys.
+    pub fn on_key_down_with_modifiers(
+        &mut self,
+        key_code: u32,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) -> Option<(LayoutNodeId, u32)> {
         #[cfg(not(feature = "recorder"))]
         let _ = key_code;
+
+        self.modifiers = InputModifiers {
+            shift,
+            ctrl,
+            alt,
+            meta,
+        };
+
+        let is_repeat = key_code != 0 && !self.pressed_keys.insert(key_code);
 
         if let Some(focused) = self.focused {
             // Record key down event (only if recording is enabled)
@@ -772,6 +822,8 @@ impl EventRouter {
             if recorder_bridge::is_recording() {
                 recorder_bridge::record_event(RecorderEventData::KeyDown {
                     key_code,
+                    modifiers: self.recorder_modifiers(),
+                    is_repeat,
                     focused_element: Some(format!("{:?}", focused)),
                 });
             }
@@ -787,8 +839,36 @@ impl EventRouter {
     ///
     /// Emits KEY_UP to the focused element.
     pub fn on_key_up(&mut self, key_code: u32) -> Option<(LayoutNodeId, u32)> {
+        self.on_key_up_with_modifiers(
+            key_code,
+            self.modifiers.shift,
+            self.modifiers.ctrl,
+            self.modifiers.alt,
+            self.modifiers.meta,
+        )
+    }
+
+    /// Handle key release with explicit modifier state.
+    pub fn on_key_up_with_modifiers(
+        &mut self,
+        key_code: u32,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) -> Option<(LayoutNodeId, u32)> {
         #[cfg(not(feature = "recorder"))]
         let _ = key_code;
+
+        self.modifiers = InputModifiers {
+            shift,
+            ctrl,
+            alt,
+            meta,
+        };
+        if key_code != 0 {
+            self.pressed_keys.remove(&key_code);
+        }
 
         if let Some(focused) = self.focused {
             // Record key up event (only if recording is enabled)
@@ -796,6 +876,7 @@ impl EventRouter {
             if recorder_bridge::is_recording() {
                 recorder_bridge::record_event(RecorderEventData::KeyUp {
                     key_code,
+                    modifiers: self.recorder_modifiers(),
                     focused_element: Some(format!("{:?}", focused)),
                 });
             }
@@ -918,6 +999,11 @@ impl EventRouter {
     /// When the window gains focus, emits WINDOW_FOCUS to the focused element.
     /// When the window loses focus, emits WINDOW_BLUR to the focused element.
     pub fn on_window_focus(&mut self, focused: bool) -> Option<(LayoutNodeId, u32)> {
+        if !focused {
+            self.pressed_keys.clear();
+            self.modifiers = InputModifiers::default();
+        }
+
         if let Some(focus_target) = self.focused {
             let event_type = if focused {
                 event_types::WINDOW_FOCUS
@@ -1043,6 +1129,16 @@ impl EventRouter {
             Self::collect_nodes_recursive(tree, root, &mut nodes);
         }
         nodes
+    }
+
+    #[cfg(feature = "recorder")]
+    fn recorder_modifiers(&self) -> RecorderModifiers {
+        RecorderModifiers {
+            shift: self.modifiers.shift,
+            ctrl: self.modifiers.ctrl,
+            alt: self.modifiers.alt,
+            meta: self.modifiers.meta,
+        }
     }
 
     /// Recursively collect node IDs

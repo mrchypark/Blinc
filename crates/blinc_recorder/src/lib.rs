@@ -71,6 +71,8 @@ pub fn install_recorder(session: Arc<SharedRecordingSession>) {
     RECORDER.with(|r| {
         *r.write() = Some(session);
     });
+    // If context state already exists, wire hooks immediately.
+    install_hooks();
 }
 
 /// Remove the recorder session from the current thread.
@@ -223,6 +225,7 @@ macro_rules! enable_debug_recording {
                 $crate::RecordingConfig::debug(),
             ));
             $crate::install_recorder(session.clone());
+            $crate::install_hooks();
             session.start();
             session
         }
@@ -237,6 +240,7 @@ macro_rules! enable_debug_recording {
     ($config:expr) => {{
         let session = std::sync::Arc::new($crate::SharedRecordingSession::new($config));
         $crate::install_recorder(session.clone());
+        $crate::install_hooks();
         session.start();
         session
     }};

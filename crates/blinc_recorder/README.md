@@ -5,138 +5,88 @@
 > This crate is a component of Blinc, a GPU-accelerated UI framework for Rust.
 > For full documentation and guides, visit the [Blinc documentation](https://project-blinc.github.io/Blinc).
 
-Recording and debugging infrastructure for Blinc applications.
+Recording, replay, and debug-server infrastructure for Blinc applications.
 
 ## Overview
 
-`blinc_recorder` provides tools for recording user interactions, capturing UI state, and enabling visual regression testing.
+`blinc_recorder` provides:
 
-## Features
+- user input/event recording
+- element tree snapshot capture
+- replay with virtual time controls
+- local debug server for debugger tooling
+- basic test helpers (headless/framebuffer/visual comparison)
 
-- **Event Recording**: Capture user interactions (clicks, keys, etc.)
-- **Tree Snapshots**: Capture UI element tree state
-- **Session Management**: Start/pause/stop recording lifecycle
-- **Replay**: Play back recorded sessions
-- **Visual Testing**: Screenshot comparison for regression testing
-- **Debug Server**: Live inspection of running applications
-
-## Recording Sessions
+## Quick Start
 
 ```rust
-use blinc_recorder::{SharedRecordingSession, RecordingConfig};
+use std::sync::Arc;
+use blinc_recorder::{install_recorder, RecordingConfig, SharedRecordingSession};
 
-// Create a recording session
-let session = SharedRecordingSession::new(RecordingConfig {
-    capture_events: true,
-    capture_snapshots: true,
-    snapshot_interval: Duration::from_millis(100),
-    ..Default::default()
-});
+let session = Arc::new(SharedRecordingSession::new(RecordingConfig::debug()));
+install_recorder(session.clone());
 
-// Start recording
 session.start();
-
-// ... application runs ...
-
-// Stop and get recorded data
+// ... run your app ...
 session.stop();
-let events = session.events();
-let snapshots = session.snapshots();
+
+let export = session.export();
+let json = serde_json::to_string_pretty(&export)?;
+std::fs::write("recording.json", json)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Event Types
+## Loading + Replay
 
 ```rust
-use blinc_recorder::RecordedEvent;
+use blinc_recorder::{RecordingExport, ReplayConfig, ReplayPlayer};
 
-// Recorded events include:
-RecordedEvent::MouseMove { x, y, timestamp }
-RecordedEvent::MouseDown { x, y, button, timestamp }
-RecordedEvent::MouseUp { x, y, button, timestamp }
-RecordedEvent::Click { x, y, button, timestamp }
-RecordedEvent::KeyDown { key, modifiers, timestamp }
-RecordedEvent::KeyUp { key, modifiers, timestamp }
-RecordedEvent::Scroll { x, y, delta_x, delta_y, timestamp }
-RecordedEvent::TextInput { text, timestamp }
-```
+let json = std::fs::read_to_string("recording.json")?;
+let export: RecordingExport = serde_json::from_str(&json)?;
 
-## Tree Snapshots
-
-```rust
-use blinc_recorder::TreeSnapshot;
-
-// Snapshots capture the UI element tree
-let snapshot: TreeSnapshot = session.latest_snapshot();
-
-// Access element data
-for element in snapshot.elements() {
-    println!("Element: {} at ({}, {})",
-        element.type_name,
-        element.bounds.x,
-        element.bounds.y
-    );
-}
-```
-
-## Replay
-
-```rust
-use blinc_recorder::ReplayPlayer;
-
-// Load recorded session
-let session = SharedRecordingSession::load("recording.json")?;
-
-// Create replay player
-let player = ReplayPlayer::new(session);
-
-// Play back events
+let mut player = ReplayPlayer::new(export, ReplayConfig::interactive());
+player.clock_mut().set_speed(1.5);
 player.play();
 
-// Or step through manually
-player.step();
+let frame = player.update();
+if frame.has_snapshot() {
+    // inspect snapshot
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Visual Testing
+## Debug Server Integration
 
 ```rust
-use blinc_recorder::{TestRunner, ScreenshotExporter};
-
-// Capture screenshot
-let frame = app.render(&ui);
-ScreenshotExporter::save_png(&frame, "screenshot.png")?;
-
-// Compare with baseline
-let runner = TestRunner::new("tests/visual");
-runner.compare("test_name", &frame)?;
+// Debug build convenience macro:
+// - creates a debug recording session
+// - installs recorder + hooks
+// - starts local debug server
+// - starts recording
+let (_session, _server) = blinc_recorder::enable_debug_server!("my_app");
 ```
 
-## Debug Server
+`blinc_debugger` can connect via:
 
-```rust
-use blinc_recorder::DebugServer;
+```bash
+blinc-debugger --connect my_app
+# or explicit socket path on Unix
+blinc-debugger --connect unix:/tmp/blinc/my_app.sock
+# or explicit TCP endpoint
+blinc-debugger --connect tcp:127.0.0.1:7331
+```
 
-// Start debug server for live inspection
-let server = DebugServer::start(8080)?;
+## Blinc Layout Integration
 
-// Connect via browser at http://localhost:8080
-// View live element tree, events, and snapshots
+If your app uses `blinc_layout`, enable the `recorder` feature so layout-side recorder bridge code is active:
+
+```toml
+blinc_layout = { version = "0.1.12", features = ["recorder"] }
 ```
 
 ## Optional Features
 
-- `png` - Enable PNG screenshot export
-
-## Architecture
-
-```
-blinc_recorder
-├── session.rs        # Recording session management
-├── events.rs         # Event types and recording
-├── snapshot.rs       # Tree snapshot capture
-├── replay/           # Replay infrastructure
-├── testing/          # Visual testing utilities
-└── server.rs         # Debug server
-```
+- `png`: enable PNG exporting in framebuffer helpers
 
 ## License
 

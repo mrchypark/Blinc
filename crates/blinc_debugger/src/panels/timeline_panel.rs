@@ -1,6 +1,7 @@
-//! Timeline Panel - Event timeline with scrubber
+//! Timeline Panel - Event timeline with playback controls
 
 use std::cell::OnceCell;
+use std::sync::Arc;
 
 use blinc_cn::components::button::{button, ButtonSize, ButtonVariant};
 use blinc_cn::components::select::{select, SelectSize};
@@ -38,11 +39,21 @@ impl Default for TimelinePanelState {
     }
 }
 
+type VoidCallback = Arc<dyn Fn() + Send + Sync>;
+type SeekCallback = Arc<dyn Fn(f32) + Send + Sync>;
+type SpeedCallback = Arc<dyn Fn(f64) + Send + Sync>;
+
 struct TimelinePanelConfig {
     position: Timestamp,
     duration: Timestamp,
     playback_state: ReplayState,
     speed: f64,
+    event_positions: Vec<f32>,
+    on_step_back: Option<VoidCallback>,
+    on_play_pause: Option<VoidCallback>,
+    on_step_forward: Option<VoidCallback>,
+    on_seek: Option<SeekCallback>,
+    on_speed_change: Option<SpeedCallback>,
 }
 
 struct BuiltTimelinePanel {
@@ -50,6 +61,9 @@ struct BuiltTimelinePanel {
 }
 
 impl BuiltTimelinePanel {
+    const TRACK_WIDTH: f32 = 740.0;
+    const EVENT_MARKER_WIDTH: f32 = 3.0;
+
     fn from_config(config: &TimelinePanelConfig) -> Self {
         let theme = ThemeState::get();
 
@@ -76,10 +90,17 @@ impl BuiltTimelinePanel {
         let theme = ThemeState::get();
         let is_playing = config.playback_state == ReplayState::Playing;
 
-        // Get speed state from context
         let speed_str = format!("{:.1}", config.speed);
         let speed_state =
             BlincContextState::get().use_state_keyed("timeline_speed", || speed_str.clone());
+        if speed_state.get() != speed_str {
+            speed_state.set(speed_str.clone());
+        }
+
+        let on_step_back = config.on_step_back.clone();
+        let on_play_pause = config.on_play_pause.clone();
+        let on_step_forward = config.on_step_forward.clone();
+        let on_speed_change = config.on_speed_change.clone();
 
         div()
             .w_full()
@@ -90,7 +111,6 @@ impl BuiltTimelinePanel {
             .items_center()
             .justify_between()
             .child(
-                // Playback controls
                 div()
                     .flex_row()
                     .items_center()
@@ -99,7 +119,12 @@ impl BuiltTimelinePanel {
                         button("")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Icon)
-                            .icon(icons::SKIP_BACK),
+                            .icon(icons::SKIP_BACK)
+                            .on_click(move |_| {
+                                if let Some(cb) = &on_step_back {
+                                    cb();
+                                }
+                            }),
                     )
                     .child(
                         button("")
@@ -109,17 +134,26 @@ impl BuiltTimelinePanel {
                                 icons::PAUSE
                             } else {
                                 icons::PLAY
+                            })
+                            .on_click(move |_| {
+                                if let Some(cb) = &on_play_pause {
+                                    cb();
+                                }
                             }),
                     )
                     .child(
                         button("")
                             .variant(ButtonVariant::Ghost)
                             .size(ButtonSize::Icon)
-                            .icon(icons::SKIP_FORWARD),
+                            .icon(icons::SKIP_FORWARD)
+                            .on_click(move |_| {
+                                if let Some(cb) = &on_step_forward {
+                                    cb();
+                                }
+                            }),
                     ),
             )
             .child(
-                // Time display
                 div()
                     .flex_row()
                     .items_center()
@@ -141,50 +175,62 @@ impl BuiltTimelinePanel {
                     ),
             )
             .child(
-                // Speed selector
                 select(&speed_state)
                     .size(SelectSize::Small)
                     .w(80.0)
                     .option("0.5", "0.5x")
                     .option("1.0", "1.0x")
-                    .option("2.0", "2.0x"),
+                    .option("2.0", "2.0x")
+                    .on_change(move |value| {
+                        if let (Some(cb), Ok(speed)) = (&on_speed_change, value.parse::<f64>()) {
+                            cb(speed);
+                        }
+                    }),
             )
     }
 
     fn timeline_track(config: &TimelinePanelConfig) -> Div {
-        // Get position state from context (normalized 0.0-1.0)
         let position_norm = if config.duration.as_micros() > 0 {
             config.position.as_micros() as f32 / config.duration.as_micros() as f32
         } else {
             0.0
         };
+
         let position_state =
             BlincContextState::get().use_state_keyed("timeline_position", || position_norm);
+        if (position_state.get() - position_norm).abs() > 0.0005 {
+            position_state.set(position_norm);
+        }
+
+        let on_seek = config.on_seek.clone();
 
         div()
             .w_full()
             .padding_x_px(24.0)
             .py(4.0)
             .flex_col()
-            .bg_background()
             .gap_px(8.0)
             .items_center()
             .justify_center()
-            .child(Self::event_markers())
+            .child(Self::event_markers(&config.event_positions))
             .child(
                 slider(&position_state)
                     .min(0.0)
                     .max(1.0)
                     .size(SliderSize::Small)
-                    .w(740.0)
+                    .w(Self::TRACK_WIDTH)
+                    .on_change(move |value| {
+                        if let Some(cb) = &on_seek {
+                            cb(value.clamp(0.0, 1.0));
+                        }
+                    })
                     .build_final(),
             )
             .child(Self::time_labels(config.duration))
     }
 
-    fn event_markers() -> Div {
+    fn event_markers(positions: &[f32]) -> Div {
         let theme = ThemeState::get();
-
         let colors = [
             theme.color(ColorToken::Primary),
             theme.color(ColorToken::Info),
@@ -193,18 +239,21 @@ impl BuiltTimelinePanel {
             theme.color(ColorToken::Warning),
         ];
 
-        // Use flexbox to distribute markers evenly - match slider width
-        let mut track = div()
-            .id("timeline_track_id")
-            .w(740.0) // Match slider width
-            .h(16.0)
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .px(4.0); // Small padding at edges
-
-        for i in 0..10 {
-            track = track.child(div().w(3.0).h(12.0).rounded(1.5).bg(colors[i % 5]));
+        let mut track = div().w(Self::TRACK_WIDTH).h(16.0).relative();
+        for (idx, pos) in positions.iter().enumerate() {
+            track = track.child(
+                div()
+                    .absolute()
+                    .left(
+                        (pos * Self::TRACK_WIDTH)
+                            .clamp(0.0, Self::TRACK_WIDTH - Self::EVENT_MARKER_WIDTH),
+                    )
+                    .top(2.0)
+                    .w(Self::EVENT_MARKER_WIDTH)
+                    .h(12.0)
+                    .rounded(1.5)
+                    .bg(colors[idx % colors.len()]),
+            );
         }
         track
     }
@@ -212,7 +261,7 @@ impl BuiltTimelinePanel {
     fn time_labels(duration: Timestamp) -> Div {
         let theme = ThemeState::get();
         div()
-            .w(740.0) // Match slider width
+            .w(Self::TRACK_WIDTH)
             .h(14.0)
             .flex_row()
             .justify_between()
@@ -240,16 +289,45 @@ pub struct TimelinePanel {
 }
 
 impl TimelinePanel {
-    pub fn new(_events: &[TimestampedEvent], state: &TimelinePanelState) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        events: &[TimestampedEvent],
+        state: &TimelinePanelState,
+        on_step_back: Option<VoidCallback>,
+        on_play_pause: Option<VoidCallback>,
+        on_step_forward: Option<VoidCallback>,
+        on_seek: Option<SeekCallback>,
+        on_speed_change: Option<SpeedCallback>,
+    ) -> Self {
         Self {
             config: TimelinePanelConfig {
                 position: state.position,
                 duration: state.duration,
                 playback_state: state.playback_state,
                 speed: state.speed,
+                event_positions: Self::sample_event_positions(events, state.duration),
+                on_step_back,
+                on_play_pause,
+                on_step_forward,
+                on_seek,
+                on_speed_change,
             },
             built: OnceCell::new(),
         }
+    }
+
+    fn sample_event_positions(events: &[TimestampedEvent], duration: Timestamp) -> Vec<f32> {
+        if events.is_empty() || duration.as_micros() == 0 {
+            return Vec::new();
+        }
+
+        let max_markers = 120usize;
+        let stride = (events.len() / max_markers).max(1);
+        events
+            .iter()
+            .step_by(stride)
+            .map(|e| (e.timestamp.as_micros() as f32 / duration.as_micros() as f32).clamp(0.0, 1.0))
+            .collect()
     }
 
     fn get_or_build(&self) -> &BuiltTimelinePanel {
