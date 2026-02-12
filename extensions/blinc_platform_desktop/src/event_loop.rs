@@ -1,5 +1,7 @@
 //! Desktop event loop implementation using winit
 
+use std::time::{Duration, Instant};
+
 use crate::input;
 use crate::window::DesktopWindow;
 use blinc_platform::{
@@ -7,9 +9,33 @@ use blinc_platform::{
 };
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent as WinitWindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop as WinitEventLoop, EventLoopProxy};
+use winit::event_loop::{
+    ActiveEventLoop, ControlFlow as WinitControlFlow, EventLoop as WinitEventLoop, EventLoopProxy,
+};
 use winit::keyboard::ModifiersState;
 use winit::window::WindowId;
+
+// If the platform doesn't send `TouchPhase::Ended` promptly for wheel/trackpad,
+// synthesize `ScrollEnd` after a short inactivity window.
+const SCROLL_END_DEBOUNCE: Duration = Duration::from_millis(36);
+
+fn should_emit_synthetic_scroll_end(
+    scroll_end_pending: bool,
+    elapsed_since_last_scroll: Option<Duration>,
+) -> bool {
+    scroll_end_pending
+        && elapsed_since_last_scroll.is_some_and(|elapsed| elapsed >= SCROLL_END_DEBOUNCE)
+}
+
+fn scroll_end_deadline(
+    scroll_end_pending: bool,
+    last_scroll_event_at: Option<Instant>,
+) -> Option<Instant> {
+    if !scroll_end_pending {
+        return None;
+    }
+    last_scroll_event_at.map(|last| last + SCROLL_END_DEBOUNCE)
+}
 
 /// Proxy for waking up the event loop from another thread
 ///
@@ -98,6 +124,8 @@ where
     handler: F,
     modifiers: ModifiersState,
     mouse_position: (f32, f32),
+    last_scroll_event_at: Option<Instant>,
+    scroll_end_pending: bool,
     should_exit: bool,
 }
 
@@ -112,6 +140,8 @@ where
             handler,
             modifiers: ModifiersState::empty(),
             mouse_position: (0.0, 0.0),
+            last_scroll_event_at: None,
+            scroll_end_pending: false,
             should_exit: false,
         }
     }
@@ -123,6 +153,11 @@ where
                 self.should_exit = true;
             }
         }
+    }
+
+    fn reset_scroll_state(&mut self) {
+        self.last_scroll_event_at = None;
+        self.scroll_end_pending = false;
     }
 }
 
@@ -242,6 +277,8 @@ where
                 };
                 let input_event = input::scroll_event(dx, dy, phase);
                 self.handle_event(Event::Input(input_event));
+                self.last_scroll_event_at = Some(Instant::now());
+                self.scroll_end_pending = true;
 
                 // If scroll gesture ended or momentum ended, send a scroll end event
                 if matches!(
@@ -249,6 +286,7 @@ where
                     winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
                 ) {
                     self.handle_event(Event::Input(input::scroll_end_event()));
+                    self.reset_scroll_state();
                 }
             }
 
@@ -294,6 +332,24 @@ where
         }
     }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let elapsed_since_last_scroll = self.last_scroll_event_at.map(|last| last.elapsed());
+        if should_emit_synthetic_scroll_end(self.scroll_end_pending, elapsed_since_last_scroll) {
+            self.handle_event(Event::Input(input::scroll_end_event()));
+            self.reset_scroll_state();
+            if let Some(ref window) = self.window {
+                window.request_redraw();
+            }
+            return;
+        }
+
+        if let Some(deadline) =
+            scroll_end_deadline(self.scroll_end_pending, self.last_scroll_event_at)
+        {
+            event_loop.set_control_flow(WinitControlFlow::WaitUntil(deadline));
+        }
+    }
+
     fn memory_warning(&mut self, _event_loop: &ActiveEventLoop) {
         self.handle_event(Event::Lifecycle(LifecycleEvent::LowMemory));
     }
@@ -303,5 +359,43 @@ where
         if let Some(ref window) = self.window {
             window.request_redraw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{scroll_end_deadline, should_emit_synthetic_scroll_end, SCROLL_END_DEBOUNCE};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn synthetic_scroll_end_requires_pending_and_elapsed_threshold() {
+        assert!(!should_emit_synthetic_scroll_end(
+            false,
+            Some(SCROLL_END_DEBOUNCE)
+        ));
+        assert!(!should_emit_synthetic_scroll_end(true, None));
+        assert!(!should_emit_synthetic_scroll_end(
+            true,
+            Some(SCROLL_END_DEBOUNCE - Duration::from_millis(1))
+        ));
+        assert!(should_emit_synthetic_scroll_end(
+            true,
+            Some(SCROLL_END_DEBOUNCE)
+        ));
+        assert!(should_emit_synthetic_scroll_end(
+            true,
+            Some(SCROLL_END_DEBOUNCE + Duration::from_millis(1))
+        ));
+    }
+
+    #[test]
+    fn scroll_end_deadline_requires_pending_and_timestamp() {
+        let now = Instant::now();
+        assert_eq!(scroll_end_deadline(false, Some(now)), None);
+        assert_eq!(scroll_end_deadline(true, None), None);
+        assert_eq!(
+            scroll_end_deadline(true, Some(now)),
+            Some(now + SCROLL_END_DEBOUNCE)
+        );
     }
 }
