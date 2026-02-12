@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 const MAX_NETWORK_PAYLOAD_BYTES: usize = 100 * 1024 * 1024;
+const MAX_EXPORT_STREAM_PAYLOAD_BYTES: usize = MAX_NETWORK_PAYLOAD_BYTES;
 const MAX_SERVER_MESSAGES_TO_PARSE: usize = 32;
 
 /// Application state
@@ -225,14 +226,26 @@ pub fn run(width: u32, height: u32, file: Option<PathBuf>, connect: Option<Strin
     let app_state = Arc::new(RwLock::new(AppState::default()));
 
     if let Some(ref path) = file {
-        if let Err(e) = app_state.write().unwrap().load_recording(path) {
-            log::warn!("Failed to load recording from {:?}: {}", path, e);
+        match app_state.write() {
+            Ok(mut state) => {
+                if let Err(e) = state.load_recording(path) {
+                    log::warn!("Failed to load recording from {:?}: {}", path, e);
+                }
+            }
+            Err(e) => {
+                log::error!("App state lock is poisoned, cannot load recording: {e}");
+            }
         }
     }
 
     if let Some(ref addr) = connect {
         match request_export_from_server(addr) {
-            Ok(export) => app_state.write().unwrap().load_from_server(addr, export),
+            Ok(export) => match app_state.write() {
+                Ok(mut state) => state.load_from_server(addr, export),
+                Err(e) => {
+                    log::error!("App state lock is poisoned, cannot load from server: {e}");
+                }
+            },
             Err(e) => log::warn!("Failed to load recording from server {}: {}", addr, e),
         }
     }
@@ -253,8 +266,19 @@ pub fn run(width: u32, height: u32, file: Option<PathBuf>, connect: Option<Strin
 
 /// Build the debugger UI.
 fn build_debugger_ui(ctx: &WindowedContext, app_state: &SharedAppState) -> impl ElementBuilder {
-    app_state.write().unwrap().tick();
-    let state = app_state.read().unwrap();
+    if let Ok(mut state) = app_state.write() {
+        state.tick();
+    } else {
+        log::error!("App state lock is poisoned during tick");
+        return unavailable_debugger_ui(ctx);
+    }
+    let state = match app_state.read() {
+        Ok(state) => state,
+        Err(e) => {
+            log::error!("App state lock is poisoned during render: {e}");
+            return unavailable_debugger_ui(ctx);
+        }
+    };
 
     let on_tree_select = make_state_callback(app_state, |state, id: String| {
         state.selected_element_id = Some(id);
@@ -322,6 +346,16 @@ fn build_debugger_ui(ctx: &WindowedContext, app_state: &SharedAppState) -> impl 
             Some(on_seek),
             Some(on_speed_change),
         ))
+}
+
+fn unavailable_debugger_ui(ctx: &WindowedContext) -> Div {
+    div()
+        .w(ctx.width)
+        .h(ctx.height)
+        .bg(DebuggerColors::bg_base())
+        .items_center()
+        .justify_center()
+        .child(text("Debugger state unavailable"))
 }
 
 fn read_len_prefixed<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
@@ -410,7 +444,8 @@ fn resolve_connect_target(addr: &str) -> ConnectTarget {
         return ConnectTarget::Unix(addr.to_string());
     }
 
-    if addr.parse::<SocketAddr>().is_ok() || addr.to_socket_addrs().is_ok() {
+    if addr.parse::<SocketAddr>().is_ok() || (addr.contains(':') && addr.to_socket_addrs().is_ok())
+    {
         return ConnectTarget::Tcp(addr.to_string());
     }
 
@@ -435,7 +470,10 @@ fn request_export_over_tcp(addr: &str) -> Result<RecordingExport> {
 }
 
 fn request_export_over_stream<S: Read + Write>(stream: &mut S) -> Result<RecordingExport> {
+    let mut total_payload_bytes = 0usize;
+
     let hello_payload = read_len_prefixed(stream)?;
+    add_payload_budget(&mut total_payload_bytes, hello_payload.len())?;
     let hello: serde_json::Value = serde_json::from_slice(&hello_payload)?;
     if hello.get("type").and_then(|v| v.as_str()) != Some("hello") {
         bail!("unexpected first server message: {hello}");
@@ -447,6 +485,7 @@ fn request_export_over_stream<S: Read + Write>(stream: &mut S) -> Result<Recordi
 
     for _ in 0..MAX_SERVER_MESSAGES_TO_PARSE {
         let payload = read_len_prefixed(stream)?;
+        add_payload_budget(&mut total_payload_bytes, payload.len())?;
         let value: serde_json::Value = serde_json::from_slice(&payload)?;
         match value.get("type").and_then(|v| v.as_str()) {
             Some("export") => {
@@ -470,10 +509,26 @@ fn request_export_over_stream<S: Read + Write>(stream: &mut S) -> Result<Recordi
     bail!("did not receive export payload from server")
 }
 
+fn add_payload_budget(total_payload_bytes: &mut usize, payload_len: usize) -> Result<()> {
+    let updated = total_payload_bytes
+        .checked_add(payload_len)
+        .ok_or_else(|| anyhow!("payload size overflow"))?;
+    if updated > MAX_EXPORT_STREAM_PAYLOAD_BYTES {
+        bail!(
+            "total payload size {} exceeds maximum allowed {}",
+            updated,
+            MAX_EXPORT_STREAM_PAYLOAD_BYTES
+        );
+    }
+    *total_payload_bytes = updated;
+    Ok(())
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        read_len_prefixed, resolve_connect_target, ConnectTarget, MAX_NETWORK_PAYLOAD_BYTES,
+        add_payload_budget, read_len_prefixed, resolve_connect_target, ConnectTarget,
+        MAX_EXPORT_STREAM_PAYLOAD_BYTES, MAX_NETWORK_PAYLOAD_BYTES,
     };
     use std::io::Cursor;
 
@@ -518,6 +573,14 @@ mod tests {
     }
 
     #[test]
+    fn app_name_without_colon_stays_unix_target() {
+        assert!(matches!(
+            resolve_connect_target("example.com"),
+            ConnectTarget::Unix(path) if path == "/tmp/blinc/example.com.sock"
+        ));
+    }
+
+    #[test]
     fn rejects_payload_larger_than_limit() {
         let len = (MAX_NETWORK_PAYLOAD_BYTES as u32) + 1;
         let mut frame = Vec::new();
@@ -532,6 +595,16 @@ mod tests {
         );
         assert!(
             err.to_string().contains(&expected),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn payload_budget_rejects_total_over_limit() {
+        let mut total = MAX_EXPORT_STREAM_PAYLOAD_BYTES - 1;
+        let err = add_payload_budget(&mut total, 2).expect_err("payload budget overflow expected");
+        assert!(
+            err.to_string().contains("total payload size"),
             "unexpected error: {err}"
         );
     }
