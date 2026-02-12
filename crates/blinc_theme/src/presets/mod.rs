@@ -55,9 +55,9 @@ impl ThemePreset {
     pub fn bundle(self) -> ThemeBundle {
         match self {
             Self::Blinc => BlincTheme::bundle(),
-            Self::Neutral => shadcn_bundle("Neutral", neutral_light(), neutral_dark()),
-            Self::Slate => shadcn_bundle("Slate", slate_light(), slate_dark()),
-            Self::Zinc => shadcn_bundle("Zinc", zinc_light(), zinc_dark()),
+            Self::Neutral => shadcn_bundle(self.display_name(), neutral_light(), neutral_dark()),
+            Self::Slate => shadcn_bundle(self.display_name(), slate_light(), slate_dark()),
+            Self::Zinc => shadcn_bundle(self.display_name(), zinc_light(), zinc_dark()),
         }
     }
 }
@@ -136,27 +136,32 @@ impl Theme for PresetTheme {
 }
 
 fn shadcn_bundle(name: &'static str, light: BasePalette, dark: BasePalette) -> ThemeBundle {
+    let typography = TypographyTokens::default();
+    let spacing = SpacingTokens::default();
+    let radii = shadcn_radii();
+    let animations = AnimationTokens::default();
+
     ThemeBundle::new(
         name,
         PresetTheme {
             name,
             scheme: ColorScheme::Light,
             colors: build_colors(light, ColorScheme::Light),
-            typography: TypographyTokens::default(),
-            spacing: SpacingTokens::default(),
-            radii: shadcn_radii(),
+            typography: typography.clone(),
+            spacing: spacing.clone(),
+            radii: radii.clone(),
             shadows: ShadowTokens::light(),
-            animations: AnimationTokens::default(),
+            animations: animations.clone(),
         },
         PresetTheme {
             name,
             scheme: ColorScheme::Dark,
             colors: build_colors(dark, ColorScheme::Dark),
-            typography: TypographyTokens::default(),
-            spacing: SpacingTokens::default(),
-            radii: shadcn_radii(),
+            typography,
+            spacing,
+            radii,
             shadows: ShadowTokens::dark(),
-            animations: AnimationTokens::default(),
+            animations,
         },
     )
 }
