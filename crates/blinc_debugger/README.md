@@ -13,11 +13,11 @@ Visual debugger application for Blinc UI recordings.
 
 ## Features
 
-- **Element Tree**: Hierarchical view of UI elements with diff highlighting
-- **UI Preview**: Visual preview with debug overlays
-- **Inspector Panel**: Detailed element properties and styles
-- **Event Timeline**: Playback controls for recorded events
-- **State Viewer**: Track reactive state changes
+- **Element Tree**: Hierarchical view of recorded element trees with selection
+- **UI Preview**: Snapshot preview with cursor/bounds/zoom controls
+- **Inspector Panel**: Selected element properties and bounds
+- **Event Timeline**: Play/pause/step/seek/speed controls for recorded sessions
+- **Server Import**: Load recording export from a running debug server (`--connect`)
 
 ## Installation
 
@@ -84,10 +84,11 @@ blinc-debugger
 
 ### UI Preview
 
-- Zoom and pan
-- Debug overlays (bounds, padding, margins)
+- Zoom control
+- Cursor overlay
+- Bounds overlay
 - Element highlighting on selection
-- Snapshot comparison (before/after)
+- Snapshot metadata (size/element count)
 
 ### Inspector Panel
 
@@ -101,18 +102,7 @@ blinc-debugger
 
 - Play/pause/step through events
 - Jump to specific timestamp
-- Filter by event type
-- Event details on hover
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Space` | Play/Pause |
-| `←` / `→` | Step backward/forward |
-| `Cmd/Ctrl + O` | Open recording |
-| `Cmd/Ctrl + F` | Search elements |
-| `Escape` | Deselect |
+- Change playback speed
 
 ## Recording Format
 
@@ -120,12 +110,14 @@ The debugger reads JSON files created by `blinc_recorder`:
 
 ```json
 {
-  "version": "1.0",
+  "config": {
+    "app_name": "my_app"
+  },
   "events": [...],
   "snapshots": [...],
-  "metadata": {
-    "app_name": "My App",
-    "recorded_at": "2024-01-01T00:00:00Z"
+  "stats": {
+    "total_events": 123,
+    "total_snapshots": 45
   }
 }
 ```
