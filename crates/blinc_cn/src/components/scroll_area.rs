@@ -188,26 +188,30 @@ impl BuiltScrollArea {
 
         // Apply viewport dimensions.
         // Responsive mode follows parent container when width/height are not explicitly set.
-        scroll_widget = match (config.responsive, config.width) {
-            (_, Some(width)) => scroll_widget.w(width),
-            (true, None) => scroll_widget.w_full(),
-            (false, None) => scroll_widget.w(LEGACY_FALLBACK_WIDTH),
+        scroll_widget = if let Some(width) = config.width {
+            scroll_widget.w(width)
+        } else if config.responsive {
+            scroll_widget.w_full()
+        } else {
+            scroll_widget.w(LEGACY_FALLBACK_WIDTH)
         };
-        scroll_widget = match (config.responsive, config.height) {
-            (_, Some(height)) => scroll_widget.h(height),
-            (true, None) => scroll_widget.h_full(),
-            (false, None) => scroll_widget.h(LEGACY_FALLBACK_HEIGHT),
+        scroll_widget = if let Some(height) = config.height {
+            scroll_widget.h(height)
+        } else if config.responsive {
+            scroll_widget.h_full()
+        } else {
+            scroll_widget.h(LEGACY_FALLBACK_HEIGHT)
         };
 
         // Apply scrollbar width
         if let Some(width) = config.scrollbar_width {
             scroll_widget = scroll_widget.scrollbar_width(width);
         } else {
-            let scrollbar_size = if config.responsive && config.size == ScrollAreaSize::Medium {
-                match current_device_class() {
-                    DeviceClass::Mobile => ScrollbarSize::Thin,
-                    DeviceClass::Tablet | DeviceClass::Desktop => ScrollbarSize::Normal,
-                }
+            let scrollbar_size = if config.responsive
+                && config.size == ScrollAreaSize::Medium
+                && current_device_class() == DeviceClass::Mobile
+            {
+                ScrollbarSize::Thin
             } else {
                 config.size.to_layout()
             };
