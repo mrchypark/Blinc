@@ -24,6 +24,20 @@ Component library for Blinc UI - shadcn/ui-style themed components.
 ```toml
 [dependencies]
 blinc_cn = { path = "../blinc_cn" }
+blinc_theme = { path = "../blinc_theme" }
+```
+
+## Use Theme Presets
+
+`blinc_cn` components read tokens from `blinc_theme::ThemeState`.
+Initialize `ThemeState` with a preset bundle once at app startup:
+
+```rust
+use blinc_theme::{ColorScheme, ThemePreset, ThemeState};
+
+fn init_theme() {
+    ThemeState::init(ThemePreset::Slate.bundle(), ColorScheme::Light);
+}
 ```
 
 ## Quick Start

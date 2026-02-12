@@ -68,6 +68,7 @@
 //! ```
 
 pub mod platform;
+pub mod presets;
 pub mod state;
 pub mod theme;
 pub mod themes;
@@ -78,6 +79,7 @@ pub mod watcher;
 
 // Re-export commonly used types
 pub use platform::{detect_system_color_scheme, Platform};
+pub use presets::{preset_bundle, ThemePreset};
 pub use state::{set_redraw_callback, ThemeState};
 pub use theme::{ColorScheme, Theme, ThemeBundle};
 pub use themes::{platform::platform_theme_bundle, BlincTheme};
