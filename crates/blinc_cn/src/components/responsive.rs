@@ -48,12 +48,10 @@ pub enum DeviceClass {
 /// Classify device width into mobile/tablet/desktop using Tailwind defaults.
 pub fn device_class_for_width(width: f32) -> DeviceClass {
     let bp = TailwindBreakpoints::DEFAULT;
-    if width < bp.md {
-        DeviceClass::Mobile
-    } else if width < bp.lg {
-        DeviceClass::Tablet
-    } else {
-        DeviceClass::Desktop
+    match width {
+        w if w < bp.md => DeviceClass::Mobile,
+        w if w < bp.lg => DeviceClass::Tablet,
+        _ => DeviceClass::Desktop,
     }
 }
 
