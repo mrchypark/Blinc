@@ -14,13 +14,14 @@ crate-type = ["lib"]
 [features]
 default = []
 # Enable recorder integration for debugging/testing. Disable for production builds.
-recorder = []
+recorder = ["dep:blinc_recorder"]
 
 [dependencies]
 blinc_core = { path = "../blinc_core", version = "0.1.12" }
 blinc_animation = { path = "../blinc_animation", version = "0.1.12" }
 blinc_theme = { path = "../blinc_theme", version = "0.1.12" }
 blinc_i18n = { path = "../blinc_i18n", version = "0.1.12" }
+blinc_recorder = { path = "../blinc_recorder", version = "0.1.12", optional = true }
 
 # Layout
 taffy.workspace = true

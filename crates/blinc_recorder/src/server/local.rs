@@ -5,6 +5,7 @@
 
 use crate::{RecordingExport, SharedRecordingSession};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -171,8 +172,9 @@ impl DebugServer {
 
                     // Handle client in a new thread
                     let session = self.session.clone();
+                    let app_name = self.config.app_name.clone();
                     thread::spawn(move || {
-                        if let Err(e) = handle_client(stream, session) {
+                        if let Err(e) = handle_client(stream, session, app_name) {
                             tracing::debug!("Client disconnected: {}", e);
                         }
                     });
@@ -213,8 +215,9 @@ impl DebugServer {
                     }
 
                     let session = self.session.clone();
+                    let app_name = self.config.app_name.clone();
                     thread::spawn(move || {
-                        if let Err(e) = handle_client_tcp(stream, session) {
+                        if let Err(e) = handle_client_tcp(stream, session, app_name) {
                             tracing::debug!("Client disconnected: {}", e);
                         }
                     });
@@ -269,30 +272,31 @@ impl ClientCommand {
             data
         };
 
-        // Try to parse as JSON
-        let s = std::str::from_utf8(json_data).ok()?;
-
-        // Simple JSON parsing for command type
-        if s.contains("\"start\"") || s.contains("\"Start\"") {
-            Some(ClientCommand::Start)
-        } else if s.contains("\"pause\"") || s.contains("\"Pause\"") {
-            Some(ClientCommand::Pause)
-        } else if s.contains("\"resume\"") || s.contains("\"Resume\"") {
-            Some(ClientCommand::Resume)
-        } else if s.contains("\"stop\"") || s.contains("\"Stop\"") {
-            Some(ClientCommand::Stop)
-        } else if s.contains("\"reset\"") || s.contains("\"Reset\"") {
-            Some(ClientCommand::Reset)
-        } else if s.contains("\"request_export\"") || s.contains("\"RequestExport\"") {
-            Some(ClientCommand::RequestExport)
-        } else if s.contains("\"request_stats\"") || s.contains("\"RequestStats\"") {
-            Some(ClientCommand::RequestStats)
-        } else if s.contains("\"ping\"") || s.contains("\"Ping\"") {
-            Some(ClientCommand::Ping)
-        } else {
-            None
+        let value: serde_json::Value = serde_json::from_slice(json_data).ok()?;
+        let raw = value
+            .get("type")
+            .or_else(|| value.get("command"))
+            .and_then(|v| v.as_str())?;
+        match normalize_command(raw).as_str() {
+            "start" => Some(ClientCommand::Start),
+            "pause" => Some(ClientCommand::Pause),
+            "resume" => Some(ClientCommand::Resume),
+            "stop" => Some(ClientCommand::Stop),
+            "reset" => Some(ClientCommand::Reset),
+            "requestexport" => Some(ClientCommand::RequestExport),
+            "requeststats" => Some(ClientCommand::RequestStats),
+            "ping" => Some(ClientCommand::Ping),
+            _ => None,
         }
     }
+}
+
+fn normalize_command(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| *c != '_' && *c != '-')
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 /// Message types sent to clients.
@@ -325,57 +329,43 @@ pub enum ServerMessage {
 impl ServerMessage {
     /// Serialize message to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
-        // Simple format: 4-byte length prefix + JSON payload
-        let json = match self {
+        // 4-byte length prefix + JSON payload.
+        let payload = match self {
             ServerMessage::Hello {
                 app_name,
                 protocol_version,
             } => {
-                format!(
-                    r#"{{"type":"hello","app_name":"{}","protocol_version":{}}}"#,
-                    app_name, protocol_version
-                )
+                json!({ "type": "hello", "app_name": app_name, "protocol_version": protocol_version })
             }
-            ServerMessage::Export(export) => {
-                format!(
-                    r#"{{"type":"export","total_events":{},"total_snapshots":{}}}"#,
-                    export.stats.total_events, export.stats.total_snapshots
-                )
-            }
+            ServerMessage::Export(export) => json!({ "type": "export", "export": export }),
             ServerMessage::StateChange {
                 is_recording,
                 is_paused,
             } => {
-                format!(
-                    r#"{{"type":"state_change","is_recording":{},"is_paused":{}}}"#,
-                    is_recording, is_paused
-                )
+                json!({ "type": "state_change", "is_recording": is_recording, "is_paused": is_paused })
             }
             ServerMessage::Stats {
                 total_events,
                 total_snapshots,
                 events_dropped,
                 snapshots_dropped,
-            } => {
-                format!(
-                    r#"{{"type":"stats","total_events":{},"total_snapshots":{},"events_dropped":{},"snapshots_dropped":{}}}"#,
-                    total_events, total_snapshots, events_dropped, snapshots_dropped
-                )
-            }
-            ServerMessage::Ack { command } => {
-                format!(r#"{{"type":"ack","command":"{}"}}"#, command)
-            }
-            ServerMessage::Error { message } => {
-                format!(r#"{{"type":"error","message":"{}"}}"#, message)
-            }
-            ServerMessage::Pong => r#"{"type":"pong"}"#.to_string(),
+            } => json!({
+                "type": "stats",
+                "total_events": total_events,
+                "total_snapshots": total_snapshots,
+                "events_dropped": events_dropped,
+                "snapshots_dropped": snapshots_dropped
+            }),
+            ServerMessage::Ack { command } => json!({ "type": "ack", "command": command }),
+            ServerMessage::Error { message } => json!({ "type": "error", "message": message }),
+            ServerMessage::Pong => json!({ "type": "pong" }),
         };
 
-        let bytes = json.as_bytes();
+        let bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| b"{}".to_vec());
         let len = bytes.len() as u32;
         let mut result = Vec::with_capacity(4 + bytes.len());
         result.extend_from_slice(&len.to_le_bytes());
-        result.extend_from_slice(bytes);
+        result.extend_from_slice(&bytes);
         result
     }
 }
@@ -428,6 +418,7 @@ fn handle_command(cmd: ClientCommand, session: &Arc<SharedRecordingSession>) -> 
 fn handle_client(
     mut stream: std::os::unix::net::UnixStream,
     session: Arc<SharedRecordingSession>,
+    app_name: String,
 ) -> io::Result<()> {
     use std::time::Duration;
 
@@ -436,7 +427,7 @@ fn handle_client(
 
     // Send hello message
     let hello = ServerMessage::Hello {
-        app_name: "blinc_app".to_string(),
+        app_name,
         protocol_version: 1,
     };
     stream.write_all(&hello.to_bytes())?;
@@ -490,6 +481,7 @@ fn handle_client(
 fn handle_client_tcp(
     mut stream: std::net::TcpStream,
     session: Arc<SharedRecordingSession>,
+    app_name: String,
 ) -> io::Result<()> {
     use std::time::Duration;
 
@@ -497,7 +489,7 @@ fn handle_client_tcp(
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
     let hello = ServerMessage::Hello {
-        app_name: "blinc_app".to_string(),
+        app_name,
         protocol_version: 1,
     };
     stream.write_all(&hello.to_bytes())?;
@@ -581,6 +573,35 @@ mod tests {
         // Check length prefix
         let len = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
         assert_eq!(len + 4, bytes.len());
+    }
+
+    #[test]
+    fn test_export_message_contains_full_payload() {
+        use crate::{RecordedEvent, RecordingConfig, Timestamp, TimestampedEvent};
+
+        let export = RecordingExport {
+            config: RecordingConfig::minimal(),
+            events: vec![TimestampedEvent::new(
+                Timestamp::from_micros(1),
+                RecordedEvent::WindowFocus(true),
+            )],
+            snapshots: vec![],
+            stats: Default::default(),
+        };
+
+        let msg = ServerMessage::Export(export);
+        let bytes = msg.to_bytes();
+        let len = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let payload = std::str::from_utf8(&bytes[4..4 + len]).unwrap();
+
+        assert!(
+            payload.contains("\"events\""),
+            "export payload should include events field, got: {payload}"
+        );
+        assert!(
+            payload.contains("\"config\""),
+            "export payload should include config field, got: {payload}"
+        );
     }
 
     #[test]

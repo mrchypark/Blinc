@@ -25,12 +25,16 @@ use std::path::PathBuf;
 #[command(about = "Visual debugger for Blinc UI recordings")]
 #[command(version)]
 struct Args {
+    /// Recording file to open (positional)
+    #[arg(value_name = "FILE")]
+    input: Option<PathBuf>,
+
     /// Recording file to open (optional)
     #[arg(short, long)]
     file: Option<PathBuf>,
 
     /// Connect to debug server at address
-    #[arg(short, long, default_value = "127.0.0.1:9999")]
+    #[arg(short, long)]
     connect: Option<String>,
 
     /// Window width
@@ -51,10 +55,11 @@ fn main() -> Result<()> {
     ThemeState::get().set_scheme(ColorScheme::Dark);
 
     let args = Args::parse();
+    let file = args.file.or(args.input);
 
     log::info!("Starting Blinc Debugger");
 
-    if let Some(ref file) = args.file {
+    if let Some(ref file) = file {
         log::info!("Opening recording: {}", file.display());
     }
 
@@ -63,5 +68,5 @@ fn main() -> Result<()> {
     }
 
     // Run the app
-    app::run(args.width, args.height, args.file, args.connect)
+    app::run(args.width, args.height, file, args.connect)
 }

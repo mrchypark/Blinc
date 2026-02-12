@@ -34,8 +34,15 @@ cargo build -p blinc_debugger --release
 ## Usage
 
 ```bash
-# Open a recording file
+# Open a recording file (positional)
 blinc-debugger recording.json
+
+# Open a recording file (flag)
+blinc-debugger --file recording.json
+
+# Connect to a running debug server (Unix socket path or app name)
+blinc-debugger --connect /tmp/blinc/blinc_app.sock
+blinc-debugger --connect blinc_app
 
 # Or launch and open via UI
 blinc-debugger
