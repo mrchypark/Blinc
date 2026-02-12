@@ -33,7 +33,7 @@ struct Args {
     #[arg(short, long)]
     file: Option<PathBuf>,
 
-    /// Connect to debug server at address
+    /// Connect to debug server (`app_name`, `unix:/path.sock`, or `tcp:host:port`)
     #[arg(short, long)]
     connect: Option<String>,
 

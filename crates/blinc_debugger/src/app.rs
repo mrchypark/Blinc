@@ -386,7 +386,9 @@ fn write_len_prefixed<W: Write>(writer: &mut W, payload: &[u8]) -> Result<()> {
 fn request_export_from_server(addr: &str) -> Result<RecordingExport> {
     #[cfg(unix)]
     {
-        match resolve_connect_target(addr) {
+        match resolve_connect_target(addr)
+            .with_context(|| format!("invalid --connect target: {addr}"))?
+        {
             ConnectTarget::Unix(socket) => {
                 return request_export_over_unix_socket(&socket)
                     .with_context(|| format!("failed to connect to unix socket {socket}"));
@@ -427,31 +429,55 @@ where
 }
 
 #[cfg(unix)]
+#[derive(Debug)]
 enum ConnectTarget {
     Unix(String),
     Tcp(String),
 }
 
 #[cfg(unix)]
-fn resolve_connect_target(addr: &str) -> ConnectTarget {
+fn resolve_connect_target(addr: &str) -> Result<ConnectTarget> {
     use std::net::{SocketAddr, ToSocketAddrs};
 
     if let Some(path) = addr.strip_prefix("unix:") {
-        return ConnectTarget::Unix(path.to_string());
+        if path.is_empty() {
+            bail!("unix target cannot be empty (use unix:/path/to/socket.sock)");
+        }
+        return Ok(ConnectTarget::Unix(path.to_string()));
     }
     if let Some(target) = addr.strip_prefix("tcp:") {
-        return ConnectTarget::Tcp(target.to_string());
+        if target.is_empty() {
+            bail!("tcp target cannot be empty (use tcp:host:port)");
+        }
+        return Ok(ConnectTarget::Tcp(target.to_string()));
     }
-    if addr.contains('/') {
-        return ConnectTarget::Unix(addr.to_string());
+    if addr.contains('/') || addr.contains('\\') {
+        bail!(
+            "path-like connect target '{addr}' is not allowed without scheme; use unix:/path.sock"
+        );
     }
 
     if addr.parse::<SocketAddr>().is_ok() || (addr.contains(':') && addr.to_socket_addrs().is_ok())
     {
-        return ConnectTarget::Tcp(addr.to_string());
+        return Ok(ConnectTarget::Tcp(addr.to_string()));
     }
 
-    ConnectTarget::Unix(format!("/tmp/blinc/{addr}.sock"))
+    if !is_valid_default_socket_name(addr) {
+        bail!(
+            "invalid app name '{addr}'; allowed characters for default socket mapping are [A-Za-z0-9._-]"
+        );
+    }
+
+    Ok(ConnectTarget::Unix(format!("/tmp/blinc/{addr}.sock")))
+}
+
+#[cfg(unix)]
+fn is_valid_default_socket_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
 #[cfg(unix)]
@@ -537,7 +563,7 @@ mod tests {
     #[test]
     fn resolves_unix_scheme_address() {
         assert!(matches!(
-            resolve_connect_target("unix:/tmp/blinc/test.sock"),
+            resolve_connect_target("unix:/tmp/blinc/test.sock").expect("valid unix target"),
             ConnectTarget::Unix(path) if path == "/tmp/blinc/test.sock"
         ));
     }
@@ -545,15 +571,15 @@ mod tests {
     #[test]
     fn resolves_tcp_scheme_address() {
         assert!(matches!(
-            resolve_connect_target("tcp:127.0.0.1:7331"),
+            resolve_connect_target("tcp:127.0.0.1:7331").expect("valid tcp target"),
             ConnectTarget::Tcp(target) if target == "127.0.0.1:7331"
         ));
     }
 
     #[test]
-    fn resolves_unix_socket_path() {
+    fn resolves_unix_socket_path_with_unix_scheme() {
         assert!(matches!(
-            resolve_connect_target("/tmp/blinc/custom.sock"),
+            resolve_connect_target("unix:/tmp/blinc/custom.sock").expect("valid unix target"),
             ConnectTarget::Unix(path) if path == "/tmp/blinc/custom.sock"
         ));
     }
@@ -561,7 +587,7 @@ mod tests {
     #[test]
     fn resolves_ip_socket_addr_as_tcp() {
         assert!(matches!(
-            resolve_connect_target("127.0.0.1:7331"),
+            resolve_connect_target("127.0.0.1:7331").expect("valid tcp addr"),
             ConnectTarget::Tcp(target) if target == "127.0.0.1:7331"
         ));
     }
@@ -569,7 +595,7 @@ mod tests {
     #[test]
     fn resolves_app_name_to_default_socket_path() {
         assert!(matches!(
-            resolve_connect_target("my_app"),
+            resolve_connect_target("my_app").expect("valid app name"),
             ConnectTarget::Unix(path) if path == "/tmp/blinc/my_app.sock"
         ));
     }
@@ -577,9 +603,29 @@ mod tests {
     #[test]
     fn app_name_without_colon_stays_unix_target() {
         assert!(matches!(
-            resolve_connect_target("example.com"),
+            resolve_connect_target("example.com").expect("valid app name"),
             ConnectTarget::Unix(path) if path == "/tmp/blinc/example.com.sock"
         ));
+    }
+
+    #[test]
+    fn rejects_path_like_target_without_scheme() {
+        let err = resolve_connect_target("/tmp/blinc/custom.sock")
+            .expect_err("path-like target without unix: prefix must be rejected");
+        assert!(
+            err.to_string().contains("path-like connect target"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_default_socket_name() {
+        let err = resolve_connect_target("bad$name")
+            .expect_err("app name with invalid characters must be rejected");
+        assert!(
+            err.to_string().contains("invalid app name"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

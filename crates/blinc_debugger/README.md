@@ -40,9 +40,14 @@ blinc-debugger recording.json
 # Open a recording file (flag)
 blinc-debugger --file recording.json
 
-# Connect to a running debug server (Unix socket path or app name)
-blinc-debugger --connect /tmp/blinc/blinc_app.sock
+# Connect to a running debug server (default app socket mapping)
 blinc-debugger --connect blinc_app
+
+# Connect to an explicit Unix socket path
+blinc-debugger --connect unix:/tmp/blinc/blinc_app.sock
+
+# Connect to a TCP debug server
+blinc-debugger --connect tcp:127.0.0.1:7331
 
 # Or launch and open via UI
 blinc-debugger

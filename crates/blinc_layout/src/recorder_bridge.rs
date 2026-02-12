@@ -5,6 +5,7 @@
 
 use blinc_core::BlincContextState;
 use std::any::Any;
+use std::collections::HashMap;
 
 /// Mouse button for recorder events
 #[derive(Clone, Copy, Debug)]
@@ -28,6 +29,15 @@ impl From<crate::event_router::MouseButton> for RecorderMouseButton {
     }
 }
 
+/// Modifier key state captured for recorder events.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecorderModifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
 /// Event data sent to recorder
 #[derive(Clone, Debug)]
 pub enum RecorderEventData {
@@ -35,12 +45,14 @@ pub enum RecorderEventData {
         x: f32,
         y: f32,
         button: RecorderMouseButton,
+        modifiers: RecorderModifiers,
         target_element: Option<String>,
     },
     MouseUp {
         x: f32,
         y: f32,
         button: RecorderMouseButton,
+        modifiers: RecorderModifiers,
         target_element: Option<String>,
     },
     MouseMove {
@@ -52,14 +64,18 @@ pub enum RecorderEventData {
         x: f32,
         y: f32,
         button: RecorderMouseButton,
+        modifiers: RecorderModifiers,
         target_element: Option<String>,
     },
     KeyDown {
         key_code: u32,
+        modifiers: RecorderModifiers,
+        is_repeat: bool,
         focused_element: Option<String>,
     },
     KeyUp {
         key_code: u32,
+        modifiers: RecorderModifiers,
         focused_element: Option<String>,
     },
     TextInput {
@@ -189,6 +205,8 @@ pub struct SnapshotVisualProps {
     pub border_width: Option<f32>,
     pub border_radius: Option<f32>,
     pub opacity: Option<f32>,
+    pub transform: Option<[f32; 6]>,
+    pub styles: HashMap<String, String>,
 }
 
 /// Snapshot of a single element.
@@ -270,6 +288,16 @@ fn to_mouse_button(button: RecorderMouseButton) -> blinc_recorder::MouseButton {
         RecorderMouseButton::Right => blinc_recorder::MouseButton::Right,
         RecorderMouseButton::Middle => blinc_recorder::MouseButton::Middle,
         RecorderMouseButton::Other(n) => blinc_recorder::MouseButton::Other(n),
+    }
+}
+
+#[cfg(feature = "recorder")]
+fn to_modifiers(modifiers: RecorderModifiers) -> blinc_recorder::Modifiers {
+    blinc_recorder::Modifiers {
+        shift: modifiers.shift,
+        ctrl: modifiers.ctrl,
+        alt: modifiers.alt,
+        meta: modifiers.meta,
     }
 }
 
@@ -359,22 +387,24 @@ pub(crate) fn to_recorded_event(event: RecorderEventData) -> blinc_recorder::Rec
             x,
             y,
             button,
+            modifiers,
             target_element,
         } => blinc_recorder::RecordedEvent::MouseDown(MouseEvent {
             position: Point::new(x, y),
             button: to_mouse_button(button),
-            modifiers: Modifiers::none(),
+            modifiers: to_modifiers(modifiers),
             target_element,
         }),
         RecorderEventData::MouseUp {
             x,
             y,
             button,
+            modifiers,
             target_element,
         } => blinc_recorder::RecordedEvent::MouseUp(MouseEvent {
             position: Point::new(x, y),
             button: to_mouse_button(button),
-            modifiers: Modifiers::none(),
+            modifiers: to_modifiers(modifiers),
             target_element,
         }),
         RecorderEventData::MouseMove {
@@ -389,28 +419,32 @@ pub(crate) fn to_recorded_event(event: RecorderEventData) -> blinc_recorder::Rec
             x,
             y,
             button,
+            modifiers,
             target_element,
         } => blinc_recorder::RecordedEvent::Click(MouseEvent {
             position: Point::new(x, y),
             button: to_mouse_button(button),
-            modifiers: Modifiers::none(),
+            modifiers: to_modifiers(modifiers),
             target_element,
         }),
         RecorderEventData::KeyDown {
             key_code,
+            modifiers,
+            is_repeat,
             focused_element,
         } => blinc_recorder::RecordedEvent::KeyDown(KeyEvent {
             key: to_key(key_code),
-            modifiers: Modifiers::none(),
-            is_repeat: false,
+            modifiers: to_modifiers(modifiers),
+            is_repeat,
             focused_element,
         }),
         RecorderEventData::KeyUp {
             key_code,
+            modifiers,
             focused_element,
         } => blinc_recorder::RecordedEvent::KeyUp(KeyEvent {
             key: to_key(key_code),
-            modifiers: Modifiers::none(),
+            modifiers: to_modifiers(modifiers),
             is_repeat: false,
             focused_element,
         }),
@@ -473,8 +507,8 @@ pub(crate) fn to_tree_snapshot(snapshot: TreeSnapshotData) -> blinc_recorder::Tr
                     border_width: props.border_width,
                     border_radius: props.border_radius,
                     opacity: props.opacity,
-                    transform: None,
-                    styles: std::collections::HashMap::new(),
+                    transform: props.transform,
+                    styles: props.styles,
                 });
 
             (
@@ -513,6 +547,12 @@ mod tests {
             x: 10.0,
             y: 20.0,
             button: RecorderMouseButton::Left,
+            modifiers: RecorderModifiers {
+                shift: true,
+                ctrl: false,
+                alt: true,
+                meta: false,
+            },
             target_element: Some("node-1".to_string()),
         };
 
@@ -522,6 +562,10 @@ mod tests {
                 assert_eq!(click.position.x, 10.0);
                 assert_eq!(click.position.y, 20.0);
                 assert_eq!(click.target_element.as_deref(), Some("node-1"));
+                assert!(click.modifiers.shift);
+                assert!(click.modifiers.alt);
+                assert!(!click.modifiers.ctrl);
+                assert!(!click.modifiers.meta);
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -551,6 +595,8 @@ mod tests {
                     border_width: Some(1.0),
                     border_radius: Some(2.0),
                     opacity: Some(0.5),
+                    transform: Some([1.0, 0.0, 0.0, 1.0, 4.0, 8.0]),
+                    styles: HashMap::from([("z-index".to_string(), "3".to_string())]),
                 }),
                 text_content: Some("hello".to_string()),
             },
@@ -561,6 +607,13 @@ mod tests {
         assert_eq!(converted.scale_factor, 2.0);
         assert_eq!(converted.root_id.as_deref(), Some("root"));
         assert!(converted.elements.contains_key("root"));
+        let props = converted
+            .elements
+            .get("root")
+            .and_then(|e| e.visual_props.as_ref())
+            .expect("visual props");
+        assert_eq!(props.transform, Some([1.0, 0.0, 0.0, 1.0, 4.0, 8.0]));
+        assert_eq!(props.styles.get("z-index").map(String::as_str), Some("3"));
     }
 }
 
@@ -638,6 +691,8 @@ fn capture_node_recursive(
             },
             border_radius: Some(props.border_radius.top_left),
             opacity: Some(props.opacity),
+            transform: extract_snapshot_transform(props.transform.as_ref()),
+            styles: extract_snapshot_styles(props),
         }
     });
 
@@ -686,4 +741,47 @@ fn capture_node_recursive(
             snapshot,
         );
     }
+}
+
+fn extract_snapshot_transform(transform: Option<&blinc_core::Transform>) -> Option<[f32; 6]> {
+    match transform {
+        Some(blinc_core::Transform::Affine2D(affine)) => Some(affine.elements),
+        _ => None,
+    }
+}
+
+fn extract_snapshot_styles(props: &crate::element::RenderProps) -> HashMap<String, String> {
+    let mut styles = HashMap::new();
+
+    if let Some(cursor) = props.cursor {
+        styles.insert("cursor".to_string(), format!("{cursor:?}"));
+    }
+    if props.pointer_events_none {
+        styles.insert("pointer-events".to_string(), "none".to_string());
+    }
+    if props.is_fixed {
+        styles.insert("position".to_string(), "fixed".to_string());
+    } else if props.is_sticky {
+        styles.insert("position".to_string(), "sticky".to_string());
+    }
+    if let Some(top) = props.sticky_top {
+        styles.insert("sticky-top".to_string(), top.to_string());
+    }
+    if let Some(bottom) = props.sticky_bottom {
+        styles.insert("sticky-bottom".to_string(), bottom.to_string());
+    }
+    if props.z_index != 0 {
+        styles.insert("z-index".to_string(), props.z_index.to_string());
+    }
+    if props.clips_content {
+        styles.insert("overflow".to_string(), "clip".to_string());
+    }
+    if let Some([x, y]) = props.transform_origin {
+        styles.insert("transform-origin".to_string(), format!("{x:.3},{y:.3}"));
+    }
+    if let Some(font_size) = props.font_size {
+        styles.insert("font-size".to_string(), font_size.to_string());
+    }
+
+    styles
 }

@@ -2737,7 +2737,13 @@ impl WindowedApp {
                                             }
 
                                             // Dispatch KEY_DOWN for all keys
-                                            router.on_key_down(key_code);
+                                            router.on_key_down_with_modifiers(
+                                                key_code,
+                                                mods.shift,
+                                                mods.ctrl,
+                                                mods.alt,
+                                                mods.meta,
+                                            );
 
                                             // For character-producing keys, dispatch TEXT_INPUT
                                             // We use broadcast dispatch so any focused text input can receive it
@@ -2772,7 +2778,13 @@ impl WindowedApp {
                                             }
                                         }
                                         KeyState::Released => {
-                                            router.on_key_up(key_code);
+                                            router.on_key_up_with_modifiers(
+                                                key_code,
+                                                mods.shift,
+                                                mods.ctrl,
+                                                mods.alt,
+                                                mods.meta,
+                                            );
                                         }
                                     }
                                 },

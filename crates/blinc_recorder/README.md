@@ -71,7 +71,9 @@ let (_session, _server) = blinc_recorder::enable_debug_server!("my_app");
 ```bash
 blinc-debugger --connect my_app
 # or explicit socket path on Unix
-blinc-debugger --connect /tmp/blinc/my_app.sock
+blinc-debugger --connect unix:/tmp/blinc/my_app.sock
+# or explicit TCP endpoint
+blinc-debugger --connect tcp:127.0.0.1:7331
 ```
 
 ## Blinc Layout Integration
