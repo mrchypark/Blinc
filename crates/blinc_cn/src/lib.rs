@@ -77,6 +77,9 @@ pub mod cn {
     pub use crate::components::progress::{progress, progress_animated};
     pub use crate::components::radio::radio_group;
     pub use crate::components::resizable::{resizable_group, resizable_panel};
+    pub use crate::components::responsive::{
+        current_device_class, device_class_for_width, DeviceClass, TailwindBreakpoints,
+    };
     pub use crate::components::select::select;
     pub use crate::components::separator::separator;
     pub use crate::components::sheet::{sheet, sheet_bottom, sheet_left, sheet_right, sheet_top};
@@ -180,6 +183,9 @@ pub mod prelude {
     pub use crate::components::resizable::{
         resizable_group, resizable_panel, ResizableGroup, ResizableGroupBuilder,
         ResizablePanelBuilder, ResizeDirection,
+    };
+    pub use crate::components::responsive::{
+        current_device_class, device_class_for_width, DeviceClass, TailwindBreakpoints,
     };
     pub use crate::components::select::{select, Select, SelectBuilder, SelectOption, SelectSize};
     pub use crate::components::separator::{separator, Separator, SeparatorOrientation};

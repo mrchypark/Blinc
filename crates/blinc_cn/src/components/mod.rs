@@ -35,6 +35,7 @@ pub mod popover;
 pub mod progress;
 pub mod radio;
 pub mod resizable;
+pub mod responsive;
 pub mod scroll_area;
 pub mod select;
 pub mod separator;
@@ -101,6 +102,9 @@ pub use radio::{radio_group, RadioGroup, RadioGroupBuilder, RadioLayout, RadioSi
 pub use resizable::{
     resizable_group, resizable_panel, ResizableGroup, ResizableGroupBuilder, ResizablePanelBuilder,
     ResizeDirection,
+};
+pub use responsive::{
+    current_device_class, device_class_for_width, DeviceClass, TailwindBreakpoints,
 };
 pub use select::{select, Select, SelectBuilder, SelectOption, SelectSize};
 pub use separator::{separator, Separator, SeparatorOrientation};

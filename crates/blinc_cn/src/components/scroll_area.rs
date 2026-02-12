@@ -40,6 +40,7 @@
 
 use std::cell::{OnceCell, RefCell};
 
+use crate::components::responsive::{current_device_class, DeviceClass};
 use blinc_core::Color;
 use blinc_layout::element::RenderProps;
 use blinc_layout::prelude::*;
@@ -49,6 +50,9 @@ use blinc_layout::widgets::scroll::{
     ScrollbarVisibility as LayoutScrollbarVisibility,
 };
 use blinc_theme::{ColorToken, ThemeState};
+
+const LEGACY_FALLBACK_WIDTH: f32 = 300.0;
+const LEGACY_FALLBACK_HEIGHT: f32 = 400.0;
 
 /// Scrollbar visibility modes
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -125,6 +129,8 @@ struct ScrollAreaConfig {
     /// Viewport dimensions
     width: Option<f32>,
     height: Option<f32>,
+    /// Enable responsive viewport defaults (Tailwind-style behavior)
+    responsive: bool,
     /// Enable bounce physics
     bounce: bool,
     /// Content builder
@@ -146,6 +152,7 @@ impl Default for ScrollAreaConfig {
             track_color: None,
             width: None,
             height: None,
+            responsive: true,
             bounce: true,
             content: None,
             rounded: None,
@@ -171,25 +178,44 @@ impl BuiltScrollArea {
             .track_color
             .unwrap_or_else(|| theme.color(ColorToken::Surface).with_alpha(0.1));
 
-        // Get viewport dimensions
-        let viewport_width = config.width.unwrap_or(300.0);
-        let viewport_height = config.height.unwrap_or(400.0);
-
         // Build the scroll widget with built-in scrollbar
         let mut scroll_widget = scroll()
-            .w(viewport_width)
-            .h(viewport_height)
             .direction(config.direction)
             .bounce(config.bounce)
             .scrollbar_visibility(config.visibility.to_layout())
             .scrollbar_thumb_color(thumb_color.r, thumb_color.g, thumb_color.b, thumb_color.a)
             .scrollbar_track_color(track_color.r, track_color.g, track_color.b, track_color.a);
 
+        // Apply viewport dimensions.
+        // Responsive mode follows parent container when width/height are not explicitly set.
+        scroll_widget = if let Some(width) = config.width {
+            scroll_widget.w(width)
+        } else if config.responsive {
+            scroll_widget.w_full()
+        } else {
+            scroll_widget.w(LEGACY_FALLBACK_WIDTH)
+        };
+        scroll_widget = if let Some(height) = config.height {
+            scroll_widget.h(height)
+        } else if config.responsive {
+            scroll_widget.h_full()
+        } else {
+            scroll_widget.h(LEGACY_FALLBACK_HEIGHT)
+        };
+
         // Apply scrollbar width
         if let Some(width) = config.scrollbar_width {
             scroll_widget = scroll_widget.scrollbar_width(width);
         } else {
-            scroll_widget = scroll_widget.scrollbar_size(config.size.to_layout());
+            let scrollbar_size = if config.responsive
+                && config.size == ScrollAreaSize::Medium
+                && current_device_class() == DeviceClass::Mobile
+            {
+                ScrollbarSize::Thin
+            } else {
+                config.size.to_layout()
+            };
+            scroll_widget = scroll_widget.scrollbar_size(scrollbar_size);
         }
 
         // Apply corner radius
@@ -327,6 +353,15 @@ impl ScrollAreaBuilder {
         self
     }
 
+    /// Enable or disable responsive viewport defaults.
+    ///
+    /// - `true` (default): width/height follow parent when not explicitly set.
+    /// - `false`: legacy fallback size (`300x400`) when width/height are not set.
+    pub fn responsive(self, enabled: bool) -> Self {
+        self.config.borrow_mut().responsive = enabled;
+        self
+    }
+
     /// Enable or disable bounce physics
     pub fn bounce(self, enabled: bool) -> Self {
         self.config.borrow_mut().bounce = enabled;
@@ -421,13 +456,31 @@ pub fn scroll_area() -> ScrollAreaBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blinc_core::context_state::{BlincContextState, HookState};
+    use blinc_core::reactive::ReactiveGraph;
     use blinc_theme::ThemeState;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex, OnceLock};
 
     fn init_theme() {
         let _ = ThemeState::try_get().unwrap_or_else(|| {
             ThemeState::init_default();
             ThemeState::get()
         });
+    }
+
+    fn init_context() {
+        if !BlincContextState::is_initialized() {
+            let reactive = Arc::new(Mutex::new(ReactiveGraph::new()));
+            let hooks = Arc::new(Mutex::new(HookState::new()));
+            let dirty_flag = Arc::new(AtomicBool::new(false));
+            BlincContextState::init(reactive, hooks, dirty_flag);
+        }
+    }
+
+    fn context_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 
     #[test]
@@ -452,5 +505,85 @@ mod tests {
         assert_eq!(config.size, ScrollAreaSize::Large);
         assert_eq!(config.height, Some(500.0));
         assert_eq!(config.width, Some(300.0));
+    }
+
+    #[test]
+    fn test_scroll_area_is_responsive_by_default() {
+        init_theme();
+        let builder = scroll_area();
+        let config = builder.config.borrow();
+        assert!(config.responsive);
+    }
+
+    #[test]
+    fn test_scroll_area_non_responsive_uses_legacy_fallback_size() {
+        init_theme();
+
+        let config = ScrollAreaConfig {
+            responsive: false,
+            ..Default::default()
+        };
+        let built = BuiltScrollArea::from_config(config);
+        let physics = built.inner.physics();
+        let physics = physics.lock().unwrap();
+
+        assert_eq!(physics.viewport_width, LEGACY_FALLBACK_WIDTH);
+        assert_eq!(physics.viewport_height, LEGACY_FALLBACK_HEIGHT);
+    }
+
+    #[test]
+    fn test_scroll_area_explicit_size_takes_precedence_over_responsive_default() {
+        init_theme();
+
+        let config = ScrollAreaConfig {
+            responsive: true,
+            width: Some(320.0),
+            height: Some(240.0),
+            ..Default::default()
+        };
+        let built = BuiltScrollArea::from_config(config);
+        let physics = built.inner.physics();
+        let physics = physics.lock().unwrap();
+
+        assert_eq!(physics.viewport_width, 320.0);
+        assert_eq!(physics.viewport_height, 240.0);
+    }
+
+    #[test]
+    fn test_scroll_area_responsive_medium_scrollbar_thins_on_mobile() {
+        let _guard = context_lock().lock().unwrap();
+        init_theme();
+        init_context();
+        BlincContextState::get().set_viewport_size(375.0, 812.0);
+
+        let config = ScrollAreaConfig {
+            responsive: true,
+            size: ScrollAreaSize::Medium,
+            ..Default::default()
+        };
+        let built = BuiltScrollArea::from_config(config);
+        let physics = built.inner.physics();
+        let physics = physics.lock().unwrap();
+
+        assert_eq!(physics.config.scrollbar.size, ScrollbarSize::Thin);
+    }
+
+    #[test]
+    fn test_scroll_area_responsive_medium_scrollbar_is_normal_on_desktop() {
+        let _guard = context_lock().lock().unwrap();
+        init_theme();
+        init_context();
+        BlincContextState::get().set_viewport_size(1280.0, 800.0);
+
+        let config = ScrollAreaConfig {
+            responsive: true,
+            size: ScrollAreaSize::Medium,
+            ..Default::default()
+        };
+        let built = BuiltScrollArea::from_config(config);
+        let physics = built.inner.physics();
+        let physics = physics.lock().unwrap();
+
+        assert_eq!(physics.config.scrollbar.size, ScrollbarSize::Normal);
     }
 }
