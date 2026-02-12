@@ -4,10 +4,13 @@ use crate::theme::{ColorScheme, Theme, ThemeBundle};
 use crate::themes::BlincTheme;
 use crate::tokens::*;
 use blinc_core::Color;
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 /// Built-in theme preset catalog.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ThemePreset {
     /// Existing Blinc (Catppuccin-based) theme.
     Blinc,
@@ -27,6 +30,17 @@ impl ThemePreset {
             Self::Neutral => "neutral",
             Self::Slate => "slate",
             Self::Zinc => "zinc",
+        }
+    }
+
+    /// Parse a preset from a stable id.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "blinc" => Some(Self::Blinc),
+            "neutral" => Some(Self::Neutral),
+            "slate" => Some(Self::Slate),
+            "zinc" => Some(Self::Zinc),
+            _ => None,
         }
     }
 
@@ -65,6 +79,37 @@ impl ThemePreset {
 impl Display for ThemePreset {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.display_name())
+    }
+}
+
+/// Error returned when parsing a [`ThemePreset`] from a string fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseThemePresetError {
+    input: String,
+}
+
+impl ParseThemePresetError {
+    /// Input string that failed to parse.
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+}
+
+impl Display for ParseThemePresetError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown theme preset: {}", self.input)
+    }
+}
+
+impl std::error::Error for ParseThemePresetError {}
+
+impl FromStr for ThemePreset {
+    type Err = ParseThemePresetError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_id(s).ok_or_else(|| ParseThemePresetError {
+            input: s.to_string(),
+        })
     }
 }
 

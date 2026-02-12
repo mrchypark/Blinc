@@ -64,3 +64,34 @@ fn shadcn_like_presets_use_readable_selection_text() {
         }
     }
 }
+
+#[test]
+fn theme_preset_from_str_round_trips_with_id() {
+    for preset in ThemePreset::all() {
+        let parsed: ThemePreset = preset.id().parse().expect("preset id should parse");
+        assert_eq!(parsed, *preset);
+    }
+}
+
+#[test]
+fn theme_preset_from_str_rejects_unknown_id() {
+    let parsed: Result<ThemePreset, _> = "unknown".parse();
+    assert!(parsed.is_err());
+}
+
+#[test]
+fn theme_preset_serde_round_trip_uses_id_strings() {
+    for preset in ThemePreset::all() {
+        let json = serde_json::to_string(preset).expect("serialize preset");
+        assert_eq!(json, format!("\"{}\"", preset.id()));
+
+        let parsed: ThemePreset = serde_json::from_str(&json).expect("deserialize preset");
+        assert_eq!(parsed, *preset);
+    }
+}
+
+#[test]
+fn theme_preset_serde_rejects_unknown_id() {
+    let parsed: Result<ThemePreset, _> = serde_json::from_str("\"unknown\"");
+    assert!(parsed.is_err());
+}
