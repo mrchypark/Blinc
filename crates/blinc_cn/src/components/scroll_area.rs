@@ -40,6 +40,7 @@
 
 use std::cell::{OnceCell, RefCell};
 
+use crate::components::responsive::{current_device_class, DeviceClass};
 use blinc_core::Color;
 use blinc_layout::element::RenderProps;
 use blinc_layout::prelude::*;
@@ -125,6 +126,8 @@ struct ScrollAreaConfig {
     /// Viewport dimensions
     width: Option<f32>,
     height: Option<f32>,
+    /// Enable responsive viewport defaults (Tailwind-style behavior)
+    responsive: bool,
     /// Enable bounce physics
     bounce: bool,
     /// Content builder
@@ -146,6 +149,7 @@ impl Default for ScrollAreaConfig {
             track_color: None,
             width: None,
             height: None,
+            responsive: true,
             bounce: true,
             content: None,
             rounded: None,
@@ -171,25 +175,40 @@ impl BuiltScrollArea {
             .track_color
             .unwrap_or_else(|| theme.color(ColorToken::Surface).with_alpha(0.1));
 
-        // Get viewport dimensions
-        let viewport_width = config.width.unwrap_or(300.0);
-        let viewport_height = config.height.unwrap_or(400.0);
-
         // Build the scroll widget with built-in scrollbar
         let mut scroll_widget = scroll()
-            .w(viewport_width)
-            .h(viewport_height)
             .direction(config.direction)
             .bounce(config.bounce)
             .scrollbar_visibility(config.visibility.to_layout())
             .scrollbar_thumb_color(thumb_color.r, thumb_color.g, thumb_color.b, thumb_color.a)
             .scrollbar_track_color(track_color.r, track_color.g, track_color.b, track_color.a);
 
+        // Apply viewport dimensions.
+        // Responsive mode follows parent container when width/height are not explicitly set.
+        scroll_widget = match (config.responsive, config.width) {
+            (_, Some(width)) => scroll_widget.w(width),
+            (true, None) => scroll_widget.w_full(),
+            (false, None) => scroll_widget.w(300.0),
+        };
+        scroll_widget = match (config.responsive, config.height) {
+            (_, Some(height)) => scroll_widget.h(height),
+            (true, None) => scroll_widget.h_full(),
+            (false, None) => scroll_widget.h(400.0),
+        };
+
         // Apply scrollbar width
         if let Some(width) = config.scrollbar_width {
             scroll_widget = scroll_widget.scrollbar_width(width);
         } else {
-            scroll_widget = scroll_widget.scrollbar_size(config.size.to_layout());
+            let scrollbar_size = if config.responsive && config.size == ScrollAreaSize::Medium {
+                match current_device_class() {
+                    DeviceClass::Mobile => ScrollbarSize::Thin,
+                    DeviceClass::Tablet | DeviceClass::Desktop => ScrollbarSize::Normal,
+                }
+            } else {
+                config.size.to_layout()
+            };
+            scroll_widget = scroll_widget.scrollbar_size(scrollbar_size);
         }
 
         // Apply corner radius
@@ -327,6 +346,15 @@ impl ScrollAreaBuilder {
         self
     }
 
+    /// Enable or disable responsive viewport defaults.
+    ///
+    /// - `true` (default): width/height follow parent when not explicitly set.
+    /// - `false`: legacy fallback size (`300x400`) when width/height are not set.
+    pub fn responsive(self, enabled: bool) -> Self {
+        self.config.borrow_mut().responsive = enabled;
+        self
+    }
+
     /// Enable or disable bounce physics
     pub fn bounce(self, enabled: bool) -> Self {
         self.config.borrow_mut().bounce = enabled;
@@ -452,5 +480,25 @@ mod tests {
         assert_eq!(config.size, ScrollAreaSize::Large);
         assert_eq!(config.height, Some(500.0));
         assert_eq!(config.width, Some(300.0));
+    }
+
+    #[test]
+    fn test_tailwind_device_class_breakpoints() {
+        use crate::components::responsive::{device_class_for_width, DeviceClass};
+
+        assert_eq!(device_class_for_width(375.0), DeviceClass::Mobile);
+        assert_eq!(device_class_for_width(767.0), DeviceClass::Mobile);
+        assert_eq!(device_class_for_width(768.0), DeviceClass::Tablet);
+        assert_eq!(device_class_for_width(1023.0), DeviceClass::Tablet);
+        assert_eq!(device_class_for_width(1024.0), DeviceClass::Desktop);
+        assert_eq!(device_class_for_width(1440.0), DeviceClass::Desktop);
+    }
+
+    #[test]
+    fn test_scroll_area_is_responsive_by_default() {
+        init_theme();
+        let builder = scroll_area();
+        let config = builder.config.borrow();
+        assert!(config.responsive);
     }
 }
