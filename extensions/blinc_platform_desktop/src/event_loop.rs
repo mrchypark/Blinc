@@ -343,7 +343,8 @@ where
             return;
         }
 
-        if let Some(deadline) = scroll_end_deadline(self.scroll_end_pending, self.last_scroll_event_at)
+        if let Some(deadline) =
+            scroll_end_deadline(self.scroll_end_pending, self.last_scroll_event_at)
         {
             event_loop.set_control_flow(WinitControlFlow::WaitUntil(deadline));
         }
@@ -363,9 +364,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        scroll_end_deadline, should_emit_synthetic_scroll_end, SCROLL_END_DEBOUNCE,
-    };
+    use super::{scroll_end_deadline, should_emit_synthetic_scroll_end, SCROLL_END_DEBOUNCE};
     use std::time::{Duration, Instant};
 
     #[test]
