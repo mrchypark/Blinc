@@ -483,22 +483,44 @@ mod tests {
     }
 
     #[test]
-    fn test_tailwind_device_class_breakpoints() {
-        use crate::components::responsive::{device_class_for_width, DeviceClass};
-
-        assert_eq!(device_class_for_width(375.0), DeviceClass::Mobile);
-        assert_eq!(device_class_for_width(767.0), DeviceClass::Mobile);
-        assert_eq!(device_class_for_width(768.0), DeviceClass::Tablet);
-        assert_eq!(device_class_for_width(1023.0), DeviceClass::Tablet);
-        assert_eq!(device_class_for_width(1024.0), DeviceClass::Desktop);
-        assert_eq!(device_class_for_width(1440.0), DeviceClass::Desktop);
-    }
-
-    #[test]
     fn test_scroll_area_is_responsive_by_default() {
         init_theme();
         let builder = scroll_area();
         let config = builder.config.borrow();
         assert!(config.responsive);
+    }
+
+    #[test]
+    fn test_scroll_area_non_responsive_uses_legacy_fallback_size() {
+        init_theme();
+
+        let config = ScrollAreaConfig {
+            responsive: false,
+            ..Default::default()
+        };
+        let built = BuiltScrollArea::from_config(config);
+        let physics = built.inner.physics();
+        let physics = physics.lock().unwrap();
+
+        assert_eq!(physics.viewport_width, 300.0);
+        assert_eq!(physics.viewport_height, 400.0);
+    }
+
+    #[test]
+    fn test_scroll_area_explicit_size_takes_precedence_over_responsive_default() {
+        init_theme();
+
+        let config = ScrollAreaConfig {
+            responsive: true,
+            width: Some(320.0),
+            height: Some(240.0),
+            ..Default::default()
+        };
+        let built = BuiltScrollArea::from_config(config);
+        let physics = built.inner.physics();
+        let physics = physics.lock().unwrap();
+
+        assert_eq!(physics.viewport_width, 320.0);
+        assert_eq!(physics.viewport_height, 240.0);
     }
 }

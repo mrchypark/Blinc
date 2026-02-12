@@ -61,9 +61,24 @@ pub fn device_class_for_width(width: f32) -> DeviceClass {
 ///
 /// If viewport is not initialized yet, defaults to `Desktop`.
 pub fn current_device_class() -> DeviceClass {
-    let width = BlincContextState::try_get()
+    BlincContextState::try_get()
         .map(|ctx| ctx.viewport_size().0)
         .filter(|w| *w > 0.0)
-        .unwrap_or(TailwindBreakpoints::DEFAULT.lg);
-    device_class_for_width(width)
+        .map(device_class_for_width)
+        .unwrap_or(DeviceClass::Desktop)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{device_class_for_width, DeviceClass};
+
+    #[test]
+    fn test_tailwind_device_class_breakpoints() {
+        assert_eq!(device_class_for_width(375.0), DeviceClass::Mobile);
+        assert_eq!(device_class_for_width(767.0), DeviceClass::Mobile);
+        assert_eq!(device_class_for_width(768.0), DeviceClass::Tablet);
+        assert_eq!(device_class_for_width(1023.0), DeviceClass::Tablet);
+        assert_eq!(device_class_for_width(1024.0), DeviceClass::Desktop);
+        assert_eq!(device_class_for_width(1440.0), DeviceClass::Desktop);
+    }
 }
