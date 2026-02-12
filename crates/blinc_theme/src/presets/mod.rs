@@ -228,7 +228,7 @@ fn build_colors(base: BasePalette, scheme: ColorScheme) -> ColorTokens {
         input_bg_focus: base.background,
         input_bg_disabled: base.muted,
         selection: base.primary.with_alpha(selection_alpha),
-        selection_text: base.primary_foreground,
+        selection_text: base.foreground,
         accent: base.accent,
         accent_subtle: base.accent.with_alpha(subtle_alpha),
         tooltip_bg: base.foreground,
