@@ -46,4 +46,4 @@ jobs:
         run: cargo check -p blinc_platform_ios --target ${{ matrix.target }}
 
       - name: Check blinc_app for iOS
-        run: cargo check -p blinc_app --target ${{ matrix.target }} --features ios
+        run: cargo check -p blinc_app --no-default-features --target ${{ matrix.target }} --features ios
