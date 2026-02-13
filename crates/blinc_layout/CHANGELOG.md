@@ -26,6 +26,7 @@ All notable changes to `blinc_layout` will be documented in this file.
 - `align-items`, `align-self`, `justify-content` (start, center, end, stretch, space-between, space-around, space-evenly)
 - `overflow: visible | clip | scroll`
 - `border-width`, `border-color`
+- `visibility: visible | hidden | collapse | normal` — hides rendering and collapses layout (Display::None in taffy)
 
 #### Visual Properties
 
@@ -36,6 +37,22 @@ All notable changes to `blinc_layout` will be documented in this file.
 - `box-shadow` with offset, blur, spread, and color
 - `transform: scale() rotate() translate()` (2D transforms)
 - `backdrop-filter: glass | blur(Npx) | chrome | gold | metallic | wood`
+- `backdrop-filter: liquid-glass(blur() saturate() brightness() border() tint())` variant with configurable border thickness and tint
+
+#### SVG CSS Transform Inheritance
+
+- SVGs now inherit CSS transforms from ancestor elements via `css_affine` propagation
+- Affine decomposition into uniform scale (applied to bounds) + rotation angle (sent to shader)
+
+#### Visibility
+
+- `StyleVisibility` enum (`Visible`, `Hidden`) on `ElementStyle`
+- CSS parser recognizes `visibility: hidden | visible | collapse | normal`
+- `visibility: hidden` both skips rendering and collapses layout (sets `Display::None` in taffy)
+- `visibility: visible` restores `Display::Flex` when reversing hidden state
+- Visibility applied across all render paths: `render_layer_with_motion`, `render_text_recursive`, `collect_elements_recursive`
+- Complex selector state changes (hover/leave) properly reset taffy styles via `base_taffy_styles`
+- Layout recomputed after state style changes that affect layout properties
 
 #### 3D CSS Transforms
 
