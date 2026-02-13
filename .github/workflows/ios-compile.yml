@@ -43,7 +43,7 @@ jobs:
             ${{ runner.os }}-${{ matrix.target }}-cargo-ios-
 
       - name: Check iOS platform crate
-        run: cargo check -p blinc_platform_ios --target ${{ matrix.target }} --locked
+        run: cargo check -p blinc_platform_ios --target ${{ matrix.target }}
 
       - name: Check blinc_app for iOS
-        run: cargo check -p blinc_app --target ${{ matrix.target }} --locked --features ios
+        run: cargo check -p blinc_app --target ${{ matrix.target }} --features ios

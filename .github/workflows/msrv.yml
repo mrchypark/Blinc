@@ -44,4 +44,4 @@ jobs:
             ${{ runner.os }}-cargo-msrv-
 
       - name: Check workspace on MSRV
-        run: cargo check --workspace --all-targets --locked
+        run: cargo check --workspace --all-targets

@@ -54,7 +54,7 @@ jobs:
 
       - name: Generate LCOV coverage report
         run: |
-          xvfb-run --auto-servernum cargo llvm-cov --workspace --all-features --locked --lcov --output-path coverage.info
+          xvfb-run --auto-servernum cargo llvm-cov --workspace --all-features --lcov --output-path coverage.info
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

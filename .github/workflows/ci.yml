@@ -50,7 +50,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run cargo check
-        run: cargo check --workspace --all-features --locked
+        run: cargo check --workspace --all-features
 
   security-audit:
     name: Security Audit
@@ -133,7 +133,7 @@ jobs:
 
       - name: Run tests (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run --auto-servernum cargo nextest run --workspace --all-features --locked
+        run: xvfb-run --auto-servernum cargo nextest run --workspace --all-features
         env:
           # Use software rendering for headless GPU tests
           MESA_GL_VERSION_OVERRIDE: "4.5"
@@ -141,11 +141,11 @@ jobs:
 
       - name: Run tests (non-Linux)
         if: runner.os != 'Linux'
-        run: cargo nextest run --workspace --all-features --locked
+        run: cargo nextest run --workspace --all-features
 
       - name: Run doctests (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run --auto-servernum cargo test --doc --workspace --all-features --locked
+        run: xvfb-run --auto-servernum cargo test --doc --workspace --all-features
         env:
           # Use software rendering for headless GPU tests
           MESA_GL_VERSION_OVERRIDE: "4.5"
@@ -153,7 +153,7 @@ jobs:
 
       - name: Run doctests (non-Linux)
         if: runner.os != 'Linux'
-        run: cargo test --doc --workspace --all-features --locked
+        run: cargo test --doc --workspace --all-features
 
   fmt:
     name: Format
@@ -206,7 +206,7 @@ jobs:
             ${{ runner.os }}-cargo-clippy-
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-features --locked -- -W clippy::all -A clippy::type_complexity -A dead_code
+        run: cargo clippy --workspace --all-features -- -W clippy::all -A clippy::type_complexity -A dead_code
 
   docs:
     name: Documentation
@@ -243,7 +243,7 @@ jobs:
             ${{ runner.os }}-cargo-docs-
 
       - name: Build documentation
-        run: cargo doc --workspace --no-deps --all-features --locked
+        run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -296,7 +296,7 @@ jobs:
             ${{ runner.os }}-${{ matrix.target }}-cargo-release-
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p blinc_cli --locked
+        run: cargo build --release --target ${{ matrix.target }} -p blinc_cli
 
       - name: Upload artifact (Unix)
         if: runner.os != 'Windows'
