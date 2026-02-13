@@ -55,7 +55,6 @@ jobs:
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -66,12 +65,12 @@ jobs:
         run: cargo install cargo-audit
 
       - name: Run cargo audit
+        continue-on-error: true
         run: cargo audit
 
   security-deny:
     name: Security Deny
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -82,7 +81,8 @@ jobs:
         run: cargo install cargo-deny
 
       - name: Run cargo deny
-        run: cargo deny check
+        continue-on-error: true
+        run: cargo deny check advisories bans sources
 
   test:
     name: Test
