@@ -204,6 +204,13 @@ pub enum StyleOverflow {
     Scroll,
 }
 
+/// CSS visibility property
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StyleVisibility {
+    Visible,
+    Hidden,
+}
+
 /// CSS position property
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StylePosition {
@@ -212,6 +219,17 @@ pub enum StylePosition {
     Absolute,
     Fixed,
     Sticky,
+}
+
+/// CSS dimension value (length, auto, or keyword)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StyleDimension {
+    /// Fixed length in pixels
+    Length(f32),
+    /// Percentage of parent (0.0-1.0)
+    Percent(f32),
+    /// Auto sizing (shrink to content)
+    Auto,
 }
 
 /// Visual style properties for an element
@@ -304,10 +322,10 @@ pub struct ElementStyle {
     // =========================================================================
     // Layout Properties
     // =========================================================================
-    /// Width in pixels
-    pub width: Option<f32>,
-    /// Height in pixels
-    pub height: Option<f32>,
+    /// Width (pixels, percentage, or auto/fit-content)
+    pub width: Option<StyleDimension>,
+    /// Height (pixels, percentage, or auto/fit-content)
+    pub height: Option<StyleDimension>,
     /// Minimum width in pixels
     pub min_width: Option<f32>,
     /// Minimum height in pixels
@@ -403,6 +421,8 @@ pub struct ElementStyle {
     pub left: Option<f32>,
     /// CSS z-index for controlling render order
     pub z_index: Option<i32>,
+    /// CSS visibility (visible or hidden — hidden keeps layout space but doesn't render)
+    pub visibility: Option<StyleVisibility>,
 }
 
 impl ElementStyle {
@@ -763,13 +783,13 @@ impl ElementStyle {
 
     /// Set width in pixels
     pub fn w(mut self, px: f32) -> Self {
-        self.width = Some(px);
+        self.width = Some(StyleDimension::Length(px));
         self
     }
 
     /// Set height in pixels
     pub fn h(mut self, px: f32) -> Self {
-        self.height = Some(px);
+        self.height = Some(StyleDimension::Length(px));
         self
     }
 
@@ -1144,6 +1164,7 @@ impl ElementStyle {
             bottom: other.bottom.or(self.bottom),
             left: other.left.or(self.left),
             z_index: other.z_index.or(self.z_index),
+            visibility: other.visibility.or(self.visibility),
         }
     }
 
@@ -1158,6 +1179,7 @@ impl ElementStyle {
             || self.opacity.is_some()
             || self.animation.is_some()
             || self.z_index.is_some()
+            || self.visibility.is_some()
     }
 
     /// Check if any layout property is set
@@ -1189,6 +1211,7 @@ impl ElementStyle {
             || self.right.is_some()
             || self.bottom.is_some()
             || self.left.is_some()
+            || self.visibility.is_some()
     }
 
     /// Check if no property is set

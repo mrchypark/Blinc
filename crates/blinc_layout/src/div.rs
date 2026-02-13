@@ -940,10 +940,36 @@ impl Div {
 
         // Layout: sizing
         if let Some(w) = style.width {
-            self.style.size.width = Dimension::Length(w);
+            match w {
+                crate::element_style::StyleDimension::Length(px) => {
+                    self.style.size.width = Dimension::Length(px);
+                }
+                crate::element_style::StyleDimension::Percent(p) => {
+                    self.style.size.width = Dimension::Percent(p);
+                }
+                crate::element_style::StyleDimension::Auto => {
+                    self.style.size.width = Dimension::Auto;
+                    self.style.flex_basis = Dimension::Auto;
+                    self.style.flex_grow = 0.0;
+                    self.style.flex_shrink = 0.0;
+                }
+            }
         }
         if let Some(h) = style.height {
-            self.style.size.height = Dimension::Length(h);
+            match h {
+                crate::element_style::StyleDimension::Length(px) => {
+                    self.style.size.height = Dimension::Length(px);
+                }
+                crate::element_style::StyleDimension::Percent(p) => {
+                    self.style.size.height = Dimension::Percent(p);
+                }
+                crate::element_style::StyleDimension::Auto => {
+                    self.style.size.height = Dimension::Auto;
+                    self.style.flex_basis = Dimension::Auto;
+                    self.style.flex_grow = 0.0;
+                    self.style.flex_shrink = 0.0;
+                }
+            }
         }
         if let Some(w) = style.min_width {
             self.style.min_size.width = Dimension::Length(w);

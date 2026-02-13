@@ -116,7 +116,7 @@ impl Default for GpuImageInstance {
             dst_rect: [0.0, 0.0, 100.0, 100.0],
             src_uv: [0.0, 0.0, 1.0, 1.0],
             tint: [1.0, 1.0, 1.0, 1.0],
-            params: [0.0, 1.0, 0.0, 0.0], // border_radius=0, opacity=1
+            params: [0.0, 1.0, 0.0, 1.0], // border_radius=0, opacity=1, sin_rot=0, cos_rot=1
             // Default: no clip (large negative value disables clipping)
             clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
             clip_radius: [0.0; 4],
@@ -154,6 +154,13 @@ impl GpuImageInstance {
     /// Set opacity
     pub fn with_opacity(mut self, opacity: f32) -> Self {
         self.params[1] = opacity;
+        self
+    }
+
+    /// Set rotation via sin/cos values (rotates around quad center)
+    pub fn with_rotation_sincos(mut self, sin_rot: f32, cos_rot: f32) -> Self {
+        self.params[2] = sin_rot;
+        self.params[3] = cos_rot;
         self
     }
 

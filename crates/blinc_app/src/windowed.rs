@@ -2953,7 +2953,12 @@ impl WindowedApp {
                             // This also detects property changes and starts new transitions
                             if let Some(ref mut tree) = render_tree {
                                 if tree.stylesheet().is_some() {
-                                    tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
+                                    let state_changed = tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
+                                    // Recompute layout if state styles affected layout properties
+                                    // (e.g. visibility: hidden → display: none, or height changes on hover)
+                                    if state_changed {
+                                        tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                    }
                                 }
                             }
 

@@ -52,8 +52,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use blinc_core::{
-    Brush, ClipLength, ClipPath, Color, CornerRadius, Gradient, GradientSpace, GradientStop, Point,
-    Shadow, Transform,
+    Brush, ClipLength, ClipPath, Color, CornerRadius, Gradient, GradientSpace, GradientStop,
+    ImageBrush, Point, Shadow, Transform,
 };
 use blinc_theme::{ColorToken, ThemeState};
 use nom::{
@@ -1003,11 +1003,11 @@ impl CssKeyframes {
             props.backdrop_brightness = Some(glass.brightness);
         }
 
-        // Layout properties
-        if let Some(w) = style.width {
+        // Layout properties (only Length values are animatable)
+        if let Some(crate::element_style::StyleDimension::Length(w)) = style.width {
             props.width = Some(w);
         }
-        if let Some(h) = style.height {
+        if let Some(crate::element_style::StyleDimension::Length(h)) = style.height {
             props.height = Some(h);
         }
         if let Some(ref p) = style.padding {
@@ -2650,13 +2650,17 @@ fn parse_stylesheet_with_errors<'a>(
         }
 
         // Try to parse a rule (complex selector or simple #id selector)
+        // Supports comma-separated selector lists: #a, #b { ... }
         match css_rule_complex_or_simple(css, errors, &parsed_variables)(trimmed) {
-            Ok((rest, ParsedRule::Simple(key, style))) => {
-                rules.push((key, style));
-                remaining = rest;
-            }
-            Ok((rest, ParsedRule::Complex(selector, style))) => {
-                complex_rules.push((selector, style));
+            Ok((rest, parsed_rules)) => {
+                for rule in parsed_rules {
+                    match rule {
+                        ParsedRule::Simple(key, style) => rules.push((key, style)),
+                        ParsedRule::Complex(selector, style) => {
+                            complex_rules.push((selector, style))
+                        }
+                    }
+                }
                 remaining = rest;
             }
             Err(nom::Err::Error(_)) | Err(nom::Err::Failure(_)) => {
@@ -2689,22 +2693,43 @@ enum ParsedRule {
     Complex(ComplexSelector, ElementStyle),
 }
 
-/// Parse a CSS rule with either a complex or simple selector
+/// Parse a CSS rule with either a complex or simple selector.
+/// Supports comma-separated selector lists: `#a, .b, div > span { ... }`
 fn css_rule_complex_or_simple<'a, 'b>(
     original_css: &'a str,
     errors: &'b mut Vec<ParseError>,
     variables: &'b HashMap<String, String>,
-) -> impl FnMut(&'a str) -> ParseResult<'a, ParsedRule> + 'b
+) -> impl FnMut(&'a str) -> ParseResult<'a, Vec<ParsedRule>> + 'b
 where
     'a: 'b,
 {
     move |input: &'a str| {
         let (input, _) = ws(input)?;
 
-        // Try to parse a complex selector (handles #id, .class, combinators, etc.)
-        let (input, selector) = context("CSS rule selector", parse_complex_selector)(input)?;
-        let (input, _) = ws(input)?;
-        let (input, properties) = context("CSS rule block", rule_block)(input)?;
+        // Parse first selector
+        let (mut remaining, first_selector) =
+            context("CSS rule selector", parse_complex_selector)(input)?;
+        let (trimmed, _) = ws(remaining)?;
+        remaining = trimmed;
+
+        let mut selectors = vec![first_selector];
+
+        // Parse additional comma-separated selectors
+        while remaining.starts_with(',') {
+            let after_comma = &remaining[1..];
+            let (trimmed, _) = ws(after_comma)?;
+            match parse_complex_selector(trimmed) {
+                Ok((rest, selector)) => {
+                    selectors.push(selector);
+                    let (trimmed, _) = ws(rest)?;
+                    remaining = trimmed;
+                }
+                Err(_) => break,
+            }
+        }
+
+        // Parse the rule block (shared by all selectors)
+        let (input, properties) = context("CSS rule block", rule_block)(remaining)?;
 
         let mut style = ElementStyle::new();
         for (name, value) in properties {
@@ -2719,20 +2744,23 @@ where
             );
         }
 
-        // Determine if this is a simple or complex rule for fast-path storage
-        let rule = if selector.is_simple() {
-            // Single compound selector — check if it's a simple #id or #id:state
-            let compound = &selector.segments[0].0;
-            if let Some(simple_key) = try_as_simple_selector(compound) {
-                ParsedRule::Simple(simple_key, style)
+        // Create a rule for each selector in the comma-separated list
+        let mut rules = Vec::with_capacity(selectors.len());
+        for selector in selectors {
+            let rule = if selector.is_simple() {
+                let compound = &selector.segments[0].0;
+                if let Some(simple_key) = try_as_simple_selector(compound) {
+                    ParsedRule::Simple(simple_key, style.clone())
+                } else {
+                    ParsedRule::Complex(selector, style.clone())
+                }
             } else {
-                ParsedRule::Complex(selector, style)
-            }
-        } else {
-            ParsedRule::Complex(selector, style)
-        };
+                ParsedRule::Complex(selector, style.clone())
+            };
+            rules.push(rule);
+        }
 
-        Ok((input, rule))
+        Ok((input, rules))
     }
 }
 
@@ -3198,6 +3226,10 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                     style.material = Some(Material::Glass(GlassMaterial::new()));
                     style.render_layer = Some(RenderLayer::Glass);
                 }
+                "liquid-glass" => {
+                    style.material = Some(Material::Glass(GlassMaterial::new()));
+                    style.render_layer = Some(RenderLayer::Glass);
+                }
                 "metallic" => {
                     style.material = Some(Material::Metallic(MetallicMaterial::new()));
                 }
@@ -3211,8 +3243,11 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                     style.material = Some(Material::Wood(WoodMaterial::new()));
                 }
                 _ => {
-                    // Parse functional backdrop-filter values: blur(), saturate(), brightness()
-                    if let Some(glass) = parse_backdrop_filter_functions(&trimmed) {
+                    // Parse liquid-glass(...) or blur()/saturate()/brightness() functions
+                    if let Some(glass) = parse_liquid_glass_functions(&trimmed) {
+                        style.material = Some(Material::Glass(glass));
+                        style.render_layer = Some(RenderLayer::Glass);
+                    } else if let Some(glass) = parse_backdrop_filter_functions(&trimmed) {
                         style.material = Some(Material::Glass(glass));
                         style.render_layer = Some(RenderLayer::Glass);
                     }
@@ -3228,13 +3263,13 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
         // Layout Properties
         // =====================================================================
         "width" => {
-            if let Some(px) = parse_css_px(value) {
-                style.width = Some(px);
+            if let Some(dim) = parse_css_dimension(value) {
+                style.width = Some(dim);
             }
         }
         "height" => {
-            if let Some(px) = parse_css_px(value) {
-                style.height = Some(px);
+            if let Some(dim) = parse_css_dimension(value) {
+                style.height = Some(dim);
             }
         }
         "min-width" => {
@@ -3261,6 +3296,15 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
             "flex" => style.display = Some(StyleDisplay::Flex),
             "block" => style.display = Some(StyleDisplay::Block),
             "none" => style.display = Some(StyleDisplay::None),
+            _ => {}
+        },
+        "visibility" => match value.trim() {
+            "hidden" | "collapse" => {
+                style.visibility = Some(crate::element_style::StyleVisibility::Hidden)
+            }
+            "visible" | "normal" => {
+                style.visibility = Some(crate::element_style::StyleVisibility::Visible)
+            }
             _ => {}
         },
         "flex-direction" => match value.trim() {
@@ -3355,6 +3399,20 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
             "scroll" | "auto" => style.overflow_y = Some(StyleOverflow::Scroll),
             _ => {}
         },
+        "border" => {
+            // Shorthand: border: [width] [style] [color]
+            // Parts can be in any order. Style is ignored (always solid).
+            for part in value.split_whitespace() {
+                let p = part.trim();
+                if p == "solid" || p == "dashed" || p == "dotted" || p == "none" || p == "hidden" {
+                    continue; // skip style keyword
+                } else if let Some(px) = parse_css_px(p) {
+                    style.border_width = Some(px);
+                } else if let Some(color) = parse_color(p) {
+                    style.border_color = Some(color);
+                }
+            }
+        }
         "border-width" => {
             if let Some(px) = parse_css_px(value) {
                 style.border_width = Some(px);
@@ -3364,6 +3422,9 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
             if let Some(color) = parse_color(value) {
                 style.border_color = Some(color);
             }
+        }
+        "border-style" => {
+            // Blinc borders are always solid; accept and ignore
         }
         "outline-width" => {
             if let Some(px) = parse_css_px(value) {
@@ -3875,6 +3936,10 @@ fn apply_property_with_errors(
                     style.material = Some(Material::Glass(GlassMaterial::new()));
                     style.render_layer = Some(RenderLayer::Glass);
                 }
+                "liquid-glass" => {
+                    style.material = Some(Material::Glass(GlassMaterial::new()));
+                    style.render_layer = Some(RenderLayer::Glass);
+                }
                 "metallic" => {
                     style.material = Some(Material::Metallic(MetallicMaterial::new()));
                 }
@@ -3888,7 +3953,10 @@ fn apply_property_with_errors(
                     style.material = Some(Material::Wood(WoodMaterial::new()));
                 }
                 _ => {
-                    if let Some(glass) = parse_backdrop_filter_functions(&trimmed) {
+                    if let Some(glass) = parse_liquid_glass_functions(&trimmed) {
+                        style.material = Some(Material::Glass(glass));
+                        style.render_layer = Some(RenderLayer::Glass);
+                    } else if let Some(glass) = parse_backdrop_filter_functions(&trimmed) {
                         style.material = Some(Material::Glass(glass));
                         style.render_layer = Some(RenderLayer::Glass);
                     } else {
@@ -3908,15 +3976,15 @@ fn apply_property_with_errors(
         // Layout Properties
         // =====================================================================
         "width" => {
-            if let Some(px) = parse_css_px(value) {
-                style.width = Some(px);
+            if let Some(dim) = parse_css_dimension(value) {
+                style.width = Some(dim);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
         "height" => {
-            if let Some(px) = parse_css_px(value) {
-                style.height = Some(px);
+            if let Some(dim) = parse_css_dimension(value) {
+                style.height = Some(dim);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
@@ -3953,6 +4021,15 @@ fn apply_property_with_errors(
             "flex" => style.display = Some(StyleDisplay::Flex),
             "block" => style.display = Some(StyleDisplay::Block),
             "none" => style.display = Some(StyleDisplay::None),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "visibility" => match value.trim() {
+            "hidden" | "collapse" => {
+                style.visibility = Some(crate::element_style::StyleVisibility::Hidden)
+            }
+            "visible" | "normal" => {
+                style.visibility = Some(crate::element_style::StyleVisibility::Visible)
+            }
             _ => errors.push(ParseError::invalid_value(name, value, line, column)),
         },
         "flex-direction" => match value.trim() {
@@ -4057,6 +4134,19 @@ fn apply_property_with_errors(
             "scroll" | "auto" => style.overflow_y = Some(StyleOverflow::Scroll),
             _ => errors.push(ParseError::invalid_value(name, value, line, column)),
         },
+        "border" => {
+            // Shorthand: border: [width] [style] [color]
+            for part in value.split_whitespace() {
+                let p = part.trim();
+                if p == "solid" || p == "dashed" || p == "dotted" || p == "none" || p == "hidden" {
+                    continue;
+                } else if let Some(px) = parse_css_px(p) {
+                    style.border_width = Some(px);
+                } else if let Some(color) = parse_color(p) {
+                    style.border_color = Some(color);
+                }
+            }
+        }
         "border-width" => {
             if let Some(px) = parse_css_px(value) {
                 style.border_width = Some(px);
@@ -4070,6 +4160,9 @@ fn apply_property_with_errors(
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
+        }
+        "border-style" => {
+            // Blinc borders are always solid; accept and ignore
         }
         "outline-width" => {
             if let Some(px) = parse_css_px(value) {
@@ -4197,6 +4290,13 @@ fn apply_property_with_errors(
 fn parse_brush(value: &str) -> Option<Brush> {
     let trimmed = value.trim();
 
+    // Try url() for background images
+    if trimmed.starts_with("url(") {
+        if let Some(source) = parse_url_value(trimmed) {
+            return Some(Brush::Image(ImageBrush::new(source)));
+        }
+    }
+
     // Try linear-gradient()
     if trimmed.starts_with("linear-gradient(") {
         return parse_linear_gradient(trimmed).map(Brush::Gradient);
@@ -4219,6 +4319,23 @@ fn parse_brush(value: &str) -> Option<Brush> {
 
     // Try parsing as color
     parse_color(trimmed).map(Brush::Solid)
+}
+
+/// Parse `url("path")` or `url('path')` or `url(path)` and return the inner path string.
+fn parse_url_value(value: &str) -> Option<String> {
+    let inner = value.strip_prefix("url(")?.strip_suffix(')')?.trim();
+    // Strip optional quotes
+    let path = if (inner.starts_with('"') && inner.ends_with('"'))
+        || (inner.starts_with('\'') && inner.ends_with('\''))
+    {
+        &inner[1..inner.len() - 1]
+    } else {
+        inner
+    };
+    if path.is_empty() {
+        return None;
+    }
+    Some(path.to_string())
 }
 
 /// Parse theme(token-name) for colors
@@ -5092,6 +5209,138 @@ fn parse_backdrop_filter_functions(value: &str) -> Option<GlassMaterial> {
     }
 }
 
+/// Parse `liquid-glass(...)` CSS function.
+///
+/// Syntax: `liquid-glass(blur(Npx) saturate(N%) brightness(N%) border(N) tint(color) noise(N))`
+///
+/// All sub-functions are optional. Produces a `GlassMaterial` with `simple=false`
+/// (liquid glass with refracted bevel borders).
+fn parse_liquid_glass_functions(value: &str) -> Option<GlassMaterial> {
+    let stripped = value.strip_prefix("liquid-glass(")?;
+    // Find the matching closing paren for the outer liquid-glass(...)
+    let mut depth = 0i32;
+    let mut outer_close = None;
+    for (i, ch) in stripped.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    outer_close = Some(i);
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    let inner = stripped[..outer_close?].trim();
+
+    // Start with default liquid glass (simple=false, border_thickness=0.8)
+    let mut glass = GlassMaterial::new();
+    let mut found_any = false;
+    let mut remaining = inner;
+
+    while !remaining.is_empty() {
+        remaining = remaining.trim_start();
+        if remaining.is_empty() {
+            break;
+        }
+
+        let paren_pos = match remaining.find('(') {
+            Some(p) => p,
+            None => break,
+        };
+        let func_name = remaining[..paren_pos].trim();
+        let after_paren = &remaining[paren_pos + 1..];
+
+        // Find matching close paren
+        let close_pos = {
+            let mut d = 0i32;
+            let mut found = None;
+            for (i, ch) in after_paren.char_indices() {
+                match ch {
+                    '(' => d += 1,
+                    ')' => {
+                        if d == 0 {
+                            found = Some(i);
+                            break;
+                        }
+                        d -= 1;
+                    }
+                    _ => {}
+                }
+            }
+            found
+        };
+
+        if let Some(close) = close_pos {
+            let arg_str = after_paren[..close].trim();
+            remaining = after_paren[close + 1..].trim_start();
+
+            match func_name.to_lowercase().as_str() {
+                "blur" => {
+                    if let Some(px) = parse_css_px(arg_str) {
+                        glass.blur = px;
+                        found_any = true;
+                    }
+                }
+                "saturate" => {
+                    if let Some(v) = arg_str
+                        .strip_suffix('%')
+                        .and_then(|s| s.trim().parse::<f32>().ok())
+                        .map(|p| p / 100.0)
+                        .or_else(|| arg_str.parse::<f32>().ok())
+                    {
+                        glass.saturation = v;
+                        found_any = true;
+                    }
+                }
+                "brightness" => {
+                    if let Some(v) = arg_str
+                        .strip_suffix('%')
+                        .and_then(|s| s.trim().parse::<f32>().ok())
+                        .map(|p| p / 100.0)
+                        .or_else(|| arg_str.parse::<f32>().ok())
+                    {
+                        glass.brightness = v;
+                        found_any = true;
+                    }
+                }
+                "border" | "border-thickness" => {
+                    if let Some(v) = parse_css_px(arg_str).or_else(|| arg_str.parse::<f32>().ok()) {
+                        glass.border_thickness = v;
+                        found_any = true;
+                    }
+                }
+                "tint" => {
+                    if let Some(color) = parse_color(arg_str) {
+                        glass.tint = color;
+                        found_any = true;
+                    }
+                }
+                "noise" => {
+                    if let Some(v) = arg_str.parse::<f32>().ok() {
+                        glass.noise = v;
+                        found_any = true;
+                    }
+                }
+                _ => {
+                    continue;
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    // liquid-glass() with no sub-functions still produces default liquid glass
+    if found_any || inner.is_empty() {
+        Some(glass)
+    } else {
+        None
+    }
+}
+
 fn parse_css_filter(value: &str) -> Option<crate::element_style::CssFilter> {
     use crate::element_style::CssFilter;
 
@@ -5256,6 +5505,23 @@ fn parse_css_px(input: &str) -> Option<f32> {
     }
     // Unitless number = px
     trimmed.parse::<f32>().ok()
+}
+
+/// Parse a CSS dimension value: `Npx`, `N%`, `auto`, `fit-content`, `max-content`
+fn parse_css_dimension(input: &str) -> Option<crate::element_style::StyleDimension> {
+    use crate::element_style::StyleDimension;
+    let trimmed = input.trim();
+    match trimmed.to_lowercase().as_str() {
+        "auto" | "fit-content" | "max-content" => Some(StyleDimension::Auto),
+        _ => {
+            if let Some(pct_str) = trimmed.strip_suffix('%') {
+                let pct = pct_str.trim().parse::<f32>().ok()?;
+                Some(StyleDimension::Percent(pct / 100.0))
+            } else {
+                parse_css_px(trimmed).map(StyleDimension::Length)
+            }
+        }
+    }
 }
 
 /// Parse a CSS spacing value (uniform or per-side)
@@ -6741,8 +7007,8 @@ mod tests {
 
     #[test]
     fn test_parse_error_context() {
-        // Invalid selector should give error context
-        let css = "not-a-selector { opacity: 0.5; }";
+        // A string that can't be parsed as any selector should result in an empty stylesheet
+        let css = "!!! { opacity: 0.5; }";
         let result = Stylesheet::parse(css);
         // This should parse as empty (no valid rules) but not error
         // since the parser just ignores what it can't parse
@@ -8477,6 +8743,64 @@ mod tests {
         } else {
             panic!("Expected Affine2D transform to be parsed");
         }
+    }
+
+    // =========================================================================
+    // Comma-Separated Selector Tests
+    // =========================================================================
+
+    #[test]
+    fn test_comma_separated_id_selectors() {
+        let css = "#a, #b { opacity: 0.5; }";
+        let result = Stylesheet::parse_with_errors(css);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+
+        let style_a = result.stylesheet.get("a").unwrap();
+        assert_eq!(style_a.opacity, Some(0.5));
+
+        let style_b = result.stylesheet.get("b").unwrap();
+        assert_eq!(style_b.opacity, Some(0.5));
+    }
+
+    #[test]
+    fn test_comma_separated_does_not_break_subsequent_rules() {
+        let css = r#"
+            #a, #b { opacity: 0.5; }
+            #c { opacity: 0.8; }
+        "#;
+        let result = Stylesheet::parse_with_errors(css);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+
+        assert_eq!(result.stylesheet.get("a").unwrap().opacity, Some(0.5));
+        assert_eq!(result.stylesheet.get("b").unwrap().opacity, Some(0.5));
+        assert_eq!(result.stylesheet.get("c").unwrap().opacity, Some(0.8));
+    }
+
+    #[test]
+    fn test_comma_separated_mixed_selectors() {
+        let css = r#"#a, .myclass { border-radius: 10px; }"#;
+        let result = Stylesheet::parse_with_errors(css);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+
+        // #a should be a simple rule
+        let style_a = result.stylesheet.get("a").unwrap();
+        assert!(style_a.corner_radius.is_some());
+
+        // .myclass should be in complex rules
+        let complex = result.stylesheet.complex_rules();
+        assert!(!complex.is_empty());
+        assert!(complex[0].1.corner_radius.is_some());
+    }
+
+    #[test]
+    fn test_comma_separated_three_selectors() {
+        let css = "#x, #y, #z { opacity: 0.3; }";
+        let result = Stylesheet::parse_with_errors(css);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+
+        assert_eq!(result.stylesheet.get("x").unwrap().opacity, Some(0.3));
+        assert_eq!(result.stylesheet.get("y").unwrap().opacity, Some(0.3));
+        assert_eq!(result.stylesheet.get("z").unwrap().opacity, Some(0.3));
     }
 
     // =========================================================================

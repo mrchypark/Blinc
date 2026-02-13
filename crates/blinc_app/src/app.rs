@@ -120,8 +120,16 @@ impl BlincApp {
         ]);
 
         // Preload generic font weights (for system fallback fonts)
-        text_ctx.preload_generic_styles(blinc_gpu::GenericFont::SansSerif, &[400, 700], false);
-        text_ctx.preload_generic_styles(blinc_gpu::GenericFont::SansSerif, &[400, 700], true);
+        text_ctx.preload_generic_styles(
+            blinc_gpu::GenericFont::SansSerif,
+            &[400, 600, 700, 800, 900],
+            false,
+        );
+        text_ctx.preload_generic_styles(
+            blinc_gpu::GenericFont::SansSerif,
+            &[400, 600, 700, 800, 900],
+            true,
+        );
         text_ctx.preload_generic_styles(blinc_gpu::GenericFont::Monospace, &[400, 700], false);
 
         let ctx = RenderContext::new(renderer, text_ctx, device, queue, config.sample_count);
@@ -362,8 +370,16 @@ impl BlincApp {
         ]);
 
         // Preload generic font weights (for system fallback fonts)
-        text_ctx.preload_generic_styles(blinc_gpu::GenericFont::SansSerif, &[400, 700], false);
-        text_ctx.preload_generic_styles(blinc_gpu::GenericFont::SansSerif, &[400, 700], true);
+        text_ctx.preload_generic_styles(
+            blinc_gpu::GenericFont::SansSerif,
+            &[400, 600, 700, 800, 900],
+            false,
+        );
+        text_ctx.preload_generic_styles(
+            blinc_gpu::GenericFont::SansSerif,
+            &[400, 600, 700, 800, 900],
+            true,
+        );
         text_ctx.preload_generic_styles(blinc_gpu::GenericFont::Monospace, &[400, 700], false);
 
         let ctx = RenderContext::new(renderer, text_ctx, device, queue, config.sample_count);

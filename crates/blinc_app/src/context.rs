@@ -162,6 +162,9 @@ struct SvgElement {
     clip_bounds: Option<[f32; 4]>,
     /// Motion opacity inherited from parent motion container
     motion_opacity: f32,
+    /// Inherited CSS transform from ancestor elements (full 6-element affine in layout coords)
+    /// [a, b, c, d, tx, ty] where new_x = a*x + c*y + tx, new_y = b*x + d*y + ty
+    css_affine: Option<[f32; 6]>,
 }
 
 /// Debug bounds element for layout visualization
@@ -413,6 +416,19 @@ impl RenderContext {
                 .iter()
                 .partition(|img| img.layer == RenderLayer::Background);
 
+            // Pre-render background images to both backdrop and target so glass can blur them
+            let has_bg_images = !bg_images.is_empty();
+            if has_bg_images {
+                // Take backdrop temporarily to avoid borrow conflict with render_images_ref(&mut self)
+                let backdrop_tex = self.backdrop_texture.take().unwrap();
+                self.renderer
+                    .clear_target(&backdrop_tex.view, wgpu::Color::TRANSPARENT);
+                self.renderer.clear_target(target, wgpu::Color::BLACK);
+                self.render_images_ref(&backdrop_tex.view, &bg_images);
+                self.render_images_ref(target, &bg_images);
+                self.backdrop_texture = Some(backdrop_tex);
+            }
+
             // Glass path - batched rendering for reduced command buffer overhead:
             // Steps 1-3 are batched into a single encoder submission
             {
@@ -422,6 +438,7 @@ impl RenderContext {
                     &backdrop.view,
                     (backdrop.width, backdrop.height),
                     &bg_batch,
+                    has_bg_images,
                 );
             }
 
@@ -432,8 +449,10 @@ impl RenderContext {
                     .render_paths_overlay_msaa(target, &bg_batch, self.sample_count);
             }
 
-            // Step 4: Render background-layer images to target (separate for now - images use different pipeline)
-            self.render_images_ref(target, &bg_images);
+            // Render remaining bg images to target (only if not already pre-rendered)
+            if !has_bg_images {
+                self.render_images_ref(target, &bg_images);
+            }
 
             // Step 5: Render glass/foreground-layer images (on top of glass, NOT blurred)
             self.render_images_ref(target, &fg_images);
@@ -1392,8 +1411,55 @@ impl RenderContext {
                         svg_attrs.push_str(&format!(r#" stroke-width="{}""#, sw));
                     }
 
-                    // Insert attributes into the opening <svg tag, before the closing >
+                    // Strip existing attribute from a tag region in the SVG string.
+                    // Returns the modified string with the attribute removed.
+                    fn strip_attr(s: &mut String, tag_start: usize, tag_end: usize, attr: &str) {
+                        // Search for attr="..." or attr='...' within the tag
+                        let region = &s[tag_start..tag_end];
+                        let attr_eq = format!("{}=", attr);
+                        if let Some(attr_offset) = region.find(&attr_eq) {
+                            let abs_attr = tag_start + attr_offset;
+                            let after_eq = abs_attr + attr.len() + 1; // skip past '='
+                            if after_eq < s.len() {
+                                let quote = s.as_bytes()[after_eq];
+                                if quote == b'"' || quote == b'\'' {
+                                    if let Some(end_quote) = s[after_eq + 1..].find(quote as char) {
+                                        let remove_end = after_eq + 1 + end_quote + 1;
+                                        // Also remove leading whitespace before the attribute
+                                        let remove_start =
+                                            if abs_attr > 0 && s.as_bytes()[abs_attr - 1] == b' ' {
+                                                abs_attr - 1
+                                            } else {
+                                                abs_attr
+                                            };
+                                        s.replace_range(remove_start..remove_end, "");
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let mut modified = svg.source.clone();
+
+                    // Strip existing attributes that we're about to override from the <svg> tag
+                    if let Some(svg_close) = modified.find('>') {
+                        if svg.stroke.is_some() {
+                            strip_attr(&mut modified, 0, svg_close, "stroke-width");
+                            // Recompute close pos after removal
+                            let svg_close = modified.find('>').unwrap_or(0);
+                            strip_attr(&mut modified, 0, svg_close, "stroke");
+                        }
+                        if svg.fill.is_some() {
+                            let svg_close = modified.find('>').unwrap_or(0);
+                            strip_attr(&mut modified, 0, svg_close, "fill");
+                        }
+                        if svg.stroke_width.is_some() {
+                            let svg_close = modified.find('>').unwrap_or(0);
+                            strip_attr(&mut modified, 0, svg_close, "stroke-width");
+                        }
+                    }
+
+                    // Insert new attributes into the opening <svg tag, before the closing >
                     if !svg_attrs.is_empty() {
                         if let Some(pos) = modified.find('>') {
                             // Check if it's a self-closing tag like <svg ... />
@@ -1420,9 +1486,32 @@ impl RenderContext {
                     for tag in &shape_tags {
                         let mut search_from = 0;
                         while let Some(tag_start) = modified[search_from..].find(tag) {
-                            let abs_start = search_from + tag_start + tag.len();
+                            let abs_tag = search_from + tag_start;
+                            let abs_start = abs_tag + tag.len();
                             if let Some(close) = modified[abs_start..].find('>') {
                                 let abs_close = abs_start + close;
+
+                                // Strip existing attributes from this element before adding overrides
+                                if svg.stroke.is_some() {
+                                    strip_attr(&mut modified, abs_tag, abs_close, "stroke-width");
+                                    let new_close = abs_start
+                                        + modified[abs_start..].find('>').unwrap_or(close);
+                                    strip_attr(&mut modified, abs_tag, new_close, "stroke");
+                                }
+                                if svg.fill.is_some() {
+                                    let new_close = abs_start
+                                        + modified[abs_start..].find('>').unwrap_or(close);
+                                    strip_attr(&mut modified, abs_tag, new_close, "fill");
+                                }
+                                if svg.stroke_width.is_some() {
+                                    let new_close = abs_start
+                                        + modified[abs_start..].find('>').unwrap_or(close);
+                                    strip_attr(&mut modified, abs_tag, new_close, "stroke-width");
+                                }
+
+                                // Recompute close position after stripping
+                                let abs_close =
+                                    abs_start + modified[abs_start..].find('>').unwrap_or(0);
                                 let is_self_close =
                                     abs_close > 0 && modified.as_bytes()[abs_close - 1] == b'/';
                                 let insert_at = if is_self_close {
@@ -1495,9 +1584,48 @@ impl RenderContext {
                 continue;
             };
 
-            // Create instance at SVG position
-            let mut instance = GpuImageInstance::new(svg.x, svg.y, svg.width, svg.height)
-                .with_opacity(svg.motion_opacity);
+            // Apply CSS affine transform to SVG bounds if present.
+            // Decomposes the affine into scale (applied to bounds) and rotation
+            // (applied in the image shader vertex stage).
+            let (draw_x, draw_y, draw_w, draw_h, sin_rot, cos_rot) =
+                if let Some([a, b, c, d, tx, ty]) = svg.css_affine {
+                    // DPI-scale the translation components
+                    let tx_s = tx * scale_factor;
+                    let ty_s = ty * scale_factor;
+
+                    // Transform center through the affine (in screen space)
+                    let cx = svg.x + svg.width * 0.5;
+                    let cy = svg.y + svg.height * 0.5;
+                    let new_cx = a * cx + c * cy + tx_s;
+                    let new_cy = b * cx + d * cy + ty_s;
+
+                    // Extract uniform scale from the 2x2 determinant
+                    let det = a * d - b * c;
+                    let uniform_scale = det.abs().sqrt();
+
+                    // Scale the bounds
+                    let new_w = svg.width * uniform_scale;
+                    let new_h = svg.height * uniform_scale;
+
+                    // Extract rotation angle from the 2x2 part
+                    let angle = b.atan2(a);
+
+                    (
+                        new_cx - new_w * 0.5,
+                        new_cy - new_h * 0.5,
+                        new_w,
+                        new_h,
+                        angle.sin(),
+                        angle.cos(),
+                    )
+                } else {
+                    (svg.x, svg.y, svg.width, svg.height, 0.0, 1.0)
+                };
+
+            // Create instance at (possibly transformed) SVG position
+            let mut instance = GpuImageInstance::new(draw_x, draw_y, draw_w, draw_h)
+                .with_opacity(svg.motion_opacity)
+                .with_rotation_sincos(sin_rot, cos_rot);
 
             // Apply clip bounds if specified
             if let Some([clip_x, clip_y, clip_w, clip_h]) = svg.clip_bounds {
@@ -1677,6 +1805,13 @@ impl RenderContext {
             return;
         }
 
+        // CSS visibility: hidden — skip rendering but preserve layout space
+        if let Some(render_node) = tree.get_render_node(node) {
+            if !render_node.props.visible {
+                return;
+            }
+        }
+
         // Determine if this node is a glass element
         let is_glass = tree
             .get_render_node(node)
@@ -1730,7 +1865,14 @@ impl RenderContext {
             } else {
                 [abs_x, abs_y, bounds.width, bounds.height]
             };
-            let this_clip = clip_bounds;
+            // Inset clip by padding so children clip to the content box
+            let [pt, pr, pb, pl] = tree.get_node_padding(node);
+            let this_clip = [
+                clip_bounds[0] + pl,
+                clip_bounds[1] + pt,
+                (clip_bounds[2] - pl - pr).max(0.0),
+                (clip_bounds[3] - pt - pb).max(0.0),
+            ];
 
             // Extract border radius from this node for rounded clipping
             // Order: top_left, top_right, bottom_right, bottom_left
@@ -1878,7 +2020,7 @@ impl RenderContext {
                         font_size: scaled_font_size,
                         color: render_node.props.text_color.unwrap_or(text_data.color),
                         align: text_data.align,
-                        weight: text_data.weight,
+                        weight: render_node.props.font_weight.unwrap_or(text_data.weight),
                         italic: text_data.italic,
                         v_align: text_data.v_align,
                         clip_bounds: scaled_clip,
@@ -1966,6 +2108,7 @@ impl RenderContext {
                         stroke_width: render_node.props.stroke_width.or(svg_data.stroke_width),
                         clip_bounds: scaled_clip,
                         motion_opacity: effective_motion_opacity,
+                        css_affine: inherited_css_affine,
                     });
                 }
                 ElementType::Image(image_data) => {
@@ -2005,7 +2148,53 @@ impl RenderContext {
                 }
                 // Canvas elements are rendered inline during tree traversal (in render_layer)
                 ElementType::Canvas(_) => {}
-                ElementType::Div => {}
+                ElementType::Div => {
+                    // Check if this div has a background image brush
+                    if let Some(blinc_core::Brush::Image(ref img_brush)) =
+                        render_node.props.background
+                    {
+                        let scaled_clip = current_clip.map(|[cx, cy, cw, ch]| {
+                            [cx * scale, cy * scale, cw * scale, ch * scale]
+                        });
+                        let scaled_clip_radius = current_clip_radius
+                            .map(|[tl, tr, br, bl]| {
+                                [tl * scale, tr * scale, br * scale, bl * scale]
+                            })
+                            .unwrap_or([0.0; 4]);
+
+                        images.push(ImageElement {
+                            source: img_brush.source.clone(),
+                            x: abs_x * scale,
+                            y: abs_y * scale,
+                            width: bounds.width * scale,
+                            height: bounds.height * scale,
+                            object_fit: match img_brush.fit {
+                                blinc_core::ImageFit::Cover => 0,
+                                blinc_core::ImageFit::Contain => 1,
+                                blinc_core::ImageFit::Fill => 2,
+                                blinc_core::ImageFit::Tile => 0,
+                            },
+                            object_position: [img_brush.position.x, img_brush.position.y],
+                            opacity: img_brush.opacity * effective_motion_opacity,
+                            border_radius: render_node.props.border_radius.top_left * scale,
+                            tint: [
+                                img_brush.tint.r,
+                                img_brush.tint.g,
+                                img_brush.tint.b,
+                                img_brush.tint.a,
+                            ],
+                            clip_bounds: scaled_clip,
+                            clip_radius: scaled_clip_radius,
+                            layer: effective_layer,
+                            loading_strategy: 0, // Eager
+                            placeholder_type: 0, // None
+                            placeholder_color: [0.0; 4],
+                            z_index: *z_layer,
+                            border_width: 0.0,
+                            border_color: blinc_core::Color::TRANSPARENT,
+                        });
+                    }
+                }
                 // StyledText: render text with inline styling using multiple TextElements
                 ElementType::StyledText(styled_data) => {
                     // Apply DPI scale factor first
@@ -2638,26 +2827,46 @@ impl RenderContext {
                 .iter()
                 .partition(|img| img.layer == RenderLayer::Background);
 
+            // Pre-render background images to both backdrop and target so glass can blur them
+            let has_bg_images = !bg_images.is_empty();
+            if has_bg_images {
+                let backdrop_tex = self.backdrop_texture.take().unwrap();
+                self.renderer
+                    .clear_target(&backdrop_tex.view, wgpu::Color::TRANSPARENT);
+                self.renderer.clear_target(target, wgpu::Color::BLACK);
+                self.render_images_ref(&backdrop_tex.view, &bg_images);
+                self.render_images_ref(target, &bg_images);
+                self.backdrop_texture = Some(backdrop_tex);
+            }
+
             if has_layer_effects_in_batch {
                 // When we have layer effects, we need a more complex render path:
-                // 1. Render backdrop for glass blur sampling
+                // 1. Render backdrop for glass blur sampling (with pre-rendered images if any)
                 // 2. Use render_with_clear which handles layer effects
-                // 3. Render glass primitives on top
-                let backdrop = self.backdrop_texture.as_ref().unwrap();
-
-                // First render to backdrop texture for glass blur sampling
-                self.renderer.render_to_backdrop(
-                    &backdrop.view,
-                    (backdrop.width, backdrop.height),
-                    &batch,
-                );
+                // 3. Render background images to target (after clear, before glass)
+                // 4. Render glass primitives on top
+                {
+                    let backdrop = self.backdrop_texture.as_ref().unwrap();
+                    self.renderer.render_to_backdrop(
+                        &backdrop.view,
+                        (backdrop.width, backdrop.height),
+                        &batch,
+                        has_bg_images,
+                    );
+                }
 
                 // Then use render_with_clear which handles layer effects
                 self.renderer
                     .render_with_clear(target, &batch, [0.0, 0.0, 0.0, 1.0]);
 
+                // Render background images to target after clear (so they're visible behind glass)
+                if has_bg_images {
+                    self.render_images_ref(target, &bg_images);
+                }
+
                 // Finally render glass primitives on top
                 if batch.glass_count() > 0 {
+                    let backdrop = self.backdrop_texture.as_ref().unwrap();
                     self.renderer.render_glass(target, &backdrop.view, &batch);
                 }
             } else {
@@ -2668,6 +2877,7 @@ impl RenderContext {
                     &backdrop.view,
                     (backdrop.width, backdrop.height),
                     &batch,
+                    has_bg_images,
                 );
             }
 
@@ -2678,7 +2888,10 @@ impl RenderContext {
                     .render_paths_overlay_msaa(target, &batch, self.sample_count);
             }
 
-            self.render_images_ref(target, &bg_images);
+            // Render remaining bg images (only if not already pre-rendered for glass)
+            if !has_bg_images {
+                self.render_images_ref(target, &bg_images);
+            }
             self.render_images_ref(target, &fg_images);
 
             // Render z>0 primitives as overlays for z-index support

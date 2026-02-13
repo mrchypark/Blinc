@@ -1078,6 +1078,8 @@ pub struct RenderProps {
         note = "Use query_motion(key).exit() to explicitly trigger motion exit"
     )]
     pub motion_is_exiting: bool,
+    /// CSS visibility (false = hidden, keeps layout space but doesn't render)
+    pub visible: bool,
 }
 
 impl Default for RenderProps {
@@ -1140,6 +1142,7 @@ impl Default for RenderProps {
             stroke: None,
             stroke_width: None,
             transform_origin: None,
+            visible: true,
         }
     }
 }

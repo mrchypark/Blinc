@@ -207,7 +207,7 @@ pub mod prelude {
     // Unified element styling
     pub use crate::element_style::{
         style, ElementStyle, SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection,
-        StyleJustify, StyleOverflow,
+        StyleJustify, StyleOverflow, StyleVisibility,
     };
     // Diff and reconciliation
     pub use crate::diff::{

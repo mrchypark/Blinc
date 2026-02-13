@@ -74,6 +74,7 @@ blinc_platform_ios = { path = "../../extensions/blinc_platform_ios", version = "
 image.workspace = true
 tracing-subscriber.workspace = true
 blinc_cn = { path = "../blinc_cn", version = "0.1.12" }
+blinc_icons = { path = "../blinc_icons", version = "0.1.12" }
 
 [features]
 default = ["windowed"]

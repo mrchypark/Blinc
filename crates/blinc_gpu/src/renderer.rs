@@ -3851,6 +3851,7 @@ impl GpuRenderer {
         backdrop: &wgpu::TextureView,
         _backdrop_size: (u32, u32),
         batch: &PrimitiveBatch,
+        has_backdrop_content: bool,
     ) {
         if batch.primitives.is_empty() {
             return;
@@ -3885,13 +3886,18 @@ impl GpuRenderer {
 
         // Render to backdrop texture
         {
+            let backdrop_load = if has_backdrop_content {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+            };
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Backdrop Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: backdrop,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: backdrop_load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -3923,6 +3929,7 @@ impl GpuRenderer {
         backdrop: &wgpu::TextureView,
         _backdrop_size: (u32, u32), // Not used - we render with full viewport coords
         batch: &PrimitiveBatch,
+        has_backdrop_content: bool,
     ) {
         // Update uniforms for rendering (always use full viewport size)
         // The GPU maps NDC space to actual texture size automatically
@@ -4055,13 +4062,18 @@ impl GpuRenderer {
                 bytemuck::bytes_of(&main_uniforms),
             );
 
+            let backdrop_load = if has_backdrop_content {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+            };
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Backdrop Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: backdrop,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: backdrop_load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -4085,13 +4097,18 @@ impl GpuRenderer {
                 bytemuck::bytes_of(&main_uniforms),
             );
 
+            let target_load = if has_backdrop_content {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+            };
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Target Background Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: target_load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -4152,6 +4169,112 @@ impl GpuRenderer {
 
         // Submit background and glass passes first
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Pass 3b: Render nested glass primitives (glass inside glass)
+        // These are glass elements that are children of other glass elements.
+        // They render after parent glass, sampling from the same backdrop.
+        if !batch.nested_glass_primitives.is_empty() {
+            // Split nested glass into simple and liquid
+            let mut nested_simple: Vec<GpuGlassPrimitive> = Vec::new();
+            let mut nested_liquid: Vec<GpuGlassPrimitive> = Vec::new();
+            for prim in &batch.nested_glass_primitives {
+                if prim.type_info[0] == GlassType::Simple as u32 {
+                    nested_simple.push(*prim);
+                } else {
+                    nested_liquid.push(*prim);
+                }
+            }
+            let nested_simple_count = nested_simple.len();
+            let nested_liquid_count = nested_liquid.len();
+
+            // Combine: simple first, then liquid
+            let mut ordered_nested = nested_simple;
+            ordered_nested.extend(nested_liquid);
+
+            // Upload nested glass primitives to buffer
+            self.queue.write_buffer(
+                &self.buffers.glass_primitives,
+                0,
+                bytemuck::cast_slice(&ordered_nested),
+            );
+
+            // Recreate bind group since glass_primitives buffer contents changed
+            {
+                let cached_glass = self.cached_glass.as_ref().unwrap();
+                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Nested Glass Bind Group"),
+                    layout: &self.bind_group_layouts.glass,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.buffers.glass_uniforms.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: self.buffers.glass_primitives.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(backdrop),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(&cached_glass.sampler),
+                        },
+                    ],
+                });
+                if let Some(ref mut cached) = self.cached_glass {
+                    cached.bind_group = Some(bind_group);
+                }
+            }
+
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Blinc Nested Glass Encoder"),
+                });
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Nested Glass Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            let nested_bind_group = self
+                .cached_glass
+                .as_ref()
+                .unwrap()
+                .bind_group
+                .as_ref()
+                .unwrap();
+
+            if nested_simple_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.simple_glass);
+                render_pass.set_bind_group(0, nested_bind_group, &[]);
+                render_pass.draw(0..6, 0..nested_simple_count as u32);
+            }
+
+            if nested_liquid_count > 0 {
+                render_pass.set_pipeline(&self.pipelines.glass);
+                render_pass.set_bind_group(0, nested_bind_group, &[]);
+                render_pass.draw(
+                    0..6,
+                    nested_simple_count as u32..(nested_simple_count + nested_liquid_count) as u32,
+                );
+            }
+
+            drop(render_pass);
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
 
         // Pass 4: Render foreground primitives (on top of glass)
         // This requires a separate submission because we need to overwrite the primitives buffer
@@ -5392,6 +5515,32 @@ impl GpuRenderer {
             instance_buffer,
             sampler,
         });
+    }
+
+    /// Clear a texture view to a solid color
+    pub fn clear_target(&mut self, target: &wgpu::TextureView, color: wgpu::Color) {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Clear Target Encoder"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Clear Target Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
     }
 
     /// Render images to a texture view
