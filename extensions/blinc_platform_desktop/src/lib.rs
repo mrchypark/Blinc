@@ -32,9 +32,13 @@
 
 pub mod event_loop;
 pub mod input;
+#[cfg(feature = "webview")]
+pub mod webview;
 pub mod window;
 
 pub use event_loop::{DesktopEventLoop, WakeProxy};
+#[cfg(feature = "webview")]
+pub use webview::{DesktopWebView, DesktopWebViewHost};
 pub use window::DesktopWindow;
 
 use blinc_platform::{Platform, PlatformError, WindowConfig};

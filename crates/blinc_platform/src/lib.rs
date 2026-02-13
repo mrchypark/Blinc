@@ -47,6 +47,8 @@ mod error;
 mod event;
 mod input;
 mod platform;
+#[cfg(feature = "webview")]
+mod webview;
 mod window;
 
 // Re-export all public types
@@ -57,6 +59,12 @@ pub use input::{
     TouchEvent,
 };
 pub use platform::Platform;
+#[cfg(feature = "webview")]
+pub use webview::{
+    WebView, WebViewBounds, WebViewConfig, WebViewError, WebViewEvent, WebViewEventHandler,
+    WebViewHost, WebViewId, WebViewNavigationBlockReason, WebViewNavigationDecision,
+    WebViewNavigationPolicy,
+};
 pub use window::{Cursor, Window, WindowConfig};
 
 // Re-export commonly used asset types
@@ -74,5 +82,11 @@ pub mod prelude {
         TouchEvent,
     };
     pub use crate::platform::Platform;
+    #[cfg(feature = "webview")]
+    pub use crate::webview::{
+        WebView, WebViewBounds, WebViewConfig, WebViewError, WebViewEvent, WebViewEventHandler,
+        WebViewHost, WebViewId, WebViewNavigationBlockReason, WebViewNavigationDecision,
+        WebViewNavigationPolicy,
+    };
     pub use crate::window::{Cursor, Window, WindowConfig};
 }

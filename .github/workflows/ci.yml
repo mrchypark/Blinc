@@ -52,6 +52,110 @@ jobs:
       - name: Run cargo check
         run: cargo check --workspace --all-features
 
+  desktop-feature-matrix:
+    name: Desktop Feature Matrix (${{ matrix.os }} / ${{ matrix.profile }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            profile: feature-off
+            cargo_features: windowed
+          - os: ubuntu-latest
+            profile: feature-on
+            cargo_features: "windowed webview"
+          - os: macos-latest
+            profile: feature-off
+            cargo_features: windowed
+          - os: macos-latest
+            profile: feature-on
+            cargo_features: "windowed webview"
+          - os: windows-latest
+            profile: feature-off
+            cargo_features: windowed
+          - os: windows-latest
+            profile: feature-on
+            cargo_features: "windowed webview"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libvulkan-dev \
+            libfontconfig1-dev
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ matrix.profile }}-cargo-desktop-matrix-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.profile }}-cargo-desktop-matrix-
+
+      - name: Run desktop feature check
+        run: cargo check -p blinc_app --locked --no-default-features --features "${{ matrix.cargo_features }}"
+
+  packaging-smoke:
+    name: Packaging Smoke (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [macos, windows, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure package smoke script is executable
+        run: chmod +x scripts/package-smoke.sh
+
+      - name: Run package smoke dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .sisyphus/evidence
+          log_path=".sisyphus/evidence/package-smoke-${{ matrix.target }}.log"
+          scripts/package-smoke.sh --target "${{ matrix.target }}" --dry-run 2>&1 | tee "$log_path"
+
+      - name: Validate smoke log markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_path=".sisyphus/evidence/package-smoke-${{ matrix.target }}.log"
+          if ! grep -q "expected_from_meta:" "$log_path"; then
+            echo "error: expected_from_meta marker missing in $log_path" >&2
+            exit 1
+          fi
+          if ! grep -q "mode: dry-run" "$log_path"; then
+            echo "error: dry-run marker missing in $log_path" >&2
+            exit 1
+          fi
+
+      - name: Upload package smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-smoke-${{ matrix.target }}-logs
+          path: |
+            .sisyphus/evidence/package-smoke-${{ matrix.target }}.log
+            toolchain/targets/${{ matrix.target }}.toml
+
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest

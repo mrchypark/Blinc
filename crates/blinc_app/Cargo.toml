@@ -80,6 +80,7 @@ blinc_charts = { path = "../blinc_charts", version = "0.1.12" }
 [features]
 default = ["windowed"]
 windowed = ["winit", "blinc_platform_desktop", "blinc_gpu/desktop"]
+webview = ["windowed", "blinc_platform/webview", "blinc_platform_desktop?/webview"]
 android = ["blinc_platform_android", "android-activity", "ndk", "jni", "android_logger", "log", "tracing-android", "tracing-subscriber", "blinc_gpu/android"]
 ios = ["blinc_platform_ios", "blinc_gpu/ios"]
 harmony = ["blinc_gpu/harmony"]  # blinc_platform_harmony when target is available

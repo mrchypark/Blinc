@@ -159,6 +159,24 @@ where
         self.last_scroll_event_at = None;
         self.scroll_end_pending = false;
     }
+
+    fn sync_webview_bounds(&self) {
+        #[cfg(feature = "webview")]
+        if let Some(ref window) = self.window {
+            if let Err(error) = window.sync_webview_bounds() {
+                tracing::warn!("Failed to sync desktop webview bounds: {}", error);
+            }
+        }
+    }
+
+    fn cleanup_webviews(&self) {
+        #[cfg(feature = "webview")]
+        if let Some(ref window) = self.window {
+            if let Err(error) = window.cleanup_webviews() {
+                tracing::warn!("Failed to cleanup desktop webview resources: {}", error);
+            }
+        }
+    }
 }
 
 impl<F> ApplicationHandler for DesktopApp<F>
@@ -213,6 +231,7 @@ where
                     width: size.width,
                     height: size.height,
                 }));
+                self.sync_webview_bounds();
             }
 
             WinitWindowEvent::Moved(pos) => {
@@ -230,6 +249,7 @@ where
                 self.handle_event(Event::Window(WindowEvent::ScaleFactorChanged {
                     scale_factor,
                 }));
+                self.sync_webview_bounds();
             }
 
             WinitWindowEvent::RedrawRequested => {
@@ -328,6 +348,7 @@ where
 
         // Check for exit
         if self.should_exit {
+            self.cleanup_webviews();
             event_loop.exit();
         }
     }

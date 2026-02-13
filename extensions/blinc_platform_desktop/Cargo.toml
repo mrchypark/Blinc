@@ -13,6 +13,7 @@ crate-type = ["lib"]
 
 [features]
 default = []
+webview = ["blinc_platform/webview"]
 
 [dependencies]
 # Platform abstraction

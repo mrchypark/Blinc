@@ -25,6 +25,14 @@ pub enum PlatformError {
     #[error("Platform not supported: {0}")]
     Unsupported(String),
 
+    /// Failed to create WebView
+    #[error("WebView creation failed: {0}")]
+    WebViewCreation(String),
+
+    /// WebView operation failed
+    #[error("WebView operation failed: {0}")]
+    WebViewOperation(String),
+
     /// Generic platform error
     #[error("Platform error: {0}")]
     Other(String),

@@ -41,6 +41,11 @@ use blinc_platform::{
     ControlFlow, Event, EventLoop, InputEvent, Key, KeyState, LifecycleEvent, MouseEvent, Platform,
     TouchEvent, Window, WindowConfig, WindowEvent,
 };
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+use blinc_platform::{
+    PlatformError, WebView, WebViewBounds, WebViewConfig, WebViewEvent, WebViewHost,
+    WebViewNavigationBlockReason, WebViewNavigationDecision, WebViewNavigationPolicy,
+};
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
@@ -491,6 +496,234 @@ fn e2e_count_pixels(rgba: &[u8], w: u32, h: u32) -> (usize, usize, usize) {
     }
 
     (blue, warm, total)
+}
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+struct DesktopWebViewLifecycle {
+    host: Option<blinc_platform_desktop::DesktopWebViewHost>,
+    webview: Option<blinc_platform_desktop::DesktopWebView>,
+    create_attempted: bool,
+    navigation_policy: WebViewNavigationPolicy,
+    navigation_url: Option<String>,
+}
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+const WEBVIEW_URL_ENV: &str = "BLINC_WEBVIEW_URL";
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+const WEBVIEW_ALLOW_ORIGINS_ENV: &str = "BLINC_WEBVIEW_ALLOW_ORIGINS";
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+impl Default for DesktopWebViewLifecycle {
+    fn default() -> Self {
+        Self {
+            host: None,
+            webview: None,
+            create_attempted: false,
+            navigation_policy: webview_navigation_policy_from_env(),
+            navigation_url: webview_navigation_url_from_env(),
+        }
+    }
+}
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+fn webview_navigation_url_from_env() -> Option<String> {
+    std::env::var(WEBVIEW_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+fn webview_navigation_policy_from_env() -> WebViewNavigationPolicy {
+    let Some(raw_origins) = std::env::var(WEBVIEW_ALLOW_ORIGINS_ENV).ok() else {
+        return WebViewNavigationPolicy::default();
+    };
+
+    raw_origins
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .fold(WebViewNavigationPolicy::default(), |policy, origin| {
+            policy.allow_origin(origin)
+        })
+}
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+fn apply_navigation_policy(
+    config: WebViewConfig,
+    requested_url: Option<&str>,
+) -> (WebViewConfig, Option<WebViewNavigationDecision>) {
+    let Some(url) = requested_url.map(str::trim).filter(|url| !url.is_empty()) else {
+        return (config, None);
+    };
+
+    let decision = config.navigation_policy.evaluate(url);
+    let config = match &decision {
+        WebViewNavigationDecision::Allowed { .. } => config.initial_url(url),
+        WebViewNavigationDecision::Blocked { .. } => config,
+    };
+
+    (config, Some(decision))
+}
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+fn navigation_block_reason_code(reason: &WebViewNavigationBlockReason) -> &'static str {
+    match reason {
+        WebViewNavigationBlockReason::MalformedUrl => "malformed-url",
+        WebViewNavigationBlockReason::OriginNotAllowed => "origin-not-allowed",
+    }
+}
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+fn navigation_decision_event_name(decision: &WebViewNavigationDecision) -> &'static str {
+    match decision {
+        WebViewNavigationDecision::Allowed { .. } => "navigation allowed",
+        WebViewNavigationDecision::Blocked { .. } => "navigation blocked",
+    }
+}
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+fn log_webview_navigation_decision(decision: &WebViewNavigationDecision) {
+    let event_name = navigation_decision_event_name(decision);
+    match decision {
+        WebViewNavigationDecision::Allowed { url, origin } => {
+            tracing::info!(
+                target: "blinc_webview_policy",
+                event = event_name,
+                url = %url,
+                origin = %origin,
+                "{event_name}"
+            );
+        }
+        WebViewNavigationDecision::Blocked {
+            url,
+            origin,
+            reason,
+        } => {
+            tracing::warn!(
+                target: "blinc_webview_policy",
+                event = event_name,
+                url = %url,
+                origin = %origin.as_deref().unwrap_or(""),
+                reason = navigation_block_reason_code(reason),
+                "{event_name}"
+            );
+        }
+    }
+}
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+impl DesktopWebViewLifecycle {
+    fn ensure_created(&mut self, window: &blinc_platform_desktop::DesktopWindow) {
+        if self.host.is_none() {
+            self.host = Some(window.webview_host());
+        }
+        if self.webview.is_some() || self.create_attempted {
+            return;
+        }
+
+        self.create_attempted = true;
+        let (width, height) = window.logical_size();
+        let bounds = WebViewBounds::new(0.0, 0.0, width, height);
+        let config = WebViewConfig::new()
+            .bounds(bounds)
+            .navigation_policy(self.navigation_policy.clone());
+        let (config, decision) = apply_navigation_policy(config, self.navigation_url.as_deref());
+        if let Some(ref decision) = decision {
+            log_webview_navigation_decision(decision);
+        }
+
+        let Some(host) = self.host.as_ref() else {
+            return;
+        };
+
+        match host.create_webview(config) {
+            Ok(mut webview) => {
+                if let Err(error) = webview.set_event_handler(Some(Box::new(|event| match event {
+                    WebViewEvent::Message(message) => {
+                        tracing::debug!("Desktop webview message received: {}", message)
+                    }
+                    WebViewEvent::Error(error) => {
+                        tracing::warn!("Desktop webview reported error: {:?}", error)
+                    }
+                    _ => {}
+                }))) {
+                    log_webview_error("register event handler", &error);
+                }
+                self.webview = Some(webview);
+                tracing::info!("Desktop webview created");
+            }
+            Err(error) => {
+                log_webview_error("create", &error);
+            }
+        }
+    }
+
+    fn sync_bounds(&self, window: &blinc_platform_desktop::DesktopWindow) {
+        if let Some(host) = self.host.as_ref() {
+            if let Err(error) = host.sync_bounds_with_window() {
+                log_webview_error("sync host bounds", &error);
+            }
+        }
+
+        if let Some(webview) = self.webview.as_ref() {
+            let (width, height) = window.logical_size();
+            let bounds = WebViewBounds::new(0.0, 0.0, width, height);
+            if let Err(error) = webview.set_bounds(bounds) {
+                log_webview_error("set bounds", &error);
+            }
+        }
+    }
+
+    fn on_focus_changed(&self, focused: bool) {
+        if let Some(webview) = self.webview.as_ref() {
+            let message = if focused {
+                r#"{"type":"window-focus","focused":true}"#
+            } else {
+                r#"{"type":"window-focus","focused":false}"#
+            };
+            if let Err(error) = webview.post_message(message) {
+                log_webview_error("post focus message", &error);
+            }
+        }
+    }
+
+    fn dispose(&mut self) {
+        if let Some(mut webview) = self.webview.take() {
+            if let Err(error) = webview.destroy() {
+                log_webview_error("destroy", &error);
+            }
+        }
+
+        if let Some(host) = self.host.take() {
+            if let Err(error) = host.cleanup() {
+                log_webview_error("cleanup", &error);
+            }
+        }
+
+        self.create_attempted = false;
+    }
+}
+
+#[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+fn log_webview_error(action: &str, error: &PlatformError) {
+    match error {
+        PlatformError::Unavailable(_) => {
+            tracing::info!(
+                "Desktop webview {} unavailable; continuing without webview: {}",
+                action,
+                error
+            );
+        }
+        _ => {
+            tracing::warn!(
+                "Desktop webview {} failed; continuing without webview: {}",
+                action,
+                error
+            );
+        }
+    }
 }
 
 /// Shared animation scheduler for the application (thread-safe)
@@ -2246,6 +2479,8 @@ impl WindowedApp {
         let e2e_script = e2e_script();
         let e2e_script_exit = e2e_script_exit_after(e2e_script.is_some());
         let mut e2e_script_ran: bool = false;
+        #[cfg(feature = "webview")]
+        let mut webview_lifecycle = DesktopWebViewLifecycle::default();
 
         event_loop
             .run(move |event, window| {
@@ -2315,10 +2550,26 @@ impl WindowedApp {
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to initialize Blinc: {}", e);
+                                    #[cfg(feature = "webview")]
+                                    webview_lifecycle.dispose();
                                     return ControlFlow::Exit;
                                 }
                             }
                         }
+
+                        #[cfg(feature = "webview")]
+                        {
+                            webview_lifecycle.ensure_created(window);
+                            webview_lifecycle.sync_bounds(window);
+                            if let Some(ref windowed_ctx) = ctx {
+                                webview_lifecycle.on_focus_changed(windowed_ctx.focused);
+                            }
+                        }
+                    }
+
+                    Event::Lifecycle(LifecycleEvent::Suspended) => {
+                        #[cfg(feature = "webview")]
+                        webview_lifecycle.dispose();
                     }
 
                     Event::Window(WindowEvent::Resized { width, height }) => {
@@ -2360,8 +2611,39 @@ impl WindowedApp {
 
                                 // Request redraw to trigger relayout with new dimensions
                                 window.request_redraw();
+
+                                #[cfg(feature = "webview")]
+                                webview_lifecycle.sync_bounds(window);
                             }
                         }
+                    }
+
+                    Event::Window(WindowEvent::ScaleFactorChanged { scale_factor }) => {
+                        needs_rebuild = true;
+                        needs_relayout = true;
+
+                        let (width, height) = window.size();
+                        if let (Some(ref mut windowed_ctx), Some(ref tree)) = (&mut ctx, &render_tree) {
+                            let logical_width = width as f32 / scale_factor as f32;
+                            let logical_height = height as f32 / scale_factor as f32;
+
+                            windowed_ctx.width = logical_width;
+                            windowed_ctx.height = logical_height;
+                            windowed_ctx.scale_factor = scale_factor;
+                            windowed_ctx.physical_width = width as f32;
+                            windowed_ctx.physical_height = height as f32;
+
+                            BlincContextState::get().set_viewport_size(logical_width, logical_height);
+                            windowed_ctx
+                                .event_router
+                                .on_window_resize(tree, logical_width, logical_height);
+                            tree.clear_layout_bounds_storages();
+                        }
+
+                        #[cfg(feature = "webview")]
+                        webview_lifecycle.sync_bounds(window);
+
+                        window.request_redraw();
                     }
 
                     Event::Window(WindowEvent::Focused(focused)) => {
@@ -2377,9 +2659,14 @@ impl WindowedApp {
                                 blinc_layout::widgets::blur_all_text_inputs();
                             }
                         }
+
+                        #[cfg(feature = "webview")]
+                        webview_lifecycle.on_focus_changed(focused);
                     }
 
                     Event::Window(WindowEvent::CloseRequested) => {
+                        #[cfg(feature = "webview")]
+                        webview_lifecycle.dispose();
                         return ControlFlow::Exit;
                     }
 
@@ -3069,6 +3356,8 @@ impl WindowedApp {
                                 }
                                 Err(wgpu::SurfaceError::OutOfMemory) => {
                                     tracing::error!("Out of GPU memory");
+                                    #[cfg(feature = "webview")]
+                                    webview_lifecycle.dispose();
                                     return ControlFlow::Exit;
                                 }
                                 Err(e) => {
@@ -4079,5 +4368,88 @@ mod tests {
         });
 
         assert_eq!(ctx.get(sig), Some(14));
+    }
+
+    #[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+    #[test]
+    fn test_apply_navigation_policy_allows_configured_origin() {
+        let config = WebViewConfig::new()
+            .navigation_policy(WebViewNavigationPolicy::new().allow_origin("https://example.com"));
+
+        let (config, decision) = apply_navigation_policy(config, Some("https://example.com/docs"));
+
+        assert_eq!(
+            config.initial_url.as_deref(),
+            Some("https://example.com/docs")
+        );
+        assert_eq!(
+            decision,
+            Some(WebViewNavigationDecision::Allowed {
+                url: "https://example.com/docs".to_string(),
+                origin: "https://example.com".to_string(),
+            })
+        );
+    }
+
+    #[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+    #[test]
+    fn test_apply_navigation_policy_blocks_disallowed_origin() {
+        let config = WebViewConfig::new()
+            .navigation_policy(WebViewNavigationPolicy::new().allow_origin("https://example.com"));
+
+        let (config, decision) =
+            apply_navigation_policy(config, Some("https://not-allowed.example/path"));
+
+        assert_eq!(config.initial_url, None);
+        assert_eq!(
+            decision,
+            Some(WebViewNavigationDecision::Blocked {
+                url: "https://not-allowed.example/path".to_string(),
+                origin: Some("https://not-allowed.example".to_string()),
+                reason: WebViewNavigationBlockReason::OriginNotAllowed,
+            })
+        );
+    }
+
+    #[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+    #[test]
+    fn test_apply_navigation_policy_blocks_malformed_url() {
+        let config = WebViewConfig::new()
+            .navigation_policy(WebViewNavigationPolicy::new().allow_origin("https://example.com"));
+
+        let (config, decision) = apply_navigation_policy(config, Some("not-a-valid-url"));
+
+        assert_eq!(config.initial_url, None);
+        assert_eq!(
+            decision,
+            Some(WebViewNavigationDecision::Blocked {
+                url: "not-a-valid-url".to_string(),
+                origin: None,
+                reason: WebViewNavigationBlockReason::MalformedUrl,
+            })
+        );
+    }
+
+    #[cfg(all(feature = "windowed", feature = "webview", not(target_os = "android")))]
+    #[test]
+    fn test_navigation_decision_event_names_are_machine_grepable() {
+        let allowed = WebViewNavigationDecision::Allowed {
+            url: "https://example.com/docs".to_string(),
+            origin: "https://example.com".to_string(),
+        };
+        let blocked = WebViewNavigationDecision::Blocked {
+            url: "https://not-allowed.example".to_string(),
+            origin: Some("https://not-allowed.example".to_string()),
+            reason: WebViewNavigationBlockReason::OriginNotAllowed,
+        };
+
+        assert_eq!(
+            navigation_decision_event_name(&allowed),
+            "navigation allowed"
+        );
+        assert_eq!(
+            navigation_decision_event_name(&blocked),
+            "navigation blocked"
+        );
     }
 }

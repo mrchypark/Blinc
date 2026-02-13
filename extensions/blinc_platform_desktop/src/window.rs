@@ -1,5 +1,9 @@
 //! Desktop window implementation using winit
 
+#[cfg(feature = "webview")]
+use crate::webview::DesktopWebViewHost;
+#[cfg(feature = "webview")]
+use blinc_platform::PlatformError;
 use blinc_platform::{Cursor, Window, WindowConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,6 +15,8 @@ use winit::window::{Window as WinitWindow, WindowAttributes};
 pub struct DesktopWindow {
     window: Arc<WinitWindow>,
     focused: AtomicBool,
+    #[cfg(feature = "webview")]
+    webview_host: DesktopWebViewHost,
 }
 
 impl DesktopWindow {
@@ -30,10 +36,12 @@ impl DesktopWindow {
             attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
 
-        let window = event_loop.create_window(attrs)?;
+        let window = Arc::new(event_loop.create_window(attrs)?);
 
         Ok(Self {
-            window: Arc::new(window),
+            #[cfg(feature = "webview")]
+            webview_host: DesktopWebViewHost::new(Arc::clone(&window)),
+            window,
             focused: AtomicBool::new(true),
         })
     }
@@ -46,6 +54,24 @@ impl DesktopWindow {
     /// Get an Arc to the winit window
     pub fn winit_window_arc(&self) -> Arc<WinitWindow> {
         Arc::clone(&self.window)
+    }
+
+    /// Get desktop WebView host bound to this window.
+    #[cfg(feature = "webview")]
+    pub fn webview_host(&self) -> DesktopWebViewHost {
+        self.webview_host.clone()
+    }
+
+    /// Sync WebView bounds during resize/scale lifecycle updates.
+    #[cfg(feature = "webview")]
+    pub(crate) fn sync_webview_bounds(&self) -> Result<(), PlatformError> {
+        self.webview_host.sync_bounds_with_window()
+    }
+
+    /// Cleanup WebView resources during window teardown.
+    #[cfg(feature = "webview")]
+    pub(crate) fn cleanup_webviews(&self) -> Result<(), PlatformError> {
+        self.webview_host.cleanup()
     }
 
     /// Set focus state (called by event loop)
@@ -113,6 +139,15 @@ impl Window for DesktopWindow {
 
     fn is_visible(&self) -> bool {
         self.window.is_visible().unwrap_or(true)
+    }
+}
+
+#[cfg(feature = "webview")]
+impl Drop for DesktopWindow {
+    fn drop(&mut self) {
+        if let Err(error) = self.webview_host.cleanup() {
+            tracing::warn!("Failed to cleanup desktop webview host on drop: {}", error);
+        }
     }
 }
 

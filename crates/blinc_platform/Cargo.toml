@@ -15,6 +15,7 @@ crate-type = ["lib"]
 
 [features]
 default = []
+webview = []
 
 [dependencies]
 thiserror.workspace = true
