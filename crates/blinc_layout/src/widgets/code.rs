@@ -985,8 +985,16 @@ pub fn pre(content: impl Into<String>) -> Code {
 mod tests {
     use super::*;
 
+    fn init_theme() {
+        let _ = ThemeState::try_get().unwrap_or_else(|| {
+            ThemeState::init_default();
+            ThemeState::get()
+        });
+    }
+
     #[test]
     fn test_code_creation() {
+        init_theme();
         let c = code("fn main() {}");
         assert!(!c.config.editable);
         assert!(!c.config.line_numbers);
@@ -994,6 +1002,7 @@ mod tests {
 
     #[test]
     fn test_code_builder() {
+        init_theme();
         let c = code("let x = 42;")
             .line_numbers(true)
             .edit(true)
