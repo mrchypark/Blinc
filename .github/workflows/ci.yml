@@ -50,7 +50,39 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run cargo check
-        run: cargo check --workspace --all-features
+        run: cargo check --workspace --all-features --locked
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run cargo audit
+        run: cargo audit
+
+  security-deny:
+    name: Security Deny
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+
+      - name: Run cargo deny
+        run: cargo deny check
 
   test:
     name: Test
@@ -94,9 +126,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Run tests (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run --auto-servernum cargo test --workspace --all-features
+        run: xvfb-run --auto-servernum cargo nextest run --workspace --all-features --locked
         env:
           # Use software rendering for headless GPU tests
           MESA_GL_VERSION_OVERRIDE: "4.5"
@@ -104,7 +141,19 @@ jobs:
 
       - name: Run tests (non-Linux)
         if: runner.os != 'Linux'
-        run: cargo test --workspace --all-features
+        run: cargo nextest run --workspace --all-features --locked
+
+      - name: Run doctests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum cargo test --doc --workspace --all-features --locked
+        env:
+          # Use software rendering for headless GPU tests
+          MESA_GL_VERSION_OVERRIDE: "4.5"
+          LIBGL_ALWAYS_SOFTWARE: "1"
+
+      - name: Run doctests (non-Linux)
+        if: runner.os != 'Linux'
+        run: cargo test --doc --workspace --all-features --locked
 
   fmt:
     name: Format
@@ -157,7 +206,7 @@ jobs:
             ${{ runner.os }}-cargo-clippy-
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-features -- -W clippy::all -A clippy::type_complexity -A dead_code
+        run: cargo clippy --workspace --all-features --locked -- -W clippy::all -A clippy::type_complexity -A dead_code
 
   docs:
     name: Documentation
@@ -194,7 +243,7 @@ jobs:
             ${{ runner.os }}-cargo-docs-
 
       - name: Build documentation
-        run: cargo doc --workspace --no-deps --all-features
+        run: cargo doc --workspace --no-deps --all-features --locked
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -247,7 +296,7 @@ jobs:
             ${{ runner.os }}-${{ matrix.target }}-cargo-release-
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p blinc_cli
+        run: cargo build --release --target ${{ matrix.target }} -p blinc_cli --locked
 
       - name: Upload artifact (Unix)
         if: runner.os != 'Windows'
