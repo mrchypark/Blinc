@@ -34,7 +34,7 @@ impl Form {
         }
 
         if config.disabled {
-            inner = inner.opacity(0.6);
+            inner = inner.opacity(0.6).pointer_events_none();
         }
 
         inner = inner.children(config.children);

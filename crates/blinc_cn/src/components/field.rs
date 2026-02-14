@@ -31,6 +31,7 @@ impl Field {
         }
         if config.disabled {
             lbl = lbl.disabled(true);
+            container = container.opacity(0.6).pointer_events_none();
         }
         container = container.child(lbl);
 
