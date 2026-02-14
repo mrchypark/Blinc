@@ -1390,9 +1390,15 @@ theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
 use blinc_app::prelude::*;
 use blinc_app::windowed::{{WindowedApp, WindowedContext}};
 use blinc_core::reactive::State;
+use std::collections::HashMap;
+use std::path::Path;
 
 /// Counter button with stateful hover/press states
-fn counter_button(label: &str, count: State<i32>, delta: i32) -> impl ElementBuilder {{
+fn counter_button(
+    label: &str,
+    count: State<i32>,
+    delta: i32,
+) -> impl ElementBuilder {{
     let label = label.to_string();
 
     let count = count.clone();
@@ -1460,6 +1466,111 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {{
         )
 }}
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn parse_headless_args() -> Result<(bool, Option<String>, Option<String>)> {{
+    let mut headless = false;
+    let mut scenario: Option<String> = None;
+    let mut report: Option<String> = None;
+
+    let mut args = std::env::args().skip(1).peekable();
+    while let Some(arg) = args.next() {{
+        match arg.as_str() {{
+            "--headless" => {{
+                headless = true;
+            }}
+            "--scenario" => {{
+                if let Some(next) = args.peek() {{
+                    if !next.starts_with("--") {{
+                        scenario = args.next();
+                    }} else {{
+                        return Err(BlincError::Other("--scenario requires a file path".to_string()));
+                    }}
+                }} else {{
+                    return Err(BlincError::Other("--scenario requires a file path".to_string()));
+                }}
+            }}
+            "--report" => {{
+                if let Some(next) = args.peek() {{
+                    if !next.starts_with("--") {{
+                        report = args.next();
+                    }} else {{
+                        return Err(BlincError::Other("--report requires a file path".to_string()));
+                    }}
+                }} else {{
+                    return Err(BlincError::Other("--report requires a file path".to_string()));
+                }}
+            }}
+            _ if arg.starts_with("--") => {{
+                return Err(BlincError::Other(format!("unknown flag: {{}}", arg)));
+            }}
+            _ => {{}}
+        }}
+    }}
+
+    Ok((headless, scenario, report))
+}}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn default_headless_scenario() -> HeadlessScenario {{
+    HeadlessScenario {{
+        steps: vec![ScenarioStep::Tick {{ frames: 1 }}],
+    }}
+}}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn run_headless_diagnostics(
+    app_name: &str,
+    scenario_path: Option<&str>,
+    report_path: Option<&str>,
+) -> Result<()> {{
+    // TODO: map probe values from your real app state (signals/store/domain model).
+    let scenario = match scenario_path {{
+        Some(path) => HeadlessScenario::from_path(Path::new(path))?,
+        None => default_headless_scenario(),
+    }};
+
+    let mut probe = |_probe_ctx| {{
+        let mut elements = HashMap::new();
+        elements.insert(
+            "app.title".to_string(),
+            DiagnosticsElement {{
+                text: Some(format!("Welcome to {{}}", app_name)),
+            }},
+        );
+        elements.insert(
+            "counter.value".to_string(),
+            DiagnosticsElement {{
+                text: Some("0".to_string()),
+            }},
+        );
+        DiagnosticsSnapshot {{ elements }}
+    }};
+
+    let outcome = run_loaded_scenario_with_probe(
+        &scenario,
+        HeadlessRunConfig {{
+            width: 400,
+            height: 600,
+            max_frames: 1,
+            tick_ms: 16,
+        }},
+        &mut probe,
+    )?;
+
+    let report = outcome.report();
+    if let Some(path) = report_path {{
+        report.write_to_path(Path::new(path))?;
+    }} else {{
+        report.write_to_writer(&mut std::io::stdout())?;
+    }}
+
+    if outcome.is_failed() {{
+        std::process::exit(2);
+    }}
+
+    Ok(())
+}}
+
 // =============================================================================
 // Desktop Entry Point
 // =============================================================================
@@ -1469,6 +1580,16 @@ fn main() -> Result<()> {{
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
+
+    let (headless, scenario_path, report_path) = parse_headless_args()?;
+
+    if headless {{
+        return run_headless_diagnostics(
+            "{name}",
+            scenario_path.as_deref(),
+            report_path.as_deref(),
+        );
+    }}
 
     let config = WindowConfig {{
         title: "{name}".to_string(),
@@ -2525,4 +2646,40 @@ open BlincApp.xcodeproj
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn rust_template_contains_headless_diagnostics_branch() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_headless_{nonce}"));
+
+        create_rust_project(&root, "DemoApp", "com.example")
+            .expect("rust project template should be generated");
+
+        let main_rs =
+            fs::read_to_string(root.join("src/main.rs")).expect("generated main.rs should exist");
+
+        assert!(
+            main_rs.contains("--headless"),
+            "generated template should parse --headless flag"
+        );
+        assert!(
+            main_rs.contains("run_headless_diagnostics"),
+            "generated template should include headless diagnostics entrypoint"
+        );
+        assert!(
+            main_rs.contains("run_loaded_scenario_with_probe"),
+            "generated template should wire diagnostics runner"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

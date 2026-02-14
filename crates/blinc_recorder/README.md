@@ -91,3 +91,13 @@ blinc_layout = { version = "0.1.12", features = ["recorder"] }
 ## License
 
 MIT OR Apache-2.0
+
+## With App Headless Diagnostics
+
+Use `blinc_recorder` as the capture/control source and `blinc_app` headless diagnostics as the goal/assertion runner.
+
+Recommended split:
+
+- `blinc_recorder`: event/snapshot capture + debug-server transport
+- `blinc_app` headless diagnostics: scenario execution + assertion evaluation + failure report
+- `blinc_debugger`: post-run visualization and analysis

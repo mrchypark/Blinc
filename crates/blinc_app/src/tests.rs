@@ -1037,3 +1037,111 @@ fn test_render_tree_reuse() {
     save_to_png(app.device(), app.queue(), &texture, 200, 200, &path);
     println!("Saved: {:?}", path);
 }
+
+#[test]
+fn headless_runtime_runs_fixed_frame_budget() {
+    use crate::headless_runtime::{HeadlessRunConfig, HeadlessRuntime};
+
+    let mut frames = 0u32;
+    let cfg = HeadlessRunConfig {
+        width: 800,
+        height: 600,
+        max_frames: 3,
+        tick_ms: 16,
+    };
+
+    HeadlessRuntime::run(cfg, |_ctx| {
+        frames += 1;
+    })
+    .expect("headless run should succeed");
+
+    assert_eq!(frames, 3);
+}
+
+#[test]
+fn parses_wait_and_assert_steps() {
+    use crate::headless_scenario::{HeadlessScenario, ScenarioStep};
+
+    let json = r#"{
+      "steps": [
+        {"type":"wait","ms":100},
+        {"type":"assert_exists","id":"login.button"}
+      ]
+    }"#;
+
+    let scenario: HeadlessScenario = serde_json::from_str(json).expect("scenario should parse");
+    assert!(matches!(scenario.steps[0], ScenarioStep::Wait { ms: 100 }));
+    assert!(matches!(
+        scenario.steps[1],
+        ScenarioStep::AssertExists { ref id } if id == "login.button"
+    ));
+}
+
+#[test]
+fn assert_text_contains_reports_failure_detail() {
+    use crate::headless_assert::{
+        evaluate_assert_text_contains, DiagnosticsElement, DiagnosticsSnapshot,
+    };
+
+    let mut snapshot = DiagnosticsSnapshot::default();
+    snapshot.elements.insert(
+        "title".to_string(),
+        DiagnosticsElement {
+            text: Some("Hello".to_string()),
+        },
+    );
+
+    let result = evaluate_assert_text_contains("title", "Welcome", &snapshot);
+    assert!(matches!(
+        result,
+        crate::headless_assert::AssertionResult::Failed { .. }
+    ));
+}
+
+#[test]
+fn runner_stops_on_first_failed_assertion() {
+    use crate::headless_assert::DiagnosticsSnapshot;
+    use crate::headless_runner::{run_scenario_with_probe, RunOutcome};
+    use crate::headless_runtime::HeadlessRunConfig;
+
+    let scenario_json = r#"{
+      "steps": [
+        {"type":"assert_exists","id":"missing.node"},
+        {"type":"tick","frames":10}
+      ]
+    }"#;
+
+    let outcome = run_scenario_with_probe(scenario_json, HeadlessRunConfig::default(), |_ctx| {
+        DiagnosticsSnapshot::default()
+    })
+    .expect("runner should return outcome");
+    assert!(matches!(outcome, RunOutcome::Failed { .. }));
+}
+
+#[test]
+fn run_scenario_requires_probe_for_assertions() {
+    use crate::headless_runner::run_scenario;
+
+    let scenario_json = r#"{
+      "steps": [
+        {"type":"assert_exists","id":"missing.node"}
+      ]
+    }"#;
+
+    let err = run_scenario(scenario_json).expect_err("assert scenario without probe must fail");
+    assert!(
+        err.to_string().contains("use run_scenario_with_probe"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn failed_run_writes_machine_readable_report() {
+    use crate::headless_report::HeadlessReport;
+
+    let report = HeadlessReport::failed("assert_exists", 0, "missing.node".to_string(), 0, 0);
+    let json = serde_json::to_string(&report).expect("report should serialize");
+
+    assert!(json.contains("\"status\":\"failed\""));
+    assert!(json.contains("\"assert_exists\""));
+}
