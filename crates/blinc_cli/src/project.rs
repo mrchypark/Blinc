@@ -1499,7 +1499,9 @@ fn parse_headless_args() -> Result<(bool, Option<String>, Option<String>)> {{
                 report = Some(next_value("--report")?);
             }}
             _ if arg.starts_with("--") => {{
-                return Err(BlincError::Other("unknown flag".to_string()));
+                let mut msg = "unknown flag: ".to_string();
+                msg.push_str(arg.as_str());
+                return Err(BlincError::Other(msg));
             }}
             _ => {{}}
         }}
