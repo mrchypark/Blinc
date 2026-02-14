@@ -12,6 +12,8 @@ use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_charts::prelude::*;
 use blinc_core::{Color, Point, State};
 use blinc_layout::prelude::{ButtonState, NoState};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ChartKind {
@@ -33,6 +35,31 @@ enum ChartKind {
     Gauge,
     Funnel,
     Geo,
+}
+
+impl ChartKind {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Line => "line",
+            Self::MultiLine => "multi_line",
+            Self::Area => "area",
+            Self::Bar => "bar",
+            Self::Histogram => "histogram",
+            Self::Scatter => "scatter",
+            Self::Candlestick => "candlestick",
+            Self::Heatmap => "heatmap",
+            Self::StackedArea => "stacked_area",
+            Self::DensityMap => "density_map",
+            Self::Contour => "contour",
+            Self::Statistics => "statistics",
+            Self::Hierarchy => "hierarchy",
+            Self::Network => "network",
+            Self::Polar => "polar",
+            Self::Gauge => "gauge",
+            Self::Funnel => "funnel",
+            Self::Geo => "geo",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -243,6 +270,8 @@ struct GalleryConfig {
     chart_salts: Vec<u64>,
 
     preset: DataPreset,
+    noise_enabled: bool,
+    option_indices: BTreeMap<String, usize>,
 
     bar_stacked: bool,
     stacked_mode: StackedAreaMode,
@@ -260,6 +289,8 @@ impl GalleryConfig {
             base_seed: seed,
             chart_salts: vec![0; item_count],
             preset: DataPreset::Balanced,
+            noise_enabled: true,
+            option_indices: BTreeMap::new(),
             bar_stacked: true,
             stacked_mode: StackedAreaMode::Stacked,
             hierarchy_mode: HierarchyMode::Treemap,
@@ -284,11 +315,30 @@ impl GalleryConfig {
         }
     }
 
+    fn option_index(&self, kind: ChartKind, name: &str, len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        let key = format!("{}:{name}", kind.key());
+        self.option_indices.get(&key).copied().unwrap_or(0) % len
+    }
+
+    fn cycle_option(&mut self, kind: ChartKind, name: &str, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let key = format!("{}:{name}", kind.key());
+        let cur = self.option_indices.get(&key).copied().unwrap_or(0);
+        self.option_indices.insert(key, (cur + 1) % len);
+    }
+
     fn reset(&mut self) {
         self.base_seed = self.initial_seed;
         self.chart_salts.fill(0);
 
         self.preset = DataPreset::Balanced;
+        self.noise_enabled = true;
+        self.option_indices.clear();
         self.bar_stacked = true;
         self.stacked_mode = StackedAreaMode::Stacked;
         self.hierarchy_mode = HierarchyMode::Treemap;
@@ -321,6 +371,8 @@ struct GalleryModels {
 
 impl GalleryModels {
     fn new(config: &GalleryConfig) -> Self {
+        set_gallery_noise_enabled(config.noise_enabled);
+
         let line_seed = config.seed_for_index(ChartKind::Line as usize);
         let multi_seed = config.seed_for_index(ChartKind::MultiLine as usize);
         let bar_seed = config.seed_for_index(ChartKind::Bar as usize);
@@ -415,9 +467,11 @@ impl GalleryModels {
         let polar = PolarChartHandle::new(polar_model);
 
         let gauge_value = seed_range(gauge_seed, 12, 8.0, 96.0);
-        let gauge = GaugeChartHandle::new(
-            GaugeChartModel::new(0.0, 100.0, gauge_value).expect("gauge model"),
-        );
+        let gauge = GaugeChartHandle::new({
+            let mut m = GaugeChartModel::new(0.0, 100.0, 0.0).expect("gauge model");
+            m.set_value_transition(gauge_value, 0.45);
+            m
+        });
 
         let funnel = FunnelChartHandle::new(
             FunnelChartModel::new(make_funnel_stages(funnel_seed)).expect("funnel stages"),
@@ -447,6 +501,7 @@ impl GalleryModels {
             geo,
         };
         models.apply_preset(config.preset);
+        models.apply_advanced_options(config);
         models
     }
 
@@ -587,6 +642,371 @@ impl GalleryModels {
         }
         if let Ok(mut m) = self.geo.0.lock() {
             m.style.max_points = geo_points;
+        }
+    }
+
+    fn apply_advanced_options(&mut self, config: &GalleryConfig) {
+        let pick_usize = |kind: ChartKind, name: &str, values: &[usize]| -> usize {
+            values[config.option_index(kind, name, values.len())]
+        };
+        let pick_f32 = |kind: ChartKind, name: &str, values: &[f32]| -> f32 {
+            values[config.option_index(kind, name, values.len())]
+        };
+        #[derive(Clone, Copy)]
+        struct ThemePalette {
+            bg: Color,
+            grid: Color,
+            text: Color,
+            a: Color,
+            b: Color,
+            c: Color,
+        }
+        let theme_palette = |kind: ChartKind| -> Option<ThemePalette> {
+            match config.option_index(kind, "theme", 4) {
+                0 => None,
+                1 => Some(ThemePalette {
+                    bg: Color::rgba(0.05, 0.07, 0.11, 1.0),
+                    grid: Color::rgba(0.35, 0.55, 0.72, 0.22),
+                    text: Color::rgba(0.86, 0.93, 0.98, 1.0),
+                    a: Color::rgba(0.40, 0.78, 1.0, 1.0),
+                    b: Color::rgba(0.17, 0.52, 0.82, 0.62),
+                    c: Color::rgba(0.82, 0.94, 1.0, 0.75),
+                }),
+                2 => Some(ThemePalette {
+                    bg: Color::rgba(0.10, 0.08, 0.06, 1.0),
+                    grid: Color::rgba(0.62, 0.46, 0.24, 0.24),
+                    text: Color::rgba(0.98, 0.92, 0.82, 1.0),
+                    a: Color::rgba(1.0, 0.67, 0.30, 1.0),
+                    b: Color::rgba(0.85, 0.40, 0.20, 0.58),
+                    c: Color::rgba(1.0, 0.86, 0.60, 0.78),
+                }),
+                _ => Some(ThemePalette {
+                    bg: Color::rgba(0.07, 0.07, 0.08, 1.0),
+                    grid: Color::rgba(0.62, 0.64, 0.68, 0.18),
+                    text: Color::rgba(0.93, 0.94, 0.96, 1.0),
+                    a: Color::rgba(0.88, 0.92, 0.98, 1.0),
+                    b: Color::rgba(0.66, 0.71, 0.80, 0.55),
+                    c: Color::rgba(0.95, 0.97, 1.0, 0.70),
+                }),
+            }
+        };
+
+        if let Ok(mut m) = self.line.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Line) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.line = p.a;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+            }
+            m.style.stroke_width = pick_f32(ChartKind::Line, "stroke", &[1.0, 1.5, 2.2, 3.0]);
+            m.style.scroll_zoom_factor = pick_f32(ChartKind::Line, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::Line, "pinch", &[0.01, 0.05, 0.1]);
+            m.set_downsample_max_points(pick_usize(
+                ChartKind::Line,
+                "max_points",
+                &[2_500, 8_000, 20_000, 60_000],
+            ));
+        }
+
+        if let Ok(mut m) = self.area.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Area) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.line = p.a;
+                m.style.area = p.b;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+            }
+            m.style.stroke_width = pick_f32(ChartKind::Area, "stroke", &[1.0, 1.5, 2.2, 3.0]);
+            m.style.baseline_y = pick_f32(ChartKind::Area, "baseline", &[-0.5, 0.0, 0.5]);
+            m.style.scroll_zoom_factor = pick_f32(ChartKind::Area, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::Area, "pinch", &[0.01, 0.05, 0.1]);
+            m.set_downsample_max_points(pick_usize(
+                ChartKind::Area,
+                "max_points",
+                &[2_500, 8_000, 20_000, 60_000],
+            ));
+        }
+
+        if let Ok(mut m) = self.multi.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::MultiLine) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+            }
+            m.style.stroke_width = pick_f32(ChartKind::MultiLine, "stroke", &[0.8, 1.2, 1.8, 2.5]);
+            m.style.series_alpha =
+                pick_f32(ChartKind::MultiLine, "alpha", &[0.30, 0.45, 0.60, 0.75]);
+            m.style.scroll_zoom_factor =
+                pick_f32(ChartKind::MultiLine, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::MultiLine, "pinch", &[0.01, 0.05, 0.1]);
+            m.style.max_series = pick_usize(ChartKind::MultiLine, "max_series", &[24, 48, 72, 96]);
+            m.style.max_total_segments = pick_usize(
+                ChartKind::MultiLine,
+                "max_segments",
+                &[8_000, 22_000, 40_000, 80_000],
+            );
+            m.style.max_points_per_series = pick_usize(
+                ChartKind::MultiLine,
+                "max_points_per_series",
+                &[256, 512, 1_024, 2_048],
+            );
+            m.set_gap_dx(pick_f32(
+                ChartKind::MultiLine,
+                "gap_dx",
+                &[2.0, 6.0, 10.0, 14.0],
+            ));
+        }
+
+        if let Ok(mut m) = self.bar.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Bar) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.crosshair = p.c;
+            }
+            m.style.bar_alpha = pick_f32(ChartKind::Bar, "alpha", &[0.45, 0.65, 0.85, 1.0]);
+            m.style.max_series = pick_usize(ChartKind::Bar, "max_series", &[2, 4, 8, 16]);
+            m.style.max_bins =
+                pick_usize(ChartKind::Bar, "max_bins", &[2_000, 8_000, 20_000, 40_000]);
+            m.style.scroll_zoom_factor = pick_f32(ChartKind::Bar, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::Bar, "pinch", &[0.01, 0.05, 0.1]);
+        }
+
+        if let Ok(mut m) = self.hist.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Histogram) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.bar = p.a;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+            }
+            m.style.bins = pick_usize(ChartKind::Histogram, "bins", &[24, 48, 96, 192]);
+            m.style.scroll_zoom_factor =
+                pick_f32(ChartKind::Histogram, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::Histogram, "pinch", &[0.01, 0.05, 0.1]);
+        }
+
+        if let Ok(mut m) = self.scatter.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Scatter) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.points = p.a;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+            }
+            m.style.point_radius = pick_f32(ChartKind::Scatter, "radius", &[0.8, 1.2, 1.8, 2.5]);
+            m.style.hover_hit_radius_px =
+                pick_f32(ChartKind::Scatter, "hit", &[8.0, 12.0, 16.0, 24.0]);
+            m.style.scroll_zoom_factor =
+                pick_f32(ChartKind::Scatter, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::Scatter, "pinch", &[0.01, 0.05, 0.1]);
+            let max_points = pick_usize(
+                ChartKind::Scatter,
+                "max_points",
+                &[1_600, 4_000, 7_000, 14_000],
+            );
+            m.style.max_points = max_points.max(512);
+            m.set_max_points(max_points);
+        }
+
+        if let Ok(mut m) = self.candle.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Candlestick) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+                m.style.up = p.a;
+                m.style.down = p.b;
+                m.style.wick = p.c;
+            }
+            m.style.stroke_width =
+                pick_f32(ChartKind::Candlestick, "stroke", &[1.0, 1.5, 2.0, 2.8]);
+            m.style.max_candles = pick_usize(
+                ChartKind::Candlestick,
+                "max_candles",
+                &[3_500, 12_000, 20_000, 35_000],
+            );
+            m.style.scroll_zoom_factor =
+                pick_f32(ChartKind::Candlestick, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::Candlestick, "pinch", &[0.01, 0.05, 0.1]);
+        }
+
+        if let Ok(mut m) = self.heat.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Heatmap) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+            }
+            m.style.max_cells_x = pick_usize(ChartKind::Heatmap, "cells_x", &[64, 128, 192, 256]);
+            m.style.max_cells_y = pick_usize(ChartKind::Heatmap, "cells_y", &[32, 64, 96, 128]);
+        }
+
+        if let Ok(mut m) = self.stacked_area.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::StackedArea) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.crosshair = p.c;
+            }
+            m.style.stroke_width =
+                pick_f32(ChartKind::StackedArea, "stroke", &[0.8, 1.2, 1.8, 2.4]);
+            m.style.scroll_zoom_factor =
+                pick_f32(ChartKind::StackedArea, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::StackedArea, "pinch", &[0.01, 0.05, 0.1]);
+        }
+
+        if let Ok(mut m) = self.density.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::DensityMap) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+            }
+            m.style.max_cells_x =
+                pick_usize(ChartKind::DensityMap, "cells_x", &[72, 128, 192, 256]);
+            m.style.max_cells_y = pick_usize(ChartKind::DensityMap, "cells_y", &[36, 64, 96, 128]);
+            m.style.max_points = pick_usize(
+                ChartKind::DensityMap,
+                "max_points",
+                &[80_000, 180_000, 250_000, 400_000],
+            );
+            m.style.scroll_zoom_factor =
+                pick_f32(ChartKind::DensityMap, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::DensityMap, "pinch", &[0.01, 0.05, 0.1]);
+        }
+
+        if let Ok(mut m) = self.contour.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Contour) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.stroke = p.a;
+            }
+            m.style.stroke_width = pick_f32(ChartKind::Contour, "stroke", &[1.0, 1.5, 2.2, 3.0]);
+            m.style.max_segments = pick_usize(
+                ChartKind::Contour,
+                "max_segments",
+                &[7_000, 20_000, 35_000, 60_000],
+            );
+            let levels = [
+                vec![-0.4, 0.0, 0.4],
+                vec![-0.6, -0.2, 0.2, 0.6],
+                vec![-0.8, -0.4, 0.0, 0.4, 0.8],
+                vec![-0.9, -0.6, -0.3, 0.0, 0.3, 0.6, 0.9],
+            ];
+            m.style.levels =
+                levels[config.option_index(ChartKind::Contour, "levels", levels.len())].clone();
+            m.style.scroll_zoom_factor =
+                pick_f32(ChartKind::Contour, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::Contour, "pinch", &[0.01, 0.05, 0.1]);
+        }
+
+        if let Ok(mut m) = self.stats.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Statistics) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.accent = p.a;
+                m.style.crosshair = p.c;
+            }
+            m.style.scroll_zoom_factor =
+                pick_f32(ChartKind::Statistics, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::Statistics, "pinch", &[0.01, 0.05, 0.1]);
+        }
+
+        if let Ok(mut m) = self.hierarchy.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Hierarchy) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.border = p.a;
+            }
+            m.style.max_leaves = pick_usize(
+                ChartKind::Hierarchy,
+                "max_leaves",
+                &[600, 2_000, 4_000, 8_000],
+            );
+        }
+
+        if let Ok(mut m) = self.network.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Network) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.node = p.a;
+                m.style.link = p.b;
+            }
+            m.style.node_radius = pick_f32(ChartKind::Network, "radius", &[3.0, 6.0, 10.0, 14.0]);
+            m.style.max_nodes = pick_usize(ChartKind::Network, "max_nodes", &[96, 256, 512, 1024]);
+            m.style.max_links =
+                pick_usize(ChartKind::Network, "max_links", &[700, 2_000, 4_000, 8_000]);
+            m.style.scroll_zoom_factor =
+                pick_f32(ChartKind::Network, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::Network, "pinch", &[0.01, 0.05, 0.1]);
+        }
+
+        if let Ok(mut m) = self.polar.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Polar) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.stroke = p.a;
+            }
+            m.style.fill_alpha =
+                pick_f32(ChartKind::Polar, "fill_alpha", &[0.10, 0.20, 0.35, 0.50]);
+            m.style.max_series = pick_usize(ChartKind::Polar, "max_series", &[4, 8, 16, 32]);
+            let ranges = [0.8f32, 1.0, 1.2, 1.5];
+            let range = ranges[config.option_index(ChartKind::Polar, "range", ranges.len())];
+            m.style.min_value = 0.0;
+            m.style.max_value = range;
+        }
+
+        if let Ok(mut m) = self.gauge.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Gauge) {
+                m.style.bg = p.bg;
+                m.style.track = p.grid;
+                m.style.fill = p.a;
+                m.style.needle = p.c;
+                m.style.text = p.text;
+            }
+            m.style.stroke_width = pick_f32(ChartKind::Gauge, "stroke", &[4.0, 8.0, 12.0, 16.0]);
+            let spans = [0.5f32, 0.75, 1.0, 1.25];
+            let span = spans[config.option_index(ChartKind::Gauge, "span", spans.len())];
+            m.style.angle_start_rad = -std::f32::consts::PI * span;
+            m.style.angle_end_rad = std::f32::consts::PI * span;
+            m.transition_step_sec = pick_f32(
+                ChartKind::Gauge,
+                "transition_dt",
+                &[1.0 / 120.0, 1.0 / 90.0, 1.0 / 60.0, 1.0 / 30.0],
+            );
+        }
+
+        if let Ok(mut m) = self.funnel.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Funnel) {
+                m.style.bg = p.bg;
+                m.style.text = p.text;
+                m.style.fill = p.b;
+                m.style.stroke = p.c;
+            }
+        }
+
+        if let Ok(mut m) = self.geo.0.lock() {
+            if let Some(p) = theme_palette(ChartKind::Geo) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.stroke = p.a;
+            }
+            m.style.stroke_width = pick_f32(ChartKind::Geo, "stroke", &[0.8, 1.2, 1.8, 2.6]);
+            m.style.max_points = pick_usize(
+                ChartKind::Geo,
+                "max_points",
+                &[6_000, 20_000, 35_000, 60_000],
+            );
+            m.style.scroll_zoom_factor = pick_f32(ChartKind::Geo, "scroll", &[0.01, 0.02, 0.04]);
+            m.style.pinch_zoom_min = pick_f32(ChartKind::Geo, "pinch", &[0.01, 0.05, 0.1]);
         }
     }
 }
@@ -743,9 +1163,10 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     )
                     .child(
                         text(format!(
-                            "N={} | preset={} | seed=0x{:08X}",
+                            "N={} | preset={} | noise={} | seed=0x{:08X}",
                             cfg.line_n,
                             cfg.preset.label(),
+                            if cfg.noise_enabled { "on" } else { "off" },
                             cfg.base_seed as u32
                         ))
                         .size(if dense { 10.0 } else { 12.0 })
@@ -980,9 +1401,10 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             )
                             .child(
                                 text(format!(
-                                    "seed 0x{:08X} | preset {}",
+                                    "seed 0x{:08X} | preset {} | noise {}",
                                     cfg.seed_for_index(idx) as u32,
-                                    cfg.preset.label()
+                                    cfg.preset.label(),
+                                    if cfg.noise_enabled { "on" } else { "off" }
                                 ))
                                 .size(10.0)
                                 .color(Color::rgba(0.55, 0.60, 0.67, 1.0)),
@@ -1037,6 +1459,12 @@ fn control_panel(
     models: State<GalleryModels>,
 ) -> impl ElementBuilder {
     let cfg = config.try_get().expect("config exists");
+    let pick_usize = |kind: ChartKind, name: &str, values: &[usize]| -> usize {
+        values[cfg.option_index(kind, name, values.len())]
+    };
+    let pick_f32 = |kind: ChartKind, name: &str, values: &[f32]| -> f32 {
+        values[cfg.option_index(kind, name, values.len())]
+    };
 
     let mut row = div()
         .flex_row()
@@ -1088,6 +1516,23 @@ fn control_panel(
     {
         let config_for_click = config.clone();
         let models_for_click = models.clone();
+        row = row.child(action_chip(
+            format!("Noise: {}", if cfg.noise_enabled { "On" } else { "Off" }),
+            dense,
+            cfg.noise_enabled,
+            move |_| {
+                config_for_click.update(|mut c| {
+                    c.noise_enabled = !c.noise_enabled;
+                    c
+                });
+                refresh_models(&config_for_click, &models_for_click);
+            },
+        ));
+    }
+
+    {
+        let config_for_click = config.clone();
+        let models_for_click = models.clone();
         row = row.child(action_chip("Reset view/style", dense, false, move |_| {
             config_for_click.update(|mut c| {
                 c.reset();
@@ -1097,7 +1542,243 @@ fn control_panel(
         }));
     }
 
+    row = row.child(cycle_option_chip(
+        format!("Theme: T{}", cfg.option_index(item.kind, "theme", 4) + 1),
+        dense,
+        config.clone(),
+        models.clone(),
+        item.kind,
+        "theme",
+        4,
+    ));
+
     match item.kind {
+        ChartKind::Line => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Stroke {:.1}",
+                    pick_f32(ChartKind::Line, "stroke", &[1.0, 1.5, 2.2, 3.0])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Line,
+                "stroke",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "MaxPts {}",
+                    pick_usize(
+                        ChartKind::Line,
+                        "max_points",
+                        &[2_500, 8_000, 20_000, 60_000]
+                    )
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Line,
+                "max_points",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::Line, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Line,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::Line, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Line,
+                "pinch",
+                3,
+            ));
+        }
+        ChartKind::Area => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Stroke {:.1}",
+                    pick_f32(ChartKind::Area, "stroke", &[1.0, 1.5, 2.2, 3.0])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Area,
+                "stroke",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Baseline {:.1}",
+                    pick_f32(ChartKind::Area, "baseline", &[-0.5, 0.0, 0.5])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Area,
+                "baseline",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "MaxPts {}",
+                    pick_usize(
+                        ChartKind::Area,
+                        "max_points",
+                        &[2_500, 8_000, 20_000, 60_000]
+                    )
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Area,
+                "max_points",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::Area, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Area,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::Area, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Area,
+                "pinch",
+                3,
+            ));
+        }
+        ChartKind::MultiLine => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Stroke {:.1}",
+                    pick_f32(ChartKind::MultiLine, "stroke", &[0.8, 1.2, 1.8, 2.5])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::MultiLine,
+                "stroke",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Alpha {:.2}",
+                    pick_f32(ChartKind::MultiLine, "alpha", &[0.30, 0.45, 0.60, 0.75])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::MultiLine,
+                "alpha",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Series {}",
+                    pick_usize(ChartKind::MultiLine, "max_series", &[24, 48, 72, 96])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::MultiLine,
+                "max_series",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Seg {}",
+                    pick_usize(
+                        ChartKind::MultiLine,
+                        "max_segments",
+                        &[8_000, 22_000, 40_000, 80_000]
+                    )
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::MultiLine,
+                "max_segments",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pts/Series {}",
+                    pick_usize(
+                        ChartKind::MultiLine,
+                        "max_points_per_series",
+                        &[256, 512, 1_024, 2_048]
+                    )
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::MultiLine,
+                "max_points_per_series",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Gap {:.1}",
+                    pick_f32(ChartKind::MultiLine, "gap_dx", &[2.0, 6.0, 10.0, 14.0])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::MultiLine,
+                "gap_dx",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::MultiLine, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::MultiLine,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::MultiLine, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::MultiLine,
+                "pinch",
+                3,
+            ));
+        }
         ChartKind::Bar => {
             let config_for_click = config.clone();
             let models_for_click = models.clone();
@@ -1120,6 +1801,250 @@ fn control_panel(
                     refresh_models(&config_for_click, &models_for_click);
                 },
             ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Alpha {:.2}",
+                    pick_f32(ChartKind::Bar, "alpha", &[0.45, 0.65, 0.85, 1.0])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Bar,
+                "alpha",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Series {}",
+                    pick_usize(ChartKind::Bar, "max_series", &[2, 4, 8, 16])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Bar,
+                "max_series",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Bins {}",
+                    pick_usize(ChartKind::Bar, "max_bins", &[2_000, 8_000, 20_000, 40_000])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Bar,
+                "max_bins",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::Bar, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Bar,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::Bar, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Bar,
+                "pinch",
+                3,
+            ));
+        }
+        ChartKind::Histogram => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Bins {}",
+                    pick_usize(ChartKind::Histogram, "bins", &[24, 48, 96, 192])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Histogram,
+                "bins",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::Histogram, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Histogram,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::Histogram, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Histogram,
+                "pinch",
+                3,
+            ));
+        }
+        ChartKind::Scatter => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Radius {:.1}",
+                    pick_f32(ChartKind::Scatter, "radius", &[0.8, 1.2, 1.8, 2.5])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Scatter,
+                "radius",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Hit {:.0}",
+                    pick_f32(ChartKind::Scatter, "hit", &[8.0, 12.0, 16.0, 24.0])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Scatter,
+                "hit",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "MaxPts {}",
+                    pick_usize(
+                        ChartKind::Scatter,
+                        "max_points",
+                        &[1_600, 4_000, 7_000, 14_000]
+                    )
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Scatter,
+                "max_points",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::Scatter, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Scatter,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::Scatter, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Scatter,
+                "pinch",
+                3,
+            ));
+        }
+        ChartKind::Candlestick => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Stroke {:.1}",
+                    pick_f32(ChartKind::Candlestick, "stroke", &[1.0, 1.5, 2.0, 2.8])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Candlestick,
+                "stroke",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "MaxCandle {}",
+                    pick_usize(
+                        ChartKind::Candlestick,
+                        "max_candles",
+                        &[3_500, 12_000, 20_000, 35_000]
+                    )
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Candlestick,
+                "max_candles",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::Candlestick, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Candlestick,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::Candlestick, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Candlestick,
+                "pinch",
+                3,
+            ));
+        }
+        ChartKind::Heatmap => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "CellsX {}",
+                    pick_usize(ChartKind::Heatmap, "cells_x", &[64, 128, 192, 256])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Heatmap,
+                "cells_x",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "CellsY {}",
+                    pick_usize(ChartKind::Heatmap, "cells_y", &[32, 64, 96, 128])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Heatmap,
+                "cells_y",
+                4,
+            ));
         }
         ChartKind::StackedArea => {
             let config_for_click = config.clone();
@@ -1135,6 +2060,198 @@ fn control_panel(
                     });
                     refresh_models(&config_for_click, &models_for_click);
                 },
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Stroke {:.1}",
+                    pick_f32(ChartKind::StackedArea, "stroke", &[0.8, 1.2, 1.8, 2.4])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::StackedArea,
+                "stroke",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::StackedArea, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::StackedArea,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::StackedArea, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::StackedArea,
+                "pinch",
+                3,
+            ));
+        }
+        ChartKind::DensityMap => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "CellsX {}",
+                    pick_usize(ChartKind::DensityMap, "cells_x", &[72, 128, 192, 256])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::DensityMap,
+                "cells_x",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "CellsY {}",
+                    pick_usize(ChartKind::DensityMap, "cells_y", &[36, 64, 96, 128])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::DensityMap,
+                "cells_y",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "MaxPts {}",
+                    pick_usize(
+                        ChartKind::DensityMap,
+                        "max_points",
+                        &[80_000, 180_000, 250_000, 400_000]
+                    )
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::DensityMap,
+                "max_points",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::DensityMap, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::DensityMap,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::DensityMap, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::DensityMap,
+                "pinch",
+                3,
+            ));
+        }
+        ChartKind::Contour => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Stroke {:.1}",
+                    pick_f32(ChartKind::Contour, "stroke", &[1.0, 1.5, 2.2, 3.0])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Contour,
+                "stroke",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Segments {}",
+                    pick_usize(
+                        ChartKind::Contour,
+                        "max_segments",
+                        &[7_000, 20_000, 35_000, 60_000]
+                    )
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Contour,
+                "max_segments",
+                4,
+            ));
+            let lvl = cfg.option_index(ChartKind::Contour, "levels", 4) + 1;
+            row = row.child(cycle_option_chip(
+                format!("Levels L{lvl}"),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Contour,
+                "levels",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::Contour, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Contour,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::Contour, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Contour,
+                "pinch",
+                3,
+            ));
+        }
+        ChartKind::Statistics => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::Statistics, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Statistics,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::Statistics, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Statistics,
+                "pinch",
+                3,
             ));
         }
         ChartKind::Hierarchy => {
@@ -1152,6 +2269,22 @@ fn control_panel(
                     refresh_models(&config_for_click, &models_for_click);
                 },
             ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Leaves {}",
+                    pick_usize(
+                        ChartKind::Hierarchy,
+                        "max_leaves",
+                        &[600, 2_000, 4_000, 8_000]
+                    )
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Hierarchy,
+                "max_leaves",
+                4,
+            ));
         }
         ChartKind::Network => {
             let config_for_click = config.clone();
@@ -1168,6 +2301,66 @@ fn control_panel(
                     refresh_models(&config_for_click, &models_for_click);
                 },
             ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Radius {:.1}",
+                    pick_f32(ChartKind::Network, "radius", &[3.0, 6.0, 10.0, 14.0])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Network,
+                "radius",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Nodes {}",
+                    pick_usize(ChartKind::Network, "max_nodes", &[96, 256, 512, 1_024])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Network,
+                "max_nodes",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Links {}",
+                    pick_usize(ChartKind::Network, "max_links", &[700, 2_000, 4_000, 8_000])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Network,
+                "max_links",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::Network, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Network,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::Network, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Network,
+                "pinch",
+                3,
+            ));
         }
         ChartKind::Polar => {
             let config_for_click = config.clone();
@@ -1183,6 +2376,139 @@ fn control_panel(
                     });
                     refresh_models(&config_for_click, &models_for_click);
                 },
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Fill {:.2}",
+                    pick_f32(ChartKind::Polar, "fill_alpha", &[0.10, 0.20, 0.35, 0.50])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Polar,
+                "fill_alpha",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Series {}",
+                    pick_usize(ChartKind::Polar, "max_series", &[4, 8, 16, 32])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Polar,
+                "max_series",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Range {:.1}",
+                    pick_f32(ChartKind::Polar, "range", &[0.8, 1.0, 1.2, 1.5])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Polar,
+                "range",
+                4,
+            ));
+        }
+        ChartKind::Gauge => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Stroke {:.0}",
+                    pick_f32(ChartKind::Gauge, "stroke", &[4.0, 8.0, 12.0, 16.0])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Gauge,
+                "stroke",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Arc x{:.2}",
+                    pick_f32(ChartKind::Gauge, "span", &[0.5, 0.75, 1.0, 1.25])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Gauge,
+                "span",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Anim {}Hz",
+                    (1.0 / pick_f32(
+                        ChartKind::Gauge,
+                        "transition_dt",
+                        &[1.0 / 120.0, 1.0 / 90.0, 1.0 / 60.0, 1.0 / 30.0]
+                    ))
+                    .round() as i32
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Gauge,
+                "transition_dt",
+                4,
+            ));
+        }
+        ChartKind::Geo => {
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Stroke {:.1}",
+                    pick_f32(ChartKind::Geo, "stroke", &[0.8, 1.2, 1.8, 2.6])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Geo,
+                "stroke",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "MaxPts {}",
+                    pick_usize(
+                        ChartKind::Geo,
+                        "max_points",
+                        &[6_000, 20_000, 35_000, 60_000]
+                    )
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Geo,
+                "max_points",
+                4,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Scroll {:.2}",
+                    pick_f32(ChartKind::Geo, "scroll", &[0.01, 0.02, 0.04])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Geo,
+                "scroll",
+                3,
+            ));
+            row = row.child(cycle_option_chip(
+                format!(
+                    "Pinch {:.2}",
+                    pick_f32(ChartKind::Geo, "pinch", &[0.01, 0.05, 0.1])
+                ),
+                dense,
+                config.clone(),
+                models.clone(),
+                ChartKind::Geo,
+                "pinch",
+                3,
             ));
         }
         _ => {}
@@ -1254,6 +2580,24 @@ where
         .on_click(on_click)
 }
 
+fn cycle_option_chip(
+    label: impl Into<String>,
+    dense: bool,
+    config: State<GalleryConfig>,
+    models: State<GalleryModels>,
+    kind: ChartKind,
+    name: &'static str,
+    len: usize,
+) -> impl ElementBuilder {
+    action_chip(label, dense, true, move |_| {
+        config.update(|mut c| {
+            c.cycle_option(kind, name, len);
+            c
+        });
+        refresh_models(&config, &models);
+    })
+}
+
 fn refresh_models(config: &State<GalleryConfig>, models: &State<GalleryModels>) {
     if let Some(cfg) = config.try_get() {
         models.set(GalleryModels::new(&cfg));
@@ -1300,6 +2644,24 @@ fn splitmix64(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+static GALLERY_NOISE_ENABLED: AtomicBool = AtomicBool::new(true);
+
+fn set_gallery_noise_enabled(enabled: bool) {
+    GALLERY_NOISE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+fn gallery_noise_enabled() -> bool {
+    GALLERY_NOISE_ENABLED.load(Ordering::Relaxed)
+}
+
+fn noise_amount() -> f32 {
+    if gallery_noise_enabled() {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 fn seed01(seed: u64, stream: u64) -> f32 {
     let bits = (splitmix64(seed ^ stream.wrapping_mul(0x9E37_79B9_7F4A_7C15)) >> 40) as u32;
     bits as f32 / 16_777_215.0
@@ -1310,6 +2672,9 @@ fn seed_range(seed: u64, stream: u64, lo: f32, hi: f32) -> f32 {
 }
 
 fn seed_signed(seed: u64, stream: u64, magnitude: f32) -> f32 {
+    if !gallery_noise_enabled() {
+        return 0.0;
+    }
     (seed01(seed, stream) * 2.0 - 1.0) * magnitude
 }
 
@@ -1324,9 +2689,10 @@ fn make_series(n: usize, seed: u64) -> anyhow::Result<TimeSeriesF32> {
 
     for i in 0..n {
         let t = i as f32 * 0.001;
+        let saw = ((t * seed_range(seed, 5, 0.9, 1.3) + phase).fract() - 0.5) * noise;
         let v = (t * f0 + phase).sin() * 0.8
             + (t * f1 + phase * 0.55).sin() * 0.2
-            + ((t * seed_range(seed, 5, 0.9, 1.3) + phase).fract() - 0.5) * noise;
+            + saw * noise_amount();
         x.push(i as f32);
         y.push(v);
     }
@@ -1414,7 +2780,7 @@ fn make_candles(n: usize, seed: u64) -> Vec<Candle> {
         let noise = (t * seed_range(seed, 44, 1.2, 2.4)).sin() * noise_scale
             + (t * seed_range(seed, 45, 1.5, 2.8)).cos() * (noise_scale * 0.35);
 
-        let close = last + drift + noise;
+        let close = last + drift + noise * noise_amount();
         let open = last;
         let wick_amp = seed_range(seed, 46, 0.02, 0.07);
         let hi =

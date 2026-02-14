@@ -477,6 +477,20 @@ Easing::EaseOutBounce    // Bounce effect
 | Fuschia | In progress | wgpu (Vulkan/Scenic) |
 | HarmonyOS | In progress | wgpu (Vulkan/OpenGL ES) |
 
+## BlincCharts D3 Capability Policy
+
+BlincCharts follows an explicit capability contract against D3 modules:
+
+- `Full`: equivalent capability exists in BlincCharts.
+- `Partial`: capability exists with a narrower surface or constraints.
+- `Missing`: no practical equivalent yet.
+- `Out-of-scope`: runtime/data/DOM helpers intentionally outside `blinc_charts`.
+
+Reference docs:
+
+- Capability matrix: `docs/references/2026-02-11-d3-blinccharts-capability-matrix.md`
+- Gap closure backlog/implementation plan: `docs/plans/2026-02-11-d3-blinccharts-gap-backlog.md`
+
 ## Roadmap
 
 ### Completed
