@@ -13,11 +13,11 @@ Purpose: compare the latest `d3` package capability surface with current `blinc_
   - `Out-of-scope`: web/DOM utility not intended for BlincCharts runtime.
 
 Key evidence:
-- Public chart modules: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/lib.rs`
-- Gallery coverage (18 chart kinds wired): `/Users/cypark/Documents/project/Blinc/crates/blinc_app/examples/charts_gallery_demo.rs`
-- Shared view/domain mapping: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/view.rs`
-- Shared link/selection state: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/link.rs`
-- Shared interaction bindings: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/input.rs`
+- Public chart modules: `crates/blinc_charts/src/lib.rs`
+- Gallery coverage (18 chart kinds wired): `crates/blinc_app/examples/charts_gallery_demo.rs`
+- Shared view/domain mapping: `crates/blinc_charts/src/view.rs`
+- Shared link/selection state: `crates/blinc_charts/src/link.rs`
+- Shared interaction bindings: `crates/blinc_charts/src/input.rs`
 
 ## Capability Matrix (D3 30 modules)
 
@@ -94,7 +94,7 @@ Use these IDs in commit messages, PR descriptions, and progress notes so the cap
 ## Notable implementation update
 
 - `PolarChartMode::Parallel` now has a dedicated parallel-coordinates render path (axis + polyline), replacing the prior stub.
-  - Evidence: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/polar.rs` (`render_parallel`).
+  - Evidence: `crates/blinc_charts/src/polar.rs` (`render_parallel`).
 - Reusable utility layers (`axis`, `scale`, `format`, `time_format`) and optional algorithm layers (`spatial_index`, `triangulation`, `polygon`) were added for gap closure.
 - Transition/interpolation baseline now exists via `interpolate.rs` + `transition.rs`, with `GaugeChartModel` as the first integrated chart.
 

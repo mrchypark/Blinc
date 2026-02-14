@@ -12,10 +12,10 @@
 
 ## Source of Truth
 
-- Capability matrix: `/Users/cypark/Documents/project/Blinc/docs/references/2026-02-11-d3-blinccharts-capability-matrix.md`
-- Chart module surface: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/lib.rs`
-- Gallery coverage: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/examples/charts_gallery_demo.rs`
-- Parallel stub evidence: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/polar.rs`
+- Capability matrix: `docs/references/2026-02-11-d3-blinccharts-capability-matrix.md`
+- Chart module surface: `crates/blinc_charts/src/lib.rs`
+- Gallery coverage: `crates/blinc_app/examples/charts_gallery_demo.rs`
+- Parallel stub evidence: `crates/blinc_charts/src/polar.rs`
 
 ## Prioritization Rubric
 
@@ -81,9 +81,9 @@
 ### Task 1: `BLC-D3-001` Parallel Coordinates Real Implementation
 
 **Files:**
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/polar.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/examples/charts_gallery_demo.rs` (labels/help text only if needed)
-- Test: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/tests/gallery_completion_smoke.rs`
+- Modify: `crates/blinc_charts/src/polar.rs`
+- Modify: `crates/blinc_app/examples/charts_gallery_demo.rs` (labels/help text only if needed)
+- Test: `crates/blinc_charts/tests/gallery_completion_smoke.rs`
 
 **Step 1: Write failing tests for `Parallel` behavior**
 
@@ -114,9 +114,9 @@
 ### Task 2: `BLC-D3-002` Support Policy Publication
 
 **Files:**
-- Modify: `/Users/cypark/Documents/project/Blinc/docs/references/2026-02-11-d3-blinccharts-capability-matrix.md`
-- Modify: `/Users/cypark/Documents/project/Blinc/docs/plans/2026-02-11-d3-blinccharts-gap-backlog.md`
-- Modify: `/Users/cypark/Documents/project/Blinc/README.md` (short pointer section)
+- Modify: `docs/references/2026-02-11-d3-blinccharts-capability-matrix.md`
+- Modify: `docs/plans/2026-02-11-d3-blinccharts-gap-backlog.md`
+- Modify: `README.md` (short pointer section)
 
 **Step 1: Add visible rubric pointer from README**
 
@@ -134,12 +134,12 @@
 ### Task 3: `BLC-D3-003` Reusable Axis/Tick Module (Phase 1 first)
 
 **Files:**
-- Create: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/axis.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/lib.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/line.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/bar.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/scatter.rs`
-- Test: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/tests/gallery_completion_smoke.rs` (or new dedicated axis tests)
+- Create: `crates/blinc_charts/src/axis.rs`
+- Modify: `crates/blinc_charts/src/lib.rs`
+- Modify: `crates/blinc_charts/src/line.rs`
+- Modify: `crates/blinc_charts/src/bar.rs`
+- Modify: `crates/blinc_charts/src/scatter.rs`
+- Test: `crates/blinc_charts/tests/gallery_completion_smoke.rs` (or new dedicated axis tests)
 
 **Step 1: Add axis API and failing tests**
 
