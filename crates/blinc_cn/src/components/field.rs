@@ -33,7 +33,9 @@ impl Field {
             container = container.max_w(max_width);
         }
 
-        let mut lbl = label(&config.label).size(config.label_size);
+        let mut lbl = label(&config.label)
+            .size(config.label_size)
+            .disabled(config.disabled);
         if config.required {
             lbl = lbl.required();
         }
