@@ -13,6 +13,8 @@ pub struct HeadlessRunConfig {
     pub max_frames: u32,
     /// Logical milliseconds between frames.
     pub tick_ms: u64,
+    /// Probe sampling interval in frames (1 = every frame, 4 = every 4 frames).
+    pub probe_every_frames: u32,
 }
 
 impl Default for HeadlessRunConfig {
@@ -22,6 +24,7 @@ impl Default for HeadlessRunConfig {
             height: 720,
             max_frames: 1,
             tick_ms: 16,
+            probe_every_frames: 4,
         }
     }
 }

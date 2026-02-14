@@ -1048,6 +1048,7 @@ fn headless_runtime_runs_fixed_frame_budget() {
         height: 600,
         max_frames: 3,
         tick_ms: 16,
+        probe_every_frames: 1,
     };
 
     HeadlessRuntime::run(cfg, |_ctx| {

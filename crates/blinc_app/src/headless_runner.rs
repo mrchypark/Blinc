@@ -79,6 +79,7 @@ where
     let mut elapsed_frames: u64 = 0;
     let mut elapsed_ms: u64 = 0;
     let mut latest_snapshot: Option<DiagnosticsSnapshot> = None;
+    let probe_every = runtime_cfg.probe_every_frames.max(1);
 
     for (step_index, step) in scenario.steps.iter().enumerate() {
         match step {
@@ -87,17 +88,22 @@ where
                 if frames > 0 {
                     let mut cfg = runtime_cfg;
                     cfg.max_frames = frames;
+                    let mut sampled_frames = 0u32;
                     let mut remaining_ms = *ms;
                     HeadlessRuntime::run(cfg, |_| {
                         elapsed_frames = elapsed_frames.saturating_add(1);
                         let step_ms = remaining_ms.min(runtime_cfg.tick_ms);
                         elapsed_ms = elapsed_ms.saturating_add(step_ms);
                         remaining_ms = remaining_ms.saturating_sub(step_ms);
-                        latest_snapshot = Some(probe(&ProbeContext {
-                            elapsed_frames,
-                            elapsed_ms,
-                            step_index,
-                        }));
+                        sampled_frames = sampled_frames.saturating_add(1);
+
+                        if sampled_frames % probe_every == 0 || sampled_frames == frames {
+                            latest_snapshot = Some(probe(&ProbeContext {
+                                elapsed_frames,
+                                elapsed_ms,
+                                step_index,
+                            }));
+                        }
                     })?;
                 } else {
                     latest_snapshot = Some(probe(&ProbeContext {
@@ -111,14 +117,19 @@ where
                 if *frames > 0 {
                     let mut cfg = runtime_cfg;
                     cfg.max_frames = *frames;
+                    let mut sampled_frames = 0u32;
                     HeadlessRuntime::run(cfg, |_| {
                         elapsed_frames = elapsed_frames.saturating_add(1);
                         elapsed_ms = elapsed_ms.saturating_add(runtime_cfg.tick_ms);
-                        latest_snapshot = Some(probe(&ProbeContext {
-                            elapsed_frames,
-                            elapsed_ms,
-                            step_index,
-                        }));
+                        sampled_frames = sampled_frames.saturating_add(1);
+
+                        if sampled_frames % probe_every == 0 || sampled_frames == *frames {
+                            latest_snapshot = Some(probe(&ProbeContext {
+                                elapsed_frames,
+                                elapsed_ms,
+                                step_index,
+                            }));
+                        }
                     })?;
                 } else {
                     latest_snapshot = Some(probe(&ProbeContext {

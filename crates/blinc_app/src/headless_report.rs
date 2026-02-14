@@ -47,6 +47,11 @@ impl HeadlessReport {
 
     pub fn write_to_path(&self, path: &Path) -> Result<()> {
         let payload = serde_json::to_string_pretty(self)?;
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         std::fs::write(path, payload)?;
         Ok(())
     }

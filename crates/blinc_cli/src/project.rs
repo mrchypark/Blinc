@@ -1553,6 +1553,7 @@ fn run_headless_diagnostics(
             height: 600,
             max_frames: 1,
             tick_ms: 16,
+            probe_every_frames: 4,
         }},
         &mut probe,
     )?;

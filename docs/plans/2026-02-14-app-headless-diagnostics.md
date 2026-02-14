@@ -48,7 +48,7 @@ fn headless_runtime_runs_fixed_frame_budget() {
     use crate::headless_runtime::{HeadlessRunConfig, HeadlessRuntime};
 
     let mut frames = 0u32;
-    let cfg = HeadlessRunConfig { width: 800, height: 600, max_frames: 3, tick_ms: 16 };
+    let cfg = HeadlessRunConfig { width: 800, height: 600, max_frames: 3, tick_ms: 16, probe_every_frames: 1 };
 
     HeadlessRuntime::run(cfg, |_ctx| {
         frames += 1;
@@ -66,7 +66,7 @@ Expected: FAIL (`headless_runtime` module/types not found).
 **Step 3: Write minimal implementation**
 
 ```rust
-pub struct HeadlessRunConfig { pub width: u32, pub height: u32, pub max_frames: u32, pub tick_ms: u64 }
+pub struct HeadlessRunConfig { pub width: u32, pub height: u32, pub max_frames: u32, pub tick_ms: u64, pub probe_every_frames: u32 }
 pub struct HeadlessContext { pub frame_index: u32, pub width: u32, pub height: u32 }
 pub struct HeadlessRuntime;
 
