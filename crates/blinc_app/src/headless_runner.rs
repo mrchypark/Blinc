@@ -85,59 +85,35 @@ where
         match step {
             ScenarioStep::Wait { ms } => {
                 let frames = wait_frames(*ms, runtime_cfg.tick_ms);
-                if frames > 0 {
-                    let mut cfg = runtime_cfg;
-                    cfg.max_frames = frames;
-                    let mut sampled_frames = 0u32;
-                    let mut remaining_ms = *ms;
-                    HeadlessRuntime::run(cfg, |_| {
-                        elapsed_frames = elapsed_frames.saturating_add(1);
+                let mut remaining_ms = *ms;
+                run_sampled_frames(
+                    runtime_cfg,
+                    frames,
+                    probe_every,
+                    step_index,
+                    &mut elapsed_frames,
+                    &mut elapsed_ms,
+                    &mut latest_snapshot,
+                    probe,
+                    || {
                         let step_ms = remaining_ms.min(runtime_cfg.tick_ms);
-                        elapsed_ms = elapsed_ms.saturating_add(step_ms);
                         remaining_ms = remaining_ms.saturating_sub(step_ms);
-                        sampled_frames = sampled_frames.saturating_add(1);
-
-                        if sampled_frames % probe_every == 0 || sampled_frames == frames {
-                            latest_snapshot = Some(probe(&ProbeContext {
-                                elapsed_frames,
-                                elapsed_ms,
-                                step_index,
-                            }));
-                        }
-                    })?;
-                } else {
-                    latest_snapshot = Some(probe(&ProbeContext {
-                        elapsed_frames,
-                        elapsed_ms,
-                        step_index,
-                    }));
-                }
+                        step_ms
+                    },
+                )?;
             }
             ScenarioStep::Tick { frames } => {
-                if *frames > 0 {
-                    let mut cfg = runtime_cfg;
-                    cfg.max_frames = *frames;
-                    let mut sampled_frames = 0u32;
-                    HeadlessRuntime::run(cfg, |_| {
-                        elapsed_frames = elapsed_frames.saturating_add(1);
-                        elapsed_ms = elapsed_ms.saturating_add(runtime_cfg.tick_ms);
-                        sampled_frames = sampled_frames.saturating_add(1);
-
-                        if sampled_frames % probe_every == 0 || sampled_frames == *frames {
-                            latest_snapshot = Some(probe(&ProbeContext {
-                                elapsed_frames,
-                                elapsed_ms,
-                                step_index,
-                            }));
-                        }
-                    })?;
-                } else {
-                    latest_snapshot = Some(probe(&ProbeContext {
-                        elapsed_frames,
-                        elapsed_ms,
-                        step_index,
-                    }));
-                }
+                run_sampled_frames(
+                    runtime_cfg,
+                    *frames,
+                    probe_every,
+                    step_index,
+                    &mut elapsed_frames,
+                    &mut elapsed_ms,
+                    &mut latest_snapshot,
+                    probe,
+                    || runtime_cfg.tick_ms,
+                )?;
             }
             ScenarioStep::AssertExists { id } => {
                 let snapshot = ensure_snapshot(
@@ -202,6 +178,50 @@ where
     F: FnMut(&ProbeContext) -> DiagnosticsSnapshot,
 {
     latest_snapshot.get_or_insert_with(|| probe(&probe_ctx))
+}
+
+fn run_sampled_frames<F, A>(
+    runtime_cfg: HeadlessRunConfig,
+    frames: u32,
+    probe_every: u32,
+    step_index: usize,
+    elapsed_frames: &mut u64,
+    elapsed_ms: &mut u64,
+    latest_snapshot: &mut Option<DiagnosticsSnapshot>,
+    probe: &mut F,
+    mut advance_ms: A,
+) -> Result<()>
+where
+    F: FnMut(&ProbeContext) -> DiagnosticsSnapshot,
+    A: FnMut() -> u64,
+{
+    if frames == 0 {
+        *latest_snapshot = Some(probe(&ProbeContext {
+            elapsed_frames: *elapsed_frames,
+            elapsed_ms: *elapsed_ms,
+            step_index,
+        }));
+        return Ok(());
+    }
+
+    let mut cfg = runtime_cfg;
+    cfg.max_frames = frames;
+    let mut sampled_frames = 0u32;
+    HeadlessRuntime::run(cfg, |_| {
+        *elapsed_frames = (*elapsed_frames).saturating_add(1);
+        *elapsed_ms = (*elapsed_ms).saturating_add(advance_ms());
+        sampled_frames = sampled_frames.saturating_add(1);
+
+        if sampled_frames % probe_every == 0 || sampled_frames == frames {
+            *latest_snapshot = Some(probe(&ProbeContext {
+                elapsed_frames: *elapsed_frames,
+                elapsed_ms: *elapsed_ms,
+                step_index,
+            }));
+        }
+    })?;
+
+    Ok(())
 }
 
 fn wait_frames(wait_ms: u64, tick_ms: u64) -> u32 {

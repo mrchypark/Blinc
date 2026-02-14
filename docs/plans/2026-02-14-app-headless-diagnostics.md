@@ -36,9 +36,9 @@ I'm using the writing-plans skill to create the implementation plan.
 ### Task 1: Define Headless Runtime Contract in `blinc_app`
 
 **Files:**
-- Create: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/headless_runtime.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/lib.rs`
-- Test: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/tests.rs`
+- Create: `crates/blinc_app/src/headless_runtime.rs`
+- Modify: `crates/blinc_app/src/lib.rs`
+- Test: `crates/blinc_app/src/tests.rs`
 
 **Step 1: Write the failing test**
 
@@ -98,10 +98,10 @@ git commit -m "feat(blinc_app): add minimal headless runtime contract"
 ### Task 2: Add Scenario File Parsing (MVP DSL)
 
 **Files:**
-- Create: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/headless_scenario.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/lib.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/Cargo.toml`
-- Test: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/tests.rs`
+- Create: `crates/blinc_app/src/headless_scenario.rs`
+- Modify: `crates/blinc_app/src/lib.rs`
+- Modify: `crates/blinc_app/Cargo.toml`
+- Test: `crates/blinc_app/src/tests.rs`
 
 **Step 1: Write the failing test**
 
@@ -159,9 +159,9 @@ git commit -m "feat(blinc_app): add headless scenario parser"
 ### Task 3: Implement Assertion Engine for Goal Checks
 
 **Files:**
-- Create: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/headless_assert.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/lib.rs`
-- Test: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/tests.rs`
+- Create: `crates/blinc_app/src/headless_assert.rs`
+- Modify: `crates/blinc_app/src/lib.rs`
+- Test: `crates/blinc_app/src/tests.rs`
 
 **Step 1: Write the failing test**
 
@@ -215,9 +215,9 @@ git commit -m "feat(blinc_app): add headless goal assertion engine"
 ### Task 4: Connect Headless Runtime + Scenario + Assertions into One Runner
 
 **Files:**
-- Create: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/headless_runner.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/lib.rs`
-- Test: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/tests.rs`
+- Create: `crates/blinc_app/src/headless_runner.rs`
+- Modify: `crates/blinc_app/src/lib.rs`
+- Test: `crates/blinc_app/src/tests.rs`
 
 **Step 1: Write the failing test**
 
@@ -274,9 +274,9 @@ git commit -m "feat(blinc_app): wire headless diagnostics runner"
 ### Task 5: Add App Entry `--headless` Mode in Generated Rust Template
 
 **Files:**
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_cli/src/project.rs`
-- Test: `/Users/cypark/Documents/project/Blinc/crates/blinc_cli/src/project.rs` (template generation tests)
-- Docs: `/Users/cypark/Documents/project/Blinc/crates/blinc_cli/README.md` (if present; else use root CLI docs)
+- Modify: `crates/blinc_cli/src/project.rs`
+- Test: `crates/blinc_cli/src/project.rs` (template generation tests)
+- Docs: `crates/blinc_cli/README.md` (if present; else use root CLI docs)
 
 **Step 1: Write the failing test**
 
@@ -318,10 +318,10 @@ git commit -m "feat(blinc_cli): scaffold app-level headless diagnostics mode"
 ### Task 6: Recorder-Compatible Failure Report Output
 
 **Files:**
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/headless_runner.rs`
-- Create: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/headless_report.rs`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/lib.rs`
-- Test: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/src/tests.rs`
+- Modify: `crates/blinc_app/src/headless_runner.rs`
+- Create: `crates/blinc_app/src/headless_report.rs`
+- Modify: `crates/blinc_app/src/lib.rs`
+- Test: `crates/blinc_app/src/tests.rs`
 
 **Step 1: Write the failing test**
 
@@ -373,13 +373,13 @@ git commit -m "feat(blinc_app): emit headless diagnostics failure reports"
 ### Task 7: Documentation + Developer Workflow
 
 **Files:**
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/README.md`
-- Modify: `/Users/cypark/Documents/project/Blinc/crates/blinc_recorder/README.md`
-- Create: `/Users/cypark/Documents/project/Blinc/docs/headless-diagnostics.md`
+- Modify: `crates/blinc_app/README.md`
+- Modify: `crates/blinc_recorder/README.md`
+- Create: `docs/headless-diagnostics.md`
 
 **Step 1: Write the failing doc check**
 
-Run: `rg -n "headless diagnostics|--headless|scenario|assert" /Users/cypark/Documents/project/Blinc/crates/blinc_app/README.md /Users/cypark/Documents/project/Blinc/docs/headless-diagnostics.md`
+Run: `rg -n "headless diagnostics|--headless|scenario|assert" crates/blinc_app/README.md docs/headless-diagnostics.md`
 Expected: FAIL for missing new guide file and missing sections.
 
 **Step 2: Add minimal docs**
@@ -392,7 +392,7 @@ Include:
 
 **Step 3: Verify docs presence**
 
-Run: `rg -n "headless diagnostics|--headless|assert_exists|assert_text_contains" /Users/cypark/Documents/project/Blinc/crates/blinc_app/README.md /Users/cypark/Documents/project/Blinc/docs/headless-diagnostics.md`
+Run: `rg -n "headless diagnostics|--headless|assert_exists|assert_text_contains" crates/blinc_app/README.md docs/headless-diagnostics.md`
 Expected: PASS.
 
 **Step 4: Formatting gate**
