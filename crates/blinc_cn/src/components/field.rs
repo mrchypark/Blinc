@@ -101,11 +101,11 @@ impl ElementBuilder for Field {
 #[derive(Clone, Default)]
 pub(crate) struct FieldConfig {
     label: String,
-    pub(crate) label_size: LabelSize,
-    pub(crate) required: bool,
-    pub(crate) disabled: bool,
-    pub(crate) description: Option<String>,
-    pub(crate) error: Option<String>,
+    label_size: LabelSize,
+    required: bool,
+    disabled: bool,
+    description: Option<String>,
+    error: Option<String>,
     width: Option<f32>,
     max_width: Option<f32>,
     full_width: bool,

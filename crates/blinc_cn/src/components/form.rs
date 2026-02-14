@@ -78,9 +78,9 @@ impl ElementBuilder for Form {
 
 #[derive(Clone, Default)]
 pub(crate) struct FormConfig {
-    pub(crate) spacing: Option<f32>,
-    pub(crate) full_width: bool,
-    pub(crate) disabled: bool,
+    spacing: Option<f32>,
+    full_width: bool,
+    disabled: bool,
     width: Option<f32>,
     max_width: Option<f32>,
     children: Vec<Arc<dyn ElementBuilder>>,
