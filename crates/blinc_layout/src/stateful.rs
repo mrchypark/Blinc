@@ -3900,16 +3900,6 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
         ElementTypeId::Div
     }
 
-    fn element_id(&self) -> Option<&str> {
-        // SAFETY: Same pattern as children_builders/layout_style - stable during rendering
-        unsafe { (*self.inner.as_ptr()).element_id.as_deref() }
-    }
-
-    fn element_classes(&self) -> &[String] {
-        // SAFETY: Same pattern as children_builders/layout_style - stable during rendering
-        unsafe { &(*self.inner.as_ptr()).classes }
-    }
-
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
         // SAFETY: We use a raw pointer here because we need to return a reference
         // to the event handlers cache. The cache is stable during rendering.
