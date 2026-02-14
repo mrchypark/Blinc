@@ -140,13 +140,15 @@ where
                 }
             }
             ScenarioStep::AssertExists { id } => {
-                let snapshot = latest_snapshot.get_or_insert_with(|| {
-                    probe(&ProbeContext {
+                let snapshot = ensure_snapshot(
+                    &mut latest_snapshot,
+                    probe,
+                    ProbeContext {
                         elapsed_frames,
                         elapsed_ms,
                         step_index,
-                    })
-                });
+                    },
+                );
                 if let AssertionResult::Failed { message, .. } =
                     evaluate_assert_exists(id, snapshot)
                 {
@@ -161,13 +163,15 @@ where
                 }
             }
             ScenarioStep::AssertTextContains { id, value } => {
-                let snapshot = latest_snapshot.get_or_insert_with(|| {
-                    probe(&ProbeContext {
+                let snapshot = ensure_snapshot(
+                    &mut latest_snapshot,
+                    probe,
+                    ProbeContext {
                         elapsed_frames,
                         elapsed_ms,
                         step_index,
-                    })
-                });
+                    },
+                );
                 if let AssertionResult::Failed { message, .. } =
                     evaluate_assert_text_contains(id, value, snapshot)
                 {
@@ -187,6 +191,17 @@ where
     Ok(RunOutcome::Passed {
         report: HeadlessReport::passed(elapsed_frames, elapsed_ms),
     })
+}
+
+fn ensure_snapshot<'a, F>(
+    latest_snapshot: &'a mut Option<DiagnosticsSnapshot>,
+    probe: &mut F,
+    probe_ctx: ProbeContext,
+) -> &'a DiagnosticsSnapshot
+where
+    F: FnMut(&ProbeContext) -> DiagnosticsSnapshot,
+{
+    latest_snapshot.get_or_insert_with(|| probe(&probe_ctx))
 }
 
 fn wait_frames(wait_ms: u64, tick_ms: u64) -> u32 {

@@ -43,18 +43,16 @@ pub fn evaluate_assert_text_contains(
             message: format!("{id}: element not found"),
         };
     };
-    let Some(text) = element.text.as_deref() else {
-        return AssertionResult::Failed {
-            code: "missing_text".to_string(),
-            message: format!("{id}: text not available"),
-        };
-    };
-    if text.contains(expected) {
-        AssertionResult::Passed
-    } else {
-        AssertionResult::Failed {
+
+    match element.text.as_deref() {
+        Some(text) if text.contains(expected) => AssertionResult::Passed,
+        Some(text) => AssertionResult::Failed {
             code: "text_mismatch".to_string(),
             message: format!("{id}: expected substring '{expected}', got '{text}'"),
-        }
+        },
+        None => AssertionResult::Failed {
+            code: "missing_text".to_string(),
+            message: format!("{id}: text not available"),
+        },
     }
 }

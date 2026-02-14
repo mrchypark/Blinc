@@ -5,10 +5,18 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
 
+/// Report status for a headless diagnostics run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportStatus {
+    Passed,
+    Failed,
+}
+
 /// Machine-readable result of a headless diagnostics run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeadlessReport {
-    pub status: String,
+    pub status: ReportStatus,
     pub failed_step_index: Option<usize>,
     pub assertion: Option<String>,
     pub message: Option<String>,
@@ -19,7 +27,7 @@ pub struct HeadlessReport {
 impl HeadlessReport {
     pub fn passed(elapsed_frames: u64, elapsed_ms: u64) -> Self {
         Self {
-            status: "passed".to_string(),
+            status: ReportStatus::Passed,
             failed_step_index: None,
             assertion: None,
             message: None,
@@ -36,7 +44,7 @@ impl HeadlessReport {
         elapsed_ms: u64,
     ) -> Self {
         Self {
-            status: "failed".to_string(),
+            status: ReportStatus::Failed,
             failed_step_index: Some(failed_step_index),
             assertion: Some(assertion.to_string()),
             message: Some(message),
