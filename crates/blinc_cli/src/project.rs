@@ -1499,10 +1499,7 @@ fn parse_headless_args() -> Result<(bool, Option<String>, Option<String>)> {{
                 report = Some(next_value("--report")?);
             }}
             _ if arg.starts_with("--") => {{
-                return Err(BlincError::Other(format!(
-                    concat!("unknown flag: ", "{{}}"),
-                    arg
-                )));
+                // Allow non-headless flags for compatibility with host/runtime launchers.
             }}
             _ => {{}}
         }}
@@ -1561,7 +1558,10 @@ fn run_headless_diagnostics(
 
     let report = outcome.report();
     if let Some(path) = report_path {{
-        report.write_to_path(Path::new(path))?;
+        report.write_to_path_under(
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            Path::new(path),
+        )?;
     }} else {{
         report.write_to_writer(&mut std::io::stdout())?;
     }}

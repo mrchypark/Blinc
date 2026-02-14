@@ -53,7 +53,10 @@ impl HeadlessReport {
         }
     }
 
-    pub fn write_to_path(&self, path: &Path) -> Result<()> {
+    pub fn write_to_path_under(&self, root: &Path, path: &Path) -> Result<()> {
+        if !root.is_absolute() {
+            bail!("report root must be absolute");
+        }
         if path.is_absolute() || path.has_root() {
             bail!("report path must be relative and must not start with a separator");
         }
@@ -63,13 +66,14 @@ impl HeadlessReport {
         {
             bail!("report path cannot contain '..' or drive prefixes");
         }
+        let resolved = root.join(path);
         let payload = serde_json::to_string_pretty(self)?;
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = resolved.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        std::fs::write(path, payload)?;
+        std::fs::write(resolved, payload)?;
         Ok(())
     }
 
