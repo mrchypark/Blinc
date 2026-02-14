@@ -591,7 +591,8 @@ pub struct ShapeDesc {
 /// - type_info: `vec4<u32>`     (16 bytes)
 /// - clip_bounds: `vec4<f32>`   (16 bytes)
 /// - clip_radius: `vec4<f32>`   (16 bytes)
-///   Total: 128 bytes
+/// - border_color: `vec4<f32>`  (16 bytes)
+///   Total: 144 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuGlassPrimitive {
@@ -615,6 +616,8 @@ pub struct GpuGlassPrimitive {
     pub clip_bounds: [f32; 4],
     /// Clip corner radii (for rounded rect clips)
     pub clip_radius: [f32; 4],
+    /// Border color (RGBA) - when alpha > 0, renders a solid border instead of light-based highlights
+    pub border_color: [f32; 4],
 }
 
 impl Default for GpuGlassPrimitive {
@@ -630,6 +633,7 @@ impl Default for GpuGlassPrimitive {
             // No clip by default (very large bounds)
             clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
             clip_radius: [0.0; 4],
+            border_color: [0.0, 0.0, 0.0, 0.0], // Transparent = use light-based highlights
         }
     }
 }
@@ -846,6 +850,13 @@ impl GpuGlassPrimitive {
     pub fn with_no_clip(mut self) -> Self {
         self.clip_bounds = [-10000.0, -10000.0, 100000.0, 100000.0];
         self.clip_radius = [0.0; 4];
+        self
+    }
+
+    /// Set border color (RGBA). When alpha > 0, a solid border is rendered
+    /// using this color instead of the default light-based edge highlights.
+    pub fn with_border_color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
+        self.border_color = [r, g, b, a];
         self
     }
 }
@@ -1525,6 +1536,11 @@ impl PrimitiveBatch {
     }
 
     pub fn push_glass(&mut self, glass: GpuGlassPrimitive) {
+        self.glass_primitives.push(glass);
+    }
+
+    /// Compatibility shim for nested glass call sites.
+    pub fn push_nested_glass(&mut self, glass: GpuGlassPrimitive) {
         self.glass_primitives.push(glass);
     }
 

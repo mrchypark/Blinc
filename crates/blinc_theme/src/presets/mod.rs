@@ -270,6 +270,7 @@ fn build_colors(base: BasePalette, scheme: ColorScheme) -> ColorTokens {
         text_inverse: base.primary_foreground,
         text_link: base.primary,
         border: base.border,
+        border_secondary: base.border,
         border_hover,
         border_focus: base.ring,
         border_error: base.destructive,
