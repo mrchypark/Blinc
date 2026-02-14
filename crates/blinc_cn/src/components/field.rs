@@ -25,7 +25,7 @@ impl Field {
 
         let mut container = div().flex_col().h_fit().gap_px(gap);
 
-        let mut lbl = label(&config.label).size(LabelSize::Medium);
+        let mut lbl = label(&config.label).size(config.label_size);
         if config.required {
             lbl = lbl.required();
         }
@@ -90,6 +90,7 @@ impl ElementBuilder for Field {
 #[derive(Clone, Default)]
 pub(crate) struct FieldConfig {
     label: String,
+    pub(crate) label_size: LabelSize,
     pub(crate) required: bool,
     pub(crate) disabled: bool,
     pub(crate) description: Option<String>,
@@ -122,6 +123,11 @@ impl FieldBuilder {
 
     pub fn required(mut self) -> Self {
         self.config.required = true;
+        self
+    }
+
+    pub fn label_size(mut self, size: LabelSize) -> Self {
+        self.config.label_size = size;
         self
     }
 
@@ -195,5 +201,11 @@ mod tests {
             field.config.description.as_deref(),
             Some("We'll never share your email.")
         );
+    }
+
+    #[test]
+    fn test_field_builder_sets_label_size() {
+        let field = field("Email").label_size(LabelSize::Small);
+        assert_eq!(field.config.label_size, LabelSize::Small);
     }
 }

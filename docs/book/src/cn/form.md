@@ -297,17 +297,15 @@ use blinc_layout::widgets::text_input::text_input_data;
 let email = text_input_data();
 let show_error = true; // replace with your own validation condition
 
-field("Email")
-    .child(
-        if show_error {
-            input(&email)
-                .input_type("email")
-                .error("Invalid email address")
-                .on_change(|v| println!("email: {}", v))
-        } else {
-            input(&email)
-                .input_type("email")
-                .on_change(|v| println!("email: {}", v))
-        }
-    )
+let mut email_field = field("Email");
+let mut email_input = input(&email)
+    .input_type("email")
+    .on_change(|v| println!("email: {}", v));
+
+if show_error {
+    email_field = email_field.error("Invalid email address");
+    email_input = email_input.error("Invalid email address");
+}
+
+email_field.child(email_input)
 ```
