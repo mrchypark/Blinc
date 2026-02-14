@@ -293,26 +293,22 @@ form()
 ## Validation
 
 ```rust
-let email = use_state(String::new());
-let email_error = use_derived(|| {
-    if email.is_empty() {
-        None
-    } else if !email.contains('@') {
-        Some("Invalid email address")
-    } else {
-        None
-    }
-});
+use blinc_layout::widgets::text_input::text_input_data;
 
-div().flex_col().gap(4.0)
-    .child(label("Email"))
-    .child(input()
-        .value(&email)
-        .error(email_error.is_some())
-        .on_change(|v| set_email(v)))
+let email = text_input_data();
+let show_error = true; // replace with your own validation condition
+
+field("Email")
     .child(
-        email_error.map(|err|
-            text(err).size(12.0).color(Color::RED)
-        )
+        if show_error {
+            input(&email)
+                .input_type("email")
+                .error("Invalid email address")
+                .on_change(|v| set_email(v))
+        } else {
+            input(&email)
+                .input_type("email")
+                .on_change(|v| set_email(v))
+        }
     )
 ```
