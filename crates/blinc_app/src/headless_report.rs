@@ -3,7 +3,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Component, Path};
 
 /// Report status for a headless diagnostics run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +54,9 @@ impl HeadlessReport {
     }
 
     pub fn write_to_path(&self, path: &Path) -> Result<()> {
+        if path.components().any(|c| c == Component::ParentDir) {
+            return Err(anyhow::Error::msg("report path cannot contain '..'"));
+        }
         let payload = serde_json::to_string_pretty(self)?;
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
