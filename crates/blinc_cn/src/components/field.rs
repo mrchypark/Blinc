@@ -175,6 +175,7 @@ impl FieldBuilder {
 
     pub fn w_full(mut self) -> Self {
         self.config.full_width = true;
+        self.config.width = None;
         self
     }
 
@@ -247,7 +248,7 @@ mod tests {
     #[test]
     fn test_field_builder_sets_width_controls() {
         let field = field("Email").w(320.0).max_w(480.0).w_full();
-        assert_eq!(field.config.width, Some(320.0));
+        assert_eq!(field.config.width, None);
         assert_eq!(field.config.max_width, Some(480.0));
         assert!(field.config.full_width);
     }

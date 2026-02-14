@@ -121,6 +121,7 @@ impl FormBuilder {
 
     pub fn w_full(mut self) -> Self {
         self.config.full_width = true;
+        self.config.width = None;
         self
     }
 
@@ -190,5 +191,12 @@ mod tests {
     fn test_form_builder_sets_disabled() {
         let form = form().disabled(true);
         assert!(form.config.disabled);
+    }
+
+    #[test]
+    fn test_form_builder_w_full_clears_fixed_width() {
+        let form = form().w(320.0).w_full();
+        assert!(form.config.full_width);
+        assert_eq!(form.config.width, None);
     }
 }
