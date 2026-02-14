@@ -694,8 +694,13 @@ impl GalleryModels {
     }
 
     fn apply_advanced_options(&mut self, config: &GalleryConfig) {
-        let cfg = config;
+        self.apply_advanced_series_options(config);
+        self.apply_advanced_field_options(config);
+        self.apply_advanced_structural_options(config);
+        self.apply_advanced_specialized_options(config);
+    }
 
+    fn apply_advanced_series_options(&mut self, cfg: &GalleryConfig) {
         if let Ok(mut m) = self.line.0.lock() {
             if let Some(p) = cfg.theme_palette(ChartKind::Line) {
                 m.style.bg = p.bg;
@@ -843,7 +848,9 @@ impl GalleryModels {
             m.style.pinch_zoom_min =
                 cfg.pick_f32(ChartKind::Candlestick, "pinch", &[0.01, 0.05, 0.1]);
         }
+    }
 
+    fn apply_advanced_field_options(&mut self, cfg: &GalleryConfig) {
         if let Ok(mut m) = self.heat.0.lock() {
             if let Some(p) = cfg.theme_palette(ChartKind::Heatmap) {
                 m.style.bg = p.bg;
@@ -912,7 +919,7 @@ impl GalleryModels {
                 vec![-0.9, -0.6, -0.3, 0.0, 0.3, 0.6, 0.9],
             ];
             m.style.levels =
-                levels[config.option_index(ChartKind::Contour, "levels", levels.len())].clone();
+                levels[cfg.option_index(ChartKind::Contour, "levels", levels.len())].clone();
             m.style.scroll_zoom_factor =
                 cfg.pick_f32(ChartKind::Contour, "scroll", &[0.01, 0.02, 0.04]);
             m.style.pinch_zoom_min = cfg.pick_f32(ChartKind::Contour, "pinch", &[0.01, 0.05, 0.1]);
@@ -931,7 +938,9 @@ impl GalleryModels {
             m.style.pinch_zoom_min =
                 cfg.pick_f32(ChartKind::Statistics, "pinch", &[0.01, 0.05, 0.1]);
         }
+    }
 
+    fn apply_advanced_structural_options(&mut self, cfg: &GalleryConfig) {
         if let Ok(mut m) = self.hierarchy.0.lock() {
             if let Some(p) = cfg.theme_palette(ChartKind::Hierarchy) {
                 m.style.bg = p.bg;
@@ -976,11 +985,13 @@ impl GalleryModels {
                 cfg.pick_f32(ChartKind::Polar, "fill_alpha", &[0.10, 0.20, 0.35, 0.50]);
             m.style.max_series = cfg.pick_usize(ChartKind::Polar, "max_series", &[4, 8, 16, 32]);
             let ranges = [0.8f32, 1.0, 1.2, 1.5];
-            let range = ranges[config.option_index(ChartKind::Polar, "range", ranges.len())];
+            let range = ranges[cfg.option_index(ChartKind::Polar, "range", ranges.len())];
             m.style.min_value = 0.0;
             m.style.max_value = range;
         }
+    }
 
+    fn apply_advanced_specialized_options(&mut self, cfg: &GalleryConfig) {
         if let Ok(mut m) = self.gauge.0.lock() {
             if let Some(p) = cfg.theme_palette(ChartKind::Gauge) {
                 m.style.bg = p.bg;
@@ -992,7 +1003,7 @@ impl GalleryModels {
             m.style.stroke_width =
                 cfg.pick_f32(ChartKind::Gauge, "stroke", &[4.0, 8.0, 12.0, 16.0]);
             let spans = [0.5f32, 0.75, 1.0, 1.25];
-            let span = spans[config.option_index(ChartKind::Gauge, "span", spans.len())];
+            let span = spans[cfg.option_index(ChartKind::Gauge, "span", spans.len())];
             m.style.angle_start_rad = -std::f32::consts::PI * span;
             m.style.angle_end_rad = std::f32::consts::PI * span;
             m.transition_step_sec = cfg.pick_f32(
