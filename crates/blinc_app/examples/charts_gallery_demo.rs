@@ -693,6 +693,8 @@ impl GalleryModels {
         }
     }
 
+    // Keep per-chart option application explicit for type safety:
+    // each model owns a distinct style struct and mutation surface.
     fn apply_advanced_options(&mut self, config: &GalleryConfig) {
         self.apply_advanced_series_options(config);
         self.apply_advanced_field_options(config);
@@ -1489,6 +1491,7 @@ fn control_panel(
     config: State<GalleryConfig>,
     models: State<GalleryModels>,
 ) -> impl ElementBuilder {
+    // Intentionally explicit: control chips map 1:1 to chart-kind option keys.
     let cfg = config.try_get().expect("config exists");
 
     let mut row = div()
