@@ -8,43 +8,55 @@ Text input field:
 
 ```rust
 use blinc_cn::prelude::*;
+use blinc_layout::widgets::text_input::text_input_data;
 
-input()
+let name = text_input_data();
+
+input(&name)
     .placeholder("Enter your name...")
-    .value(name)
-    .on_change(|value| set_name(value))
+    .on_change(|value| set_name(value));
 ```
 
 ### Input Types
 
 ```rust
+use blinc_layout::widgets::text_input::text_input_data;
+
+let name = text_input_data();
+let email = text_input_data();
+let password = text_input_data();
+let age = text_input_data();
+let search = text_input_data();
+
 // Text (default)
-input().placeholder("Name")
+input(&name).placeholder("Name")
 
 // Email
-input().input_type("email").placeholder("Email")
+input(&email).input_type("email").placeholder("Email")
 
 // Password
-input().input_type("password").placeholder("Password")
+input(&password).input_type("password").placeholder("Password")
 
 // Number
-input().input_type("number").placeholder("Age")
+input(&age).input_type("number").placeholder("Age")
 
 // Search
-input().input_type("search").placeholder("Search...")
+input(&search).input_type("search").placeholder("Search...")
 ```
 
 ### Input States
 
 ```rust
-// Disabled
-input().disabled(true)
+use blinc_layout::widgets::text_input::text_input_data;
 
-// Read-only
-input().readonly(true)
+let disabled_input = text_input_data();
+let error_input = text_input_data();
+
+// Disabled
+input(&disabled_input).disabled(true)
 
 // With error
-input().error(true)
+input(&error_input).error("Invalid value")
 ```
 
 ## Textarea
@@ -52,11 +64,57 @@ input().error(true)
 Multi-line text input:
 
 ```rust
-textarea()
+use blinc_layout::widgets::text_area::text_area_state;
+
+let description = text_area_state();
+
+textarea(&description)
     .placeholder("Enter description...")
     .rows(4)
-    .value(description)
-    .on_change(|value| set_description(value))
+    .on_change(|value| set_description(value));
+```
+
+## Field
+
+`field()` wraps a single control with label + helper/error text.
+
+```rust
+use blinc_layout::widgets::text_input::text_input_data;
+
+let email = text_input_data();
+
+field("Email")
+    .required()
+    .description("We'll only use this for account notices.")
+    .child(
+        input(&email)
+            .placeholder("name@example.com")
+    )
+```
+
+## Form
+
+`form()` is a vertical layout container for multiple fields.
+
+```rust
+use blinc_layout::widgets::text_input::text_input_data;
+
+let name = text_input_data();
+let email = text_input_data();
+
+form()
+    .spacing(16.0)
+    .max_w(420.0)
+    .child(
+        field("Name")
+            .required()
+            .child(input(&name).placeholder("John Doe"))
+    )
+    .child(
+        field("Email")
+            .required()
+            .child(input(&email).input_type("email").placeholder("john@example.com"))
+    )
 ```
 
 ## Checkbox
@@ -203,54 +261,31 @@ checkbox()
 ## Form Layout Example
 
 ```rust
-div()
-    .flex_col()
-    .gap(24.0)
+use blinc_layout::widgets::text_input::text_input_data;
+
+let name = text_input_data();
+let email = text_input_data();
+
+form()
+    .spacing(24.0)
     .max_w(400.0)
-    // Name field
     .child(
-        div().flex_col().gap(4.0)
-            .child(label("Name"))
-            .child(input()
+        field("Name")
+            .required()
+            .child(input(&name)
                 .placeholder("John Doe")
-                .value(&name)
                 .on_change(|v| set_name(v)))
     )
-    // Email field
     .child(
-        div().flex_col().gap(4.0)
-            .child(label("Email"))
-            .child(input()
+        field("Email")
+            .required()
+            .child(input(&email)
                 .input_type("email")
                 .placeholder("john@example.com")
-                .value(&email)
                 .on_change(|v| set_email(v)))
     )
-    // Country select
-    .child(
-        div().flex_col().gap(4.0)
-            .child(label("Country"))
-            .child(select()
-                .value(&country)
-                .on_change(|v| set_country(v))
-                .child(select_trigger().child(select_value()))
-                .child(select_content()
-                    .child(select_item("us").child(text("United States")))
-                    .child(select_item("uk").child(text("United Kingdom")))
-                    .child(select_item("ca").child(text("Canada")))))
-    )
-    // Terms checkbox
-    .child(
-        checkbox()
-            .checked(accepted_terms)
-            .on_change(|v| set_accepted_terms(v))
-            .child(label("I accept the terms and conditions"))
-    )
-    // Submit button
     .child(
         button("Submit")
-            .full_width(true)
-            .disabled(!accepted_terms)
             .on_click(|| submit_form())
     )
 ```

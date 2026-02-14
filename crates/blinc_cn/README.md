@@ -120,14 +120,19 @@ dialog()
 ### Form Components
 
 ```rust
+use blinc_layout::widgets::text_input::text_input_data;
+use blinc_layout::widgets::text_area::text_area_state;
+
+let email = text_input_data();
+let message = text_area_state();
+
 // Input
-input()
+input(&email)
     .placeholder("Enter email...")
-    .value(email)
     .on_change(|v| set_email(v))
 
 // Textarea
-textarea()
+textarea(&message)
     .placeholder("Enter message...")
     .rows(4)
 
@@ -165,6 +170,15 @@ slider()
     .min(0.0)
     .max(100.0)
     .on_change(|v| set_volume(v))
+
+// Field + Form wrappers
+form()
+    .spacing(16.0)
+    .child(
+        field("Email")
+            .required()
+            .child(input(&email).placeholder("name@example.com"))
+    )
 ```
 
 ### Navigation
