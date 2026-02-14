@@ -2,34 +2,13 @@
 
 use std::cell::OnceCell;
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::prelude::*;
 use blinc_theme::{ColorToken, SpacingToken, ThemeState};
 
 use super::label::{label, LabelSize};
-
-#[derive(Clone)]
-struct SharedElement(Arc<dyn ElementBuilder>);
-
-impl ElementBuilder for SharedElement {
-    fn build(&self, tree: &mut blinc_layout::tree::LayoutTree) -> blinc_layout::tree::LayoutNodeId {
-        self.0.build(tree)
-    }
-
-    fn render_props(&self) -> blinc_layout::element::RenderProps {
-        self.0.render_props()
-    }
-
-    fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
-        self.0.children_builders()
-    }
-
-    fn element_type_id(&self) -> ElementTypeId {
-        self.0.element_type_id()
-    }
-}
+use super::shared::SharedElement;
 
 /// Styled field component with label + control + helper text.
 pub struct Field {
@@ -168,7 +147,7 @@ impl FieldBuilder {
     }
 
     pub fn child(mut self, child: impl ElementBuilder + 'static) -> Self {
-        self.config.children.push(SharedElement(Arc::new(child)));
+        self.config.children.push(SharedElement::new(child));
         self
     }
 

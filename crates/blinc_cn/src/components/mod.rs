@@ -41,6 +41,7 @@ pub mod responsive;
 pub mod scroll_area;
 pub mod select;
 pub mod separator;
+mod shared;
 pub mod sheet;
 pub mod sidebar;
 pub mod skeleton;
