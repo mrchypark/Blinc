@@ -303,6 +303,5 @@ field("Email")
         input(&email)
             .input_type("email")
             .on_change(|v| println!("email: {}", v))
-            .when(show_error, |i| i.error("Invalid email address"))
     )
 ```
