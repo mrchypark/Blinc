@@ -74,8 +74,7 @@ impl HeadlessReport {
     }
 
     pub fn write_to_writer<W: Write>(&self, writer: &mut W) -> Result<()> {
-        let payload = serde_json::to_string_pretty(self)?;
-        writer.write_all(payload.as_bytes())?;
+        serde_json::to_writer_pretty(&mut *writer, self)?;
         writer.write_all(b"\n")?;
         Ok(())
     }
