@@ -34,9 +34,7 @@ impl Field {
         }
         container = container.child(lbl);
 
-        for child in config.children {
-            container = container.child(child);
-        }
+        container = container.children(config.children);
 
         if let Some(error_text) = config.error {
             container = container.child(

@@ -37,9 +37,7 @@ impl Form {
             inner = inner.opacity(0.6);
         }
 
-        for child in config.children {
-            inner = inner.child(child);
-        }
+        inner = inner.children(config.children);
 
         Self { inner }
     }
