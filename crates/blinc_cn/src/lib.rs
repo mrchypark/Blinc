@@ -65,6 +65,8 @@ pub mod cn {
     pub use crate::components::dialog::{alert_dialog, dialog};
     pub use crate::components::drawer::{drawer, drawer_left, drawer_right};
     pub use crate::components::dropdown_menu::{dropdown_menu, dropdown_menu_custom};
+    pub use crate::components::field::field;
+    pub use crate::components::form::form;
     pub use crate::components::hover_card::hover_card;
     pub use crate::components::icon::{icon, IconSize};
     pub use crate::components::input::input;
@@ -153,6 +155,8 @@ pub mod prelude {
     pub use crate::components::dropdown_menu::{
         dropdown_menu, dropdown_menu_custom, DropdownAlign, DropdownMenuBuilder, DropdownPosition,
     };
+    pub use crate::components::field::{field, Field, FieldBuilder};
+    pub use crate::components::form::{form, Form, FormBuilder};
     pub use crate::components::hover_card::{
         hover_card, HoverCard, HoverCardAlign, HoverCardBuilder, HoverCardSide,
     };

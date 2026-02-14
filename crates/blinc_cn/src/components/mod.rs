@@ -23,6 +23,8 @@ pub mod context_menu;
 pub mod dialog;
 pub mod drawer;
 pub mod dropdown_menu;
+pub mod field;
+pub mod form;
 pub mod hover_card;
 pub mod icon;
 pub mod input;
@@ -82,6 +84,8 @@ pub use drawer::{drawer, drawer_left, drawer_right, DrawerBuilder, DrawerSide, D
 pub use dropdown_menu::{
     dropdown_menu, dropdown_menu_custom, DropdownAlign, DropdownMenuBuilder, DropdownPosition,
 };
+pub use field::{field, Field, FieldBuilder};
+pub use form::{form, Form, FormBuilder};
 pub use hover_card::{hover_card, HoverCard, HoverCardAlign, HoverCardBuilder, HoverCardSide};
 pub use icon::{icon, Icon, IconBuilder, IconSize};
 pub use input::{input, Input, InputBgColors, InputBorderColors, InputSize};
