@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::prelude::*;
-use blinc_theme::{SpacingToken, ThemeState};
+use blinc_theme::{OpacityToken, SpacingToken, ThemeState};
 
 /// Styled form container.
 pub struct Form {
@@ -33,7 +33,9 @@ impl Form {
         }
 
         if config.disabled {
-            inner = inner.opacity(0.6).pointer_events_none();
+            inner = inner
+                .opacity(theme.opacity_value(OpacityToken::Disabled))
+                .pointer_events_none();
         }
 
         inner = inner.children(config.children);

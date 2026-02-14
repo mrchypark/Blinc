@@ -6,7 +6,7 @@
 //! # Overview
 //!
 //! The theme system provides:
-//! - **Design tokens**: Colors, typography, spacing, radii, shadows, animations
+//! - **Design tokens**: Colors, typography, spacing, opacity, radii, shadows, animations
 //! - **Platform themes**: Native look and feel for macOS, Windows, Linux, iOS, Android
 //! - **Color scheme detection**: Automatic detection of system dark/light mode
 //! - **Dynamic overrides**: Runtime customization without layout rebuilds
@@ -39,6 +39,7 @@
 //! - [`ColorTokens`]: Semantic colors (primary, error, background, text, etc.)
 //! - [`TypographyTokens`]: Font families, sizes, weights, line heights
 //! - [`SpacingTokens`]: 4px-based spacing scale
+//! - [`OpacityTokens`]: Semantic opacity values
 //! - [`RadiusTokens`]: Border radii
 //! - [`ShadowTokens`]: Box shadows
 //! - [`AnimationTokens`]: Durations and easings

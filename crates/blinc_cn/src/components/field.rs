@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::prelude::*;
-use blinc_theme::{ColorToken, SpacingToken, ThemeState};
+use blinc_theme::{ColorToken, OpacityToken, SpacingToken, ThemeState};
 
 use super::label::{label, LabelSize};
 
@@ -40,7 +40,9 @@ impl Field {
             lbl = lbl.required();
         }
         if config.disabled {
-            container = container.opacity(0.6).pointer_events_none();
+            container = container
+                .opacity(theme.opacity_value(OpacityToken::Disabled))
+                .pointer_events_none();
         }
         container = container.child(lbl);
 
