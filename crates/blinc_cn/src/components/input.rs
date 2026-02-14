@@ -131,8 +131,8 @@ impl Input {
         let theme = ThemeState::get();
         let typography = theme.typography();
 
-        // Sync error state to underlying data's is_valid field
-        if config.error.is_some() {
+        // Sync visual error state to underlying data's is_valid field
+        if config.error_state {
             if let Ok(mut data) = config.data.lock() {
                 data.is_valid = false;
             }
@@ -311,6 +311,7 @@ struct InputConfig {
     label: Option<String>,
     description: Option<String>,
     error: Option<String>,
+    error_state: bool,
     disabled: bool,
     required: bool,
     input_type: InputType,
@@ -337,6 +338,7 @@ impl Default for InputConfig {
             label: None,
             description: None,
             error: None,
+            error_state: false,
             disabled: false,
             required: false,
             input_type: InputType::Text,
@@ -405,6 +407,13 @@ impl InputBuilder {
     /// Set an error message (shows in red, replaces description)
     pub fn error(mut self, error: impl Into<String>) -> Self {
         self.config.error = Some(error.into());
+        self.config.error_state = true;
+        self
+    }
+
+    /// Set visual error state without rendering an error message.
+    pub fn error_state(mut self, has_error: bool) -> Self {
+        self.config.error_state = has_error;
         self
     }
 
@@ -670,5 +679,14 @@ mod tests {
             .label("Username")
             .placeholder("Enter username")
             .size(InputSize::Large);
+    }
+
+    #[test]
+    fn test_input_error_state_without_message() {
+        init_theme();
+        let data = blinc_layout::widgets::text_input::text_input_data();
+        let input = input(&data).error_state(true);
+        assert!(input.config.error.is_none());
+        assert!(input.config.error_state);
     }
 }
