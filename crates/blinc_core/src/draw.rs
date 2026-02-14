@@ -1235,6 +1235,13 @@ pub trait DrawContext {
     /// Draw text at a position
     fn draw_text(&mut self, text: &str, origin: Point, style: &TextStyle);
 
+    /// Measure text dimensions for layout/alignment use-cases.
+    ///
+    /// Returns `None` when the active backend cannot provide reliable text metrics.
+    fn measure_text(&mut self, _text: &str, _style: &TextStyle) -> Option<Size> {
+        None
+    }
+
     /// Draw an image
     fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions);
 

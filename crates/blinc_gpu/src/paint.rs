@@ -2229,6 +2229,12 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
     }
 
+    fn measure_text(&mut self, text: &str, style: &TextStyle) -> Option<Size> {
+        let text_ctx = self.text_ctx.as_mut()?;
+        let (width, height) = text_ctx.measure_text(text, style.size);
+        Some(Size::new(width, height))
+    }
+
     fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions) {
         if image.0 == 0 {
             return;
