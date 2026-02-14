@@ -592,6 +592,15 @@ impl InputBuilder {
         self
     }
 
+    /// Conditionally apply builder configuration.
+    pub fn when(self, condition: bool, transform: impl FnOnce(Self) -> Self) -> Self {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
+    }
+
     /// Build the final Input component
     pub fn build_component(self) -> Input {
         Input::with_config(self.config)

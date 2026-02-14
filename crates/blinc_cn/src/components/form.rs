@@ -2,12 +2,11 @@
 
 use std::cell::OnceCell;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::prelude::*;
 use blinc_theme::{SpacingToken, ThemeState};
-
-use super::shared::SharedElement;
 
 /// Styled form container.
 pub struct Form {
@@ -82,7 +81,7 @@ pub(crate) struct FormConfig {
     pub(crate) disabled: bool,
     width: Option<f32>,
     max_width: Option<f32>,
-    children: Vec<SharedElement>,
+    children: Vec<Arc<dyn ElementBuilder>>,
 }
 
 /// Builder for `Form`.
@@ -130,8 +129,16 @@ impl FormBuilder {
         self
     }
 
+    pub fn when(self, condition: bool, transform: impl FnOnce(Self) -> Self) -> Self {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
+    }
+
     pub fn child(mut self, child: impl ElementBuilder + 'static) -> Self {
-        self.config.children.push(SharedElement::new(child));
+        self.config.children.push(Arc::new(child));
         self
     }
 

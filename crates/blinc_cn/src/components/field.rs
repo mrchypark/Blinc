@@ -2,13 +2,13 @@
 
 use std::cell::OnceCell;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::prelude::*;
 use blinc_theme::{ColorToken, SpacingToken, ThemeState};
 
 use super::label::{label, LabelSize};
-use super::shared::SharedElement;
 
 /// Styled field component with label + control + helper text.
 pub struct Field {
@@ -24,6 +24,14 @@ impl Field {
             .unwrap_or_else(|| theme.spacing_value(SpacingToken::Space2));
 
         let mut container = div().flex_col().h_fit().gap_px(gap);
+        if config.full_width {
+            container = container.w_full();
+        } else if let Some(width) = config.width {
+            container = container.w(width);
+        }
+        if let Some(max_width) = config.max_width {
+            container = container.max_w(max_width);
+        }
 
         let mut lbl = label(&config.label).size(config.label_size);
         if config.required {
@@ -95,8 +103,11 @@ pub(crate) struct FieldConfig {
     pub(crate) disabled: bool,
     pub(crate) description: Option<String>,
     pub(crate) error: Option<String>,
+    width: Option<f32>,
+    max_width: Option<f32>,
+    full_width: bool,
     gap: Option<f32>,
-    children: Vec<SharedElement>,
+    children: Vec<Arc<dyn ElementBuilder>>,
 }
 
 /// Builder for `Field`.
@@ -151,8 +162,32 @@ impl FieldBuilder {
         self
     }
 
+    pub fn w(mut self, width: f32) -> Self {
+        self.config.width = Some(width);
+        self.config.full_width = false;
+        self
+    }
+
+    pub fn max_w(mut self, max_width: f32) -> Self {
+        self.config.max_width = Some(max_width);
+        self
+    }
+
+    pub fn w_full(mut self) -> Self {
+        self.config.full_width = true;
+        self
+    }
+
+    pub fn when(self, condition: bool, transform: impl FnOnce(Self) -> Self) -> Self {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
+    }
+
     pub fn child(mut self, child: impl ElementBuilder + 'static) -> Self {
-        self.config.children.push(SharedElement::new(child));
+        self.config.children.push(Arc::new(child));
         self
     }
 
@@ -207,5 +242,13 @@ mod tests {
     fn test_field_builder_sets_label_size() {
         let field = field("Email").label_size(LabelSize::Small);
         assert_eq!(field.config.label_size, LabelSize::Small);
+    }
+
+    #[test]
+    fn test_field_builder_sets_width_controls() {
+        let field = field("Email").w(320.0).max_w(480.0).w_full();
+        assert_eq!(field.config.width, Some(320.0));
+        assert_eq!(field.config.max_width, Some(480.0));
+        assert!(field.config.full_width);
     }
 }
