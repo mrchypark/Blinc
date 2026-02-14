@@ -140,14 +140,13 @@ where
                 }
             }
             ScenarioStep::AssertExists { id } => {
-                if latest_snapshot.is_none() {
-                    latest_snapshot = Some(probe(&ProbeContext {
+                let snapshot = latest_snapshot.get_or_insert_with(|| {
+                    probe(&ProbeContext {
                         elapsed_frames,
                         elapsed_ms,
                         step_index,
-                    }));
-                }
-                let snapshot = latest_snapshot.as_ref().expect("snapshot initialized");
+                    })
+                });
                 if let AssertionResult::Failed { message, .. } =
                     evaluate_assert_exists(id, snapshot)
                 {
@@ -162,14 +161,13 @@ where
                 }
             }
             ScenarioStep::AssertTextContains { id, value } => {
-                if latest_snapshot.is_none() {
-                    latest_snapshot = Some(probe(&ProbeContext {
+                let snapshot = latest_snapshot.get_or_insert_with(|| {
+                    probe(&ProbeContext {
                         elapsed_frames,
                         elapsed_ms,
                         step_index,
-                    }));
-                }
-                let snapshot = latest_snapshot.as_ref().expect("snapshot initialized");
+                    })
+                });
                 if let AssertionResult::Failed { message, .. } =
                     evaluate_assert_text_contains(id, value, snapshot)
                 {

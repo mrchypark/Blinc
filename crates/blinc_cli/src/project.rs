@@ -1297,6 +1297,7 @@ fn template_counter(name: &str) -> String {
 /// Ideal for testing mobile platforms with full control over the Rust code.
 pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
     validate_rust_project_name(name)?;
+    validate_org_name(org)?;
     let package_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Get blinc workspace path (relative to the generated project)
@@ -1474,32 +1475,23 @@ fn parse_headless_args() -> Result<(bool, Option<String>, Option<String>)> {{
     let mut report: Option<String> = None;
 
     let mut args = std::env::args().skip(1).peekable();
+    let mut next_value = |flag: &str| -> Result<String> {{
+        if args.peek().map_or(true, |next| next.starts_with("--")) {{
+            return Err(BlincError::Other(format!("{{}} requires a file path", flag)));
+        }}
+        Ok(args.next().expect("peeked value should exist"))
+    }};
+
     while let Some(arg) = args.next() {{
         match arg.as_str() {{
             "--headless" => {{
                 headless = true;
             }}
             "--scenario" => {{
-                if let Some(next) = args.peek() {{
-                    if !next.starts_with("--") {{
-                        scenario = args.next();
-                    }} else {{
-                        return Err(BlincError::Other("--scenario requires a file path".to_string()));
-                    }}
-                }} else {{
-                    return Err(BlincError::Other("--scenario requires a file path".to_string()));
-                }}
+                scenario = Some(next_value("--scenario")?);
             }}
             "--report" => {{
-                if let Some(next) = args.peek() {{
-                    if !next.starts_with("--") {{
-                        report = args.next();
-                    }} else {{
-                        return Err(BlincError::Other("--report requires a file path".to_string()));
-                    }}
-                }} else {{
-                    return Err(BlincError::Other("--report requires a file path".to_string()));
-                }}
+                report = Some(next_value("--report")?);
             }}
             _ if arg.starts_with("--") => {{
                 return Err(BlincError::Other(format!("unknown flag: {{}}", arg)));
@@ -1777,6 +1769,24 @@ fn validate_rust_project_name(name: &str) -> Result<()> {
         bail!(
             "Invalid project name '{}'. Use only ASCII letters, digits, spaces, '-' or '_'",
             name
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_org_name(org: &str) -> Result<()> {
+    if org.is_empty() {
+        bail!("Organization name cannot be empty");
+    }
+
+    let is_valid = org
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_'));
+    if !is_valid || org.starts_with('.') || org.ends_with('.') || org.contains("..") {
+        bail!(
+            "Invalid organization name '{}'. Use only ASCII letters, digits, '.' or '_'",
+            org
         );
     }
 
@@ -2725,6 +2735,31 @@ mod tests {
         assert!(
             !root.exists(),
             "project directory should not be created when name is rejected"
+        );
+    }
+
+    #[test]
+    fn rust_project_rejects_unsafe_org_chars() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_headless_invalid_org_{nonce}"));
+
+        let err = create_rust_project(
+            &root,
+            "DemoApp",
+            r#"com.example"; std::process::Command::new("calc").spawn().unwrap(); //"#,
+        )
+        .expect_err("unsafe org name should be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "error should explain org name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when org is rejected"
         );
     }
 }
