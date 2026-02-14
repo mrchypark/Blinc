@@ -14,7 +14,7 @@ use blinc_core::{Color, Point, State};
 use blinc_layout::prelude::{ButtonState, NoState};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ChartKind {
     Line,
     MultiLine,
@@ -34,31 +34,6 @@ enum ChartKind {
     Gauge,
     Funnel,
     Geo,
-}
-
-impl ChartKind {
-    fn key(self) -> &'static str {
-        match self {
-            Self::Line => "line",
-            Self::MultiLine => "multi_line",
-            Self::Area => "area",
-            Self::Bar => "bar",
-            Self::Histogram => "histogram",
-            Self::Scatter => "scatter",
-            Self::Candlestick => "candlestick",
-            Self::Heatmap => "heatmap",
-            Self::StackedArea => "stacked_area",
-            Self::DensityMap => "density_map",
-            Self::Contour => "contour",
-            Self::Statistics => "statistics",
-            Self::Hierarchy => "hierarchy",
-            Self::Network => "network",
-            Self::Polar => "polar",
-            Self::Gauge => "gauge",
-            Self::Funnel => "funnel",
-            Self::Geo => "geo",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -289,7 +264,7 @@ struct GalleryConfig {
 
     preset: DataPreset,
     noise_enabled: bool,
-    option_indices: BTreeMap<String, usize>,
+    option_indices: BTreeMap<(ChartKind, &'static str), usize>,
 
     bar_stacked: bool,
     stacked_mode: StackedAreaMode,
@@ -333,19 +308,18 @@ impl GalleryConfig {
         }
     }
 
-    fn option_index(&self, kind: ChartKind, name: &str, len: usize) -> usize {
+    fn option_index(&self, kind: ChartKind, name: &'static str, len: usize) -> usize {
         if len == 0 {
             return 0;
         }
-        let key = format!("{}:{name}", kind.key());
-        self.option_indices.get(&key).copied().unwrap_or(0) % len
+        self.option_indices.get(&(kind, name)).copied().unwrap_or(0) % len
     }
 
-    fn pick_usize(&self, kind: ChartKind, name: &str, values: &[usize]) -> usize {
+    fn pick_usize(&self, kind: ChartKind, name: &'static str, values: &[usize]) -> usize {
         values[self.option_index(kind, name, values.len())]
     }
 
-    fn pick_f32(&self, kind: ChartKind, name: &str, values: &[f32]) -> f32 {
+    fn pick_f32(&self, kind: ChartKind, name: &'static str, values: &[f32]) -> f32 {
         values[self.option_index(kind, name, values.len())]
     }
 
@@ -379,11 +353,11 @@ impl GalleryConfig {
         }
     }
 
-    fn cycle_option(&mut self, kind: ChartKind, name: &str, len: usize) {
+    fn cycle_option(&mut self, kind: ChartKind, name: &'static str, len: usize) {
         if len == 0 {
             return;
         }
-        let key = format!("{}:{name}", kind.key());
+        let key = (kind, name);
         let cur = self.option_indices.get(&key).copied().unwrap_or(0);
         self.option_indices.insert(key, (cur + 1) % len);
     }
