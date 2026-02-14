@@ -1477,7 +1477,7 @@ fn parse_headless_args() -> Result<(bool, Option<String>, Option<String>)> {{
     let mut args = std::env::args().skip(1).peekable();
     let mut next_value = |flag: &str| -> Result<String> {{
         if args.peek().map_or(true, |next| next.starts_with("--")) {{
-            return Err(BlincError::Other([flag, " requires a file path"].concat()));
+            return Err(BlincError::Other(format!("{{flag}} requires a file path")));
         }}
         Ok(args.next().expect("peeked value should exist"))
     }};
@@ -1494,7 +1494,7 @@ fn parse_headless_args() -> Result<(bool, Option<String>, Option<String>)> {{
                 report = Some(next_value("--report")?);
             }}
             _ if arg.starts_with("--") => {{
-                return Err(BlincError::Other("unknown flag: ".to_string() + &arg));
+                return Err(BlincError::Other(format!("unknown flag: {{arg}}")));
             }}
             _ => {{}}
         }}

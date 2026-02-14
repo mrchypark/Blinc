@@ -1,6 +1,6 @@
 //! Report output model for headless diagnostics runs.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Component, Path};
@@ -55,10 +55,10 @@ impl HeadlessReport {
 
     pub fn write_to_path(&self, path: &Path) -> Result<()> {
         if path.is_absolute() {
-            return Err(anyhow::Error::msg("report path must be relative"));
+            bail!("report path must be relative");
         }
         if path.components().any(|c| c == Component::ParentDir) {
-            return Err(anyhow::Error::msg("report path cannot contain '..'"));
+            bail!("report path cannot contain '..'");
         }
         let payload = serde_json::to_string_pretty(self)?;
         if let Some(parent) = path.parent() {
