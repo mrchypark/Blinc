@@ -54,6 +54,9 @@ impl HeadlessReport {
     }
 
     pub fn write_to_path(&self, path: &Path) -> Result<()> {
+        if path.is_absolute() {
+            return Err(anyhow::Error::msg("report path must be relative"));
+        }
         if path.components().any(|c| c == Component::ParentDir) {
             return Err(anyhow::Error::msg("report path cannot contain '..'"));
         }
