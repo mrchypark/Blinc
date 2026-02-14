@@ -104,7 +104,7 @@ card()
 ```rust
 dialog()
     .open(is_open)
-    .on_open_change(|open| set_is_open(open))
+    .on_open_change(|open| println!("dialog open: {}", open))
     .child(dialog_trigger()
         .child(button("Open Dialog")))
     .child(dialog_content()
@@ -129,7 +129,7 @@ let message = text_area_state();
 // Input
 input(&email)
     .placeholder("Enter email...")
-    .on_change(|v| set_email(v))
+    .on_change(|v| println!("email: {}", v))
 
 // Textarea
 textarea(&message)
@@ -139,25 +139,25 @@ textarea(&message)
 // Checkbox
 checkbox()
     .checked(is_checked)
-    .on_change(|c| set_checked(c))
+    .on_change(|c| println!("checked: {}", c))
     .child(label("Accept terms"))
 
 // Switch
 switch_()
     .checked(is_enabled)
-    .on_change(|e| set_enabled(e))
+    .on_change(|e| println!("enabled: {}", e))
 
 // Radio Group
 radio_group()
     .value(selected)
-    .on_change(|v| set_selected(v))
+    .on_change(|v| println!("selected: {}", v))
     .child(radio_item("option1").child(label("Option 1")))
     .child(radio_item("option2").child(label("Option 2")))
 
 // Select
 select()
     .value(selected)
-    .on_change(|v| set_selected(v))
+    .on_change(|v| println!("selected: {}", v))
     .child(select_trigger()
         .child(select_value()))
     .child(select_content()
@@ -169,7 +169,7 @@ slider()
     .value(volume)
     .min(0.0)
     .max(100.0)
-    .on_change(|v| set_volume(v))
+    .on_change(|v| println!("volume: {}", v))
 
 // Field + Form wrappers
 form()
@@ -187,7 +187,7 @@ form()
 // Tabs
 tabs()
     .value(active_tab)
-    .on_change(|t| set_active_tab(t))
+    .on_change(|t| println!("active tab: {}", t))
     .child(tabs_list()
         .child(tabs_trigger("tab1").child(text("Tab 1")))
         .child(tabs_trigger("tab2").child(text("Tab 2"))))

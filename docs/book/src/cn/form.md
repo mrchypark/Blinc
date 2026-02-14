@@ -14,7 +14,7 @@ let name = text_input_data();
 
 input(&name)
     .placeholder("Enter your name...")
-    .on_change(|value| set_name(value));
+    .on_change(|value| println!("name: {}", value));
 ```
 
 ### Input Types
@@ -71,7 +71,7 @@ let description = text_area_state();
 textarea(&description)
     .placeholder("Enter description...")
     .rows(4)
-    .on_change(|value| set_description(value));
+    .on_change(|value| println!("description: {}", value));
 ```
 
 ## Field
@@ -122,7 +122,7 @@ form()
 ```rust
 checkbox()
     .checked(is_checked)
-    .on_change(|checked| set_checked(checked))
+    .on_change(|checked| println!("checked: {}", checked))
     .child(label("Accept terms and conditions"))
 ```
 
@@ -143,7 +143,7 @@ Toggle switch:
 ```rust
 switch_()
     .checked(is_enabled)
-    .on_change(|enabled| set_enabled(enabled))
+    .on_change(|enabled| println!("enabled: {}", enabled))
 ```
 
 ### With Label
@@ -153,7 +153,7 @@ div()
     .flex_row()
     .items_center()
     .gap(8.0)
-    .child(switch_().checked(dark_mode).on_change(|v| set_dark_mode(v)))
+    .child(switch_().checked(dark_mode).on_change(|v| println!("dark mode: {}", v)))
     .child(label("Dark mode"))
 ```
 
@@ -162,7 +162,7 @@ div()
 ```rust
 radio_group()
     .value(selected)
-    .on_change(|value| set_selected(value))
+    .on_change(|value| println!("selected: {}", value))
     .child(
         div().flex_col().gap(8.0)
             .child(radio_item("small").child(label("Small")))
@@ -178,7 +178,7 @@ Dropdown selection:
 ```rust
 select()
     .value(selected)
-    .on_change(|value| set_selected(value))
+    .on_change(|value| println!("selected: {}", value))
     .child(select_trigger()
         .child(select_value().placeholder("Select option...")))
     .child(select_content()
@@ -211,7 +211,7 @@ Searchable select with autocomplete:
 ```rust
 combobox()
     .value(selected)
-    .on_change(|value| set_selected(value))
+    .on_change(|value| println!("selected: {}", value))
     .child(combobox_trigger()
         .child(combobox_input().placeholder("Search...")))
     .child(combobox_content()
@@ -231,7 +231,7 @@ slider()
     .min(0.0)
     .max(100.0)
     .step(1.0)
-    .on_change(|value| set_volume(value))
+    .on_change(|value| println!("volume: {}", value))
 ```
 
 ### Range Slider
@@ -242,8 +242,7 @@ slider()
     .min(0.0)
     .max(1000.0)
     .on_change_range(|min, max| {
-        set_min_price(min);
-        set_max_price(max);
+        println!("price range: {} - {}", min, max);
     })
 ```
 
@@ -274,7 +273,7 @@ form()
             .required()
             .child(input(&name)
                 .placeholder("John Doe")
-                .on_change(|v| set_name(v)))
+                .on_change(|v| println!("name: {}", v)))
     )
     .child(
         field("Email")
@@ -282,7 +281,7 @@ form()
             .child(input(&email)
                 .input_type("email")
                 .placeholder("john@example.com")
-                .on_change(|v| set_email(v)))
+                .on_change(|v| println!("email: {}", v)))
     )
     .child(
         button("Submit")
@@ -304,11 +303,11 @@ field("Email")
             input(&email)
                 .input_type("email")
                 .error("Invalid email address")
-                .on_change(|v| set_email(v))
+                .on_change(|v| println!("email: {}", v))
         } else {
             input(&email)
                 .input_type("email")
-                .on_change(|v| set_email(v))
+                .on_change(|v| println!("email: {}", v))
         }
     )
 ```
