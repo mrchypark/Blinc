@@ -54,11 +54,14 @@ impl HeadlessReport {
     }
 
     pub fn write_to_path(&self, path: &Path) -> Result<()> {
-        if path.is_absolute() {
-            bail!("report path must be relative");
+        if path.is_absolute() || path.has_root() {
+            bail!("report path must be relative and must not start with a separator");
         }
-        if path.components().any(|c| c == Component::ParentDir) {
-            bail!("report path cannot contain '..'");
+        if path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+        {
+            bail!("report path cannot contain '..' or drive prefixes");
         }
         let payload = serde_json::to_string_pretty(self)?;
         if let Some(parent) = path.parent() {
