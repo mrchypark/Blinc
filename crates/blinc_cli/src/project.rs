@@ -13,7 +13,7 @@
 //!   └── wasm/
 //! - assets/          - Static assets
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use std::fs;
 use std::path::Path;
 
@@ -1296,6 +1296,7 @@ fn template_counter(name: &str) -> String {
 /// This creates a native Rust project with Cargo.toml instead of .blinc DSL files.
 /// Ideal for testing mobile platforms with full control over the Rust code.
 pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
+    validate_rust_project_name(name)?;
     let package_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Get blinc workspace path (relative to the generated project)
@@ -1760,6 +1761,24 @@ Cargo.lock
 .DS_Store
 "#,
     )?;
+
+    Ok(())
+}
+
+fn validate_rust_project_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("Project name cannot be empty");
+    }
+
+    let is_valid = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' '));
+    if !is_valid {
+        bail!(
+            "Invalid project name '{}'. Use only ASCII letters, digits, spaces, '-' or '_'",
+            name
+        );
+    }
 
     Ok(())
 }
@@ -2682,5 +2701,30 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rust_project_rejects_unsafe_name_chars() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_headless_invalid_{nonce}"));
+
+        let err = create_rust_project(
+            &root,
+            r#"BadName"; std::process::Command::new("calc").spawn().unwrap(); //"#,
+            "com.example",
+        )
+        .expect_err("unsafe rust template name should be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid project name"),
+            "error should explain project name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when name is rejected"
+        );
     }
 }
