@@ -59,6 +59,9 @@ pub struct ThemeState {
     /// Current shadow tokens (can be animated)
     shadows: RwLock<ShadowTokens>,
 
+    /// Current opacity tokens
+    opacities: RwLock<OpacityTokens>,
+
     /// Current spacing tokens
     spacing: RwLock<SpacingTokens>,
 
@@ -76,6 +79,9 @@ pub struct ThemeState {
 
     /// Dynamic spacing overrides
     spacing_overrides: RwLock<FxHashMap<SpacingToken, f32>>,
+
+    /// Dynamic opacity overrides
+    opacity_overrides: RwLock<FxHashMap<OpacityToken, f32>>,
 
     /// Dynamic radius overrides
     radius_overrides: RwLock<FxHashMap<RadiusToken, f32>>,
@@ -103,12 +109,14 @@ impl ThemeState {
             scheme: RwLock::new(scheme),
             colors: RwLock::new(theme.colors().clone()),
             shadows: RwLock::new(theme.shadows().clone()),
+            opacities: RwLock::new(OpacityTokens::default()),
             spacing: RwLock::new(theme.spacing().clone()),
             typography: RwLock::new(theme.typography().clone()),
             radii: RwLock::new(theme.radii().clone()),
             animations: RwLock::new(theme.animations().clone()),
             color_overrides: RwLock::new(FxHashMap::default()),
             spacing_overrides: RwLock::new(FxHashMap::default()),
+            opacity_overrides: RwLock::new(FxHashMap::default()),
             radius_overrides: RwLock::new(FxHashMap::default()),
             needs_repaint: AtomicBool::new(false),
             needs_layout: AtomicBool::new(false),
@@ -464,6 +472,35 @@ impl ThemeState {
         vars
     }
 
+    // ========== Opacity Access ==========
+
+    /// Get an opacity token value (checks override first)
+    pub fn opacity_value(&self, token: OpacityToken) -> f32 {
+        if let Some(value) = self.opacity_overrides.read().unwrap().get(&token) {
+            return *value;
+        }
+        self.opacities.read().unwrap().get(token)
+    }
+
+    /// Get all opacity tokens
+    pub fn opacities(&self) -> OpacityTokens {
+        self.opacities.read().unwrap().clone()
+    }
+
+    /// Set an opacity override (triggers repaint only)
+    pub fn set_opacity_override(&self, token: OpacityToken, value: f32) {
+        self.opacity_overrides.write().unwrap().insert(token, value);
+        self.needs_repaint.store(true, Ordering::SeqCst);
+        trigger_redraw();
+    }
+
+    /// Remove an opacity override
+    pub fn remove_opacity_override(&self, token: OpacityToken) {
+        self.opacity_overrides.write().unwrap().remove(&token);
+        self.needs_repaint.store(true, Ordering::SeqCst);
+        trigger_redraw();
+    }
+
     // ========== Spacing Access ==========
 
     /// Get a spacing token value (checks override first)
@@ -564,6 +601,7 @@ impl ThemeState {
     pub fn clear_overrides(&self) {
         self.color_overrides.write().unwrap().clear();
         self.spacing_overrides.write().unwrap().clear();
+        self.opacity_overrides.write().unwrap().clear();
         self.radius_overrides.write().unwrap().clear();
         self.needs_repaint.store(true, Ordering::SeqCst);
         self.needs_layout.store(true, Ordering::SeqCst);
