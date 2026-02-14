@@ -12,8 +12,9 @@ use blinc_app::windowed::{WindowedApp, WindowedContext};
 use blinc_charts::prelude::*;
 use blinc_core::{Color, Point, State};
 use blinc_layout::prelude::{ButtonState, NoState};
+use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ChartKind {
     Line,
     MultiLine,
@@ -210,6 +211,15 @@ const ITEMS: &[ChartEntry] = &[
     ),
 ];
 
+const ZOOM_SCROLL_OPTIONS: &[f32] = &[0.01, 0.02, 0.04];
+const ZOOM_PINCH_OPTIONS: &[f32] = &[0.01, 0.05, 0.1];
+const CONTOUR_LEVEL_OPTIONS: [&[f32]; 4] = [
+    &[-0.4, 0.0, 0.4],
+    &[-0.6, -0.2, 0.2, 0.6],
+    &[-0.8, -0.4, 0.0, 0.4, 0.8],
+    &[-0.9, -0.6, -0.3, 0.0, 0.3, 0.6, 0.9],
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DataPreset {
     Fast,
@@ -236,6 +246,16 @@ impl DataPreset {
 }
 
 #[derive(Clone, Debug)]
+struct ThemePalette {
+    bg: Color,
+    grid: Color,
+    text: Color,
+    a: Color,
+    b: Color,
+    c: Color,
+}
+
+#[derive(Clone, Debug)]
 struct GalleryConfig {
     line_n: usize,
     initial_seed: u64,
@@ -243,6 +263,8 @@ struct GalleryConfig {
     chart_salts: Vec<u64>,
 
     preset: DataPreset,
+    noise_enabled: bool,
+    option_indices: BTreeMap<(ChartKind, &'static str), usize>,
 
     bar_stacked: bool,
     stacked_mode: StackedAreaMode,
@@ -260,6 +282,8 @@ impl GalleryConfig {
             base_seed: seed,
             chart_salts: vec![0; item_count],
             preset: DataPreset::Balanced,
+            noise_enabled: true,
+            option_indices: BTreeMap::new(),
             bar_stacked: true,
             stacked_mode: StackedAreaMode::Stacked,
             hierarchy_mode: HierarchyMode::Treemap,
@@ -284,11 +308,67 @@ impl GalleryConfig {
         }
     }
 
+    fn option_index(&self, kind: ChartKind, name: &'static str, len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        self.option_indices.get(&(kind, name)).copied().unwrap_or(0) % len
+    }
+
+    fn pick_usize(&self, kind: ChartKind, name: &'static str, values: &[usize]) -> usize {
+        values[self.option_index(kind, name, values.len())]
+    }
+
+    fn pick_f32(&self, kind: ChartKind, name: &'static str, values: &[f32]) -> f32 {
+        values[self.option_index(kind, name, values.len())]
+    }
+
+    fn theme_palette(&self, kind: ChartKind) -> Option<ThemePalette> {
+        match self.option_index(kind, "theme", 4) {
+            0 => None,
+            1 => Some(ThemePalette {
+                bg: Color::rgba(0.05, 0.07, 0.11, 1.0),
+                grid: Color::rgba(0.35, 0.55, 0.72, 0.22),
+                text: Color::rgba(0.86, 0.93, 0.98, 1.0),
+                a: Color::rgba(0.40, 0.78, 1.0, 1.0),
+                b: Color::rgba(0.17, 0.52, 0.82, 0.62),
+                c: Color::rgba(0.82, 0.94, 1.0, 0.75),
+            }),
+            2 => Some(ThemePalette {
+                bg: Color::rgba(0.10, 0.08, 0.06, 1.0),
+                grid: Color::rgba(0.62, 0.46, 0.24, 0.24),
+                text: Color::rgba(0.98, 0.92, 0.82, 1.0),
+                a: Color::rgba(1.0, 0.67, 0.30, 1.0),
+                b: Color::rgba(0.85, 0.40, 0.20, 0.58),
+                c: Color::rgba(1.0, 0.86, 0.60, 0.78),
+            }),
+            _ => Some(ThemePalette {
+                bg: Color::rgba(0.07, 0.07, 0.08, 1.0),
+                grid: Color::rgba(0.62, 0.64, 0.68, 0.18),
+                text: Color::rgba(0.93, 0.94, 0.96, 1.0),
+                a: Color::rgba(0.88, 0.92, 0.98, 1.0),
+                b: Color::rgba(0.66, 0.71, 0.80, 0.55),
+                c: Color::rgba(0.95, 0.97, 1.0, 0.70),
+            }),
+        }
+    }
+
+    fn cycle_option(&mut self, kind: ChartKind, name: &'static str, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let key = (kind, name);
+        let cur = self.option_indices.get(&key).copied().unwrap_or(0);
+        self.option_indices.insert(key, (cur + 1) % len);
+    }
+
     fn reset(&mut self) {
         self.base_seed = self.initial_seed;
         self.chart_salts.fill(0);
 
         self.preset = DataPreset::Balanced;
+        self.noise_enabled = true;
+        self.option_indices.clear();
         self.bar_stacked = true;
         self.stacked_mode = StackedAreaMode::Stacked;
         self.hierarchy_mode = HierarchyMode::Treemap;
@@ -339,17 +419,18 @@ impl GalleryModels {
         let funnel_seed = config.seed_for_index(ChartKind::Funnel as usize);
         let geo_seed = config.seed_for_index(ChartKind::Geo as usize);
 
-        let line_series = make_series(config.line_n, line_seed)
+        let line_series = make_series(config.line_n, line_seed, config.noise_enabled)
             .expect("failed to create line series (x must be sorted)");
 
         let line = LineChartHandle::new(LineChartModel::new(line_series.clone()));
         let area = AreaChartHandle::new(AreaChartModel::new(line_series.clone()));
         let scatter = ScatterChartHandle::new(ScatterChartModel::new(
-            make_series(config.line_n, scatter_seed).expect("scatter series"),
+            make_series(config.line_n, scatter_seed, config.noise_enabled).expect("scatter series"),
         ));
 
-        let mut multi_model = MultiLineChartModel::new(make_multi_series(72, 240, multi_seed))
-            .expect("multiline requires series");
+        let mut multi_model =
+            MultiLineChartModel::new(make_multi_series(72, 240, multi_seed, config.noise_enabled))
+                .expect("multiline requires series");
         multi_model.set_gap_dx(seed_range(multi_seed, 99, 4.0, 14.0));
         let multi = MultiLineChartHandle::new(multi_model);
 
@@ -359,11 +440,13 @@ impl GalleryModels {
         let bar = BarChartHandle::new(bar_model);
 
         let hist = HistogramChartHandle::new(
-            HistogramChartModel::new(make_hist_values(100_000, hist_seed)).expect("hist values"),
+            HistogramChartModel::new(make_hist_values(100_000, hist_seed, config.noise_enabled))
+                .expect("hist values"),
         );
 
         let candle = CandlestickChartHandle::new(CandlestickChartModel::new(
-            CandleSeries::new(make_candles(120_000, candle_seed)).expect("candles must be sorted"),
+            CandleSeries::new(make_candles(120_000, candle_seed, config.noise_enabled))
+                .expect("candles must be sorted"),
         ));
 
         let heat = HeatmapChartHandle::new(
@@ -394,12 +477,18 @@ impl GalleryModels {
         );
 
         let stats = StatisticsChartHandle::new(
-            StatisticsChartModel::new(make_statistics_groups(18, 600, stats_seed))
-                .expect("stats groups"),
+            StatisticsChartModel::new(make_statistics_groups(
+                18,
+                600,
+                stats_seed,
+                config.noise_enabled,
+            ))
+            .expect("stats groups"),
         );
 
         let mut hierarchy_model =
-            HierarchyChartModel::new(make_hierarchy_tree(hierarchy_seed)).expect("hierarchy tree");
+            HierarchyChartModel::new(make_hierarchy_tree(hierarchy_seed, config.noise_enabled))
+                .expect("hierarchy tree");
         hierarchy_model.style.mode = config.hierarchy_mode;
         let hierarchy = HierarchyChartHandle::new(hierarchy_model);
 
@@ -407,24 +496,30 @@ impl GalleryModels {
             make_network_model(config.network_mode, network_seed).expect("network model"),
         );
 
-        let mut polar_model =
-            PolarChartModel::new_radar(make_radar_dimensions(), make_radar_series(polar_seed))
-                .expect("radar data");
+        let mut polar_model = PolarChartModel::new_radar(
+            make_radar_dimensions(),
+            make_radar_series(polar_seed, config.noise_enabled),
+        )
+        .expect("radar data");
         polar_model.mode = config.polar_mode;
         polar_model.style.mode = config.polar_mode;
         let polar = PolarChartHandle::new(polar_model);
 
         let gauge_value = seed_range(gauge_seed, 12, 8.0, 96.0);
-        let gauge = GaugeChartHandle::new(
-            GaugeChartModel::new(0.0, 100.0, gauge_value).expect("gauge model"),
-        );
+        let gauge = GaugeChartHandle::new({
+            let mut m = GaugeChartModel::new(0.0, 100.0, 0.0).expect("gauge model");
+            m.set_value_transition(gauge_value, 0.45);
+            m
+        });
 
         let funnel = FunnelChartHandle::new(
             FunnelChartModel::new(make_funnel_stages(funnel_seed)).expect("funnel stages"),
         );
 
-        let geo =
-            GeoChartHandle::new(GeoChartModel::new(make_geo_shapes(geo_seed)).expect("geo shapes"));
+        let geo = GeoChartHandle::new(
+            GeoChartModel::new(make_geo_shapes(geo_seed, config.noise_enabled))
+                .expect("geo shapes"),
+        );
 
         let mut models = Self {
             line,
@@ -447,6 +542,7 @@ impl GalleryModels {
             geo,
         };
         models.apply_preset(config.preset);
+        models.apply_advanced_options(config);
         models
     }
 
@@ -541,53 +637,445 @@ impl GalleryModels {
             ),
         };
 
-        if let Ok(mut m) = self.line.0.lock() {
+        Self::with_locked_model(&self.line.0, |m| {
             m.set_downsample_max_points(line_points);
-        }
-        if let Ok(mut m) = self.area.0.lock() {
+        });
+        Self::with_locked_model(&self.area.0, |m| {
             m.set_downsample_max_points(area_points);
-        }
-        if let Ok(mut m) = self.scatter.0.lock() {
+        });
+        Self::with_locked_model(&self.scatter.0, |m| {
             m.style.max_points = scatter_points.max(512);
             m.set_max_points(scatter_points);
-        }
-        if let Ok(mut m) = self.multi.0.lock() {
+        });
+        Self::with_locked_model(&self.multi.0, |m| {
             m.style.max_series = multi_series;
             m.style.max_total_segments = multi_segments;
             m.style.max_points_per_series = multi_points;
-        }
-        if let Ok(mut m) = self.bar.0.lock() {
+        });
+        Self::with_locked_model(&self.bar.0, |m| {
             m.style.max_bins = bar_bins;
-        }
-        if let Ok(mut m) = self.candle.0.lock() {
+        });
+        Self::with_locked_model(&self.candle.0, |m| {
             m.style.max_candles = candle_max;
-        }
-        if let Ok(mut m) = self.heat.0.lock() {
+        });
+        Self::with_locked_model(&self.heat.0, |m| {
             m.style.max_cells_x = heat_x;
             m.style.max_cells_y = heat_y;
-        }
-        if let Ok(mut m) = self.density.0.lock() {
+        });
+        Self::with_locked_model(&self.density.0, |m| {
             m.style.max_cells_x = density_x;
             m.style.max_cells_y = density_y;
             m.style.max_points = density_points;
-        }
-        if let Ok(mut m) = self.contour.0.lock() {
+        });
+        Self::with_locked_model(&self.contour.0, |m| {
             m.style.max_segments = contour_segments;
             m.style.levels = contour_levels;
-        }
-        if let Ok(mut m) = self.hierarchy.0.lock() {
+        });
+        Self::with_locked_model(&self.hierarchy.0, |m| {
             m.style.max_leaves = hierarchy_leaves;
-        }
-        if let Ok(mut m) = self.network.0.lock() {
+        });
+        Self::with_locked_model(&self.network.0, |m| {
             m.style.max_nodes = network_nodes;
             m.style.max_links = network_links;
-        }
-        if let Ok(mut m) = self.polar.0.lock() {
+        });
+        Self::with_locked_model(&self.polar.0, |m| {
             m.style.max_series = polar_series;
-        }
-        if let Ok(mut m) = self.geo.0.lock() {
+        });
+        Self::with_locked_model(&self.geo.0, |m| {
             m.style.max_points = geo_points;
+        });
+    }
+
+    fn with_locked_model<M, F>(model: &std::sync::Arc<std::sync::Mutex<M>>, apply: F)
+    where
+        F: FnOnce(&mut M),
+    {
+        if let Ok(mut locked) = model.lock() {
+            apply(&mut locked);
         }
+    }
+
+    fn apply_zoom_options(cfg: &GalleryConfig, kind: ChartKind, scroll: &mut f32, pinch: &mut f32) {
+        *scroll = cfg.pick_f32(kind, "scroll", ZOOM_SCROLL_OPTIONS);
+        *pinch = cfg.pick_f32(kind, "pinch", ZOOM_PINCH_OPTIONS);
+    }
+
+    // Keep per-chart option application explicit for type safety:
+    // each model owns a distinct style struct and mutation surface.
+    fn apply_advanced_options(&mut self, config: &GalleryConfig) {
+        self.apply_advanced_series_options(config);
+        self.apply_advanced_field_options(config);
+        self.apply_advanced_structural_options(config);
+        self.apply_advanced_specialized_options(config);
+    }
+
+    fn apply_advanced_series_options(&mut self, cfg: &GalleryConfig) {
+        Self::with_locked_model(&self.line.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Line) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.line = p.a;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+            }
+            m.style.stroke_width = cfg.pick_f32(ChartKind::Line, "stroke", &[1.0, 1.5, 2.2, 3.0]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Line,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+            m.set_downsample_max_points(cfg.pick_usize(
+                ChartKind::Line,
+                "max_points",
+                &[2_500, 8_000, 20_000, 60_000],
+            ));
+        });
+
+        Self::with_locked_model(&self.area.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Area) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.line = p.a;
+                m.style.area = p.b;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+            }
+            m.style.stroke_width = cfg.pick_f32(ChartKind::Area, "stroke", &[1.0, 1.5, 2.2, 3.0]);
+            m.style.baseline_y = cfg.pick_f32(ChartKind::Area, "baseline", &[-0.5, 0.0, 0.5]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Area,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+            m.set_downsample_max_points(cfg.pick_usize(
+                ChartKind::Area,
+                "max_points",
+                &[2_500, 8_000, 20_000, 60_000],
+            ));
+        });
+
+        Self::with_locked_model(&self.multi.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::MultiLine) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+            }
+            m.style.stroke_width =
+                cfg.pick_f32(ChartKind::MultiLine, "stroke", &[0.8, 1.2, 1.8, 2.5]);
+            m.style.series_alpha =
+                cfg.pick_f32(ChartKind::MultiLine, "alpha", &[0.30, 0.45, 0.60, 0.75]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::MultiLine,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+            m.style.max_series =
+                cfg.pick_usize(ChartKind::MultiLine, "max_series", &[24, 48, 72, 96]);
+            m.style.max_total_segments = cfg.pick_usize(
+                ChartKind::MultiLine,
+                "max_segments",
+                &[8_000, 22_000, 40_000, 80_000],
+            );
+            m.style.max_points_per_series = cfg.pick_usize(
+                ChartKind::MultiLine,
+                "max_points_per_series",
+                &[256, 512, 1_024, 2_048],
+            );
+            m.set_gap_dx(cfg.pick_f32(ChartKind::MultiLine, "gap_dx", &[2.0, 6.0, 10.0, 14.0]));
+        });
+
+        Self::with_locked_model(&self.bar.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Bar) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.crosshair = p.c;
+            }
+            m.style.bar_alpha = cfg.pick_f32(ChartKind::Bar, "alpha", &[0.45, 0.65, 0.85, 1.0]);
+            m.style.max_series = cfg.pick_usize(ChartKind::Bar, "max_series", &[2, 4, 8, 16]);
+            m.style.max_bins =
+                cfg.pick_usize(ChartKind::Bar, "max_bins", &[2_000, 8_000, 20_000, 40_000]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Bar,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+        });
+
+        Self::with_locked_model(&self.hist.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Histogram) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.bar = p.a;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+            }
+            m.style.bins = cfg.pick_usize(ChartKind::Histogram, "bins", &[24, 48, 96, 192]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Histogram,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+        });
+
+        Self::with_locked_model(&self.scatter.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Scatter) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.points = p.a;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+            }
+            m.style.point_radius =
+                cfg.pick_f32(ChartKind::Scatter, "radius", &[0.8, 1.2, 1.8, 2.5]);
+            m.style.hover_hit_radius_px =
+                cfg.pick_f32(ChartKind::Scatter, "hit", &[8.0, 12.0, 16.0, 24.0]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Scatter,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+            let max_points = cfg.pick_usize(
+                ChartKind::Scatter,
+                "max_points",
+                &[1_600, 4_000, 7_000, 14_000],
+            );
+            m.style.max_points = max_points.max(512);
+            m.set_max_points(max_points);
+        });
+
+        Self::with_locked_model(&self.candle.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Candlestick) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.crosshair = p.c;
+                m.style.text = p.text;
+                m.style.up = p.a;
+                m.style.down = p.b;
+                m.style.wick = p.c;
+            }
+            m.style.stroke_width =
+                cfg.pick_f32(ChartKind::Candlestick, "stroke", &[1.0, 1.5, 2.0, 2.8]);
+            m.style.max_candles = cfg.pick_usize(
+                ChartKind::Candlestick,
+                "max_candles",
+                &[3_500, 12_000, 20_000, 35_000],
+            );
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Candlestick,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+        });
+    }
+
+    fn apply_advanced_field_options(&mut self, cfg: &GalleryConfig) {
+        Self::with_locked_model(&self.heat.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Heatmap) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+            }
+            m.style.max_cells_x =
+                cfg.pick_usize(ChartKind::Heatmap, "cells_x", &[64, 128, 192, 256]);
+            m.style.max_cells_y = cfg.pick_usize(ChartKind::Heatmap, "cells_y", &[32, 64, 96, 128]);
+        });
+
+        Self::with_locked_model(&self.stacked_area.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::StackedArea) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.crosshair = p.c;
+            }
+            m.style.stroke_width =
+                cfg.pick_f32(ChartKind::StackedArea, "stroke", &[0.8, 1.2, 1.8, 2.4]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::StackedArea,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+        });
+
+        Self::with_locked_model(&self.density.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::DensityMap) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+            }
+            m.style.max_cells_x =
+                cfg.pick_usize(ChartKind::DensityMap, "cells_x", &[72, 128, 192, 256]);
+            m.style.max_cells_y =
+                cfg.pick_usize(ChartKind::DensityMap, "cells_y", &[36, 64, 96, 128]);
+            m.style.max_points = cfg.pick_usize(
+                ChartKind::DensityMap,
+                "max_points",
+                &[80_000, 180_000, 250_000, 400_000],
+            );
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::DensityMap,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+        });
+
+        Self::with_locked_model(&self.contour.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Contour) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.stroke = p.a;
+            }
+            m.style.stroke_width =
+                cfg.pick_f32(ChartKind::Contour, "stroke", &[1.0, 1.5, 2.2, 3.0]);
+            m.style.max_segments = cfg.pick_usize(
+                ChartKind::Contour,
+                "max_segments",
+                &[7_000, 20_000, 35_000, 60_000],
+            );
+            m.style.levels = CONTOUR_LEVEL_OPTIONS
+                [cfg.option_index(ChartKind::Contour, "levels", CONTOUR_LEVEL_OPTIONS.len())]
+            .to_vec();
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Contour,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+        });
+
+        Self::with_locked_model(&self.stats.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Statistics) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.accent = p.a;
+                m.style.crosshair = p.c;
+            }
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Statistics,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+        });
+    }
+
+    fn apply_advanced_structural_options(&mut self, cfg: &GalleryConfig) {
+        Self::with_locked_model(&self.hierarchy.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Hierarchy) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.border = p.a;
+            }
+            m.style.max_leaves = cfg.pick_usize(
+                ChartKind::Hierarchy,
+                "max_leaves",
+                &[600, 2_000, 4_000, 8_000],
+            );
+        });
+
+        Self::with_locked_model(&self.network.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Network) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.node = p.a;
+                m.style.link = p.b;
+            }
+            m.style.node_radius =
+                cfg.pick_f32(ChartKind::Network, "radius", &[3.0, 6.0, 10.0, 14.0]);
+            m.style.max_nodes =
+                cfg.pick_usize(ChartKind::Network, "max_nodes", &[96, 256, 512, 1024]);
+            m.style.max_links =
+                cfg.pick_usize(ChartKind::Network, "max_links", &[700, 2_000, 4_000, 8_000]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Network,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+        });
+
+        Self::with_locked_model(&self.polar.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Polar) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.stroke = p.a;
+            }
+            m.style.fill_alpha =
+                cfg.pick_f32(ChartKind::Polar, "fill_alpha", &[0.10, 0.20, 0.35, 0.50]);
+            m.style.max_series = cfg.pick_usize(ChartKind::Polar, "max_series", &[4, 8, 16, 32]);
+            let ranges = [0.8f32, 1.0, 1.2, 1.5];
+            let range = ranges[cfg.option_index(ChartKind::Polar, "range", ranges.len())];
+            m.style.min_value = 0.0;
+            m.style.max_value = range;
+        });
+    }
+
+    fn apply_advanced_specialized_options(&mut self, cfg: &GalleryConfig) {
+        Self::with_locked_model(&self.gauge.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Gauge) {
+                m.style.bg = p.bg;
+                m.style.track = p.grid;
+                m.style.fill = p.a;
+                m.style.needle = p.c;
+                m.style.text = p.text;
+            }
+            m.style.stroke_width =
+                cfg.pick_f32(ChartKind::Gauge, "stroke", &[4.0, 8.0, 12.0, 16.0]);
+            let spans = [0.5f32, 0.75, 1.0, 1.25];
+            let span = spans[cfg.option_index(ChartKind::Gauge, "span", spans.len())];
+            m.style.angle_start_rad = -std::f32::consts::PI * span;
+            m.style.angle_end_rad = std::f32::consts::PI * span;
+            m.transition_step_sec = cfg.pick_f32(
+                ChartKind::Gauge,
+                "transition_dt",
+                &[1.0 / 120.0, 1.0 / 90.0, 1.0 / 60.0, 1.0 / 30.0],
+            );
+        });
+
+        Self::with_locked_model(&self.funnel.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Funnel) {
+                m.style.bg = p.bg;
+                m.style.text = p.text;
+                m.style.fill = p.b;
+                m.style.stroke = p.c;
+            }
+        });
+
+        Self::with_locked_model(&self.geo.0, |m| {
+            if let Some(p) = cfg.theme_palette(ChartKind::Geo) {
+                m.style.bg = p.bg;
+                m.style.grid = p.grid;
+                m.style.text = p.text;
+                m.style.stroke = p.a;
+            }
+            m.style.stroke_width = cfg.pick_f32(ChartKind::Geo, "stroke", &[0.8, 1.2, 1.8, 2.6]);
+            m.style.max_points = cfg.pick_usize(
+                ChartKind::Geo,
+                "max_points",
+                &[6_000, 20_000, 35_000, 60_000],
+            );
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Geo,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
+        });
     }
 }
 
@@ -743,9 +1231,10 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     )
                     .child(
                         text(format!(
-                            "N={} | preset={} | seed=0x{:08X}",
+                            "N={} | preset={} | noise={} | seed=0x{:08X}",
                             cfg.line_n,
                             cfg.preset.label(),
+                            if cfg.noise_enabled { "on" } else { "off" },
                             cfg.base_seed as u32
                         ))
                         .size(if dense { 10.0 } else { 12.0 })
@@ -980,9 +1469,10 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                             )
                             .child(
                                 text(format!(
-                                    "seed 0x{:08X} | preset {}",
+                                    "seed 0x{:08X} | preset {} | noise {}",
                                     cfg.seed_for_index(idx) as u32,
-                                    cfg.preset.label()
+                                    cfg.preset.label(),
+                                    if cfg.noise_enabled { "on" } else { "off" }
                                 ))
                                 .size(10.0)
                                 .color(Color::rgba(0.55, 0.60, 0.67, 1.0)),
@@ -1088,6 +1578,23 @@ fn control_panel(
     {
         let config_for_click = config.clone();
         let models_for_click = models.clone();
+        row = row.child(action_chip(
+            format!("Noise: {}", if cfg.noise_enabled { "On" } else { "Off" }),
+            dense,
+            cfg.noise_enabled,
+            move |_| {
+                config_for_click.update(|mut c| {
+                    c.noise_enabled = !c.noise_enabled;
+                    c
+                });
+                refresh_models(&config_for_click, &models_for_click);
+            },
+        ));
+    }
+
+    {
+        let config_for_click = config.clone();
+        let models_for_click = models.clone();
         row = row.child(action_chip("Reset view/style", dense, false, move |_| {
             config_for_click.update(|mut c| {
                 c.reset();
@@ -1097,7 +1604,90 @@ fn control_panel(
         }));
     }
 
+    row = row.child(cycle_index_chip(
+        &cfg, dense, &config, &models, item.kind, "theme", "Theme: T", 4, 1,
+    ));
+
     match item.kind {
+        ChartKind::Line => {
+            let kind = ChartKind::Line;
+            row = row.child(cycle_f32_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "stroke",
+                "Stroke",
+                &[1.0, 1.5, 2.2, 3.0],
+                1,
+            ));
+            row = row.child(cycle_usize_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "max_points",
+                "MaxPts",
+                &[2_500, 8_000, 20_000, 60_000],
+            ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
+        }
+        ChartKind::Area => {
+            let kind = ChartKind::Area;
+            for (name, label, values) in [
+                ("stroke", "Stroke", &[1.0, 1.5, 2.2, 3.0][..]),
+                ("baseline", "Baseline", &[-0.5, 0.0, 0.5][..]),
+            ] {
+                row = row.child(cycle_f32_chip(
+                    &cfg, dense, &config, &models, kind, name, label, values, 1,
+                ));
+            }
+            row = row.child(cycle_usize_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "max_points",
+                "MaxPts",
+                &[2_500, 8_000, 20_000, 60_000],
+            ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
+        }
+        ChartKind::MultiLine => {
+            let kind = ChartKind::MultiLine;
+            for (name, label, values, decimals) in [
+                ("stroke", "Stroke", &[0.8, 1.2, 1.8, 2.5][..], 1usize),
+                ("alpha", "Alpha", &[0.30, 0.45, 0.60, 0.75][..], 2usize),
+                ("gap_dx", "Gap", &[2.0, 6.0, 10.0, 14.0][..], 1usize),
+            ] {
+                row = row.child(cycle_f32_chip(
+                    &cfg, dense, &config, &models, kind, name, label, values, decimals,
+                ));
+            }
+            for (name, label, values) in [
+                ("max_series", "Series", &[24, 48, 72, 96][..]),
+                ("max_segments", "Seg", &[8_000, 22_000, 40_000, 80_000][..]),
+                (
+                    "max_points_per_series",
+                    "Pts/Series",
+                    &[256, 512, 1_024, 2_048][..],
+                ),
+            ] {
+                row = row.child(cycle_usize_chip(
+                    &cfg, dense, &config, &models, kind, name, label, values,
+                ));
+            }
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
+        }
         ChartKind::Bar => {
             let config_for_click = config.clone();
             let models_for_click = models.clone();
@@ -1120,6 +1710,103 @@ fn control_panel(
                     refresh_models(&config_for_click, &models_for_click);
                 },
             ));
+            let kind = ChartKind::Bar;
+            for (name, label, values, decimals) in
+                [("alpha", "Alpha", &[0.45, 0.65, 0.85, 1.0][..], 2usize)]
+            {
+                row = row.child(cycle_f32_chip(
+                    &cfg, dense, &config, &models, kind, name, label, values, decimals,
+                ));
+            }
+            for (name, label, values) in [
+                ("max_series", "Series", &[2, 4, 8, 16][..]),
+                ("max_bins", "Bins", &[2_000, 8_000, 20_000, 40_000][..]),
+            ] {
+                row = row.child(cycle_usize_chip(
+                    &cfg, dense, &config, &models, kind, name, label, values,
+                ));
+            }
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
+        }
+        ChartKind::Histogram => {
+            let kind = ChartKind::Histogram;
+            row = row.child(cycle_usize_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "bins",
+                "Bins",
+                &[24, 48, 96, 192],
+            ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
+        }
+        ChartKind::Scatter => {
+            let kind = ChartKind::Scatter;
+            for (name, label, values, decimals) in [
+                ("radius", "Radius", &[0.8, 1.2, 1.8, 2.5][..], 1usize),
+                ("hit", "Hit", &[8.0, 12.0, 16.0, 24.0][..], 0usize),
+            ] {
+                row = row.child(cycle_f32_chip(
+                    &cfg, dense, &config, &models, kind, name, label, values, decimals,
+                ));
+            }
+            row = row.child(cycle_usize_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "max_points",
+                "MaxPts",
+                &[1_600, 4_000, 7_000, 14_000],
+            ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
+        }
+        ChartKind::Candlestick => {
+            let kind = ChartKind::Candlestick;
+            row = row.child(cycle_f32_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "stroke",
+                "Stroke",
+                &[1.0, 1.5, 2.0, 2.8],
+                1,
+            ));
+            row = row.child(cycle_usize_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "max_candles",
+                "MaxCandle",
+                &[3_500, 12_000, 20_000, 35_000],
+            ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
+        }
+        ChartKind::Heatmap => {
+            let kind = ChartKind::Heatmap;
+            for (name, label, values) in [
+                ("cells_x", "CellsX", &[64, 128, 192, 256][..]),
+                ("cells_y", "CellsY", &[32, 64, 96, 128][..]),
+            ] {
+                row = row.child(cycle_usize_chip(
+                    &cfg, dense, &config, &models, kind, name, label, values,
+                ));
+            }
         }
         ChartKind::StackedArea => {
             let config_for_click = config.clone();
@@ -1136,6 +1823,76 @@ fn control_panel(
                     refresh_models(&config_for_click, &models_for_click);
                 },
             ));
+            let kind = ChartKind::StackedArea;
+            row = row.child(cycle_f32_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "stroke",
+                "Stroke",
+                &[0.8, 1.2, 1.8, 2.4],
+                1,
+            ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
+        }
+        ChartKind::DensityMap => {
+            let kind = ChartKind::DensityMap;
+            for (name, label, values) in [
+                ("cells_x", "CellsX", &[72, 128, 192, 256][..]),
+                ("cells_y", "CellsY", &[36, 64, 96, 128][..]),
+                (
+                    "max_points",
+                    "MaxPts",
+                    &[80_000, 180_000, 250_000, 400_000][..],
+                ),
+            ] {
+                row = row.child(cycle_usize_chip(
+                    &cfg, dense, &config, &models, kind, name, label, values,
+                ));
+            }
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
+        }
+        ChartKind::Contour => {
+            let kind = ChartKind::Contour;
+            row = row.child(cycle_f32_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "stroke",
+                "Stroke",
+                &[1.0, 1.5, 2.2, 3.0],
+                1,
+            ));
+            row = row.child(cycle_usize_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "max_segments",
+                "Segments",
+                &[7_000, 20_000, 35_000, 60_000],
+            ));
+            row = row.child(cycle_index_chip(
+                &cfg, dense, &config, &models, kind, "levels", "Levels L", 4, 1,
+            ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
+        }
+        ChartKind::Statistics => {
+            let kind = ChartKind::Statistics;
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
         }
         ChartKind::Hierarchy => {
             let config_for_click = config.clone();
@@ -1151,6 +1908,16 @@ fn control_panel(
                     });
                     refresh_models(&config_for_click, &models_for_click);
                 },
+            ));
+            row = row.child(cycle_usize_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                ChartKind::Hierarchy,
+                "max_leaves",
+                "Leaves",
+                &[600, 2_000, 4_000, 8_000],
             ));
         }
         ChartKind::Network => {
@@ -1168,6 +1935,29 @@ fn control_panel(
                     refresh_models(&config_for_click, &models_for_click);
                 },
             ));
+            let kind = ChartKind::Network;
+            row = row.child(cycle_f32_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "radius",
+                "Radius",
+                &[3.0, 6.0, 10.0, 14.0],
+                1,
+            ));
+            for (name, label, values) in [
+                ("max_nodes", "Nodes", &[96, 256, 512, 1_024][..]),
+                ("max_links", "Links", &[700, 2_000, 4_000, 8_000][..]),
+            ] {
+                row = row.child(cycle_usize_chip(
+                    &cfg, dense, &config, &models, kind, name, label, values,
+                ));
+            }
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
         }
         ChartKind::Polar => {
             let config_for_click = config.clone();
@@ -1184,6 +1974,87 @@ fn control_panel(
                     refresh_models(&config_for_click, &models_for_click);
                 },
             ));
+            let kind = ChartKind::Polar;
+            for (name, label, values, decimals) in [
+                ("fill_alpha", "Fill", &[0.10, 0.20, 0.35, 0.50][..], 2usize),
+                ("range", "Range", &[0.8, 1.0, 1.2, 1.5][..], 1usize),
+            ] {
+                row = row.child(cycle_f32_chip(
+                    &cfg, dense, &config, &models, kind, name, label, values, decimals,
+                ));
+            }
+            row = row.child(cycle_usize_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "max_series",
+                "Series",
+                &[4, 8, 16, 32],
+            ));
+        }
+        ChartKind::Gauge => {
+            let kind = ChartKind::Gauge;
+            row = row.child(cycle_f32_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "stroke",
+                "Stroke",
+                &[4.0, 8.0, 12.0, 16.0],
+                0,
+            ));
+            row = row.child(cycle_f32_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "span",
+                "Arc x",
+                &[0.5, 0.75, 1.0, 1.25],
+                2,
+            ));
+            row = row.child(cycle_hz_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "transition_dt",
+                "Anim",
+                &[1.0 / 120.0, 1.0 / 90.0, 1.0 / 60.0, 1.0 / 30.0],
+            ));
+        }
+        ChartKind::Geo => {
+            let kind = ChartKind::Geo;
+            row = row.child(cycle_f32_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "stroke",
+                "Stroke",
+                &[0.8, 1.2, 1.8, 2.6],
+                1,
+            ));
+            row = row.child(cycle_usize_chip(
+                &cfg,
+                dense,
+                &config,
+                &models,
+                kind,
+                "max_points",
+                "MaxPts",
+                &[6_000, 20_000, 35_000, 60_000],
+            ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
         }
         _ => {}
     }
@@ -1206,6 +2077,130 @@ fn control_panel(
                 .color(Color::rgba(0.62, 0.69, 0.77, 0.95)),
         )
         .child(row)
+}
+
+fn cycle_f32_chip(
+    cfg: &GalleryConfig,
+    dense: bool,
+    config: &State<GalleryConfig>,
+    models: &State<GalleryModels>,
+    kind: ChartKind,
+    name: &'static str,
+    label: &'static str,
+    values: &[f32],
+    decimals: usize,
+) -> impl ElementBuilder {
+    let value = cfg.pick_f32(kind, name, values);
+    let chip_label = format!("{label} {value:.decimals$}");
+    cycle_option_chip(
+        chip_label,
+        dense,
+        config.clone(),
+        models.clone(),
+        kind,
+        name,
+        values.len(),
+    )
+}
+
+fn cycle_usize_chip(
+    cfg: &GalleryConfig,
+    dense: bool,
+    config: &State<GalleryConfig>,
+    models: &State<GalleryModels>,
+    kind: ChartKind,
+    name: &'static str,
+    label: &'static str,
+    values: &[usize],
+) -> impl ElementBuilder {
+    let value = cfg.pick_usize(kind, name, values);
+    cycle_option_chip(
+        format!("{label} {value}"),
+        dense,
+        config.clone(),
+        models.clone(),
+        kind,
+        name,
+        values.len(),
+    )
+}
+
+fn cycle_index_chip(
+    cfg: &GalleryConfig,
+    dense: bool,
+    config: &State<GalleryConfig>,
+    models: &State<GalleryModels>,
+    kind: ChartKind,
+    name: &'static str,
+    label_prefix: &'static str,
+    len: usize,
+    offset: usize,
+) -> impl ElementBuilder {
+    let label_value = cfg.option_index(kind, name, len) + offset;
+    cycle_option_chip(
+        format!("{label_prefix}{label_value}"),
+        dense,
+        config.clone(),
+        models.clone(),
+        kind,
+        name,
+        len,
+    )
+}
+
+fn cycle_hz_chip(
+    cfg: &GalleryConfig,
+    dense: bool,
+    config: &State<GalleryConfig>,
+    models: &State<GalleryModels>,
+    kind: ChartKind,
+    name: &'static str,
+    label: &'static str,
+    values: &[f32],
+) -> impl ElementBuilder {
+    let hz = (1.0 / cfg.pick_f32(kind, name, values)).round() as i32;
+    cycle_option_chip(
+        format!("{label} {hz}Hz"),
+        dense,
+        config.clone(),
+        models.clone(),
+        kind,
+        name,
+        values.len(),
+    )
+}
+
+fn zoom_chip_boxes(
+    cfg: &GalleryConfig,
+    dense: bool,
+    config: &State<GalleryConfig>,
+    models: &State<GalleryModels>,
+    kind: ChartKind,
+) -> Vec<Box<dyn ElementBuilder>> {
+    vec![
+        Box::new(cycle_f32_chip(
+            cfg,
+            dense,
+            config,
+            models,
+            kind,
+            "scroll",
+            "Scroll",
+            ZOOM_SCROLL_OPTIONS,
+            2,
+        )),
+        Box::new(cycle_f32_chip(
+            cfg,
+            dense,
+            config,
+            models,
+            kind,
+            "pinch",
+            "Pinch",
+            ZOOM_PINCH_OPTIONS,
+            2,
+        )),
+    ]
 }
 
 fn action_chip<F>(
@@ -1254,6 +2249,24 @@ where
         .on_click(on_click)
 }
 
+fn cycle_option_chip(
+    label: impl Into<String>,
+    dense: bool,
+    config: State<GalleryConfig>,
+    models: State<GalleryModels>,
+    kind: ChartKind,
+    name: &'static str,
+    len: usize,
+) -> impl ElementBuilder {
+    action_chip(label, dense, true, move |_| {
+        config.update(|mut c| {
+            c.cycle_option(kind, name, len);
+            c
+        });
+        refresh_models(&config, &models);
+    })
+}
+
 fn refresh_models(config: &State<GalleryConfig>, models: &State<GalleryModels>) {
     if let Some(cfg) = config.try_get() {
         models.set(GalleryModels::new(&cfg));
@@ -1300,6 +2313,14 @@ fn splitmix64(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+fn noise_amount(noise_enabled: bool) -> f32 {
+    if noise_enabled {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 fn seed01(seed: u64, stream: u64) -> f32 {
     let bits = (splitmix64(seed ^ stream.wrapping_mul(0x9E37_79B9_7F4A_7C15)) >> 40) as u32;
     bits as f32 / 16_777_215.0
@@ -1309,11 +2330,14 @@ fn seed_range(seed: u64, stream: u64, lo: f32, hi: f32) -> f32 {
     lo + (hi - lo) * seed01(seed, stream)
 }
 
-fn seed_signed(seed: u64, stream: u64, magnitude: f32) -> f32 {
+fn seed_signed(seed: u64, stream: u64, magnitude: f32, noise_enabled: bool) -> f32 {
+    if !noise_enabled {
+        return 0.0;
+    }
     (seed01(seed, stream) * 2.0 - 1.0) * magnitude
 }
 
-fn make_series(n: usize, seed: u64) -> anyhow::Result<TimeSeriesF32> {
+fn make_series(n: usize, seed: u64, noise_enabled: bool) -> anyhow::Result<TimeSeriesF32> {
     let mut x = Vec::with_capacity(n);
     let mut y = Vec::with_capacity(n);
 
@@ -1324,16 +2348,22 @@ fn make_series(n: usize, seed: u64) -> anyhow::Result<TimeSeriesF32> {
 
     for i in 0..n {
         let t = i as f32 * 0.001;
+        let saw = ((t * seed_range(seed, 5, 0.9, 1.3) + phase).fract() - 0.5) * noise;
         let v = (t * f0 + phase).sin() * 0.8
             + (t * f1 + phase * 0.55).sin() * 0.2
-            + ((t * seed_range(seed, 5, 0.9, 1.3) + phase).fract() - 0.5) * noise;
+            + saw * noise_amount(noise_enabled);
         x.push(i as f32);
         y.push(v);
     }
     TimeSeriesF32::new(x, y)
 }
 
-fn make_multi_series(series_n: usize, points_n: usize, seed: u64) -> Vec<TimeSeriesF32> {
+fn make_multi_series(
+    series_n: usize,
+    points_n: usize,
+    seed: u64,
+    noise_enabled: bool,
+) -> Vec<TimeSeriesF32> {
     let mut out = Vec::with_capacity(series_n);
     let gap_every = seed_range(seed, 10, 28.0, 46.0).round() as usize;
     let gap_jump = seed_range(seed, 11, 7.0, 13.0);
@@ -1357,7 +2387,7 @@ fn make_multi_series(series_n: usize, points_n: usize, seed: u64) -> Vec<TimeSer
 
             let t = i as f32;
             let vv = (t * f0 + phase).sin() * 0.72 + (t * f1 + phase * 1.8).sin() * 0.24;
-            y.push(vv + seed_signed(seed, 800 + i as u64 + (s as u64 * 17), 0.015));
+            y.push(vv + seed_signed(seed, 800 + i as u64 + (s as u64 * 17), 0.015, noise_enabled));
         }
         out.push(TimeSeriesF32::new(x, y).expect("sorted by construction"));
     }
@@ -1386,7 +2416,7 @@ fn make_bar_series(series_n: usize, n: usize, seed: u64) -> Vec<TimeSeriesF32> {
     out
 }
 
-fn make_hist_values(n: usize, seed: u64) -> Vec<f32> {
+fn make_hist_values(n: usize, seed: u64, noise_enabled: bool) -> Vec<f32> {
     let mut out = Vec::with_capacity(n);
     let phase = seed_range(seed, 30, 0.0, std::f32::consts::TAU);
     let f0 = seed_range(seed, 31, 1.2, 2.3);
@@ -1396,14 +2426,14 @@ fn make_hist_values(n: usize, seed: u64) -> Vec<f32> {
         let t = i as f32 * 0.001;
         let a = (t * f0 + phase).sin() * 0.62 + (t * 0.11 + phase * 0.5).sin() * 0.14;
         let b = (t * f1 + phase * 1.8).cos() * 0.36;
-        out.push(a + b + seed_signed(seed, 2000 + i as u64, 0.025));
+        out.push(a + b + seed_signed(seed, 2000 + i as u64, 0.025, noise_enabled));
     }
     out
 }
 
-fn make_candles(n: usize, seed: u64) -> Vec<Candle> {
+fn make_candles(n: usize, seed: u64, noise_enabled: bool) -> Vec<Candle> {
     let mut out = Vec::with_capacity(n);
-    let mut last = seed_signed(seed, 40, 0.35);
+    let mut last = seed_signed(seed, 40, 0.35, noise_enabled);
 
     let drift_scale = seed_range(seed, 41, 0.012, 0.034);
     let noise_scale = seed_range(seed, 42, 0.018, 0.06);
@@ -1414,7 +2444,7 @@ fn make_candles(n: usize, seed: u64) -> Vec<Candle> {
         let noise = (t * seed_range(seed, 44, 1.2, 2.4)).sin() * noise_scale
             + (t * seed_range(seed, 45, 1.5, 2.8)).cos() * (noise_scale * 0.35);
 
-        let close = last + drift + noise;
+        let close = last + drift + noise * noise_amount(noise_enabled);
         let open = last;
         let wick_amp = seed_range(seed, 46, 0.02, 0.07);
         let hi =
@@ -1531,7 +2561,12 @@ fn make_contour_values(w: usize, h: usize, seed: u64) -> Vec<f32> {
     out
 }
 
-fn make_statistics_groups(groups_n: usize, points_per_group: usize, seed: u64) -> Vec<Vec<f32>> {
+fn make_statistics_groups(
+    groups_n: usize,
+    points_per_group: usize,
+    seed: u64,
+    noise_enabled: bool,
+) -> Vec<Vec<f32>> {
     let groups_n = groups_n.max(1);
     let points_per_group = points_per_group.max(8);
 
@@ -1546,7 +2581,12 @@ fn make_statistics_groups(groups_n: usize, points_per_group: usize, seed: u64) -
             let v = (t + shift).sin() * spread
                 + (t * seed_range(seed, 92, 0.15, 0.30) + shift).cos() * 0.18
                 + shift * 0.6
-                + seed_signed(seed, 3500 + (g as u64 * 400 + i as u64), 0.05);
+                + seed_signed(
+                    seed,
+                    3500 + (g as u64 * 400 + i as u64),
+                    0.05,
+                    noise_enabled,
+                );
             vals.push(v);
         }
 
@@ -1555,9 +2595,9 @@ fn make_statistics_groups(groups_n: usize, points_per_group: usize, seed: u64) -
     out
 }
 
-fn make_hierarchy_tree(seed: u64) -> HierarchyNode {
+fn make_hierarchy_tree(seed: u64, noise_enabled: bool) -> HierarchyNode {
     let leaf = |name: &str, base: f32, stream: u64| {
-        let v = (base + seed_signed(seed, stream, base * 0.28)).max(0.2);
+        let v = (base + seed_signed(seed, stream, base * 0.28, noise_enabled)).max(0.2);
         HierarchyNode::leaf(name, v)
     };
 
@@ -1700,14 +2740,15 @@ fn make_radar_dimensions() -> Vec<String> {
     ]
 }
 
-fn make_radar_series(seed: u64) -> Vec<Vec<f32>> {
+fn make_radar_series(seed: u64, noise_enabled: bool) -> Vec<Vec<f32>> {
     let mut series = Vec::new();
     for s in 0..3 {
         let mut row = Vec::new();
         for d in 0..6 {
             let base = 0.45 + (d as f32 * 0.08 + s as f32 * 0.13).sin() * 0.22;
-            let v = (base + seed_signed(seed, 400 + (s as u64 * 10 + d as u64), 0.18))
-                .clamp(0.05, 0.98);
+            let v = (base
+                + seed_signed(seed, 400 + (s as u64 * 10 + d as u64), 0.18, noise_enabled))
+            .clamp(0.05, 0.98);
             row.push(v);
         }
         series.push(row);
@@ -1731,7 +2772,7 @@ fn make_funnel_stages(seed: u64) -> Vec<(String, f32)> {
     out
 }
 
-fn make_geo_shapes(seed: u64) -> Vec<Vec<Point>> {
+fn make_geo_shapes(seed: u64, noise_enabled: bool) -> Vec<Vec<Point>> {
     let mut shapes = Vec::new();
 
     let mut coast = Vec::new();
@@ -1743,7 +2784,7 @@ fn make_geo_shapes(seed: u64) -> Vec<Vec<Point>> {
         let x = t * 10.0;
         let y = (t * std::f32::consts::TAU * f0).sin() * 0.9
             + (t * std::f32::consts::TAU * f1).sin() * 0.25
-            + seed_signed(seed, 602 + i as u64, 0.04);
+            + seed_signed(seed, 602 + i as u64, 0.04, noise_enabled);
         coast.push(Point::new(x, y));
     }
     shapes.push(coast);

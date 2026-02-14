@@ -1,153 +1,169 @@
-# D3 Gap Closure Backlog for BlincCharts
+# D3 Gap Closure for BlincCharts Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Turn the D3-vs-BlincCharts capability matrix into a prioritized, phase-based backlog that supports repository split decisions.
+**Goal:** Convert the D3-vs-BlincCharts audit into an execution-ready backlog that protects split readiness while keeping scope aligned with Blinc-native chart priorities.
 
-**Architecture:** Keep the default track as product-parity (Blinc-native chart library), then add optional library-parity phases. Preserve current chart rendering/event model (`blinc_charts` + `blinc_layout` + `blinc_core`) and avoid foundation-package churn unless a concrete requirement forces it.
+**Architecture:** Keep the default track as product-parity for `blinc_charts` and gate any broader library-parity work behind explicit demand. Implement split blockers first (`Parallel` mode credibility + support policy publication), then build reusable utility layers (axis, scale, formatting), then algorithmic modules. Avoid touching `blinc_layout` and `blinc_core` unless a concrete API constraint is proven.
 
-**Tech Stack:** Rust workspace crates (`blinc_charts`, `blinc_layout`, `blinc_core`), docs under `docs/references` and `docs/plans`.
+**Tech Stack:** Rust workspace crates (`blinc_charts`, `blinc_app`, optional `blinc_layout`), documentation under `docs/references` and `docs/plans`, cargo test/check pipeline.
 
 ---
 
 ## Source of Truth
 
-- Capability matrix: `/Users/cypark/Documents/project/Blinc/docs/references/2026-02-11-d3-blinccharts-capability-matrix.md`
-- Chart module surface: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/lib.rs`
-- Gallery coverage: `/Users/cypark/Documents/project/Blinc/crates/blinc_app/examples/charts_gallery_demo.rs`
+- Capability matrix: `docs/references/2026-02-11-d3-blinccharts-capability-matrix.md`
+- Chart module surface: `crates/blinc_charts/src/lib.rs`
+- Gallery coverage: `crates/blinc_app/examples/charts_gallery_demo.rs`
+- Parallel stub evidence: `crates/blinc_charts/src/polar.rs`
 
 ## Prioritization Rubric
 
-- `P0`: split blocking or correctness credibility issue.
-- `P1`: core developer-facing API gap for reusable chart library.
-- `P2`: algorithmic depth and ecosystem parity improvements.
-- `P3`: polish and optional parity layers.
+- `P0`: split-blocking credibility or contract clarity issue.
+- `P1`: core reusable chart-library API gap.
+- `P2`: algorithmic depth and heavy-data interaction improvements.
+- `P3`: optional interpolation/transition parity layer.
 
 ## Package Change Policy (for split)
 
-- Default policy: changes should remain in `blinc_charts`.
-- Allowed optional touch points:
-  - `blinc_layout`: only if new event primitives are strictly required.
-  - `blinc_core`: only if new draw primitive API is strictly required.
-- Any item that requires `blinc_layout` or `blinc_core` changes must carry explicit justification in its PR description.
+- Default: keep all work inside `blinc_charts`.
+- Optional touch points:
+  - `blinc_layout`: only when transition/event primitives are strictly required.
+  - `blinc_core`: only when drawing primitives are strictly required.
+- If a task needs `blinc_layout` or `blinc_core`, PR must include explicit justification.
 
-## Phase 0 (P0): Split Credibility Blockers
+## Backlog Ledger
 
-Target window: immediate (before repo split announcement).
+| ID | Priority | Scope | Dependencies | Status | Done criteria |
+|---|---|---|---|---|---|
+| `BLC-D3-001` | P0 | Real parallel coordinates rendering for `PolarChartMode::Parallel` | none | Completed (initial, 2026-02-11) | `render_parallel_stub` removed, distinct axes + polyline renderer added, gallery mode visibly differs from radar |
+| `BLC-D3-002` | P0 | Publish support policy for `Full/Partial/Missing/Out-of-scope` | none | Completed (2026-02-11) | matrix rubric linked from entry docs and split recommendation |
+| `BLC-D3-003` | P1 | Reusable axis/tick module for Cartesian charts | `BLC-D3-001` | Completed (initial, 2026-02-11) | line/bar/scatter share axis renderer, tick count + formatter configurable |
+| `BLC-D3-004` | P1 | Shared scale abstraction (linear + band first) | `BLC-D3-003` recommended | Completed (initial, 2026-02-11) | chart modules can migrate incrementally from ad-hoc mapping |
+| `BLC-D3-005` | P1 | Number/time formatting utilities | `BLC-D3-003`, `BLC-D3-004` | Completed (initial, 2026-02-11) | shared formatter API used in overlays/tooltips/axes |
+| `BLC-D3-006` | P2 | Spatial index for dense hover/hit test | `BLC-D3-004` | Completed (initial, 2026-02-11) | optional index path for nearest-point queries in scatter/network |
+| `BLC-D3-007` | P2 | Triangulation utility module | `BLC-D3-006` optional | Completed (initial, 2026-02-11) | finite-input tests + at least one consumer mode |
+| `BLC-D3-008` | P2 | Polygon utility helpers | none | Completed (initial, 2026-02-11) | shared point-in-polygon/area helpers wired into selection path |
+| `BLC-D3-009` | P3 | Interpolation helper module | `BLC-D3-003`~`005` recommended | Completed (initial, 2026-02-11) | reusable interpolation API for chart transitions |
+| `BLC-D3-010` | P3 | Minimal deterministic transition policy | `BLC-D3-009` | Completed (initial, 2026-02-11) | documented lifecycle + one bounded-cost chart animation demo |
 
-1. Replace `Parallel` stub in polar chart with real parallel coordinates rendering.
-- Priority: `P0`
-- D3 mapping: `d3-shape` / partial `d3-scale` parity credibility
-- Current gap evidence: `/Users/cypark/Documents/project/Blinc/crates/blinc_charts/src/polar.rs`
-- Package impact: `blinc_charts` only (expected)
-- Done criteria:
-  - `PolarChartMode::Parallel` no longer calls `render_parallel_stub`.
-  - Distinct axes + polyline rendering path exists.
-  - Gallery mode toggle visibly switches to true parallel visualization.
+## Phase Plan
 
-2. Publish explicit support policy for `Full/Partial/Missing/Out-of-scope`.
-- Priority: `P0`
-- D3 mapping: all modules (contract clarity)
-- Package impact: docs only
-- Done criteria:
-  - Matrix status rubric is referenced from README/docs entry point.
-  - Split decision references product-parity target explicitly.
+### Phase 0 (Split Gate)
 
-## Phase 1 (P1): Core Reusable Utility Layer
+- Target: immediate (before split announcement)
+- Required items: `BLC-D3-001`, `BLC-D3-002`
+- Required verification:
+  - `cargo test -p blinc_charts`
+  - `cargo check -p blinc_app --example charts_gallery_demo --features windowed`
 
-Target window: first cycle after split (if library consumers are expected).
+### Phase 1 (Core Library Surface)
 
-3. Add reusable axis/tick module for Cartesian charts.
-- Priority: `P1`
-- D3 mapping: `d3-axis`
-- Package impact: `blinc_charts` only (expected)
-- Done criteria:
-  - Shared axis renderer used by at least line/bar/scatter.
-  - Tick generation configurable by count and formatter callback.
+- Target: first cycle after split
+- Required items: `BLC-D3-003`, `BLC-D3-004`, `BLC-D3-005`
+- Suggested verification:
+  - `cargo test -p blinc_charts`
+  - `cargo test -p blinc_charts --test gallery_completion_smoke`
+  - `cargo check -p blinc_app --example charts_gallery_demo --features windowed`
 
-4. Add scale abstraction beyond raw domain mapping.
-- Priority: `P1`
-- D3 mapping: `d3-scale`
-- Package impact: `blinc_charts` only (expected)
-- Done criteria:
-  - Introduce scale traits/types for linear and band scales.
-  - Existing chart code can opt into shared scales incrementally.
+### Phase 2 (Algorithm Depth)
 
-5. Add formatting utilities for numeric and time labels.
-- Priority: `P1`
-- D3 mapping: `d3-format`, `d3-time-format`, partial `d3-time`
-- Package impact: `blinc_charts` only (expected)
-- Done criteria:
-  - Shared number formatter API replaces ad-hoc overlay text formatting.
-  - Shared time label formatting usable in time-series axes/tooltips.
+- Target: second cycle after split
+- Items: `BLC-D3-006`, `BLC-D3-007`, `BLC-D3-008`
 
-## Phase 2 (P2): Algorithmic Depth
+### Phase 3 (Optional Transition Layer)
 
-Target window: second cycle after split (advanced analytics use cases).
+- Target: only if UX animation goals justify maintenance cost
+- Items: `BLC-D3-009`, `BLC-D3-010`
 
-6. Add spatial indexing utilities for dense interaction.
-- Priority: `P2`
-- D3 mapping: `d3-quadtree`
-- Package impact: `blinc_charts` only (expected)
-- Done criteria:
-  - Reusable quadtree-like index for nearest-point queries.
-  - Scatter/network hover hit-testing can optionally use this index.
+## Execution-Ready Tasks (Now)
 
-7. Add triangulation-based utilities for field/mesh workflows.
-- Priority: `P2`
-- D3 mapping: `d3-delaunay`
-- Package impact: `blinc_charts` only (expected)
-- Done criteria:
-  - New utility module with tests for finite input and stable topology.
-  - At least one chart mode consumes the triangulation result.
+### Task 1: `BLC-D3-001` Parallel Coordinates Real Implementation
 
-8. Add polygon utility helpers for clipping/containment.
-- Priority: `P2`
-- D3 mapping: `d3-polygon`
-- Package impact: `blinc_charts` only (expected)
-- Done criteria:
-  - Point-in-polygon and area-like helpers exposed.
-  - At least one brush/selection path uses shared polygon helper.
+**Files:**
+- Modify: `crates/blinc_charts/src/polar.rs`
+- Modify: `crates/blinc_app/examples/charts_gallery_demo.rs` (labels/help text only if needed)
+- Test: `crates/blinc_charts/tests/gallery_completion_smoke.rs`
 
-## Phase 3 (P3): Transition and Interpolation Layer
+**Step 1: Write failing tests for `Parallel` behavior**
 
-Target window: optional, based on UX goals.
+- Add tests proving `PolarChartMode::Parallel` does not use radar-only rendering path semantics (geometry/label expectations).
 
-9. Add interpolation helper module.
-- Priority: `P3`
-- D3 mapping: `d3-interpolate`
-- Package impact: `blinc_charts` only (expected)
-- Done criteria:
-  - Reusable interpolation helpers available for chart value/path transitions.
+**Step 2: Run tests to verify failure**
 
-10. Add chart transition API policy (minimal, deterministic).
-- Priority: `P3`
-- D3 mapping: `d3-transition`
-- Package impact: may require `blinc_layout` integration; keep optional
-- Done criteria:
-  - Explicit transition lifecycle API is documented.
-  - At least one chart demonstrates data-change animation with bounded cost.
+- Run: `cargo test -p blinc_charts --test gallery_completion_smoke`
+- Expected: fail on new `Parallel` assertions.
 
-## Explicit Out-of-Scope (for BlincCharts crate)
+**Step 3: Implement minimal parallel coordinates renderer**
+
+- Replace `render_parallel_stub` with dedicated render path:
+  - equally spaced vertical axes by dimension
+  - per-series polylines across axes
+  - preserve finite-value handling + color rules
+
+**Step 4: Re-run tests and fix until pass**
+
+- Run: `cargo test -p blinc_charts --test gallery_completion_smoke`
+- Expected: pass.
+
+**Step 5: Verify gallery compile path**
+
+- Run: `cargo check -p blinc_app --example charts_gallery_demo --features windowed`
+- Expected: pass.
+
+### Task 2: `BLC-D3-002` Support Policy Publication
+
+**Files:**
+- Modify: `docs/references/2026-02-11-d3-blinccharts-capability-matrix.md`
+- Modify: `docs/plans/2026-02-11-d3-blinccharts-gap-backlog.md`
+- Modify: `README.md` (short pointer section)
+
+**Step 1: Add visible rubric pointer from README**
+
+- Add a concise section linking matrix + backlog policy.
+
+**Step 2: Keep matrix and backlog IDs synchronized**
+
+- Ensure backlog IDs (`BLC-D3-001`..`010`) are used consistently.
+
+**Step 3: Verify docs references**
+
+- Run: `rg -n "BLC-D3-00[1-9]|BLC-D3-010|Full/Partial/Missing/Out-of-scope" docs README.md`
+- Expected: IDs and rubric strings found in matrix/backlog/readme.
+
+### Task 3: `BLC-D3-003` Reusable Axis/Tick Module (Phase 1 first)
+
+**Files:**
+- Create: `crates/blinc_charts/src/axis.rs`
+- Modify: `crates/blinc_charts/src/lib.rs`
+- Modify: `crates/blinc_charts/src/line.rs`
+- Modify: `crates/blinc_charts/src/bar.rs`
+- Modify: `crates/blinc_charts/src/scatter.rs`
+- Test: `crates/blinc_charts/tests/gallery_completion_smoke.rs` (or new dedicated axis tests)
+
+**Step 1: Add axis API and failing tests**
+
+- Introduce tick generation contract (count + formatter callback).
+
+**Step 2: Implement minimal axis renderer and integrate one chart first**
+
+- Start with line chart, then port bar/scatter.
+
+**Step 3: Verify chart compile and tests**
+
+- Run: `cargo test -p blinc_charts`
+- Run: `cargo check -p blinc_app --example charts_gallery_demo --features windowed`
+
+## Explicit Out-of-Scope for `blinc_charts`
 
 - `d3-fetch`, `d3-dsv`, `d3-selection`, `d3-timer`, `d3-ease`, `d3-random`
-- Rationale: these are runtime/data/DOM/timing helpers, not core chart-rendering responsibilities for this crate.
-
-## Split Decision Gates
-
-Gate A (must-pass for split):
-- Phase 0 complete.
-- Current chart tests remain green: `cargo test -p blinc_charts`.
-- Gallery compiles: `cargo check -p blinc_app --example charts_gallery_demo --features windowed`.
-
-Gate B (optional quality bar before public externalization):
-- At least Phase 1 items 3 and 4 complete.
+- Rationale: runtime/data/DOM/timing helpers are outside this crate’s rendering responsibility.
 
 ## Recommended Execution Order
 
-1. Phase 0 item 1 (Parallel real implementation).
-2. Phase 0 item 2 (support policy visibility).
-3. Phase 1 item 3 (axis/tick).
-4. Phase 1 item 4 (scale abstraction).
-5. Phase 1 item 5 (format/time-format).
-6. Phase 2 and 3 based on external consumer demand.
+1. `BLC-D3-001` (parallel credibility blocker)
+2. `BLC-D3-002` (support policy visibility)
+3. `BLC-D3-003` (axis/tick)
+4. `BLC-D3-004` (scale abstraction)
+5. `BLC-D3-005` (format/time-format)
+6. `BLC-D3-006`..`010` by external consumer demand
