@@ -13,7 +13,6 @@ use blinc_charts::prelude::*;
 use blinc_core::{Color, Point, State};
 use blinc_layout::prelude::{ButtonState, NoState};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ChartKind {
@@ -237,6 +236,9 @@ const ITEMS: &[ChartEntry] = &[
     ),
 ];
 
+const ZOOM_SCROLL_OPTIONS: &[f32] = &[0.01, 0.02, 0.04];
+const ZOOM_PINCH_OPTIONS: &[f32] = &[0.01, 0.05, 0.1];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DataPreset {
     Fast,
@@ -419,8 +421,6 @@ struct GalleryModels {
 
 impl GalleryModels {
     fn new(config: &GalleryConfig) -> Self {
-        set_gallery_noise_enabled(config.noise_enabled);
-
         let line_seed = config.seed_for_index(ChartKind::Line as usize);
         let multi_seed = config.seed_for_index(ChartKind::MultiLine as usize);
         let bar_seed = config.seed_for_index(ChartKind::Bar as usize);
@@ -439,17 +439,18 @@ impl GalleryModels {
         let funnel_seed = config.seed_for_index(ChartKind::Funnel as usize);
         let geo_seed = config.seed_for_index(ChartKind::Geo as usize);
 
-        let line_series = make_series(config.line_n, line_seed)
+        let line_series = make_series(config.line_n, line_seed, config.noise_enabled)
             .expect("failed to create line series (x must be sorted)");
 
         let line = LineChartHandle::new(LineChartModel::new(line_series.clone()));
         let area = AreaChartHandle::new(AreaChartModel::new(line_series.clone()));
         let scatter = ScatterChartHandle::new(ScatterChartModel::new(
-            make_series(config.line_n, scatter_seed).expect("scatter series"),
+            make_series(config.line_n, scatter_seed, config.noise_enabled).expect("scatter series"),
         ));
 
-        let mut multi_model = MultiLineChartModel::new(make_multi_series(72, 240, multi_seed))
-            .expect("multiline requires series");
+        let mut multi_model =
+            MultiLineChartModel::new(make_multi_series(72, 240, multi_seed, config.noise_enabled))
+                .expect("multiline requires series");
         multi_model.set_gap_dx(seed_range(multi_seed, 99, 4.0, 14.0));
         let multi = MultiLineChartHandle::new(multi_model);
 
@@ -459,11 +460,13 @@ impl GalleryModels {
         let bar = BarChartHandle::new(bar_model);
 
         let hist = HistogramChartHandle::new(
-            HistogramChartModel::new(make_hist_values(100_000, hist_seed)).expect("hist values"),
+            HistogramChartModel::new(make_hist_values(100_000, hist_seed, config.noise_enabled))
+                .expect("hist values"),
         );
 
         let candle = CandlestickChartHandle::new(CandlestickChartModel::new(
-            CandleSeries::new(make_candles(120_000, candle_seed)).expect("candles must be sorted"),
+            CandleSeries::new(make_candles(120_000, candle_seed, config.noise_enabled))
+                .expect("candles must be sorted"),
         ));
 
         let heat = HeatmapChartHandle::new(
@@ -494,12 +497,18 @@ impl GalleryModels {
         );
 
         let stats = StatisticsChartHandle::new(
-            StatisticsChartModel::new(make_statistics_groups(18, 600, stats_seed))
-                .expect("stats groups"),
+            StatisticsChartModel::new(make_statistics_groups(
+                18,
+                600,
+                stats_seed,
+                config.noise_enabled,
+            ))
+            .expect("stats groups"),
         );
 
         let mut hierarchy_model =
-            HierarchyChartModel::new(make_hierarchy_tree(hierarchy_seed)).expect("hierarchy tree");
+            HierarchyChartModel::new(make_hierarchy_tree(hierarchy_seed, config.noise_enabled))
+                .expect("hierarchy tree");
         hierarchy_model.style.mode = config.hierarchy_mode;
         let hierarchy = HierarchyChartHandle::new(hierarchy_model);
 
@@ -507,9 +516,11 @@ impl GalleryModels {
             make_network_model(config.network_mode, network_seed).expect("network model"),
         );
 
-        let mut polar_model =
-            PolarChartModel::new_radar(make_radar_dimensions(), make_radar_series(polar_seed))
-                .expect("radar data");
+        let mut polar_model = PolarChartModel::new_radar(
+            make_radar_dimensions(),
+            make_radar_series(polar_seed, config.noise_enabled),
+        )
+        .expect("radar data");
         polar_model.mode = config.polar_mode;
         polar_model.style.mode = config.polar_mode;
         let polar = PolarChartHandle::new(polar_model);
@@ -525,8 +536,10 @@ impl GalleryModels {
             FunnelChartModel::new(make_funnel_stages(funnel_seed)).expect("funnel stages"),
         );
 
-        let geo =
-            GeoChartHandle::new(GeoChartModel::new(make_geo_shapes(geo_seed)).expect("geo shapes"));
+        let geo = GeoChartHandle::new(
+            GeoChartModel::new(make_geo_shapes(geo_seed, config.noise_enabled))
+                .expect("geo shapes"),
+        );
 
         let mut models = Self {
             line,
@@ -702,6 +715,11 @@ impl GalleryModels {
         }
     }
 
+    fn apply_zoom_options(cfg: &GalleryConfig, kind: ChartKind, scroll: &mut f32, pinch: &mut f32) {
+        *scroll = cfg.pick_f32(kind, "scroll", ZOOM_SCROLL_OPTIONS);
+        *pinch = cfg.pick_f32(kind, "pinch", ZOOM_PINCH_OPTIONS);
+    }
+
     // Keep per-chart option application explicit for type safety:
     // each model owns a distinct style struct and mutation surface.
     fn apply_advanced_options(&mut self, config: &GalleryConfig) {
@@ -721,9 +739,12 @@ impl GalleryModels {
                 m.style.text = p.text;
             }
             m.style.stroke_width = cfg.pick_f32(ChartKind::Line, "stroke", &[1.0, 1.5, 2.2, 3.0]);
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::Line, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min = cfg.pick_f32(ChartKind::Line, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Line,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
             m.set_downsample_max_points(cfg.pick_usize(
                 ChartKind::Line,
                 "max_points",
@@ -742,9 +763,12 @@ impl GalleryModels {
             }
             m.style.stroke_width = cfg.pick_f32(ChartKind::Area, "stroke", &[1.0, 1.5, 2.2, 3.0]);
             m.style.baseline_y = cfg.pick_f32(ChartKind::Area, "baseline", &[-0.5, 0.0, 0.5]);
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::Area, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min = cfg.pick_f32(ChartKind::Area, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Area,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
             m.set_downsample_max_points(cfg.pick_usize(
                 ChartKind::Area,
                 "max_points",
@@ -763,10 +787,12 @@ impl GalleryModels {
                 cfg.pick_f32(ChartKind::MultiLine, "stroke", &[0.8, 1.2, 1.8, 2.5]);
             m.style.series_alpha =
                 cfg.pick_f32(ChartKind::MultiLine, "alpha", &[0.30, 0.45, 0.60, 0.75]);
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::MultiLine, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min =
-                cfg.pick_f32(ChartKind::MultiLine, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::MultiLine,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
             m.style.max_series =
                 cfg.pick_usize(ChartKind::MultiLine, "max_series", &[24, 48, 72, 96]);
             m.style.max_total_segments = cfg.pick_usize(
@@ -793,9 +819,12 @@ impl GalleryModels {
             m.style.max_series = cfg.pick_usize(ChartKind::Bar, "max_series", &[2, 4, 8, 16]);
             m.style.max_bins =
                 cfg.pick_usize(ChartKind::Bar, "max_bins", &[2_000, 8_000, 20_000, 40_000]);
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::Bar, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min = cfg.pick_f32(ChartKind::Bar, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Bar,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
         });
 
         Self::with_locked_model(&self.hist.0, |m| {
@@ -807,10 +836,12 @@ impl GalleryModels {
                 m.style.text = p.text;
             }
             m.style.bins = cfg.pick_usize(ChartKind::Histogram, "bins", &[24, 48, 96, 192]);
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::Histogram, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min =
-                cfg.pick_f32(ChartKind::Histogram, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Histogram,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
         });
 
         Self::with_locked_model(&self.scatter.0, |m| {
@@ -825,9 +856,12 @@ impl GalleryModels {
                 cfg.pick_f32(ChartKind::Scatter, "radius", &[0.8, 1.2, 1.8, 2.5]);
             m.style.hover_hit_radius_px =
                 cfg.pick_f32(ChartKind::Scatter, "hit", &[8.0, 12.0, 16.0, 24.0]);
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::Scatter, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min = cfg.pick_f32(ChartKind::Scatter, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Scatter,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
             let max_points = cfg.pick_usize(
                 ChartKind::Scatter,
                 "max_points",
@@ -854,10 +888,12 @@ impl GalleryModels {
                 "max_candles",
                 &[3_500, 12_000, 20_000, 35_000],
             );
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::Candlestick, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min =
-                cfg.pick_f32(ChartKind::Candlestick, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Candlestick,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
         });
     }
 
@@ -882,10 +918,12 @@ impl GalleryModels {
             }
             m.style.stroke_width =
                 cfg.pick_f32(ChartKind::StackedArea, "stroke", &[0.8, 1.2, 1.8, 2.4]);
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::StackedArea, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min =
-                cfg.pick_f32(ChartKind::StackedArea, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::StackedArea,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
         });
 
         Self::with_locked_model(&self.density.0, |m| {
@@ -903,10 +941,12 @@ impl GalleryModels {
                 "max_points",
                 &[80_000, 180_000, 250_000, 400_000],
             );
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::DensityMap, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min =
-                cfg.pick_f32(ChartKind::DensityMap, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::DensityMap,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
         });
 
         Self::with_locked_model(&self.contour.0, |m| {
@@ -931,9 +971,12 @@ impl GalleryModels {
             ];
             m.style.levels =
                 levels[cfg.option_index(ChartKind::Contour, "levels", levels.len())].clone();
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::Contour, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min = cfg.pick_f32(ChartKind::Contour, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Contour,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
         });
 
         Self::with_locked_model(&self.stats.0, |m| {
@@ -944,10 +987,12 @@ impl GalleryModels {
                 m.style.accent = p.a;
                 m.style.crosshair = p.c;
             }
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::Statistics, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min =
-                cfg.pick_f32(ChartKind::Statistics, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Statistics,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
         });
     }
 
@@ -980,9 +1025,12 @@ impl GalleryModels {
                 cfg.pick_usize(ChartKind::Network, "max_nodes", &[96, 256, 512, 1024]);
             m.style.max_links =
                 cfg.pick_usize(ChartKind::Network, "max_links", &[700, 2_000, 4_000, 8_000]);
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::Network, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min = cfg.pick_f32(ChartKind::Network, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Network,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
         });
 
         Self::with_locked_model(&self.polar.0, |m| {
@@ -1046,9 +1094,12 @@ impl GalleryModels {
                 "max_points",
                 &[6_000, 20_000, 35_000, 60_000],
             );
-            m.style.scroll_zoom_factor =
-                cfg.pick_f32(ChartKind::Geo, "scroll", &[0.01, 0.02, 0.04]);
-            m.style.pinch_zoom_min = cfg.pick_f32(ChartKind::Geo, "pinch", &[0.01, 0.05, 0.1]);
+            Self::apply_zoom_options(
+                cfg,
+                ChartKind::Geo,
+                &mut m.style.scroll_zoom_factor,
+                &mut m.style.pinch_zoom_min,
+            );
         });
     }
 }
@@ -1606,13 +1657,8 @@ fn control_panel(
                 "MaxPts",
                 &[2_500, 8_000, 20_000, 60_000],
             ));
-            for (name, label, values) in [
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..]),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..]),
-            ] {
-                row = row.child(cycle_f32_chip(
-                    &cfg, dense, &config, &models, kind, name, label, values, 2,
-                ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::Area => {
@@ -1635,13 +1681,8 @@ fn control_panel(
                 "MaxPts",
                 &[2_500, 8_000, 20_000, 60_000],
             ));
-            for (name, label, values) in [
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..]),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..]),
-            ] {
-                row = row.child(cycle_f32_chip(
-                    &cfg, dense, &config, &models, kind, name, label, values, 2,
-                ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::MultiLine => {
@@ -1650,8 +1691,6 @@ fn control_panel(
                 ("stroke", "Stroke", &[0.8, 1.2, 1.8, 2.5][..], 1usize),
                 ("alpha", "Alpha", &[0.30, 0.45, 0.60, 0.75][..], 2usize),
                 ("gap_dx", "Gap", &[2.0, 6.0, 10.0, 14.0][..], 1usize),
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..], 2usize),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..], 2usize),
             ] {
                 row = row.child(cycle_f32_chip(
                     &cfg, dense, &config, &models, kind, name, label, values, decimals,
@@ -1669,6 +1708,9 @@ fn control_panel(
                 row = row.child(cycle_usize_chip(
                     &cfg, dense, &config, &models, kind, name, label, values,
                 ));
+            }
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::Bar => {
@@ -1694,11 +1736,9 @@ fn control_panel(
                 },
             ));
             let kind = ChartKind::Bar;
-            for (name, label, values, decimals) in [
-                ("alpha", "Alpha", &[0.45, 0.65, 0.85, 1.0][..], 2usize),
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..], 2usize),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..], 2usize),
-            ] {
+            for (name, label, values, decimals) in
+                [("alpha", "Alpha", &[0.45, 0.65, 0.85, 1.0][..], 2usize)]
+            {
                 row = row.child(cycle_f32_chip(
                     &cfg, dense, &config, &models, kind, name, label, values, decimals,
                 ));
@@ -1710,6 +1750,9 @@ fn control_panel(
                 row = row.child(cycle_usize_chip(
                     &cfg, dense, &config, &models, kind, name, label, values,
                 ));
+            }
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::Histogram => {
@@ -1724,13 +1767,8 @@ fn control_panel(
                 "Bins",
                 &[24, 48, 96, 192],
             ));
-            for (name, label, values) in [
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..]),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..]),
-            ] {
-                row = row.child(cycle_f32_chip(
-                    &cfg, dense, &config, &models, kind, name, label, values, 2,
-                ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::Scatter => {
@@ -1738,8 +1776,6 @@ fn control_panel(
             for (name, label, values, decimals) in [
                 ("radius", "Radius", &[0.8, 1.2, 1.8, 2.5][..], 1usize),
                 ("hit", "Hit", &[8.0, 12.0, 16.0, 24.0][..], 0usize),
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..], 2usize),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..], 2usize),
             ] {
                 row = row.child(cycle_f32_chip(
                     &cfg, dense, &config, &models, kind, name, label, values, decimals,
@@ -1755,6 +1791,9 @@ fn control_panel(
                 "MaxPts",
                 &[1_600, 4_000, 7_000, 14_000],
             ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
+            }
         }
         ChartKind::Candlestick => {
             let kind = ChartKind::Candlestick;
@@ -1779,13 +1818,8 @@ fn control_panel(
                 "MaxCandle",
                 &[3_500, 12_000, 20_000, 35_000],
             ));
-            for (name, label, values) in [
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..]),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..]),
-            ] {
-                row = row.child(cycle_f32_chip(
-                    &cfg, dense, &config, &models, kind, name, label, values, 2,
-                ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::Heatmap => {
@@ -1826,13 +1860,8 @@ fn control_panel(
                 &[0.8, 1.2, 1.8, 2.4],
                 1,
             ));
-            for (name, label, values) in [
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..]),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..]),
-            ] {
-                row = row.child(cycle_f32_chip(
-                    &cfg, dense, &config, &models, kind, name, label, values, 2,
-                ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::DensityMap => {
@@ -1850,13 +1879,8 @@ fn control_panel(
                     &cfg, dense, &config, &models, kind, name, label, values,
                 ));
             }
-            for (name, label, values) in [
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..]),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..]),
-            ] {
-                row = row.child(cycle_f32_chip(
-                    &cfg, dense, &config, &models, kind, name, label, values, 2,
-                ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::Contour => {
@@ -1885,24 +1909,14 @@ fn control_panel(
             row = row.child(cycle_index_chip(
                 &cfg, dense, &config, &models, kind, "levels", "Levels L", 4, 1,
             ));
-            for (name, label, values) in [
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..]),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..]),
-            ] {
-                row = row.child(cycle_f32_chip(
-                    &cfg, dense, &config, &models, kind, name, label, values, 2,
-                ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::Statistics => {
             let kind = ChartKind::Statistics;
-            for (name, label, values) in [
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..]),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..]),
-            ] {
-                row = row.child(cycle_f32_chip(
-                    &cfg, dense, &config, &models, kind, name, label, values, 2,
-                ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::Hierarchy => {
@@ -1966,13 +1980,8 @@ fn control_panel(
                     &cfg, dense, &config, &models, kind, name, label, values,
                 ));
             }
-            for (name, label, values) in [
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..]),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..]),
-            ] {
-                row = row.child(cycle_f32_chip(
-                    &cfg, dense, &config, &models, kind, name, label, values, 2,
-                ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         ChartKind::Polar => {
@@ -2068,13 +2077,8 @@ fn control_panel(
                 "MaxPts",
                 &[6_000, 20_000, 35_000, 60_000],
             ));
-            for (name, label, values) in [
-                ("scroll", "Scroll", &[0.01, 0.02, 0.04][..]),
-                ("pinch", "Pinch", &[0.01, 0.05, 0.1][..]),
-            ] {
-                row = row.child(cycle_f32_chip(
-                    &cfg, dense, &config, &models, kind, name, label, values, 2,
-                ));
+            for chip in zoom_chip_boxes(&cfg, dense, &config, &models, kind) {
+                row = row.child_box(chip);
             }
         }
         _ => {}
@@ -2191,6 +2195,39 @@ fn cycle_hz_chip(
     )
 }
 
+fn zoom_chip_boxes(
+    cfg: &GalleryConfig,
+    dense: bool,
+    config: &State<GalleryConfig>,
+    models: &State<GalleryModels>,
+    kind: ChartKind,
+) -> Vec<Box<dyn ElementBuilder>> {
+    vec![
+        Box::new(cycle_f32_chip(
+            cfg,
+            dense,
+            config,
+            models,
+            kind,
+            "scroll",
+            "Scroll",
+            ZOOM_SCROLL_OPTIONS,
+            2,
+        )),
+        Box::new(cycle_f32_chip(
+            cfg,
+            dense,
+            config,
+            models,
+            kind,
+            "pinch",
+            "Pinch",
+            ZOOM_PINCH_OPTIONS,
+            2,
+        )),
+    ]
+}
+
 fn action_chip<F>(
     label: impl Into<String>,
     dense: bool,
@@ -2301,18 +2338,8 @@ fn splitmix64(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-static GALLERY_NOISE_ENABLED: AtomicBool = AtomicBool::new(true);
-
-fn set_gallery_noise_enabled(enabled: bool) {
-    GALLERY_NOISE_ENABLED.store(enabled, Ordering::Relaxed);
-}
-
-fn gallery_noise_enabled() -> bool {
-    GALLERY_NOISE_ENABLED.load(Ordering::Relaxed)
-}
-
-fn noise_amount() -> f32 {
-    if gallery_noise_enabled() {
+fn noise_amount(noise_enabled: bool) -> f32 {
+    if noise_enabled {
         1.0
     } else {
         0.0
@@ -2328,14 +2355,14 @@ fn seed_range(seed: u64, stream: u64, lo: f32, hi: f32) -> f32 {
     lo + (hi - lo) * seed01(seed, stream)
 }
 
-fn seed_signed(seed: u64, stream: u64, magnitude: f32) -> f32 {
-    if !gallery_noise_enabled() {
+fn seed_signed(seed: u64, stream: u64, magnitude: f32, noise_enabled: bool) -> f32 {
+    if !noise_enabled {
         return 0.0;
     }
     (seed01(seed, stream) * 2.0 - 1.0) * magnitude
 }
 
-fn make_series(n: usize, seed: u64) -> anyhow::Result<TimeSeriesF32> {
+fn make_series(n: usize, seed: u64, noise_enabled: bool) -> anyhow::Result<TimeSeriesF32> {
     let mut x = Vec::with_capacity(n);
     let mut y = Vec::with_capacity(n);
 
@@ -2349,14 +2376,19 @@ fn make_series(n: usize, seed: u64) -> anyhow::Result<TimeSeriesF32> {
         let saw = ((t * seed_range(seed, 5, 0.9, 1.3) + phase).fract() - 0.5) * noise;
         let v = (t * f0 + phase).sin() * 0.8
             + (t * f1 + phase * 0.55).sin() * 0.2
-            + saw * noise_amount();
+            + saw * noise_amount(noise_enabled);
         x.push(i as f32);
         y.push(v);
     }
     TimeSeriesF32::new(x, y)
 }
 
-fn make_multi_series(series_n: usize, points_n: usize, seed: u64) -> Vec<TimeSeriesF32> {
+fn make_multi_series(
+    series_n: usize,
+    points_n: usize,
+    seed: u64,
+    noise_enabled: bool,
+) -> Vec<TimeSeriesF32> {
     let mut out = Vec::with_capacity(series_n);
     let gap_every = seed_range(seed, 10, 28.0, 46.0).round() as usize;
     let gap_jump = seed_range(seed, 11, 7.0, 13.0);
@@ -2380,7 +2412,7 @@ fn make_multi_series(series_n: usize, points_n: usize, seed: u64) -> Vec<TimeSer
 
             let t = i as f32;
             let vv = (t * f0 + phase).sin() * 0.72 + (t * f1 + phase * 1.8).sin() * 0.24;
-            y.push(vv + seed_signed(seed, 800 + i as u64 + (s as u64 * 17), 0.015));
+            y.push(vv + seed_signed(seed, 800 + i as u64 + (s as u64 * 17), 0.015, noise_enabled));
         }
         out.push(TimeSeriesF32::new(x, y).expect("sorted by construction"));
     }
@@ -2409,7 +2441,7 @@ fn make_bar_series(series_n: usize, n: usize, seed: u64) -> Vec<TimeSeriesF32> {
     out
 }
 
-fn make_hist_values(n: usize, seed: u64) -> Vec<f32> {
+fn make_hist_values(n: usize, seed: u64, noise_enabled: bool) -> Vec<f32> {
     let mut out = Vec::with_capacity(n);
     let phase = seed_range(seed, 30, 0.0, std::f32::consts::TAU);
     let f0 = seed_range(seed, 31, 1.2, 2.3);
@@ -2419,14 +2451,14 @@ fn make_hist_values(n: usize, seed: u64) -> Vec<f32> {
         let t = i as f32 * 0.001;
         let a = (t * f0 + phase).sin() * 0.62 + (t * 0.11 + phase * 0.5).sin() * 0.14;
         let b = (t * f1 + phase * 1.8).cos() * 0.36;
-        out.push(a + b + seed_signed(seed, 2000 + i as u64, 0.025));
+        out.push(a + b + seed_signed(seed, 2000 + i as u64, 0.025, noise_enabled));
     }
     out
 }
 
-fn make_candles(n: usize, seed: u64) -> Vec<Candle> {
+fn make_candles(n: usize, seed: u64, noise_enabled: bool) -> Vec<Candle> {
     let mut out = Vec::with_capacity(n);
-    let mut last = seed_signed(seed, 40, 0.35);
+    let mut last = seed_signed(seed, 40, 0.35, noise_enabled);
 
     let drift_scale = seed_range(seed, 41, 0.012, 0.034);
     let noise_scale = seed_range(seed, 42, 0.018, 0.06);
@@ -2437,7 +2469,7 @@ fn make_candles(n: usize, seed: u64) -> Vec<Candle> {
         let noise = (t * seed_range(seed, 44, 1.2, 2.4)).sin() * noise_scale
             + (t * seed_range(seed, 45, 1.5, 2.8)).cos() * (noise_scale * 0.35);
 
-        let close = last + drift + noise * noise_amount();
+        let close = last + drift + noise * noise_amount(noise_enabled);
         let open = last;
         let wick_amp = seed_range(seed, 46, 0.02, 0.07);
         let hi =
@@ -2554,7 +2586,12 @@ fn make_contour_values(w: usize, h: usize, seed: u64) -> Vec<f32> {
     out
 }
 
-fn make_statistics_groups(groups_n: usize, points_per_group: usize, seed: u64) -> Vec<Vec<f32>> {
+fn make_statistics_groups(
+    groups_n: usize,
+    points_per_group: usize,
+    seed: u64,
+    noise_enabled: bool,
+) -> Vec<Vec<f32>> {
     let groups_n = groups_n.max(1);
     let points_per_group = points_per_group.max(8);
 
@@ -2569,7 +2606,12 @@ fn make_statistics_groups(groups_n: usize, points_per_group: usize, seed: u64) -
             let v = (t + shift).sin() * spread
                 + (t * seed_range(seed, 92, 0.15, 0.30) + shift).cos() * 0.18
                 + shift * 0.6
-                + seed_signed(seed, 3500 + (g as u64 * 400 + i as u64), 0.05);
+                + seed_signed(
+                    seed,
+                    3500 + (g as u64 * 400 + i as u64),
+                    0.05,
+                    noise_enabled,
+                );
             vals.push(v);
         }
 
@@ -2578,9 +2620,9 @@ fn make_statistics_groups(groups_n: usize, points_per_group: usize, seed: u64) -
     out
 }
 
-fn make_hierarchy_tree(seed: u64) -> HierarchyNode {
+fn make_hierarchy_tree(seed: u64, noise_enabled: bool) -> HierarchyNode {
     let leaf = |name: &str, base: f32, stream: u64| {
-        let v = (base + seed_signed(seed, stream, base * 0.28)).max(0.2);
+        let v = (base + seed_signed(seed, stream, base * 0.28, noise_enabled)).max(0.2);
         HierarchyNode::leaf(name, v)
     };
 
@@ -2723,14 +2765,15 @@ fn make_radar_dimensions() -> Vec<String> {
     ]
 }
 
-fn make_radar_series(seed: u64) -> Vec<Vec<f32>> {
+fn make_radar_series(seed: u64, noise_enabled: bool) -> Vec<Vec<f32>> {
     let mut series = Vec::new();
     for s in 0..3 {
         let mut row = Vec::new();
         for d in 0..6 {
             let base = 0.45 + (d as f32 * 0.08 + s as f32 * 0.13).sin() * 0.22;
-            let v = (base + seed_signed(seed, 400 + (s as u64 * 10 + d as u64), 0.18))
-                .clamp(0.05, 0.98);
+            let v = (base
+                + seed_signed(seed, 400 + (s as u64 * 10 + d as u64), 0.18, noise_enabled))
+            .clamp(0.05, 0.98);
             row.push(v);
         }
         series.push(row);
@@ -2754,7 +2797,7 @@ fn make_funnel_stages(seed: u64) -> Vec<(String, f32)> {
     out
 }
 
-fn make_geo_shapes(seed: u64) -> Vec<Vec<Point>> {
+fn make_geo_shapes(seed: u64, noise_enabled: bool) -> Vec<Vec<Point>> {
     let mut shapes = Vec::new();
 
     let mut coast = Vec::new();
@@ -2766,7 +2809,7 @@ fn make_geo_shapes(seed: u64) -> Vec<Vec<Point>> {
         let x = t * 10.0;
         let y = (t * std::f32::consts::TAU * f0).sin() * 0.9
             + (t * std::f32::consts::TAU * f1).sin() * 0.25
-            + seed_signed(seed, 602 + i as u64, 0.04);
+            + seed_signed(seed, 602 + i as u64, 0.04, noise_enabled);
         coast.push(Point::new(x, y));
     }
     shapes.push(coast);
