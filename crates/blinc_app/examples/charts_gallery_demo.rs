@@ -238,6 +238,12 @@ const ITEMS: &[ChartEntry] = &[
 
 const ZOOM_SCROLL_OPTIONS: &[f32] = &[0.01, 0.02, 0.04];
 const ZOOM_PINCH_OPTIONS: &[f32] = &[0.01, 0.05, 0.1];
+const CONTOUR_LEVEL_OPTIONS: [&[f32]; 4] = [
+    &[-0.4, 0.0, 0.4],
+    &[-0.6, -0.2, 0.2, 0.6],
+    &[-0.8, -0.4, 0.0, 0.4, 0.8],
+    &[-0.9, -0.6, -0.3, 0.0, 0.3, 0.6, 0.9],
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DataPreset {
@@ -963,14 +969,9 @@ impl GalleryModels {
                 "max_segments",
                 &[7_000, 20_000, 35_000, 60_000],
             );
-            let levels = [
-                vec![-0.4, 0.0, 0.4],
-                vec![-0.6, -0.2, 0.2, 0.6],
-                vec![-0.8, -0.4, 0.0, 0.4, 0.8],
-                vec![-0.9, -0.6, -0.3, 0.0, 0.3, 0.6, 0.9],
-            ];
-            m.style.levels =
-                levels[cfg.option_index(ChartKind::Contour, "levels", levels.len())].clone();
+            m.style.levels = CONTOUR_LEVEL_OPTIONS
+                [cfg.option_index(ChartKind::Contour, "levels", CONTOUR_LEVEL_OPTIONS.len())]
+            .to_vec();
             Self::apply_zoom_options(
                 cfg,
                 ChartKind::Contour,
