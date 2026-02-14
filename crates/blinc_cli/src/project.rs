@@ -1515,7 +1515,7 @@ fn run_headless_diagnostics(
     app_name: &str,
     scenario_path: Option<&str>,
     report_path: Option<&str>,
-) -> Result<()> {{
+) -> Result<bool> {{
     // TODO: map probe values from your real app state (signals/store/domain model).
     let scenario = match scenario_path {{
         Some(path) => HeadlessScenario::from_path(Path::new(path))?,
@@ -1558,11 +1558,7 @@ fn run_headless_diagnostics(
         report.write_to_writer(&mut std::io::stdout())?;
     }}
 
-    if outcome.is_failed() {{
-        std::process::exit(2);
-    }}
-
-    Ok(())
+    Ok(outcome.is_failed())
 }}
 
 // =============================================================================
@@ -1578,11 +1574,15 @@ fn main() -> Result<()> {{
     let (headless, scenario_path, report_path) = parse_headless_args()?;
 
     if headless {{
-        return run_headless_diagnostics(
+        let failed = run_headless_diagnostics(
             "{name}",
             scenario_path.as_deref(),
             report_path.as_deref(),
-        );
+        )?;
+        if failed {{
+            std::process::exit(2);
+        }}
+        return Ok(());
     }}
 
     let config = WindowConfig {{
