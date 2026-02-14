@@ -19,7 +19,7 @@
 //!
 //! fn my_form(ctx: &Context) -> impl ElementBuilder {
 //!     let username = ctx.use_state_for("username", || text_input_state());
-//!     let remember = ctx.use_state_for("remember", || checkbox_state(false));
+//!     let remember = ctx.use_state_keyed("remember", || false);
 //!
 //!     div().flex_col().gap(16.0)
 //!         // Text input - just works!
@@ -40,6 +40,7 @@ pub mod hr;
 pub mod link;
 pub mod list;
 pub mod overlay;
+pub mod radio;
 pub mod scroll;
 pub mod table;
 pub mod text_area;
@@ -49,10 +50,10 @@ pub mod text_input;
 pub use button::{button, button_with, Button, ButtonConfig, ButtonVisualState};
 
 // Re-export checkbox widget
-pub use checkbox::{
-    checkbox, checkbox_labeled, checkbox_state, Checkbox, CheckboxConfig, CheckboxState,
-    SharedCheckboxState,
-};
+pub use checkbox::{checkbox, checkbox_labeled, Checkbox, CheckboxBuilder, CheckboxConfig};
+
+// Re-export radio widget
+pub use radio::{radio_group, RadioGroup, RadioGroupBuilder, RadioGroupConfig, RadioLayout};
 
 // Re-export text input widget
 pub use text_input::{

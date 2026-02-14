@@ -1015,6 +1015,22 @@ pub struct RenderProps {
     pub font_size: Option<f32>,
     /// Text shadow (offset, blur, color)
     pub text_shadow: Option<Shadow>,
+    /// Font weight override
+    pub font_weight: Option<crate::div::FontWeight>,
+    /// Text decoration override
+    pub text_decoration: Option<crate::element_style::TextDecoration>,
+    /// Line height multiplier override
+    pub line_height: Option<f32>,
+    /// Text alignment override
+    pub text_align: Option<crate::div::TextAlign>,
+    /// Letter spacing override in pixels
+    pub letter_spacing: Option<f32>,
+    /// SVG fill color override
+    pub fill: Option<[f32; 4]>,
+    /// SVG stroke color override
+    pub stroke: Option<[f32; 4]>,
+    /// SVG stroke width override
+    pub stroke_width: Option<f32>,
     /// Transform origin as percentages [x%, y%] (default 50%, 50% = center)
     pub transform_origin: Option<[f32; 2]>,
     /// Layer effects applied to this element (blur, drop shadow, glow, color matrix)
@@ -1062,6 +1078,8 @@ pub struct RenderProps {
         note = "Use query_motion(key).exit() to explicitly trigger motion exit"
     )]
     pub motion_is_exiting: bool,
+    /// CSS visibility (false = hidden, keeps layout space but doesn't render)
+    pub visible: bool,
 }
 
 impl Default for RenderProps {
@@ -1115,7 +1133,16 @@ impl Default for RenderProps {
             text_color: None,
             font_size: None,
             text_shadow: None,
+            font_weight: None,
+            text_decoration: None,
+            line_height: None,
+            text_align: None,
+            letter_spacing: None,
+            fill: None,
+            stroke: None,
+            stroke_width: None,
             transform_origin: None,
+            visible: true,
         }
     }
 }

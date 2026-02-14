@@ -165,6 +165,8 @@ pub struct UnorderedList {
     config: ListConfig,
     marker: ListMarker,
     item_count: usize,
+    css_element_id: Option<String>,
+    css_classes: Vec<String>,
 }
 
 impl UnorderedList {
@@ -182,12 +184,13 @@ impl UnorderedList {
             config,
             marker: ListMarker::Disc,
             item_count: 0,
+            css_element_id: None,
+            css_classes: Vec::new(),
         }
     }
 
     /// Add a list item
     pub fn child(mut self, item: ListItem) -> Self {
-        // Set the marker and index on the item with our config
         let item = item.with_marker_and_config(self.marker, Some(self.item_count), &self.config);
         self.inner = self.inner.child(item);
         self.item_count += 1;
@@ -217,6 +220,18 @@ impl UnorderedList {
     pub fn spacing(mut self, spacing: f32) -> Self {
         self.config.item_spacing = spacing;
         self.inner = self.inner.gap(spacing);
+        self
+    }
+
+    /// Set the element ID for CSS selector targeting
+    pub fn id(mut self, id: &str) -> Self {
+        self.css_element_id = Some(id.to_string());
+        self
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: &str) -> Self {
+        self.css_classes.push(name.to_string());
         self
     }
 }
@@ -257,6 +272,18 @@ impl ElementBuilder for UnorderedList {
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         self.inner.element_type_id()
     }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("ul")
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.css_element_id.as_deref()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        &self.css_classes
+    }
 }
 
 // ============================================================================
@@ -270,6 +297,8 @@ pub struct OrderedList {
     marker: ListMarker,
     start: usize,
     item_count: usize,
+    css_element_id: Option<String>,
+    css_classes: Vec<String>,
 }
 
 impl OrderedList {
@@ -298,12 +327,13 @@ impl OrderedList {
             marker: ListMarker::Decimal,
             start,
             item_count: 0,
+            css_element_id: None,
+            css_classes: Vec::new(),
         }
     }
 
     /// Add a list item
     pub fn child(mut self, item: ListItem) -> Self {
-        // Set the marker and index on the item with our config
         let item = item.with_marker_and_config(
             self.marker,
             Some(self.start + self.item_count - 1),
@@ -345,6 +375,18 @@ impl OrderedList {
         self.inner = self.inner.gap(spacing);
         self
     }
+
+    /// Set the element ID for CSS selector targeting
+    pub fn id(mut self, id: &str) -> Self {
+        self.css_element_id = Some(id.to_string());
+        self
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: &str) -> Self {
+        self.css_classes.push(name.to_string());
+        self
+    }
 }
 
 impl Default for OrderedList {
@@ -382,6 +424,18 @@ impl ElementBuilder for OrderedList {
 
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         self.inner.element_type_id()
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("ol")
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.css_element_id.as_deref()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        &self.css_classes
     }
 }
 
@@ -501,6 +555,18 @@ impl ElementBuilder for ListItem {
 
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         self.inner.element_type_id()
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("li")
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
@@ -635,6 +701,18 @@ impl ElementBuilder for TaskListItem {
 
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         self.inner.element_type_id()
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("li")
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 

@@ -13,8 +13,8 @@ struct ImageInstance {
     @location(1) src_uv: vec4<f32>,
     // Tint color (RGBA)
     @location(2) tint: vec4<f32>,
-    // Border radius and opacity
-    @location(3) params: vec4<f32>, // (border_radius, opacity, padding, padding)
+    // Border radius, opacity, rotation (sin, cos)
+    @location(3) params: vec4<f32>, // (border_radius, opacity, sin_rot, cos_rot)
     // Clip bounds (x, y, width, height) - set to large values for no clip
     @location(4) clip_bounds: vec4<f32>,
     // Clip corner radii (top-left, top-right, bottom-right, bottom-left)
@@ -62,8 +62,21 @@ fn vs_main(
     let local_pos = QUAD_POSITIONS[quad_index];
 
     // Calculate screen position
-    let x = instance.dst_rect.x + local_pos.x * instance.dst_rect.z;
-    let y = instance.dst_rect.y + local_pos.y * instance.dst_rect.w;
+    var x = instance.dst_rect.x + local_pos.x * instance.dst_rect.z;
+    var y = instance.dst_rect.y + local_pos.y * instance.dst_rect.w;
+
+    // Apply rotation around quad center if sin_rot or cos_rot != (0, 1)
+    let sin_rot = instance.params.z;
+    let cos_rot = instance.params.w;
+    let has_rotation = abs(sin_rot) > 0.0001 || abs(cos_rot - 1.0) > 0.0001;
+    if has_rotation {
+        let cx = instance.dst_rect.x + instance.dst_rect.z * 0.5;
+        let cy = instance.dst_rect.y + instance.dst_rect.w * 0.5;
+        let dx = x - cx;
+        let dy = y - cy;
+        x = cx + dx * cos_rot - dy * sin_rot;
+        y = cy + dx * sin_rot + dy * cos_rot;
+    }
 
     // Convert to NDC
     let ndc_x = (x / uniforms.screen_size.x) * 2.0 - 1.0;

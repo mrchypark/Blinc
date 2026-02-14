@@ -946,7 +946,11 @@ impl ElementBuilder for Code {
     }
 
     fn element_type_id(&self) -> ElementTypeId {
-        ElementTypeId::Div // Code renders as a composed Div structure
+        ElementTypeId::Div
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("code")
     }
 
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {

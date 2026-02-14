@@ -991,6 +991,12 @@ pub struct GlassStyle {
     /// light reflections, or bevel effects. More performant and suitable
     /// for subtle UI backgrounds.
     pub simple: bool,
+    /// Glass nesting depth (0 = top-level, 1+ = nested inside another glass element).
+    /// Nested glass requires multi-pass rendering: parent glass renders first,
+    /// then the result becomes the backdrop for child glass.
+    pub depth: u32,
+    /// Border color (when set with alpha > 0, renders a solid border instead of light-based highlights)
+    pub border_color: Option<Color>,
 }
 
 impl Default for GlassStyle {
@@ -1004,6 +1010,8 @@ impl Default for GlassStyle {
             border_thickness: 0.8,
             shadow: None,
             simple: false,
+            depth: 0,
+            border_color: None,
         }
     }
 }
@@ -1098,6 +1106,8 @@ impl GlassStyle {
             border_thickness: 0.0,
             shadow: None,
             simple: true,
+            depth: 0,
+            border_color: None,
         }
     }
 

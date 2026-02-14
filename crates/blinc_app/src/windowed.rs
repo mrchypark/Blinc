@@ -1743,7 +1743,16 @@ impl WindowedContext {
     /// Stylesheets are visual-only: they update render props on existing nodes
     /// and trigger redraws. They never cause tree rebuilds.
     pub fn add_css(&mut self, css: &str) {
-        match blinc_layout::css_parser::Stylesheet::parse(css) {
+        // Seed parser with theme variables + any previously defined CSS variables
+        let mut external_vars = blinc_theme::ThemeState::try_get()
+            .map(|t| t.to_css_variable_map())
+            .unwrap_or_default();
+        if let Some(existing) = &self.stylesheet {
+            for (k, v) in existing.variables() {
+                external_vars.insert(k.clone(), v.clone());
+            }
+        }
+        match blinc_layout::css_parser::Stylesheet::parse_with_variables(css, &external_vars) {
             Ok(sheet) => self.add_stylesheet(sheet),
             Err(e) => {
                 tracing::warn!("Failed to parse CSS: {}", e);
@@ -3659,11 +3668,26 @@ impl WindowedApp {
                             // Combines stable tree structure with dynamic render state
                             // =========================================================
 
+                            // Sync text input/textarea focus to EventRouter so CSS :focus matching works
+                            {
+                                let text_focus = blinc_layout::widgets::text_input::focused_text_input_node_id()
+                                    .or_else(blinc_layout::widgets::text_input::focused_text_area_node_id);
+                                let current_focus = windowed_ctx.event_router.focused();
+                                if text_focus != current_focus {
+                                    windowed_ctx.event_router.set_focus(text_focus);
+                                }
+                            }
+
                             // Apply CSS state styles (:hover, :active, :focus) from stylesheet
                             // This also detects property changes and starts new transitions
                             if let Some(ref mut tree) = render_tree {
                                 if tree.stylesheet().is_some() {
-                                    tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
+                                    let state_changed = tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
+                                    // Recompute layout if state styles affected layout properties
+                                    // (e.g. visibility: hidden → display: none, or height changes on hover)
+                                    if state_changed {
+                                        tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                    }
                                 }
                             }
 

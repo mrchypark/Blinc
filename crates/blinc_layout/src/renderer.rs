@@ -111,6 +111,8 @@ pub struct TextData {
     pub font_family: crate::div::FontFamily,
     /// Word spacing in pixels (0.0 = normal)
     pub word_spacing: f32,
+    /// Letter spacing in pixels (0.0 = normal)
+    pub letter_spacing: f32,
     /// Font ascender in pixels (distance from baseline to top)
     pub ascender: f32,
     /// Whether text has strikethrough decoration
@@ -202,6 +204,9 @@ pub struct StyledTextData {
 pub struct SvgData {
     pub source: String,
     pub tint: Option<Color>,
+    pub fill: Option<Color>,
+    pub stroke: Option<Color>,
+    pub stroke_width: Option<f32>,
 }
 
 /// Image data for rendering
@@ -1231,6 +1236,12 @@ impl RenderTree {
                 .register_classes(node_id, classes.to_vec());
         }
 
+        // Register semantic element type for CSS type selector matching
+        if let Some(type_name) = element.semantic_type_name() {
+            self.element_registry
+                .register_element_type(node_id, type_name.to_string());
+        }
+
         // Bind ScrollRef if present (for scroll containers)
         if let Some(scroll_ref) = element.bound_scroll_ref() {
             self.register_scroll_ref(node_id, scroll_ref);
@@ -1313,6 +1324,7 @@ impl RenderTree {
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        letter_spacing: info.letter_spacing,
                         ascender: info.ascender,
                         strikethrough: info.strikethrough,
                         underline: info.underline,
@@ -1326,6 +1338,9 @@ impl RenderTree {
                     ElementType::Svg(SvgData {
                         source: info.source,
                         tint: info.tint,
+                        fill: info.fill,
+                        stroke: info.stroke,
+                        stroke_width: info.stroke_width,
                     })
                 } else {
                     ElementType::Div
@@ -1452,6 +1467,12 @@ impl RenderTree {
         if !classes.is_empty() {
             self.element_registry
                 .register_classes(node_id, classes.to_vec());
+        }
+
+        // Register semantic element type for CSS type selector matching
+        if let Some(type_name) = element.semantic_type_name() {
+            self.element_registry
+                .register_element_type(node_id, type_name.to_string());
         }
 
         // Bind ScrollRef if present (for scroll containers)
@@ -1615,6 +1636,7 @@ impl RenderTree {
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        letter_spacing: info.letter_spacing,
                         ascender: info.ascender,
                         strikethrough: info.strikethrough,
                         underline: info.underline,
@@ -1628,6 +1650,9 @@ impl RenderTree {
                     ElementType::Svg(SvgData {
                         source: info.source,
                         tint: info.tint,
+                        fill: info.fill,
+                        stroke: info.stroke,
+                        stroke_width: info.stroke_width,
                     })
                 } else {
                     ElementType::Div
@@ -1747,6 +1772,12 @@ impl RenderTree {
                 .register_classes(node_id, classes.to_vec());
         }
 
+        // Register semantic element type for CSS type selector matching
+        if let Some(type_name) = element.semantic_type_name() {
+            self.element_registry
+                .register_element_type(node_id, type_name.to_string());
+        }
+
         // Bind ScrollRef if present (for scroll containers)
         if let Some(scroll_ref) = element.bound_scroll_ref() {
             self.register_scroll_ref(node_id, scroll_ref);
@@ -1790,6 +1821,7 @@ impl RenderTree {
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        letter_spacing: info.letter_spacing,
                         ascender: info.ascender,
                         strikethrough: info.strikethrough,
                         underline: info.underline,
@@ -1803,6 +1835,9 @@ impl RenderTree {
                     ElementType::Svg(SvgData {
                         source: info.source,
                         tint: info.tint,
+                        fill: info.fill,
+                        stroke: info.stroke,
+                        stroke_width: info.stroke_width,
                     })
                 } else {
                     ElementType::Div
@@ -1888,6 +1923,7 @@ impl RenderTree {
                         measured_width: info.measured_width,
                         font_family: info.font_family,
                         word_spacing: info.word_spacing,
+                        letter_spacing: info.letter_spacing,
                         ascender: info.ascender,
                         strikethrough: info.strikethrough,
                         underline: info.underline,
@@ -1933,6 +1969,9 @@ impl RenderTree {
                     ElementType::Svg(SvgData {
                         source: info.source,
                         tint: info.tint,
+                        fill: info.fill,
+                        stroke: info.stroke,
+                        stroke_width: info.stroke_width,
                     })
                 } else {
                     ElementType::Div
@@ -4259,6 +4298,8 @@ impl RenderTree {
 
     /// Set a shared stylesheet reference
     pub fn set_stylesheet_arc(&mut self, stylesheet: Arc<Stylesheet>) {
+        // Also update the global stylesheet for form widget CSS override resolution
+        crate::css_parser::set_active_stylesheet(Arc::clone(&stylesheet));
         self.stylesheet = Some(stylesheet);
     }
 
@@ -4525,9 +4566,46 @@ impl RenderTree {
         if let Some(fs) = style.font_size {
             props.font_size = Some(fs);
         }
+        // Font weight
+        if let Some(fw) = style.font_weight {
+            props.font_weight = Some(fw);
+        }
+        // Text decoration
+        if let Some(td) = style.text_decoration {
+            props.text_decoration = Some(td);
+        }
+        // Line height
+        if let Some(lh) = style.line_height {
+            props.line_height = Some(lh);
+        }
+        // Text align
+        if let Some(ta) = style.text_align {
+            props.text_align = Some(ta);
+        }
+        // Letter spacing
+        if let Some(ls) = style.letter_spacing {
+            props.letter_spacing = Some(ls);
+        }
+        // SVG properties
+        if let Some(fill) = style.fill {
+            props.fill = Some([fill.r, fill.g, fill.b, fill.a]);
+        }
+        if let Some(stroke) = style.stroke {
+            props.stroke = Some([stroke.r, stroke.g, stroke.b, stroke.a]);
+        }
+        if let Some(sw) = style.stroke_width {
+            props.stroke_width = Some(sw);
+        }
         // Transform origin
         if let Some(to) = style.transform_origin {
             props.transform_origin = Some(to);
+        }
+        // Border
+        if let Some(bw) = style.border_width {
+            props.border_width = bw;
+        }
+        if let Some(bc) = style.border_color {
+            props.border_color = Some(bc);
         }
         // Outline
         if let Some(ow) = style.outline_width {
@@ -4600,6 +4678,11 @@ impl RenderTree {
                 props.clips_content = true;
             }
         }
+        // Visibility
+        if let Some(vis) = style.visibility {
+            use crate::element_style::StyleVisibility;
+            props.visible = matches!(vis, StyleVisibility::Visible);
+        }
     }
 
     /// Apply layout properties from an ElementStyle to a taffy Style.
@@ -4613,10 +4696,28 @@ impl RenderTree {
         use taffy::prelude::*;
 
         if let Some(w) = es.width {
-            taffy_style.size.width = Dimension::Length(w);
+            taffy_style.size.width = match w {
+                crate::element_style::StyleDimension::Length(px) => Dimension::Length(px),
+                crate::element_style::StyleDimension::Percent(p) => Dimension::Percent(p),
+                crate::element_style::StyleDimension::Auto => Dimension::Auto,
+            };
+            if matches!(w, crate::element_style::StyleDimension::Auto) {
+                taffy_style.flex_basis = Dimension::Auto;
+                taffy_style.flex_grow = 0.0;
+                taffy_style.flex_shrink = 0.0;
+            }
         }
         if let Some(h) = es.height {
-            taffy_style.size.height = Dimension::Length(h);
+            taffy_style.size.height = match h {
+                crate::element_style::StyleDimension::Length(px) => Dimension::Length(px),
+                crate::element_style::StyleDimension::Percent(p) => Dimension::Percent(p),
+                crate::element_style::StyleDimension::Auto => Dimension::Auto,
+            };
+            if matches!(h, crate::element_style::StyleDimension::Auto) {
+                taffy_style.flex_basis = Dimension::Auto;
+                taffy_style.flex_grow = 0.0;
+                taffy_style.flex_shrink = 0.0;
+            }
         }
         if let Some(v) = es.min_width {
             taffy_style.min_size.width = Dimension::Length(v);
@@ -4669,6 +4770,18 @@ impl RenderTree {
         }
         if let Some(v) = es.left {
             taffy_style.inset.left = LengthPercentageAuto::Length(v);
+        }
+        // visibility: hidden collapses element from layout (Blinc is always flex)
+        if let Some(vis) = es.visibility {
+            use crate::element_style::StyleVisibility;
+            match vis {
+                StyleVisibility::Hidden => taffy_style.display = Display::None,
+                StyleVisibility::Visible => {
+                    if taffy_style.display == Display::None {
+                        taffy_style.display = Display::Flex;
+                    }
+                }
+            }
         }
     }
 
@@ -4957,20 +5070,51 @@ impl RenderTree {
             None => return,
         };
 
-        // Collect (node_id, style) pairs that have layout overrides
-        let all_ids = self.element_registry.all_ids();
-        let overrides: Vec<_> = all_ids
-            .iter()
-            .filter_map(|id| {
-                let node_id = self.element_registry.get(id)?;
-                let style = stylesheet.get(id)?;
-                if style.has_layout_props() {
-                    Some((node_id, style.clone()))
-                } else {
-                    None
+        // Collect (node_id, style) pairs that have layout overrides.
+        // Apply complex rules (class/type selectors) FIRST — lower specificity.
+        // Then apply simple ID rules LAST — higher specificity overrides.
+        let mut overrides: Vec<(LayoutNodeId, crate::element_style::ElementStyle)> = Vec::new();
+
+        // Complex rules: class, type, and combinator selectors
+        let complex_rules = stylesheet.complex_rules();
+        if !complex_rules.is_empty() {
+            let all_node_ids: Vec<LayoutNodeId> = self.render_nodes.keys().copied().collect();
+            let empty_set = std::collections::HashSet::new();
+
+            let mut base_rules: Vec<&(
+                crate::css_parser::ComplexSelector,
+                crate::element_style::ElementStyle,
+            )> = complex_rules
+                .iter()
+                .filter(|(selector, _)| !selector.has_state())
+                .collect();
+            base_rules.sort_by_key(|(selector, _)| Self::selector_specificity(selector));
+
+            for (selector, style) in base_rules {
+                if !style.has_layout_props() {
+                    continue;
                 }
-            })
-            .collect();
+                for &node_id in &all_node_ids {
+                    if self
+                        .complex_selector_matches(selector, node_id, &empty_set, &empty_set, None)
+                    {
+                        overrides.push((node_id, style.clone()));
+                    }
+                }
+            }
+        }
+
+        // Simple ID rules: highest specificity, applied last
+        let all_ids = self.element_registry.all_ids();
+        for id in &all_ids {
+            if let Some(node_id) = self.element_registry.get(id) {
+                if let Some(style) = stylesheet.get(id) {
+                    if style.has_layout_props() {
+                        overrides.push((node_id, style.clone()));
+                    }
+                }
+            }
+        }
 
         for (node_id, es) in overrides {
             let Some(mut style) = self.layout_tree.get_style(node_id) else {
@@ -4979,10 +5123,28 @@ impl RenderTree {
 
             // Sizing
             if let Some(w) = es.width {
-                style.size.width = Dimension::Length(w);
+                style.size.width = match w {
+                    crate::element_style::StyleDimension::Length(px) => Dimension::Length(px),
+                    crate::element_style::StyleDimension::Percent(p) => Dimension::Percent(p),
+                    crate::element_style::StyleDimension::Auto => Dimension::Auto,
+                };
+                if matches!(w, crate::element_style::StyleDimension::Auto) {
+                    style.flex_basis = Dimension::Auto;
+                    style.flex_grow = 0.0;
+                    style.flex_shrink = 0.0;
+                }
             }
             if let Some(h) = es.height {
-                style.size.height = Dimension::Length(h);
+                style.size.height = match h {
+                    crate::element_style::StyleDimension::Length(px) => Dimension::Length(px),
+                    crate::element_style::StyleDimension::Percent(p) => Dimension::Percent(p),
+                    crate::element_style::StyleDimension::Auto => Dimension::Auto,
+                };
+                if matches!(h, crate::element_style::StyleDimension::Auto) {
+                    style.flex_basis = Dimension::Auto;
+                    style.flex_grow = 0.0;
+                    style.flex_shrink = 0.0;
+                }
             }
             if let Some(w) = es.min_width {
                 style.min_size.width = Dimension::Length(w);
@@ -5113,6 +5275,19 @@ impl RenderTree {
                     StyleOverflow::Clip => Overflow::Clip,
                     StyleOverflow::Scroll => Overflow::Scroll,
                 };
+            }
+
+            // Visibility: hidden collapses element from layout
+            if let Some(vis) = es.visibility {
+                use crate::element_style::StyleVisibility;
+                match vis {
+                    StyleVisibility::Hidden => style.display = Display::None,
+                    StyleVisibility::Visible => {
+                        if style.display == Display::None {
+                            style.display = Display::Flex;
+                        }
+                    }
+                }
             }
 
             // Position
@@ -5249,6 +5424,12 @@ impl RenderTree {
     ) -> bool {
         for part in &compound.parts {
             match part {
+                SelectorPart::Type(type_name) => {
+                    let node_type = self.element_registry.get_element_type(node_id);
+                    if node_type.as_deref() != Some(type_name.as_str()) {
+                        return false;
+                    }
+                }
                 SelectorPart::Id(id) => {
                     let node_id_str = self.element_registry.get_id(node_id);
                     if node_id_str.as_deref() != Some(id.as_str()) {
@@ -5266,6 +5447,7 @@ impl RenderTree {
                         ElementState::Active => pressed,
                         ElementState::Focus => focused,
                         ElementState::Disabled => false, // TODO: track disabled state
+                        ElementState::Checked => false, // checked state managed by widget callbacks
                     };
                     if !matches {
                         return false;
@@ -5353,6 +5535,12 @@ impl RenderTree {
                         return false;
                     }
                 }
+                SelectorPart::PseudoElement(_) => {
+                    // Pseudo-elements like ::placeholder are handled at the rule storage level
+                    // (stored with key "id::placeholder"), not during runtime matching.
+                    // If we encounter one here, it doesn't match element nodes.
+                    return false;
+                }
             }
         }
         true
@@ -5362,6 +5550,27 @@ impl RenderTree {
     ///
     /// Walks the selector chain right-to-left (target element first),
     /// checking combinators against the ancestor chain.
+    /// Calculate CSS specificity for a complex selector as (ids, classes, types).
+    /// Used for sorting: lower specificity rules apply first, higher ones override.
+    fn selector_specificity(selector: &ComplexSelector) -> (u32, u32, u32) {
+        let (mut ids, mut classes, mut types) = (0u32, 0u32, 0u32);
+        for (compound, _) in &selector.segments {
+            for part in &compound.parts {
+                match part {
+                    SelectorPart::Id(_) => ids += 1,
+                    SelectorPart::Class(_)
+                    | SelectorPart::State(_)
+                    | SelectorPart::PseudoClass(_)
+                    | SelectorPart::Not(_)
+                    | SelectorPart::Is(_) => classes += 1,
+                    SelectorPart::Type(_) => types += 1,
+                    SelectorPart::Universal | SelectorPart::PseudoElement(_) => {}
+                }
+            }
+        }
+        (ids, classes, types)
+    }
+
     fn complex_selector_matches(
         &self,
         selector: &ComplexSelector,
@@ -5563,12 +5772,23 @@ impl RenderTree {
                     render_node.props = base.clone();
                 }
             }
+            // Reset taffy layout to base for nodes leaving state
+            if let Some(base_taffy) = self.base_taffy_styles.get(&node_id) {
+                self.layout_tree.set_style(node_id, base_taffy.clone());
+            }
         }
 
-        // Re-apply all base (non-state) complex rules first for reset nodes
-        // so that base class styles are always present
-        for (selector, style) in complex_rules {
-            if !selector.has_state() {
+        // Re-apply all base (non-state) complex rules for reset nodes,
+        // sorted by specificity so type < class < id.
+        {
+            let mut base_rules: Vec<&(ComplexSelector, crate::element_style::ElementStyle)> =
+                complex_rules
+                    .iter()
+                    .filter(|(selector, _)| !selector.has_state())
+                    .collect();
+            base_rules.sort_by_key(|(selector, _)| Self::selector_specificity(selector));
+
+            for (selector, style) in &base_rules {
                 for &node_id in &prev_affected {
                     if self.complex_selector_matches(
                         selector,
@@ -5585,19 +5805,34 @@ impl RenderTree {
             }
         }
 
-        let mut any_applied = false;
+        // Re-apply simple ID rules on top (highest specificity)
+        if let Some(stylesheet) = &self.stylesheet {
+            let stylesheet = stylesheet.clone();
+            for &node_id in &prev_affected {
+                if let Some(element_id) = self.element_registry.get_id(node_id) {
+                    if let Some(base_style) = stylesheet.get(&element_id) {
+                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                            Self::apply_element_style_to_props(&mut render_node.props, base_style);
+                        }
+                    }
+                }
+            }
+        }
+
+        // If any prev_affected nodes were reset, styles changed
+        let mut any_applied = !prev_affected.is_empty();
 
         for (selector, style) in complex_rules {
-            // Only state-dependent rules need the full treatment here;
-            // base rules for non-previously-affected nodes are handled below
+            // Base (non-state) rules are already applied:
+            //   - At tree build time by apply_stylesheet_base_styles()
+            //   - For prev_affected (leaving-state) nodes in the reset section above
+            // Only state-dependent rules (:hover, :active, :focus, etc.) need per-frame matching.
             let is_state_rule = selector.has_state();
+            if !is_state_rule {
+                continue;
+            }
 
             for &node_id in &all_node_ids {
-                // For base rules on nodes that were just reset above, skip (already applied)
-                if !is_state_rule && prev_affected.contains(&node_id) {
-                    continue;
-                }
-
                 if self.complex_selector_matches(
                     selector,
                     node_id,
@@ -5610,6 +5845,11 @@ impl RenderTree {
                         if !self.base_styles.contains_key(&node_id) {
                             if let Some(render_node) = self.render_nodes.get(&node_id) {
                                 self.base_styles.insert(node_id, render_node.props.clone());
+                            }
+                        }
+                        if !self.base_taffy_styles.contains_key(&node_id) {
+                            if let Some(taffy_style) = self.layout_tree.get_style(node_id) {
+                                self.base_taffy_styles.insert(node_id, taffy_style);
                             }
                         }
                         self.complex_state_affected.insert(node_id);
@@ -6921,6 +7161,40 @@ impl RenderTree {
             None => return,
         };
 
+        // CSS specificity order: type(0,0,1) < class(0,1,0) < id(1,0,0)
+        // Apply complex base rules FIRST (lower specificity: type, class selectors)
+        // sorted by ascending specificity so higher-specificity rules overwrite lower.
+        // Then apply simple ID rules LAST (highest specificity, always override).
+        let complex_rules = stylesheet.complex_rules();
+        if !complex_rules.is_empty() {
+            let all_node_ids: Vec<LayoutNodeId> = self.render_nodes.keys().copied().collect();
+            let empty_set = std::collections::HashSet::new();
+
+            // Collect non-state rules and sort by specificity (ascending)
+            let mut base_rules: Vec<&(
+                crate::css_parser::ComplexSelector,
+                crate::element_style::ElementStyle,
+            )> = complex_rules
+                .iter()
+                .filter(|(selector, _)| !selector.has_state())
+                .collect();
+            base_rules.sort_by_key(|(selector, _)| Self::selector_specificity(selector));
+
+            for (selector, style) in base_rules {
+                for &node_id in &all_node_ids {
+                    if self
+                        .complex_selector_matches(selector, node_id, &empty_set, &empty_set, None)
+                    {
+                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                            Self::apply_element_style_to_props(&mut render_node.props, style);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply simple ID rules LAST — #id has highest specificity and overrides
+        // type/class selectors applied above.
         let registered_ids: Vec<(String, LayoutNodeId)> = self
             .element_registry
             .all_ids()
@@ -6932,33 +7206,6 @@ impl RenderTree {
             if let Some(base_style) = stylesheet.get(element_id) {
                 if let Some(render_node) = self.render_nodes.get_mut(node_id) {
                     Self::apply_element_style_to_props(&mut render_node.props, base_style);
-                }
-            }
-        }
-
-        // Apply complex base rules (non-state selectors like .class, structural pseudos)
-        // Must iterate ALL render nodes (not just those with IDs) since .class selectors
-        // can match elements without explicit IDs.
-        let complex_rules = stylesheet.complex_rules();
-        if !complex_rules.is_empty() {
-            let all_node_ids: Vec<LayoutNodeId> = self.render_nodes.keys().copied().collect();
-
-            // For base styles, no interaction state is active
-            let empty_set = std::collections::HashSet::new();
-
-            for (selector, style) in complex_rules {
-                // Skip selectors that require state — they'll be applied in apply_stylesheet_state_styles
-                if selector.has_state() {
-                    continue;
-                }
-                for &node_id in &all_node_ids {
-                    if self
-                        .complex_selector_matches(selector, node_id, &empty_set, &empty_set, None)
-                    {
-                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
-                            Self::apply_element_style_to_props(&mut render_node.props, style);
-                        }
-                    }
                 }
             }
         }
@@ -7279,6 +7526,11 @@ impl RenderTree {
             return;
         };
 
+        // CSS visibility: hidden — skip rendering but preserve layout space
+        if !render_node.props.visible {
+            return;
+        }
+
         // Push transform for this node's position
         ctx.push_transform(Transform::translate(bounds.x, bounds.y));
 
@@ -7338,6 +7590,7 @@ impl RenderTree {
 
         let rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
         let radius = render_node.props.border_radius;
+        let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
 
         // Check if this node has a glass material - if so, render as glass with shadow
         if let Some(Material::Glass(glass)) = &render_node.props.material {
@@ -7351,6 +7604,8 @@ impl RenderTree {
                 border_thickness: glass.border_thickness,
                 shadow: render_node.props.shadow,
                 simple: glass.simple,
+                depth: 0,
+                border_color: render_node.props.border_color,
             });
             ctx.fill_rect(rect, radius, glass_brush);
         } else {
@@ -7378,6 +7633,11 @@ impl RenderTree {
                     ctx.fill_rect(rect, radius, bg.clone());
                 }
             }
+        }
+
+        // For glass elements, borders must render in the foreground layer (after glass)
+        if is_glass {
+            ctx.set_foreground_layer(true);
         }
 
         // Draw borders
@@ -7553,6 +7813,11 @@ impl RenderTree {
                     Brush::Solid(*outline_color),
                 );
             }
+        }
+
+        // Restore foreground layer state after glass border rendering
+        if is_glass {
+            ctx.set_foreground_layer(false);
         }
 
         // Push clip if this element clips its children (e.g., scroll containers)
@@ -7751,7 +8016,7 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Background,
-                false,
+                0,
                 false,
                 (0.0, 0.0),
             );
@@ -7762,7 +8027,7 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Glass,
-                false,
+                0,
                 false,
                 (0.0, 0.0),
             );
@@ -7776,7 +8041,7 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Foreground,
-                false,
+                0,
                 false,
                 (0.0, 0.0),
             );
@@ -7808,7 +8073,7 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Background,
-                false, // inside_glass
+                0,     // glass_depth
                 false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
@@ -7821,7 +8086,7 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Glass,
-                false, // inside_glass
+                0,     // glass_depth
                 false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
@@ -7837,7 +8102,7 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Foreground,
-                false, // inside_glass
+                0,     // glass_depth
                 false, // inside_foreground
                 render_state,
                 1.0, // Start with full opacity at root
@@ -7866,7 +8131,7 @@ impl RenderTree {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         target_layer: RenderLayer,
-        inside_glass: bool,
+        glass_depth: u32,
         inside_foreground: bool,
         render_state: &crate::render_state::RenderState,
         inherited_opacity: f32,
@@ -7901,6 +8166,11 @@ impl RenderTree {
             render_state.is_motion_removed(node)
         };
         if motion_removed {
+            return;
+        }
+
+        // CSS visibility: hidden — skip rendering but preserve layout space
+        if !render_node.props.visible {
             return;
         }
 
@@ -8008,7 +8278,11 @@ impl RenderTree {
 
         // Determine if this node is a glass element
         let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
-        let children_inside_glass = inside_glass || is_glass;
+        let children_glass_depth = if is_glass {
+            glass_depth + 1
+        } else {
+            glass_depth
+        };
 
         // Determine if this node is a foreground element
         let is_foreground = render_node.props.layer == RenderLayer::Foreground;
@@ -8031,11 +8305,11 @@ impl RenderTree {
         }
 
         // Determine effective layer:
-        // - Children of glass elements render in foreground
+        // - Children of glass elements (that aren't glass themselves) render in foreground
         // - Children of foreground elements also render in foreground
-        // - Glass elements render in glass layer
+        // - Glass elements render in glass layer (both top-level and nested)
         // - Otherwise, use the node's explicit layer setting
-        let effective_layer = if (inside_glass && !is_glass) || inside_foreground {
+        let effective_layer = if (glass_depth > 0 && !is_glass) || inside_foreground {
             RenderLayer::Foreground
         } else if is_glass {
             RenderLayer::Glass
@@ -8292,6 +8566,8 @@ impl RenderTree {
                     border_thickness: glass.border_thickness,
                     shadow: render_node.props.shadow,
                     simple: glass.simple,
+                    depth: glass_depth,
+                    border_color: render_node.props.border_color,
                 });
                 ctx.fill_rect(rect, radius, glass_brush);
             } else {
@@ -8312,13 +8588,18 @@ impl RenderTree {
                 }
             }
 
+            // For glass elements, borders must render in the foreground layer (after glass)
+            // Otherwise they'd go into the background batch and be hidden behind the glass.
+            if is_glass {
+                ctx.set_foreground_layer(true);
+            }
+
             // Draw borders
-            // Individual border sides take precedence over uniform border
-            // Also check uniform border_width for .border(width, color) API
-            let has_border =
-                render_node.props.border_sides.has_any() || render_node.props.border_width > 0.0;
-            if has_border {
+            // Per-side borders take precedence; uniform border via stroke_rect for SDF rendering
+            if render_node.props.border_sides.has_any() {
                 let sides = &render_node.props.border_sides;
+                let uniform_width = render_node.props.border_width;
+                let uniform_color = render_node.props.border_color.unwrap_or(Color::TRANSPARENT);
 
                 // Helper to apply motion opacity (only when not using opacity layer)
                 let apply_motion = |color: Color| -> Color {
@@ -8338,68 +8619,76 @@ impl RenderTree {
                     ctx.push_clip(ClipShape::rounded_rect(rect, radius));
                 }
 
-                // Left border
-                if let Some(ref border) = sides.left {
-                    if border.is_visible() {
-                        let border_rect = Rect::new(0.0, 0.0, border.width, rect.height());
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(border.color)),
-                        );
-                    }
-                }
+                // Resolve per-side borders, falling back to uniform border
+                let left_border = sides
+                    .left
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
+                let right_border = sides
+                    .right
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
+                let top_border = sides
+                    .top
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
+                let bottom_border = sides
+                    .bottom
+                    .as_ref()
+                    .map(|b| (b.width, b.color))
+                    .unwrap_or((uniform_width, uniform_color));
 
-                // Right border
-                if let Some(ref border) = sides.right {
-                    if border.is_visible() {
-                        let border_rect = Rect::new(
-                            rect.width() - border.width,
-                            0.0,
-                            border.width,
-                            rect.height(),
-                        );
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(border.color)),
-                        );
-                    }
+                if left_border.0 > 0.0 {
+                    let border_rect = Rect::new(0.0, 0.0, left_border.0, rect.height());
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(apply_motion(left_border.1)),
+                    );
                 }
-
-                // Top border
-                if let Some(ref border) = sides.top {
-                    if border.is_visible() {
-                        let border_rect = Rect::new(0.0, 0.0, rect.width(), border.width);
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(border.color)),
-                        );
-                    }
+                if right_border.0 > 0.0 {
+                    let border_rect = Rect::new(
+                        rect.width() - right_border.0,
+                        0.0,
+                        right_border.0,
+                        rect.height(),
+                    );
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(apply_motion(right_border.1)),
+                    );
                 }
-
-                // Bottom border
-                if let Some(ref border) = sides.bottom {
-                    if border.is_visible() {
-                        let border_rect = Rect::new(
-                            0.0,
-                            rect.height() - border.width,
-                            rect.width(),
-                            border.width,
-                        );
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(border.color)),
-                        );
-                    }
+                if top_border.0 > 0.0 {
+                    let border_rect = Rect::new(0.0, 0.0, rect.width(), top_border.0);
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(apply_motion(top_border.1)),
+                    );
+                }
+                if bottom_border.0 > 0.0 {
+                    let border_rect = Rect::new(
+                        0.0,
+                        rect.height() - bottom_border.0,
+                        rect.width(),
+                        bottom_border.0,
+                    );
+                    ctx.fill_rect(
+                        border_rect,
+                        CornerRadius::default(),
+                        Brush::Solid(apply_motion(bottom_border.1)),
+                    );
                 }
 
                 if has_radius {
                     ctx.pop_clip();
                 }
             } else if render_node.props.border_width > 0.0 {
+                // Uniform border — use stroke_rect for proper SDF-based rounded corners
                 if let Some(ref border_color) = render_node.props.border_color {
                     let stroke = Stroke::new(render_node.props.border_width);
                     // When using opacity layer, draw at full opacity (layer handles it)
@@ -8442,6 +8731,11 @@ impl RenderTree {
                     };
                     ctx.stroke_rect(outline_rect, outline_radius, &stroke, brush);
                 }
+            }
+
+            // Restore foreground layer state after glass border rendering
+            if is_glass {
+                ctx.set_foreground_layer(false);
             }
 
             // Handle canvas elements
@@ -8595,7 +8889,7 @@ impl RenderTree {
                 child_id,
                 (0.0, 0.0),
                 target_layer,
-                children_inside_glass,
+                children_glass_depth,
                 children_inside_foreground,
                 render_state,
                 child_inherited_opacity,
@@ -8737,7 +9031,7 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Background,
-                false,
+                0,
                 false,
                 (0.0, 0.0),
             );
@@ -8748,7 +9042,7 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Glass,
-                false,
+                0,
                 false,
                 (0.0, 0.0),
             );
@@ -8759,7 +9053,7 @@ impl RenderTree {
                 root,
                 (0.0, 0.0),
                 RenderLayer::Foreground,
-                false,
+                0,
                 false,
                 (0.0, 0.0),
             );
@@ -8781,15 +9075,7 @@ impl RenderTree {
                 ctx.push_transform(Transform::scale(self.scale_factor, self.scale_factor));
             }
 
-            self.render_layer(
-                ctx,
-                root,
-                (0.0, 0.0),
-                target_layer,
-                false,
-                false,
-                (0.0, 0.0),
-            );
+            self.render_layer(ctx, root, (0.0, 0.0), target_layer, 0, false, (0.0, 0.0));
 
             // Pop the DPI scale transform
             if has_scale {
@@ -8812,7 +9098,7 @@ impl RenderTree {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         target_layer: RenderLayer,
-        inside_glass: bool,
+        glass_depth: u32,
         inside_foreground: bool,
         cumulative_scroll: (f32, f32),
     ) {
@@ -8844,10 +9130,11 @@ impl RenderTree {
 
         // Determine if this node is a glass element
         let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
-
-        // Track if children should be considered inside glass
-        // Once inside glass, stay inside glass for all descendants
-        let children_inside_glass = inside_glass || is_glass;
+        let children_glass_depth = if is_glass {
+            glass_depth + 1
+        } else {
+            glass_depth
+        };
 
         // Track if children should be considered inside foreground
         // Once inside foreground, stay inside foreground for all descendants
@@ -8911,17 +9198,11 @@ impl RenderTree {
         // - If we're inside a glass element, children render as foreground
         // - If we're inside a foreground element, children also render as foreground
         // - Otherwise, use the node's explicit layer setting
-        let effective_layer = if inside_glass && !is_glass {
-            // Children of glass elements render in foreground
-            RenderLayer::Foreground
-        } else if inside_foreground {
-            // Children of foreground elements render in foreground
+        let effective_layer = if (glass_depth > 0 && !is_glass) || inside_foreground {
             RenderLayer::Foreground
         } else if is_glass {
-            // Glass elements render in glass layer
             RenderLayer::Glass
         } else {
-            // Use the node's explicit layer
             render_node.props.layer
         };
 
@@ -8942,6 +9223,8 @@ impl RenderTree {
                     border_thickness: glass.border_thickness,
                     shadow: render_node.props.shadow,
                     simple: glass.simple,
+                    depth: glass_depth,
+                    border_color: render_node.props.border_color,
                 });
                 ctx.fill_rect(rect, radius, glass_brush);
             } else {
@@ -8953,6 +9236,11 @@ impl RenderTree {
                 if let Some(ref bg) = render_node.props.background {
                     ctx.fill_rect(rect, radius, bg.clone());
                 }
+            }
+
+            // For glass elements, borders must render in the foreground layer
+            if is_glass {
+                ctx.set_foreground_layer(true);
             }
 
             // Draw borders
@@ -9070,6 +9358,11 @@ impl RenderTree {
                 }
             }
 
+            // Restore foreground layer state after glass border rendering
+            if is_glass {
+                ctx.set_foreground_layer(false);
+            }
+
             // Handle canvas element rendering
             // Push clip to ensure canvas content respects parent bounds (e.g., scroll containers)
             if let ElementType::Canvas(canvas_data) = &render_node.element_type {
@@ -9146,7 +9439,7 @@ impl RenderTree {
                 child_id,
                 (0.0, 0.0),
                 target_layer,
-                children_inside_glass,
+                children_glass_depth,
                 children_inside_foreground,
                 child_cum,
             );
@@ -9193,6 +9486,24 @@ impl RenderTree {
     /// Get render node data
     pub fn get_render_node(&self, node: LayoutNodeId) -> Option<&RenderNode> {
         self.render_nodes.get(&node)
+    }
+
+    /// Get the resolved padding for a layout node as [top, right, bottom, left] in px.
+    pub fn get_node_padding(&self, node: LayoutNodeId) -> [f32; 4] {
+        if let Some(style) = self.layout_tree.get_style(node) {
+            let to_px = |lp: &taffy::LengthPercentage| match lp {
+                taffy::LengthPercentage::Length(v) => *v,
+                taffy::LengthPercentage::Percent(_) => 0.0, // approx
+            };
+            [
+                to_px(&style.padding.top),
+                to_px(&style.padding.right),
+                to_px(&style.padding.bottom),
+                to_px(&style.padding.left),
+            ]
+        } else {
+            [0.0; 4]
+        }
     }
 
     /// Get the cursor style for a node
@@ -9265,7 +9576,7 @@ impl RenderTree {
                     root,
                     (0.0, 0.0),
                     RenderLayer::Background,
-                    false,
+                    0,
                     (0.0, 0.0),
                 );
             }
@@ -9278,7 +9589,7 @@ impl RenderTree {
                     root,
                     (0.0, 0.0),
                     RenderLayer::Glass,
-                    false,
+                    0,
                     (0.0, 0.0),
                 );
             }
@@ -9291,7 +9602,7 @@ impl RenderTree {
                     root,
                     (0.0, 0.0),
                     RenderLayer::Foreground,
-                    false,
+                    0,
                     (0.0, 0.0),
                 );
             }
@@ -9311,7 +9622,7 @@ impl RenderTree {
         node: LayoutNodeId,
         parent_offset: (f32, f32),
         target_layer: RenderLayer,
-        inside_glass: bool,
+        glass_depth: u32,
         cumulative_scroll: (f32, f32),
     ) {
         let Some(bounds) = self.layout_tree.get_bounds(node, parent_offset) else {
@@ -9343,8 +9654,12 @@ impl RenderTree {
         // Determine if this node is a glass element
         let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
 
-        // Track if children should be considered inside glass
-        let children_inside_glass = inside_glass || is_glass;
+        // Track glass nesting depth for children
+        let children_glass_depth = if is_glass {
+            glass_depth + 1
+        } else {
+            glass_depth
+        };
 
         // Push clip BEFORE rendering content if this element clips its children
         // Clip to content area (inset by border width so children don't render over border)
@@ -9375,7 +9690,9 @@ impl RenderTree {
         }
 
         // Determine the effective layer for this node
-        let effective_layer = if inside_glass && !is_glass {
+        let effective_layer = if (glass_depth > 0 && !is_glass)
+            || render_node.props.layer == RenderLayer::Foreground
+        {
             RenderLayer::Foreground
         } else if is_glass {
             RenderLayer::Glass
@@ -9402,6 +9719,8 @@ impl RenderTree {
                             border_thickness: glass.border_thickness,
                             shadow: render_node.props.shadow,
                             simple: glass.simple,
+                            depth: glass_depth,
+                            border_color: render_node.props.border_color,
                         });
                         ctx.fill_rect(rect, radius, glass_brush);
                     } else {
@@ -9413,6 +9732,11 @@ impl RenderTree {
                         if let Some(ref bg) = render_node.props.background {
                             ctx.fill_rect(rect, radius, bg.clone());
                         }
+                    }
+
+                    // For glass elements, borders must render in the foreground layer
+                    if is_glass {
+                        ctx.set_foreground_layer(true);
                     }
 
                     // Draw borders
@@ -9516,6 +9840,11 @@ impl RenderTree {
                             );
                         }
                     }
+
+                    // Restore foreground layer state after glass border rendering
+                    if is_glass {
+                        ctx.set_foreground_layer(false);
+                    }
                 }
                 ElementType::Canvas(canvas_data) => {
                     // Canvas element: invoke the render callback with DrawContext
@@ -9604,7 +9933,7 @@ impl RenderTree {
                 child_id,
                 (0.0, 0.0),
                 target_layer,
-                children_inside_glass,
+                children_glass_depth,
                 child_cumulative,
             );
 
@@ -9641,7 +9970,7 @@ impl RenderTree {
     /// Render all text elements via the LayoutRenderer
     fn render_text_elements<R: LayoutRenderer>(&self, renderer: &mut R) {
         if let Some(root) = self.root {
-            self.render_text_recursive(renderer, root, (0.0, 0.0), false, false, (0.0, 0.0));
+            self.render_text_recursive(renderer, root, (0.0, 0.0), 0, false, (0.0, 0.0));
         }
     }
 
@@ -9651,7 +9980,7 @@ impl RenderTree {
         renderer: &mut R,
         node: LayoutNodeId,
         parent_offset: (f32, f32),
-        inside_glass: bool,
+        glass_depth: u32,
         inside_foreground: bool,
         cumulative_scroll: (f32, f32),
     ) {
@@ -9665,24 +9994,34 @@ impl RenderTree {
             return;
         };
 
+        // CSS visibility: hidden — skip text rendering but preserve layout space
+        if !render_node.props.visible {
+            return;
+        }
+
         let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
-        let children_inside_glass = inside_glass || is_glass;
+        let children_glass_depth = if is_glass {
+            glass_depth + 1
+        } else {
+            glass_depth
+        };
 
         // Track foreground inheritance
         let is_foreground = render_node.props.layer == RenderLayer::Foreground;
         let children_inside_foreground = inside_foreground || is_foreground;
 
         // Text inside glass or foreground goes to foreground layer
-        let to_foreground = children_inside_glass || children_inside_foreground;
+        let to_foreground = children_glass_depth > 0 || children_inside_foreground;
 
         if let ElementType::Text(text_data) = &render_node.element_type {
             // Absolute position for text
             let abs_x = parent_offset.0 + bounds.x;
             let abs_y = parent_offset.1 + bounds.y;
 
-            // Use animated/overridden text color and font size if available
+            // Use animated/overridden text color, font size and weight if available
             let color = render_node.props.text_color.unwrap_or(text_data.color);
             let font_size = render_node.props.font_size.unwrap_or(text_data.font_size);
+            let weight = render_node.props.font_weight.unwrap_or(text_data.weight);
 
             // Render normal text
             if to_foreground {
@@ -9695,7 +10034,7 @@ impl RenderTree {
                     font_size,
                     color,
                     text_data.align,
-                    text_data.weight,
+                    weight,
                 );
             } else {
                 renderer.render_text_background(
@@ -9707,7 +10046,7 @@ impl RenderTree {
                     font_size,
                     color,
                     text_data.align,
-                    text_data.weight,
+                    weight,
                 );
             }
         }
@@ -9777,7 +10116,7 @@ impl RenderTree {
                 renderer,
                 child_id,
                 child_offset,
-                children_inside_glass,
+                children_glass_depth,
                 children_inside_foreground,
                 child_cumulative,
             );
@@ -9787,7 +10126,7 @@ impl RenderTree {
     /// Render all SVG elements via the LayoutRenderer
     fn render_svg_elements<R: LayoutRenderer>(&self, renderer: &mut R) {
         if let Some(root) = self.root {
-            self.render_svg_recursive(renderer, root, (0.0, 0.0), false, false, (0.0, 0.0));
+            self.render_svg_recursive(renderer, root, (0.0, 0.0), 0, false, (0.0, 0.0));
         }
     }
 
@@ -9797,7 +10136,7 @@ impl RenderTree {
         renderer: &mut R,
         node: LayoutNodeId,
         parent_offset: (f32, f32),
-        inside_glass: bool,
+        glass_depth: u32,
         inside_foreground: bool,
         cumulative_scroll: (f32, f32),
     ) {
@@ -9812,14 +10151,18 @@ impl RenderTree {
         };
 
         let is_glass = matches!(render_node.props.material, Some(Material::Glass(_)));
-        let children_inside_glass = inside_glass || is_glass;
+        let children_glass_depth = if is_glass {
+            glass_depth + 1
+        } else {
+            glass_depth
+        };
 
         // Track foreground inheritance
         let is_foreground = render_node.props.layer == RenderLayer::Foreground;
         let children_inside_foreground = inside_foreground || is_foreground;
 
         // SVG inside glass or foreground goes to foreground layer
-        let to_foreground = children_inside_glass || children_inside_foreground;
+        let to_foreground = children_glass_depth > 0 || children_inside_foreground;
 
         if let ElementType::Svg(svg_data) = &render_node.element_type {
             // Absolute position for SVG
@@ -9910,7 +10253,7 @@ impl RenderTree {
                 renderer,
                 child_id,
                 child_offset,
-                children_inside_glass,
+                children_glass_depth,
                 children_inside_foreground,
                 child_cumulative,
             );

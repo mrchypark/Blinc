@@ -15,6 +15,22 @@ All notable changes to `blinc_app` will be documented in this file.
 - `translate-z` depth positioning examples
 - Blinn-Phong lighting configuration examples
 
+#### Music Player Glass Card Demo
+
+- `music_player` example: iOS-style "Now Playing" card with liquid glass morphism
+- All visual styling driven by CSS via `ctx.add_css()`
+- Glass card with `backdrop-filter: liquid-glass()` refracted bevel borders
+- Album art, song info, progress bar with track glow animation
+- Playback controls with glass icon wrappers
+- Hover effects: icon/badge scale + glass brightening + shadow deepening + SVG tint transitions
+- Progress bar hover-reveal: height transition with overflow clip, opacity-faded time labels
+
+#### SVG CSS Transform Propagation
+
+- SVGs now inherit CSS transforms from ancestor elements
+- Affine transform decomposed into scale (applied to SVG bounds) + rotation (GPU shader)
+- Layout recomputed after state style changes that affect layout (visibility, display, height, etc.)
+
 #### Stylesheet Runtime Integration
 
 - CSS animation support wired through the app runtime
@@ -29,6 +45,15 @@ All notable changes to `blinc_app` will be documented in this file.
 - Filter blur & drop-shadow demos (static blur, hover transition, keyframe animation, combo)
 - Backdrop-filter animation demos (static blur, hover transition, blur+saturate combo, keyframe pulse)
 - `:is()` / `:where()` / `*-of-type` selector demos
+
+#### CSS Form Input Styling
+
+- Form input styling demo section with CSS-styled TextInput and TextArea widgets
+- `#demo-input` with `:hover`, `:focus`, `::placeholder` pseudo-class/element demos
+- `#accent-input` with warm color scheme (yellow/amber) CSS styling
+- `#disabled-input` with `opacity: 0.5` disabled state demo
+- `#demo-textarea` with `:hover`, `:focus` CSS styling and `caret-color` demo
+- Text input focus bridge to EventRouter for `:focus` CSS matching in windowed runner
 
 ### Fixed
 

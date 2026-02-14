@@ -27,6 +27,12 @@ pub struct Svg {
     height: f32,
     /// Optional tint color (replaces fill/stroke colors)
     tint: Option<Color>,
+    /// Fill color override
+    fill_color: Option<Color>,
+    /// Stroke color override
+    stroke_color: Option<Color>,
+    /// Stroke width override
+    stroke_w: Option<f32>,
     /// Taffy style for layout
     style: Style,
     /// Render layer
@@ -35,6 +41,10 @@ pub struct Svg {
     shadow: Option<Shadow>,
     /// Transform
     transform: Option<Transform>,
+    /// Element ID for CSS selector targeting
+    element_id: Option<String>,
+    /// Internal SVGs (widget checkmarks, icons) don't match type selectors
+    is_internal: bool,
 }
 
 impl Svg {
@@ -45,6 +55,9 @@ impl Svg {
             width: 24.0,
             height: 24.0,
             tint: None,
+            fill_color: None,
+            stroke_color: None,
+            stroke_w: None,
             style: Style {
                 size: taffy::Size {
                     width: Dimension::Length(24.0),
@@ -55,6 +68,8 @@ impl Svg {
             render_layer: RenderLayer::default(),
             shadow: None,
             transform: None,
+            element_id: None,
+            is_internal: false,
         }
     }
 
@@ -87,6 +102,24 @@ impl Svg {
         self.tint(color)
     }
 
+    /// Set the fill color (overrides SVG fill without affecting stroke)
+    pub fn fill(mut self, color: Color) -> Self {
+        self.fill_color = Some(color);
+        self
+    }
+
+    /// Set the stroke color (overrides SVG stroke without affecting fill)
+    pub fn stroke(mut self, color: Color) -> Self {
+        self.stroke_color = Some(color);
+        self
+    }
+
+    /// Set the stroke width in pixels
+    pub fn stroke_width(mut self, width: f32) -> Self {
+        self.stroke_w = Some(width);
+        self
+    }
+
     /// Set the render layer
     pub fn layer(mut self, layer: RenderLayer) -> Self {
         self.render_layer = layer;
@@ -116,6 +149,12 @@ impl Svg {
     /// Get the tint color
     pub fn tint_color(&self) -> Option<Color> {
         self.tint
+    }
+
+    /// Set the element ID for CSS selector targeting
+    pub fn id(mut self, id: &str) -> Self {
+        self.element_id = Some(id.to_string());
+        self
     }
 
     // =========================================================================
@@ -237,6 +276,12 @@ impl Svg {
     pub fn rotate(self, angle: f32) -> Self {
         self.transform(Transform::rotate(angle))
     }
+
+    /// Mark as internal widget SVG (won't match `svg { }` type selectors)
+    pub fn internal(mut self) -> Self {
+        self.is_internal = true;
+        self
+    }
 }
 
 impl ElementBuilder for Svg {
@@ -262,10 +307,25 @@ impl ElementBuilder for Svg {
         ElementTypeId::Svg
     }
 
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        if self.is_internal {
+            None
+        } else {
+            Some("svg")
+        }
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.element_id.as_deref()
+    }
+
     fn svg_render_info(&self) -> Option<SvgRenderInfo> {
         Some(SvgRenderInfo {
             source: self.source.clone(),
             tint: self.tint,
+            fill: self.fill_color,
+            stroke: self.stroke_color,
+            stroke_width: self.stroke_w,
         })
     }
 

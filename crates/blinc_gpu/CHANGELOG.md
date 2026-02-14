@@ -40,6 +40,19 @@ All notable changes to `blinc_gpu` will be documented in this file.
 - `filter_a[4]` field: `(grayscale, invert, sepia, hue_rotate_rad)` for CSS filters
 - `filter_b[4]` field: `(brightness, contrast, saturate, 0)` for CSS filters
 
+#### Image/SVG Rotation Support
+
+- `GpuImageInstance::with_rotation_sincos()` for applying rotation to image quads
+- Image vertex shader (`image.wgsl`) rotates quad vertices around center using sin/cos parameters
+- Fixed default `GpuImageInstance` params: `cos_rot` now defaults to 1.0 (was 0.0, collapsed all vertices)
+
+#### Corner Radius Clamping
+
+- Clamp `border-radius` to `min(half_width, half_height)` per CSS spec in:
+  - SDF border rendering (fragment shader)
+  - Glass shader `sd_rounded_rect`
+  - Clip shader `sd_rounded_rect_clip`
+
 #### CSS Filters (GPU)
 
 - `apply_css_filter()` WGSL function: grayscale, invert, sepia, hue-rotate, brightness, contrast, saturate

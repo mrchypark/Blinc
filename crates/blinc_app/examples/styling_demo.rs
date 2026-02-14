@@ -17,6 +17,7 @@ use blinc_layout::css;
 use blinc_layout::css_parser::Stylesheet;
 use blinc_layout::element_style::ElementStyle;
 use blinc_layout::style;
+use blinc_layout::widgets::radio_group;
 use blinc_theme::{ColorToken, ThemeState};
 
 fn main() -> Result<()> {
@@ -579,8 +580,8 @@ fn main() -> Result<()> {
                 text-shadow: 2px 2px 0px rgba(34, 197, 94, 0.9);
             }
             #text-shadow-hover {
-                text-shadow: 0px 0px 0px rgba(239, 68, 68, 0);
-                transition: all 500ms ease;
+                text-shadow: 2px 2px 0px rgba(0, 0, 0, 0.6);
+                transition: text-shadow 500ms ease;
             }
             #text-shadow-hover:hover {
                 text-shadow: 3px 3px 0px rgba(239, 68, 68, 1.0);
@@ -975,6 +976,193 @@ fn main() -> Result<()> {
                 animation: outline-pulse 2500ms ease-in-out infinite;
             }
 
+            /* --- Form Input Styling (Phase 6) --- */
+
+            /* Base input style */
+            #demo-input {
+                background: #1e293b;
+                border-color: #475569;
+                border-width: 2px;
+                border-radius: 8px;
+                color: #f1f5f9;
+                caret-color: #60a5fa;
+            }
+            #demo-input:hover {
+                border-color: #64748b;
+                background: #283548;
+            }
+            #demo-input:focus {
+                border-color: #3b82f6;
+                background: #1e293b;
+                outline: 2px solid rgba(59, 130, 246, 0.4);
+                outline-offset: 2px;
+            }
+            #demo-input::placeholder {
+                color: #64748b;
+            }
+
+            /* Accent-colored input */
+            #accent-input {
+                background: #fefce8;
+                border-color: #eab308;
+                border-width: 2px;
+                border-radius: 12px;
+                color: #713f12;
+                caret-color: #ca8a04;
+            }
+            #accent-input:hover {
+                border-color: #facc15;
+                background: #fef9c3;
+            }
+            #accent-input:focus {
+                border-color: #eab308;
+                outline: 2px solid rgba(234, 179, 8, 0.4);
+                outline-offset: 2px;
+            }
+            #accent-input::placeholder {
+                color: #a16207;
+            }
+
+            /* Disabled input */
+            #disabled-input {
+                background: #1e293b;
+                border-color: #334155;
+                border-width: 1px;
+                border-radius: 8px;
+                color: #64748b;
+                opacity: 0.5;
+            }
+
+            /* Text area with CSS styling */
+            #demo-textarea {
+                background: #1e293b;
+                border-color: #475569;
+                border-width: 2px;
+                border-radius: 8px;
+                color: #f1f5f9;
+                caret-color: #a78bfa;
+            }
+            #demo-textarea:hover {
+                border-color: #64748b;
+            }
+            #demo-textarea:focus {
+                border-color: #8b5cf6;
+                outline: 2px solid rgba(139, 92, 246, 0.4);
+                outline-offset: 2px;
+            }
+            #demo-textarea::placeholder {
+                color: #64748b;
+            }
+
+            /* Checkbox CSS styling */
+            #demo-checkbox {
+                border-color: #475569;
+                border-radius: 4px;
+                accent-color: #3b82f6;
+            }
+            #demo-checkbox:hover {
+                border-color: #3b82f6;
+            }
+            #demo-checkbox:checked {
+                background: #3b82f6;
+                border-color: #3b82f6;
+            }
+
+            #accent-checkbox {
+                border-color: #eab308;
+                accent-color: #eab308;
+            }
+            #accent-checkbox:hover {
+                border-color: #facc15;
+            }
+            #accent-checkbox:checked {
+                background: #eab308;
+                border-color: #eab308;
+            }
+
+            #disabled-checkbox {
+                opacity: 0.5;
+            }
+
+            /* Radio CSS styling */
+            #theme-radio-light {
+                border-color: #475569;
+                accent-color: #3b82f6;
+            }
+            #theme-radio-light:hover {
+                border-color: #3b82f6;
+            }
+            #theme-radio-light:checked {
+                accent-color: #3b82f6;
+                border-color: #3b82f6;
+            }
+            #theme-radio-dark {
+                border-color: #475569;
+                accent-color: #3b82f6;
+            }
+            #theme-radio-dark:hover {
+                border-color: #3b82f6;
+            }
+            #theme-radio-dark:checked {
+                accent-color: #3b82f6;
+                border-color: #3b82f6;
+            }
+            #theme-radio-system {
+                border-color: #475569;
+                accent-color: #3b82f6;
+            }
+            #theme-radio-system:hover {
+                border-color: #3b82f6;
+            }
+            #theme-radio-system:checked {
+                accent-color: #3b82f6;
+                border-color: #3b82f6;
+            }
+
+            /* ============================================================ */
+            /* Global tag-name selectors (Phase 7: CSS for all widgets)     */
+            /* ============================================================ */
+
+            /* Style ALL h1 headings globally — uses theme CSS variables */
+            h1 {
+                color: var(--text-primary);
+                letter-spacing: -0.5px;
+            }
+
+            /* Style ALL paragraphs — uses theme CSS variables */
+            p {
+                color: var(--text-secondary);
+                line-height: 1.6;
+            }
+
+            /* Style ALL blockquotes */
+            blockquote {
+                background: var(--surface-elevated);
+                border-color: var(--primary);
+                border-radius: 4px;
+            }
+
+            /* Style ALL SVG icons — uses theme text-tertiary for muted icon color */
+            svg {
+                fill: var(--text-tertiary);
+            }
+
+            /* SVG stroke on hover */
+            #stroke-svg {
+                fill: none;
+                stroke: var(--border);
+                stroke-width: 2px;
+            }
+            #stroke-svg:hover {
+                stroke: var(--primary);
+                stroke-width: 3px;
+            }
+
+            /* Per-instance override — higher specificity than tag selector */
+            #accent-svg {
+                fill: var(--warning);
+            }
+
             "#,
             );
             css_loaded = true;
@@ -1027,6 +1215,12 @@ fn build_ui(ctx: &WindowedContext) -> impl ElementBuilder {
                     .child(text_shadow_section())
                     // Outline (Phase 5)
                     .child(outline_section())
+                    // Form Input CSS Styling (Phase 6)
+                    .child(form_input_section())
+                    // Checkbox & Radio CSS Styling
+                    .child(form_controls_section(ctx))
+                    // Global tag-name CSS selectors
+                    .child(global_tag_selectors_section())
                     // CSS Stylesheet integration
                     .child(css_stylesheet_section())
                     .child(css_hover_section())
@@ -2523,7 +2717,7 @@ fn text_shadow_section() -> impl ElementBuilder {
                     div()
                         .flex_col()
                         .gap(8.0)
-                        .child(code_label("text-shadow transition on :hover"))
+                        .child(code_label("text-shadow: 2px 2px 0px (dark) → 3px 3px (red) on :hover"))
                         .child(
                             div()
                                 .w(200.0)
@@ -2648,8 +2842,305 @@ fn outline_section() -> impl ElementBuilder {
 }
 
 // ============================================================================
+// FORM INPUT CSS STYLING SECTION
+// ============================================================================
+
+fn form_input_section() -> impl ElementBuilder {
+    use std::sync::OnceLock;
+
+    static INPUT_DATA: OnceLock<SharedTextInputState> = OnceLock::new();
+    static ACCENT_DATA: OnceLock<SharedTextInputState> = OnceLock::new();
+    static DISABLED_DATA: OnceLock<SharedTextInputState> = OnceLock::new();
+    static TEXTAREA_DATA: OnceLock<SharedTextAreaState> = OnceLock::new();
+
+    let input_data =
+        INPUT_DATA.get_or_init(|| text_input_state_with_placeholder("Type something..."));
+    let accent_data =
+        ACCENT_DATA.get_or_init(|| text_input_state_with_placeholder("Accent styled..."));
+    let disabled_data =
+        DISABLED_DATA.get_or_init(|| text_input_state_with_placeholder("Cannot edit"));
+    let textarea_data = TEXTAREA_DATA
+        .get_or_init(|| text_area_state_with_placeholder("Write your thoughts here..."));
+
+    section_container()
+        .child(section_title("Form Input CSS Styling"))
+        .child(section_description(
+            "TextInput and TextArea styled via CSS selectors. Supports :hover, :focus, ::placeholder, caret-color, and outline.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(20.0)
+                // 1. CSS-styled text input
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#demo-input { background: #1e293b; border-color: #475569; caret-color: #60a5fa; }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(16.0)
+                                .items_center()
+                                .child(
+                                    text_input(input_data)
+                                        .id("demo-input")
+                                        .w(300.0),
+                                )
+                                .child(
+                                    text("Hover and click to see :hover / :focus / outline transitions")
+                                        .size(12.0)
+                                        .color(Color::rgba(0.5, 0.5, 0.5, 1.0)),
+                                ),
+                        ),
+                )
+                // 2. Accent-colored input
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#accent-input { background: #fefce8; border-color: #eab308; caret-color: #ca8a04; }"))
+                        .child(
+                            text_input(accent_data)
+                                .id("accent-input")
+                                .w(300.0),
+                        ),
+                )
+                // 3. Disabled input
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("#disabled-input { opacity: 0.5; } + .disabled(true)"))
+                        .child(
+                            text_input(disabled_data)
+                                .id("disabled-input")
+                                .w(300.0)
+                                .disabled(true),
+                        ),
+                )
+                // 4. CSS-styled text area
+                .child(
+                    div()
+                        .flex_col()
+                        .w_full()
+                        .h_fit()
+                        .gap(8.0)
+                        .child(code_label("#demo-textarea { caret-color: #a78bfa; } :focus { outline + border-color: #8b5cf6; }"))
+                        .child(
+                            text_area(textarea_data)
+                                .id("demo-textarea")
+                                .w(400.0)
+                                .h(120.0),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
+// CHECKBOX & RADIO CSS STYLING SECTION
+// ============================================================================
+
+fn form_controls_section(ctx: &WindowedContext) -> impl ElementBuilder {
+    let cb_state = ctx.use_state_keyed("demo_checkbox", || false);
+    let cb_accent_state = ctx.use_state_keyed("accent_checkbox", || true);
+    let cb_disabled_state = ctx.use_state_keyed("disabled_checkbox", || false);
+
+    let radio_state = ctx.use_state_keyed("theme_radio", || "light".to_string());
+
+    section_container()
+        .child(section_title("Checkbox & Radio CSS Styling"))
+        .child(section_description(
+            "Checkbox and Radio widgets styled via CSS selectors. Supports :hover, :checked, :disabled, and accent-color.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(24.0)
+                // Checkbox demos
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(12.0)
+                        .child(code_label("#demo-checkbox { accent-color: #3b82f6; } :hover { border-color: #3b82f6; } :checked { background: #3b82f6; }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(32.0)
+                                .items_center()
+                                .child(
+                                    checkbox(&cb_state)
+                                        .id("demo-checkbox")
+                                        .label("Accept terms"),
+                                )
+                                .child(
+                                    text("Hover / click to see :hover and :checked CSS")
+                                        .size(12.0)
+                                        .color(Color::rgba(0.5, 0.5, 0.5, 1.0)),
+                                ),
+                        ),
+                )
+                // Accent checkbox
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(12.0)
+                        .child(code_label("#accent-checkbox { accent-color: #eab308; } :checked { background: #eab308; }"))
+                        .child(
+                            checkbox(&cb_accent_state)
+                                .id("accent-checkbox")
+                                .label("Amber accent checkbox (pre-checked)"),
+                        ),
+                )
+                // Disabled checkbox
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(12.0)
+                        .child(code_label("#disabled-checkbox { opacity: 0.5; } + .disabled(true)"))
+                        .child(
+                            checkbox(&cb_disabled_state)
+                                .id("disabled-checkbox")
+                                .disabled(true)
+                                .label("Disabled checkbox"),
+                        ),
+                )
+                // Radio demos
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(12.0)
+                        .child(code_label("#theme-radio-*:checked { accent-color: #3b82f6; } :hover { border-color: #3b82f6; }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(32.0)
+                                .items_center()
+                                .child(
+                                    radio_group(&radio_state)
+                                        .id("theme-radio")
+                                        .label("Theme")
+                                        .horizontal()
+                                        .option("light", "Light")
+                                        .option("dark", "Dark")
+                                        .option("system", "System"),
+                                )
+                                .child(
+                                    text("Hover / click to see :hover and :checked CSS on radio")
+                                        .size(12.0)
+                                        .color(Color::rgba(0.5, 0.5, 0.5, 1.0)),
+                                ),
+                        ),
+                ),
+        )
+}
+
+// ============================================================================
 // CSS STYLESHEET SECTION (automatic style application via ctx.add_css)
 // ============================================================================
+
+// ============================================================================
+// GLOBAL TAG-NAME CSS SELECTORS
+// ============================================================================
+
+fn global_tag_selectors_section() -> impl ElementBuilder {
+    // Simple inline SVG icons for the demo
+    let star_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>"#;
+    let heart_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>"#;
+
+    section_container()
+        .child(section_title("Global Tag-Name CSS Selectors"))
+        .child(section_description(
+            "Type selectors style ALL instances of a widget without needing #id. Per-instance #id overrides take higher priority.",
+        ))
+        .child(
+            div()
+                .flex_col()
+                .gap(24.0)
+                // --- Typography: h1 { } and p { } ---
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("h1 { color: var(--text-primary); letter-spacing: -0.5px; }"))
+                        .child(h1("Heading Styled by Tag Selector"))
+                        .child(code_label("p { color: var(--text-secondary); line-height: 1.6; }"))
+                        .child(p("This paragraph is styled globally via the p { } type selector. All paragraphs get the same base styling without needing individual IDs.")),
+                )
+                // --- Blockquote: blockquote { } ---
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("blockquote { background: var(--surface-elevated); border-color: var(--primary); }"))
+                        .child(
+                            blockquote()
+                                .child(p("This blockquote is styled by the global blockquote { } selector. No ID needed.")),
+                        ),
+                )
+                // --- SVG: svg { } + #accent-svg override ---
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(8.0)
+                        .child(code_label("svg { fill: var(--text-tertiary); }  +  #accent-svg { fill: var(--warning); }"))
+                        .child(
+                            div()
+                                .flex_row()
+                                .gap(16.0)
+                                .items_center()
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(4.0)
+                                        .items_center()
+                                        .child(svg(star_svg).size(32.0, 32.0))
+                                        .child(code_label("svg { }")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(4.0)
+                                        .items_center()
+                                        .child(svg(heart_svg).size(32.0, 32.0))
+                                        .child(code_label("svg { }")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(4.0)
+                                        .items_center()
+                                        .child(svg(star_svg).size(32.0, 32.0).id("accent-svg"))
+                                        .child(code_label("#accent-svg")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_col()
+                                        .gap(4.0)
+                                        .items_center()
+                                        .child(svg(star_svg).size(32.0, 32.0).id("stroke-svg"))
+                                        .child(code_label(":hover stroke")),
+                                ),
+                        ),
+                )
+                // --- Explanation ---
+                .child(
+                    div()
+                        .flex_col()
+                        .gap(4.0)
+                        .child(
+                            text("Specificity: #id > type selector > universal *")
+                                .size(12.0)
+                                .color(Color::rgba(0.5, 0.6, 0.7, 1.0)),
+                        )
+                        .child(
+                            text("The accent star uses #accent-svg { fill: var(--warning) } which overrides the global svg { fill: var(--text-tertiary) }.")
+                                .size(12.0)
+                                .color(Color::rgba(0.5, 0.6, 0.7, 1.0)),
+                        ),
+                ),
+        )
+}
 
 fn css_stylesheet_section() -> impl ElementBuilder {
     let theme = ThemeState::get();

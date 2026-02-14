@@ -221,7 +221,7 @@ pub mod prelude {
     // Unified element styling
     pub use crate::element_style::{
         style, ElementStyle, SpacingRect, StyleAlign, StyleDisplay, StyleFlexDirection,
-        StyleJustify, StyleOverflow,
+        StyleJustify, StyleOverflow, StyleVisibility,
     };
     // Diff and reconciliation
     pub use crate::diff::{
@@ -280,10 +280,11 @@ pub mod prelude {
         // Checkbox widget - ready-to-use
         checkbox,
         checkbox_labeled,
-        checkbox_state,
         // Cursor blink timing (for use by app layer)
         elapsed_ms,
         has_focused_text_input,
+        // Radio group widget - ready-to-use
+        radio_group,
         // Text area widget - ready-to-use
         text_area,
         text_area_state,
@@ -297,10 +298,12 @@ pub mod prelude {
         ButtonVisualState,
         Checkbox,
         CheckboxConfig,
-        CheckboxState,
         InputConstraints,
         InputType,
-        SharedCheckboxState,
+        RadioGroup,
+        RadioGroupBuilder,
+        RadioGroupConfig,
+        RadioLayout,
         SharedTextAreaState,
         SharedTextInputState,
         TextArea,

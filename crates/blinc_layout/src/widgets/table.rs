@@ -324,6 +324,10 @@ impl crate::div::ElementBuilder for TableCell {
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         self.inner.element_type_id()
     }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("td")
+    }
 }
 
 /// Create a table header cell (th)

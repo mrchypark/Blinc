@@ -1313,6 +1313,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             if rel.x > 0.0 { corner_radius = prim.corner_radius.z; }  // bottom-right
             else { corner_radius = prim.corner_radius.w; }           // bottom-left
         }
+        // Clamp radius to half the minimum dimension (CSS spec)
+        corner_radius = min(corner_radius, min(half_size.x, half_size.y));
 
         // Select border widths for nearest edges based on quadrant (GPUI approach)
         let border = vec2<f32>(
@@ -1608,6 +1610,8 @@ struct GlassPrimitive {
     clip_bounds: vec4<f32>,
     // Clip corner radii (for rounded rect clips)
     clip_radius: vec4<f32>,
+    // Border color (RGBA) - when alpha > 0, renders a solid border instead of light-based highlights
+    border_color: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: GlassUniforms;
@@ -2080,33 +2084,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var result = backdrop.rgb;
 
     // ========================================================================
-    // EDGE HIGHLIGHT - Configurable thin line with angle-based light reflection
+    // EDGE HIGHLIGHT / BORDER - Configurable thin line with angle-based light reflection
     // ========================================================================
-    // This is the signature look - a thin bright line tracing the edge
-    // The brightness varies based on the edge angle relative to light source
+    // When border_color.a > 0, use the explicit border color.
+    // Otherwise, use the signature light-based edge highlight.
     let edge_line_width = prim.params2.x; // User-configurable border thickness
     let light_angle = prim.params2.y;     // Light source angle in radians
+    let bc = prim.border_color;
 
     let edge_line = smoothstep(0.0, edge_line_width * 0.3, inner_dist) *
                     (1.0 - smoothstep(edge_line_width, edge_line_width * 1.5, inner_dist));
 
-    // Calculate light reflection based on edge normal vs light direction
-    // Light direction vector from the light angle
+    // Compute light-based highlight strength (used by glass type variants too)
     let light_dir = vec2<f32>(cos(light_angle), sin(light_angle));
-
-    // Edge normal points outward from the shape (calculated earlier as sdf_gradient)
-    // The reflection is strongest when edge normal faces the light
-    // dot(edge_normal, -light_dir) = how much the edge faces the light source
     let facing_light = dot(edge_normal, -light_dir);
-
-    // Map to 0-1 range with bias toward lit edges
-    // -1 to 1 -> 0.2 to 1.0 (edges facing away still get some highlight)
     let light_factor = 0.2 + 0.8 * max(0.0, facing_light);
+    let highlight_strength = edge_line * 0.6 * light_factor * mask;
 
-    // Combine edge line with light reflection
-    // Multiply by mask to prevent highlight bleeding outside glass boundary
-    let highlight_strength = edge_line * 0.6 * light_factor * mask; // Base strength 0.6, modulated by light
-    result = result + vec3<f32>(highlight_strength);
+    if bc.a > 0.001 {
+        // Solid border color mode: blend the user-specified color at the edge
+        result = mix(result, bc.rgb, edge_line * bc.a * mask);
+    } else {
+        // Light-based highlight mode (default liquid glass look)
+        result = result + vec3<f32>(highlight_strength);
+    }
 
     // ========================================================================
     // INNER EDGE SHADOW - Very subtle depth
@@ -2215,6 +2216,7 @@ struct SimpleGlassPrimitive {
     type_info: vec4<u32>,   // glass_type, shadow_offset_x_bits, shadow_offset_y_bits, clip_type
     clip_bounds: vec4<f32>,
     clip_radius: vec4<f32>,
+    border_color: vec4<f32>, // Border color (RGBA) - when alpha > 0, renders solid border
 }
 
 @group(0) @binding(0) var<uniform> uniforms: SimpleGlassUniforms;
@@ -2293,6 +2295,9 @@ fn sd_rounded_rect(p: vec2<f32>, origin: vec2<f32>, size: vec2<f32>, radius: vec
     else if (rel.x >= 0.0 && rel.y < 0.0) { r = radius.y; }
     else if (rel.x >= 0.0 && rel.y >= 0.0) { r = radius.z; }
     else { r = radius.w; }
+
+    // Clamp radius to half the minimum dimension (CSS spec)
+    r = min(r, min(half_size.x, half_size.y));
 
     let outer_dist = length(max(q + r, vec2<f32>(0.0)));
     let inner_dist = min(max(q.x + r, q.y + r), 0.0);
@@ -2463,6 +2468,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if noise_amount > 0.0 {
         let n = noise(p * 0.3);
         result_rgb = result_rgb + vec3<f32>((n - 0.5) * noise_amount * 0.02);
+    }
+
+    // Border color support
+    let bc = prim.border_color;
+    if bc.a > 0.001 {
+        let border_width = prim.params2.x;
+        let inner_dist = -d; // Distance from edge into the shape
+        let edge_band = smoothstep(0.0, border_width * 0.3, inner_dist) *
+                        (1.0 - smoothstep(border_width, border_width * 1.5, inner_dist));
+        result_rgb = mix(result_rgb, bc.rgb, edge_band * bc.a * mask);
     }
 
     result_rgb = clamp(result_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -3057,6 +3072,9 @@ fn sd_rounded_rect_clip(p: vec2<f32>, rect: vec4<f32>, radii: vec4<f32>) -> f32 
             r = radii.z;  // bottom-right
         }
     }
+
+    // Clamp radius to half the minimum dimension (CSS spec)
+    r = min(r, min(half_size.x, half_size.y));
 
     let adjusted_q = q + r;
     return length(max(adjusted_q, vec2<f32>(0.0))) + min(max(adjusted_q.x, adjusted_q.y), 0.0) - r;

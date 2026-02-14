@@ -1440,13 +1440,22 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             .with_noise(style.noise)
             .with_border_thickness(style.border_thickness);
 
+            // Apply border color if specified
+            if let Some(bc) = style.border_color {
+                glass = glass.with_border_color(bc.r, bc.g, bc.b, bc.a);
+            }
+
             // Apply shadow if present in the glass style
+            // Shadow values are in CSS px but glass bounds are DPI-scaled screen px,
+            // so we must scale shadow params to match.
             if let Some(ref shadow) = style.shadow {
+                let [a, b, c, d, ..] = self.current_affine().elements;
+                let scale = (a * d - b * c).abs().sqrt().max(1e-6);
                 glass = glass.with_shadow_offset(
-                    shadow.blur,
+                    shadow.blur * scale,
                     shadow.color.a, // Use color alpha as opacity
-                    shadow.offset_x,
-                    shadow.offset_y,
+                    shadow.offset_x * scale,
+                    shadow.offset_y * scale,
                 );
             }
 
@@ -1494,7 +1503,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 glass = glass.with_glass_type(GlassType::Simple);
             }
 
-            self.batch.push_glass(glass);
+            if style.depth > 0 {
+                self.batch.push_nested_glass(glass);
+            } else {
+                self.batch.push_glass(glass);
+            }
             return;
         }
 
@@ -1848,7 +1861,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
 
         // Handle glass brush specially - push to glass primitives
         if let Brush::Glass(style) = &brush {
-            let glass = GpuGlassPrimitive::circle(
+            let mut glass = GpuGlassPrimitive::circle(
                 transformed_center.x,
                 transformed_center.y,
                 transformed_radius,
@@ -1859,7 +1872,14 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             .with_brightness(style.brightness)
             .with_noise(style.noise)
             .with_border_thickness(style.border_thickness);
-            self.batch.push_glass(glass);
+            if let Some(bc) = style.border_color {
+                glass = glass.with_border_color(bc.r, bc.g, bc.b, bc.a);
+            }
+            if style.depth > 0 {
+                self.batch.push_nested_glass(glass);
+            } else {
+                self.batch.push_glass(glass);
+            }
             return;
         }
 

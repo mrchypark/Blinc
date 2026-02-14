@@ -40,10 +40,12 @@
 //! ```
 
 use blinc_core::{Color, State, Transform};
+use blinc_layout::css_parser::{active_stylesheet, ElementState, Stylesheet};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::RenderProps;
+use blinc_layout::element_style::ElementStyle;
 use blinc_layout::prelude::*;
-use blinc_layout::stateful::{stateful, ButtonState};
+use blinc_layout::stateful::{stateful_with_key, ButtonState};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_theme::{ColorToken, SpacingToken, ThemeState};
 use std::sync::Arc;
@@ -143,7 +145,13 @@ impl RadioGroup {
 
         // Add each radio button
         for option in &config.options {
-            options_container = options_container.child(build_radio_button(&config, option, theme));
+            // Auto-derive per-button CSS ID: "{group_id}-{value}"
+            let button_css_id = config.css_group_id.as_ref().map(|group_id| {
+                let sanitized = option.value.replace(' ', "-");
+                format!("{group_id}-{sanitized}")
+            });
+            options_container =
+                options_container.child(build_radio_button(&config, option, theme, button_css_id));
         }
 
         // If there's a label, wrap everything
@@ -173,6 +181,7 @@ fn build_radio_button(
     config: &RadioGroupConfig,
     option: &RadioOption,
     theme: &ThemeState,
+    button_css_id: Option<String>,
 ) -> Stateful<ButtonState> {
     let outer_size = config.size.outer_size();
     let inner_size = config.size.inner_size();
@@ -184,10 +193,10 @@ fn build_radio_button(
         .unwrap_or_else(|| theme.color(ColorToken::Primary));
     let border = config
         .border_color
-        .unwrap_or_else(|| theme.color(ColorToken::Border));
+        .unwrap_or_else(|| theme.color(ColorToken::BorderSecondary));
     let hover_border = config
         .hover_border_color
-        .unwrap_or_else(|| theme.color(ColorToken::BorderHover));
+        .unwrap_or_else(|| theme.color(ColorToken::Primary));
 
     let option_value = option.value.clone();
     let option_disabled = option.disabled || config.disabled;
@@ -203,8 +212,16 @@ fn build_radio_button(
         theme.color(ColorToken::TextPrimary)
     };
 
+    let css_id_for_state = button_css_id.clone();
+
+    // Unique key per radio button for state isolation
+    let stateful_key = button_css_id
+        .as_deref()
+        .map(|id| format!("radio-{id}"))
+        .unwrap_or_else(|| format!("radio-{}", option.value));
+
     // Build the radio button circle
-    let mut radio = stateful::<ButtonState>()
+    let mut radio = stateful_with_key::<ButtonState>(&stateful_key)
         .deps([selected_state.signal_id()])
         .on_state(move |ctx| {
             let state = ctx.state();
@@ -213,13 +230,37 @@ fn build_radio_button(
             let is_hovered = matches!(state, ButtonState::Hovered | ButtonState::Pressed);
             let is_pressed = matches!(state, ButtonState::Pressed);
 
+            // Start with builder-configured colors
+            let mut overrides = RadioStyleOverrides {
+                selected_color,
+                border_color: border,
+                hover_border_color: hover_border,
+                label_color,
+                opacity: None,
+                background: None,
+            };
+
+            // Apply CSS overrides if we have an element ID
+            if let Some(ref css_id) = css_id_for_state {
+                if let Some(stylesheet) = active_stylesheet() {
+                    apply_css_overrides_radio(
+                        &stylesheet,
+                        css_id,
+                        is_selected,
+                        is_hovered,
+                        option_disabled,
+                        &mut overrides,
+                    );
+                }
+            }
+
             // Border color based on state
-            let current_border = if is_selected {
-                selected_color
+            let border_color = if is_selected {
+                overrides.selected_color
             } else if is_hovered && !option_disabled {
-                hover_border
+                overrides.hover_border_color
             } else {
-                border
+                overrides.border_color
             };
 
             // Scale effect on hover
@@ -241,10 +282,14 @@ fn build_radio_button(
                 .w(outer_size)
                 .h(outer_size)
                 .rounded(outer_size / 2.0)
-                .border(border_width, current_border)
+                .border(border_width, border_color)
                 .items_center()
                 .justify_center()
                 .transform(Transform::scale(scale, scale));
+
+            if let Some(bg) = overrides.background {
+                circle = circle.bg(bg);
+            }
 
             // Add inner dot if selected
             if is_selected {
@@ -252,7 +297,7 @@ fn build_radio_button(
                     .w(inner_size)
                     .h(inner_size)
                     .rounded(inner_size / 2.0)
-                    .bg(selected_color)
+                    .bg(overrides.selected_color)
                     .transform(Transform::scale(inner_scale, inner_scale));
                 circle = circle.child(inner_dot);
             }
@@ -264,14 +309,21 @@ fn build_radio_button(
                 .items_center()
                 .cursor_pointer()
                 .child(circle)
-                .child(text(&option_label).size(14.0).color(label_color));
+                .child(text(&option_label).size(14.0).color(overrides.label_color));
 
-            if option_disabled {
+            if let Some(opacity) = overrides.opacity {
+                visual = visual.opacity(opacity);
+            } else if option_disabled {
                 visual = visual.opacity(0.5);
             }
 
             visual
         });
+
+    // Set CSS element ID on the Stateful for element registry matching
+    if let Some(ref css_id) = button_css_id {
+        radio = radio.id(css_id);
+    }
 
     // Click handler
     radio = radio.on_click(move |_| {
@@ -291,6 +343,74 @@ fn build_radio_button(
     radio
 }
 
+/// Mutable radio button style overrides, populated by CSS cascade
+struct RadioStyleOverrides {
+    selected_color: Color,
+    border_color: Color,
+    hover_border_color: Color,
+    label_color: Color,
+    opacity: Option<f32>,
+    background: Option<Color>,
+}
+
+impl RadioStyleOverrides {
+    /// Apply a single ElementStyle layer
+    fn apply(&mut self, style: &ElementStyle) {
+        if let Some(color) = style.accent_color {
+            self.selected_color = color;
+        }
+        if let Some(color) = style.border_color {
+            self.border_color = color;
+            // border_color also overrides hover_border_color
+            self.hover_border_color = color;
+        }
+        if let Some(color) = style.text_color {
+            self.label_color = color;
+        }
+        if let Some(o) = style.opacity {
+            self.opacity = Some(o);
+        }
+        if let Some(blinc_core::Brush::Solid(color)) = style.background {
+            self.background = Some(color);
+        }
+    }
+}
+
+/// Apply CSS style overrides to radio button visual properties
+///
+/// Cascading order: base → :checked → :hover → :disabled (highest priority)
+fn apply_css_overrides_radio(
+    stylesheet: &Stylesheet,
+    element_id: &str,
+    is_selected: bool,
+    is_hovered: bool,
+    is_disabled: bool,
+    overrides: &mut RadioStyleOverrides,
+) {
+    // 1. Base style
+    if let Some(base) = stylesheet.get(element_id) {
+        overrides.apply(base);
+    }
+    // 2. :checked (if selected)
+    if is_selected {
+        if let Some(s) = stylesheet.get_with_state(element_id, ElementState::Checked) {
+            overrides.apply(s);
+        }
+    }
+    // 3. :hover (layered after :checked)
+    if is_hovered {
+        if let Some(s) = stylesheet.get_with_state(element_id, ElementState::Hover) {
+            overrides.apply(s);
+        }
+    }
+    // 4. :disabled (highest priority)
+    if is_disabled {
+        if let Some(s) = stylesheet.get_with_state(element_id, ElementState::Disabled) {
+            overrides.apply(s);
+        }
+    }
+}
+
 /// Internal configuration for building a RadioGroup
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
@@ -306,6 +426,7 @@ struct RadioGroupConfig {
     border_color: Option<Color>,
     hover_border_color: Option<Color>,
     on_change: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    css_group_id: Option<String>,
 }
 
 impl RadioGroupConfig {
@@ -322,6 +443,7 @@ impl RadioGroupConfig {
             border_color: None,
             hover_border_color: None,
             on_change: None,
+            css_group_id: None,
         }
     }
 }
@@ -346,6 +468,16 @@ impl RadioGroupBuilder {
     fn get_or_build(&self) -> &RadioGroup {
         self.built
             .get_or_init(|| RadioGroup::with_config(self.config.clone()))
+    }
+
+    /// Set a CSS element ID for the radio group
+    ///
+    /// Individual radio buttons auto-derive IDs as `"{group_id}-{value}"`.
+    /// For example, `.id("theme-radio")` with `.option("light", "Light")` produces
+    /// a button with CSS ID `"theme-radio-light"`.
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.config.css_group_id = Some(id.into());
+        self
     }
 
     /// Add an option to the radio group

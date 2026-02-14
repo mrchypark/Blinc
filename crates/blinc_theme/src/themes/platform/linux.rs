@@ -64,6 +64,7 @@ impl LinuxTheme {
 
                 // Borders
                 border: Color::from_hex(0xCDCDCD),
+                border_secondary: Color::from_hex(0xBBBBBB), // Adwaita borders_color — form controls
                 border_hover: Color::from_hex(0xBBBBBB),
                 border_focus: Color::from_hex(0x3584E4),
                 border_error: Color::from_hex(0xE01B24),
@@ -167,6 +168,7 @@ impl LinuxTheme {
 
                 // Borders
                 border: Color::from_hex(0x3A3A3A),
+                border_secondary: Color::from_hex(0x5E5E5E), // Adwaita dark borders_color — form controls
                 border_hover: Color::from_hex(0x4A4A4A),
                 border_focus: Color::from_hex(0x3584E4),
                 border_error: Color::from_hex(0xE01B24),

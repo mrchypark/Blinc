@@ -411,6 +411,12 @@ pub struct Div {
     pub(crate) is_sticky: bool,
     /// Sticky top threshold
     pub(crate) sticky_top: Option<f32>,
+    /// Outline width in pixels
+    pub(crate) outline_width: f32,
+    /// Outline color
+    pub(crate) outline_color: Option<Color>,
+    /// Outline offset in pixels (gap between border and outline)
+    pub(crate) outline_offset: f32,
     /// CSS z-index for stacking order
     pub(crate) z_index: i32,
     /// Scroll physics for overflow:scroll containers
@@ -468,6 +474,9 @@ impl Div {
             op_3d: None,
             blend_3d: None,
             clip_path: None,
+            outline_width: 0.0,
+            outline_color: None,
+            outline_offset: 0.0,
             is_fixed: false,
             is_sticky: false,
             sticky_top: None,
@@ -517,6 +526,9 @@ impl Div {
             op_3d: None,
             blend_3d: None,
             clip_path: None,
+            outline_width: 0.0,
+            outline_color: None,
+            outline_offset: 0.0,
             is_fixed: false,
             is_sticky: false,
             sticky_top: None,
@@ -928,10 +940,36 @@ impl Div {
 
         // Layout: sizing
         if let Some(w) = style.width {
-            self.style.size.width = Dimension::Length(w);
+            match w {
+                crate::element_style::StyleDimension::Length(px) => {
+                    self.style.size.width = Dimension::Length(px);
+                }
+                crate::element_style::StyleDimension::Percent(p) => {
+                    self.style.size.width = Dimension::Percent(p);
+                }
+                crate::element_style::StyleDimension::Auto => {
+                    self.style.size.width = Dimension::Auto;
+                    self.style.flex_basis = Dimension::Auto;
+                    self.style.flex_grow = 0.0;
+                    self.style.flex_shrink = 0.0;
+                }
+            }
         }
         if let Some(h) = style.height {
-            self.style.size.height = Dimension::Length(h);
+            match h {
+                crate::element_style::StyleDimension::Length(px) => {
+                    self.style.size.height = Dimension::Length(px);
+                }
+                crate::element_style::StyleDimension::Percent(p) => {
+                    self.style.size.height = Dimension::Percent(p);
+                }
+                crate::element_style::StyleDimension::Auto => {
+                    self.style.size.height = Dimension::Auto;
+                    self.style.flex_basis = Dimension::Auto;
+                    self.style.flex_grow = 0.0;
+                    self.style.flex_shrink = 0.0;
+                }
+            }
         }
         if let Some(w) = style.min_width {
             self.style.min_size.width = Dimension::Length(w);
@@ -2520,6 +2558,24 @@ impl Div {
         self
     }
 
+    /// Set outline width in pixels
+    pub fn outline_width(mut self, width: f32) -> Self {
+        self.outline_width = width;
+        self
+    }
+
+    /// Set outline color
+    pub fn outline_color(mut self, color: Color) -> Self {
+        self.outline_color = Some(color);
+        self
+    }
+
+    /// Set outline offset in pixels (gap between border and outline)
+    pub fn outline_offset(mut self, offset: f32) -> Self {
+        self.outline_offset = offset;
+        self
+    }
+
     /// Set left border only (useful for blockquotes)
     ///
     /// If a uniform border was previously set, other sides will inherit from it.
@@ -3417,6 +3473,8 @@ pub struct TextRenderInfo {
     pub font_family: FontFamily,
     /// Word spacing in pixels (0.0 = normal)
     pub word_spacing: f32,
+    /// Letter spacing in pixels (0.0 = normal)
+    pub letter_spacing: f32,
     /// Font ascender in pixels (distance from baseline to top)
     /// Used for accurate baseline alignment across different fonts
     pub ascender: f32,
@@ -3479,6 +3537,9 @@ pub struct StyledTextRenderInfo {
 pub struct SvgRenderInfo {
     pub source: String,
     pub tint: Option<blinc_core::Color>,
+    pub fill: Option<blinc_core::Color>,
+    pub stroke: Option<blinc_core::Color>,
+    pub stroke_width: Option<f32>,
 }
 
 /// Image render data extracted from element
@@ -3675,6 +3736,14 @@ pub trait ElementBuilder {
         None
     }
 
+    /// Semantic HTML-like tag name for CSS type selectors (e.g., "button", "a", "ul")
+    ///
+    /// Widgets override this to declare their semantic type, enabling global CSS
+    /// rules like `button { background: blue; }` to match all instances.
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Get the element ID for selector API queries
     ///
     /// Elements with IDs can be looked up programmatically via `ctx.query("id")`.
@@ -3776,6 +3845,9 @@ impl ElementBuilder for Div {
             op_3d: self.op_3d,
             blend_3d: self.blend_3d,
             clip_path: self.clip_path.clone(),
+            outline_color: self.outline_color,
+            outline_width: self.outline_width,
+            outline_offset: self.outline_offset,
             is_fixed: self.is_fixed,
             is_sticky: self.is_sticky,
             sticky_top: self.sticky_top,

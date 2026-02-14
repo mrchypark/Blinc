@@ -26,6 +26,7 @@ All notable changes to `blinc_layout` will be documented in this file.
 - `align-items`, `align-self`, `justify-content` (start, center, end, stretch, space-between, space-around, space-evenly)
 - `overflow: visible | clip | scroll`
 - `border-width`, `border-color`
+- `visibility: visible | hidden | collapse | normal` — hides rendering and collapses layout (Display::None in taffy)
 
 #### Visual Properties
 
@@ -36,6 +37,22 @@ All notable changes to `blinc_layout` will be documented in this file.
 - `box-shadow` with offset, blur, spread, and color
 - `transform: scale() rotate() translate()` (2D transforms)
 - `backdrop-filter: glass | blur(Npx) | chrome | gold | metallic | wood`
+- `backdrop-filter: liquid-glass(blur() saturate() brightness() border() tint())` variant with configurable border thickness and tint
+
+#### SVG CSS Transform Inheritance
+
+- SVGs now inherit CSS transforms from ancestor elements via `css_affine` propagation
+- Affine decomposition into uniform scale (applied to bounds) + rotation angle (sent to shader)
+
+#### Visibility
+
+- `StyleVisibility` enum (`Visible`, `Hidden`) on `ElementStyle`
+- CSS parser recognizes `visibility: hidden | visible | collapse | normal`
+- `visibility: hidden` both skips rendering and collapses layout (sets `Display::None` in taffy)
+- `visibility: visible` restores `Display::Flex` when reversing hidden state
+- Visibility applied across all render paths: `render_layer_with_motion`, `render_text_recursive`, `collect_elements_recursive`
+- Complex selector state changes (hover/leave) properly reset taffy styles via `base_taffy_styles`
+- Layout recomputed after state style changes that affect layout properties
 
 #### 3D CSS Transforms
 
@@ -130,7 +147,22 @@ All notable changes to `blinc_layout` will be documented in this file.
 
 - `PINCH` event support in `EventContext` (center and scale fields)
 
+#### CSS Form Widget Styling
+
+- `caret-color` CSS property for text input cursor color
+- `selection-color` CSS property for text selection highlight
+- `::placeholder` pseudo-element for placeholder text styling (`color` property)
+- `Stateful<S>` now forwards `element_id()` and `element_classes()` to ElementBuilder, enabling CSS matching for all Stateful-based widgets
+- `.id()` and `.class()` builder methods on TextInput and TextArea
+- CSS-aware `state_callback` in TextInput and TextArea: queries active stylesheet for base, `:hover`, `:focus`, `:disabled`, and `::placeholder` overrides
+- `set_active_stylesheet()` / `active_stylesheet()` global for widget access to the current stylesheet
+- `get_placeholder_style()` on Stylesheet for `::placeholder` pseudo-element lookup
+- `Stateful::inner_layout_style()` method for capturing final taffy Style after all builder methods
+
 ### Fixed
+
+- Stateful `base_style` capture timing: `on_state()` captured layout style before `.w()`/`.h()` were applied, causing widgets to revert to constructor defaults (e.g., `w_full()`) on state transitions. Now updated in `build()` with the final layout style
+- CSS-parsed `backdrop-filter: blur()` glass now uses subtle white tint (`rgba(1,1,1,0.1)`) and zero border-thickness for clean frosted glass appearance (was fully transparent tint, making glass indistinguishable from backdrop)
 
 - CSS-parsed `backdrop-filter: blur()` glass now uses subtle white tint (`rgba(1,1,1,0.1)`) and zero border-thickness for clean frosted glass appearance (was fully transparent tint, making glass indistinguishable from backdrop)
 - CSS timing functions now map to spec-correct cubic-bezier values (`ease` was incorrectly using `ease-in-out` polynomial, causing 6.5x slower initial progress than CSS spec)

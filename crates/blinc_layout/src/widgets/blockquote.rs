@@ -55,6 +55,8 @@ impl Default for BlockquoteConfig {
 pub struct Blockquote {
     /// The content container with all styling and children
     inner: Div,
+    css_element_id: Option<String>,
+    css_classes: Vec<String>,
 }
 
 impl Blockquote {
@@ -73,12 +75,28 @@ impl Blockquote {
             .border_left(config.border_width, config.border_color)
             .p(config.padding);
 
-        Self { inner }
+        Self {
+            inner,
+            css_element_id: None,
+            css_classes: Vec::new(),
+        }
     }
 
     /// Add a child element to the blockquote content area
     pub fn child(mut self, child: impl ElementBuilder + 'static) -> Self {
-        self.inner = std::mem::take(&mut self.inner).child(child);
+        self.inner = self.inner.child(child);
+        self
+    }
+
+    /// Set the element ID for CSS selector targeting
+    pub fn id(mut self, id: &str) -> Self {
+        self.css_element_id = Some(id.to_string());
+        self
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: &str) -> Self {
+        self.css_classes.push(name.to_string());
         self
     }
 }
@@ -104,6 +122,18 @@ impl ElementBuilder for Blockquote {
 
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         crate::div::ElementTypeId::Div
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("blockquote")
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.css_element_id.as_deref()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        &self.css_classes
     }
 }
 

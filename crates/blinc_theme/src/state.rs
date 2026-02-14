@@ -9,6 +9,7 @@ use crate::tokens::*;
 use blinc_animation::{AnimatedValue, AnimationScheduler, SchedulerHandle, SpringConfig};
 use blinc_core::Color;
 use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex, OnceLock, RwLock};
 
 /// Global theme state instance
@@ -318,6 +319,149 @@ impl ThemeState {
         self.color_overrides.write().unwrap().remove(&token);
         self.needs_repaint.store(true, Ordering::SeqCst);
         trigger_redraw();
+    }
+
+    // ========== CSS Variable Generation ==========
+
+    /// Generate a CSS variable map from all color tokens.
+    ///
+    /// Returns a `HashMap<String, String>` where keys are variable names
+    /// (without `--` prefix) and values are hex color strings.
+    /// Variable names match the `theme()` CSS function token names.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let vars = ThemeState::get().to_css_variable_map();
+    /// // vars["text-primary"] == "#1a1a2e"
+    /// // vars["surface"] == "#ffffff"
+    /// ```
+    pub fn to_css_variable_map(&self) -> HashMap<String, String> {
+        fn hex(c: Color) -> String {
+            if c.a < 1.0 {
+                format!(
+                    "rgba({},{},{},{})",
+                    (c.r * 255.0) as u8,
+                    (c.g * 255.0) as u8,
+                    (c.b * 255.0) as u8,
+                    c.a
+                )
+            } else {
+                format!(
+                    "#{:02x}{:02x}{:02x}",
+                    (c.r * 255.0) as u8,
+                    (c.g * 255.0) as u8,
+                    (c.b * 255.0) as u8
+                )
+            }
+        }
+
+        let mut vars = HashMap::with_capacity(44);
+
+        // Use self.color() which checks overrides first
+        vars.insert("primary".into(), hex(self.color(ColorToken::Primary)));
+        vars.insert(
+            "primary-hover".into(),
+            hex(self.color(ColorToken::PrimaryHover)),
+        );
+        vars.insert(
+            "primary-active".into(),
+            hex(self.color(ColorToken::PrimaryActive)),
+        );
+        vars.insert("secondary".into(), hex(self.color(ColorToken::Secondary)));
+        vars.insert(
+            "secondary-hover".into(),
+            hex(self.color(ColorToken::SecondaryHover)),
+        );
+        vars.insert(
+            "secondary-active".into(),
+            hex(self.color(ColorToken::SecondaryActive)),
+        );
+        vars.insert("success".into(), hex(self.color(ColorToken::Success)));
+        vars.insert("success-bg".into(), hex(self.color(ColorToken::SuccessBg)));
+        vars.insert("warning".into(), hex(self.color(ColorToken::Warning)));
+        vars.insert("warning-bg".into(), hex(self.color(ColorToken::WarningBg)));
+        vars.insert("error".into(), hex(self.color(ColorToken::Error)));
+        vars.insert("error-bg".into(), hex(self.color(ColorToken::ErrorBg)));
+        vars.insert("info".into(), hex(self.color(ColorToken::Info)));
+        vars.insert("info-bg".into(), hex(self.color(ColorToken::InfoBg)));
+        vars.insert("background".into(), hex(self.color(ColorToken::Background)));
+        vars.insert("surface".into(), hex(self.color(ColorToken::Surface)));
+        vars.insert(
+            "surface-elevated".into(),
+            hex(self.color(ColorToken::SurfaceElevated)),
+        );
+        vars.insert(
+            "surface-overlay".into(),
+            hex(self.color(ColorToken::SurfaceOverlay)),
+        );
+        vars.insert(
+            "text-primary".into(),
+            hex(self.color(ColorToken::TextPrimary)),
+        );
+        vars.insert(
+            "text-secondary".into(),
+            hex(self.color(ColorToken::TextSecondary)),
+        );
+        vars.insert(
+            "text-tertiary".into(),
+            hex(self.color(ColorToken::TextTertiary)),
+        );
+        vars.insert(
+            "text-inverse".into(),
+            hex(self.color(ColorToken::TextInverse)),
+        );
+        vars.insert("text-link".into(), hex(self.color(ColorToken::TextLink)));
+        vars.insert("border".into(), hex(self.color(ColorToken::Border)));
+        vars.insert(
+            "border-secondary".into(),
+            hex(self.color(ColorToken::BorderSecondary)),
+        );
+        vars.insert(
+            "border-hover".into(),
+            hex(self.color(ColorToken::BorderHover)),
+        );
+        vars.insert(
+            "border-focus".into(),
+            hex(self.color(ColorToken::BorderFocus)),
+        );
+        vars.insert(
+            "border-error".into(),
+            hex(self.color(ColorToken::BorderError)),
+        );
+        vars.insert("input-bg".into(), hex(self.color(ColorToken::InputBg)));
+        vars.insert(
+            "input-bg-hover".into(),
+            hex(self.color(ColorToken::InputBgHover)),
+        );
+        vars.insert(
+            "input-bg-focus".into(),
+            hex(self.color(ColorToken::InputBgFocus)),
+        );
+        vars.insert(
+            "input-bg-disabled".into(),
+            hex(self.color(ColorToken::InputBgDisabled)),
+        );
+        vars.insert("selection".into(), hex(self.color(ColorToken::Selection)));
+        vars.insert(
+            "selection-text".into(),
+            hex(self.color(ColorToken::SelectionText)),
+        );
+        vars.insert("accent".into(), hex(self.color(ColorToken::Accent)));
+        vars.insert(
+            "accent-subtle".into(),
+            hex(self.color(ColorToken::AccentSubtle)),
+        );
+        vars.insert(
+            "tooltip-bg".into(),
+            hex(self.color(ColorToken::TooltipBackground)),
+        );
+        vars.insert(
+            "tooltip-text".into(),
+            hex(self.color(ColorToken::TooltipText)),
+        );
+
+        vars
     }
 
     // ========== Spacing Access ==========

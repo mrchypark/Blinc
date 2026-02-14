@@ -91,6 +91,28 @@ use blinc_theme::ThemeState;
 use crate::css_parser::{CssAnimation, CssTransitionSet};
 use crate::element::{GlassMaterial, Material, MetallicMaterial, RenderLayer, WoodMaterial};
 
+/// Text decoration line types
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextDecoration {
+    /// No decoration
+    None,
+    /// Underline
+    Underline,
+    /// Line through the middle of the text
+    LineThrough,
+}
+
+/// CSS scrollbar-width values
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ScrollbarWidth {
+    /// Default scrollbar width
+    Auto,
+    /// Thin scrollbar
+    Thin,
+    /// Hidden scrollbar (no space taken)
+    None,
+}
+
 // ============================================================================
 // Layout Style Types
 // ============================================================================
@@ -182,6 +204,13 @@ pub enum StyleOverflow {
     Scroll,
 }
 
+/// CSS visibility property
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StyleVisibility {
+    Visible,
+    Hidden,
+}
+
 /// CSS position property
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StylePosition {
@@ -190,6 +219,17 @@ pub enum StylePosition {
     Absolute,
     Fixed,
     Sticky,
+}
+
+/// CSS dimension value (length, auto, or keyword)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StyleDimension {
+    /// Fixed length in pixels
+    Length(f32),
+    /// Percentage of parent (0.0-1.0)
+    Percent(f32),
+    /// Auto sizing (shrink to content)
+    Auto,
 }
 
 /// Visual style properties for an element
@@ -222,6 +262,16 @@ pub struct ElementStyle {
     pub font_size: Option<f32>,
     /// Text shadow (offset, blur, color)
     pub text_shadow: Option<Shadow>,
+    /// Font weight (100-900)
+    pub font_weight: Option<crate::div::FontWeight>,
+    /// Text decoration (underline, line-through, etc.)
+    pub text_decoration: Option<TextDecoration>,
+    /// Line height multiplier
+    pub line_height: Option<f32>,
+    /// Text alignment (left, center, right)
+    pub text_align: Option<crate::div::TextAlign>,
+    /// Letter spacing in pixels
+    pub letter_spacing: Option<f32>,
     /// Skew X angle in degrees
     pub skew_x: Option<f32>,
     /// Skew Y angle in degrees
@@ -272,10 +322,10 @@ pub struct ElementStyle {
     // =========================================================================
     // Layout Properties
     // =========================================================================
-    /// Width in pixels
-    pub width: Option<f32>,
-    /// Height in pixels
-    pub height: Option<f32>,
+    /// Width (pixels, percentage, or auto/fit-content)
+    pub width: Option<StyleDimension>,
+    /// Height (pixels, percentage, or auto/fit-content)
+    pub height: Option<StyleDimension>,
     /// Minimum width in pixels
     pub min_width: Option<f32>,
     /// Minimum height in pixels
@@ -329,6 +379,36 @@ pub struct ElementStyle {
     /// Outline offset in pixels (gap between border and outline)
     pub outline_offset: Option<f32>,
 
+    // =========================================================================
+    // Form Element Properties
+    // =========================================================================
+    /// Caret (cursor) color for text inputs
+    pub caret_color: Option<Color>,
+    /// Text selection highlight color
+    pub selection_color: Option<Color>,
+    /// Placeholder text color (applied via ::placeholder pseudo-element)
+    pub placeholder_color: Option<Color>,
+    /// Accent color for form controls (checkmarks, radio dots)
+    pub accent_color: Option<Color>,
+
+    // =========================================================================
+    // Scrollbar Properties
+    // =========================================================================
+    /// Scrollbar thumb and track colors (CSS scrollbar-color: thumb track)
+    pub scrollbar_color: Option<(Color, Color)>,
+    /// Scrollbar width mode (CSS scrollbar-width: auto|thin|none)
+    pub scrollbar_width: Option<ScrollbarWidth>,
+
+    // =========================================================================
+    // SVG Properties
+    // =========================================================================
+    /// SVG fill color
+    pub fill: Option<Color>,
+    /// SVG stroke color
+    pub stroke: Option<Color>,
+    /// SVG stroke width in pixels
+    pub stroke_width: Option<f32>,
+
     /// CSS position (static, relative, absolute)
     pub position: Option<StylePosition>,
     /// Top inset in pixels (for positioned elements)
@@ -341,6 +421,8 @@ pub struct ElementStyle {
     pub left: Option<f32>,
     /// CSS z-index for controlling render order
     pub z_index: Option<i32>,
+    /// CSS visibility (visible or hidden — hidden keeps layout space but doesn't render)
+    pub visibility: Option<StyleVisibility>,
 }
 
 impl ElementStyle {
@@ -701,13 +783,13 @@ impl ElementStyle {
 
     /// Set width in pixels
     pub fn w(mut self, px: f32) -> Self {
-        self.width = Some(px);
+        self.width = Some(StyleDimension::Length(px));
         self
     }
 
     /// Set height in pixels
     pub fn h(mut self, px: f32) -> Self {
-        self.height = Some(px);
+        self.height = Some(StyleDimension::Length(px));
         self
     }
 
@@ -1012,6 +1094,11 @@ impl ElementStyle {
             text_color: other.text_color.or(self.text_color),
             font_size: other.font_size.or(self.font_size),
             text_shadow: other.text_shadow.or(self.text_shadow),
+            font_weight: other.font_weight.or(self.font_weight),
+            text_decoration: other.text_decoration.or(self.text_decoration),
+            line_height: other.line_height.or(self.line_height),
+            text_align: other.text_align.or(self.text_align),
+            letter_spacing: other.letter_spacing.or(self.letter_spacing),
             skew_x: other.skew_x.or(self.skew_x),
             skew_y: other.skew_y.or(self.skew_y),
             transform_origin: other.transform_origin.or(self.transform_origin),
@@ -1059,12 +1146,25 @@ impl ElementStyle {
             outline_width: other.outline_width.or(self.outline_width),
             outline_color: other.outline_color.or(self.outline_color),
             outline_offset: other.outline_offset.or(self.outline_offset),
+            // Form element properties
+            caret_color: other.caret_color.or(self.caret_color),
+            selection_color: other.selection_color.or(self.selection_color),
+            placeholder_color: other.placeholder_color.or(self.placeholder_color),
+            accent_color: other.accent_color.or(self.accent_color),
+            // Scrollbar
+            scrollbar_color: other.scrollbar_color.or(self.scrollbar_color),
+            scrollbar_width: other.scrollbar_width.or(self.scrollbar_width),
+            // SVG
+            fill: other.fill.or(self.fill),
+            stroke: other.stroke.or(self.stroke),
+            stroke_width: other.stroke_width.or(self.stroke_width),
             position: other.position.or(self.position),
             top: other.top.or(self.top),
             right: other.right.or(self.right),
             bottom: other.bottom.or(self.bottom),
             left: other.left.or(self.left),
             z_index: other.z_index.or(self.z_index),
+            visibility: other.visibility.or(self.visibility),
         }
     }
 
@@ -1079,6 +1179,7 @@ impl ElementStyle {
             || self.opacity.is_some()
             || self.animation.is_some()
             || self.z_index.is_some()
+            || self.visibility.is_some()
     }
 
     /// Check if any layout property is set
@@ -1110,6 +1211,7 @@ impl ElementStyle {
             || self.right.is_some()
             || self.bottom.is_some()
             || self.left.is_some()
+            || self.visibility.is_some()
     }
 
     /// Check if no property is set

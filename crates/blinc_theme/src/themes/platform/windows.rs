@@ -63,6 +63,7 @@ impl WindowsTheme {
 
                 // Borders
                 border: Color::rgba(0.0, 0.0, 0.0, 0.08), // CardStrokeColorDefault
+                border_secondary: Color::from_hex(0xBCBCBC), // Fluent ControlStrokeColor — form controls
                 border_hover: Color::rgba(0.0, 0.0, 0.0, 0.12),
                 border_focus: Color::from_hex(0x0078D4), // 2px accent
                 border_error: Color::from_hex(0xD13438),
@@ -163,6 +164,7 @@ impl WindowsTheme {
 
                 // Borders
                 border: Color::rgba(1.0, 1.0, 1.0, 0.08),
+                border_secondary: Color::from_hex(0x6B6B6B), // Fluent ControlStrokeColor dark — form controls
                 border_hover: Color::rgba(1.0, 1.0, 1.0, 0.12),
                 border_focus: Color::from_hex(0x60CDFF),
                 border_error: Color::from_hex(0xFF99A4),

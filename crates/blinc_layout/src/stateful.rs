@@ -2331,6 +2331,13 @@ impl<S: StateTransitions> Stateful<S> {
         self.inner.borrow().render_props()
     }
 
+    /// Get a clone of the inner Div's layout style
+    ///
+    /// This allows capturing the final taffy Style after all builder methods have been applied.
+    pub fn inner_layout_style(&self) -> Option<taffy::Style> {
+        self.inner.borrow().layout_style().cloned()
+    }
+
     /// Apply the state callback to update the inner div
     ///
     /// This is useful when you need to manually trigger a callback application,
@@ -2762,6 +2769,12 @@ impl<S: StateTransitions> Stateful<S> {
 
     pub fn id(self, id: &str) -> Self {
         self.merge_into_inner(Div::new().id(id));
+        self
+    }
+
+    /// Add a CSS class name for selector matching
+    pub fn class(self, name: &str) -> Self {
+        self.inner.borrow_mut().classes.push(name.to_string());
         self
     }
 
@@ -3885,6 +3898,16 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
 
     fn element_type_id(&self) -> ElementTypeId {
         ElementTypeId::Div
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        // SAFETY: Same pattern as children_builders/layout_style - stable during rendering
+        unsafe { (*self.inner.as_ptr()).element_id.as_deref() }
+    }
+
+    fn element_classes(&self) -> &[String] {
+        // SAFETY: Same pattern as children_builders/layout_style - stable during rendering
+        unsafe { &(*self.inner.as_ptr()).classes }
     }
 
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {

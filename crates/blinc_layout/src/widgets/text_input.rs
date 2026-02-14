@@ -22,6 +22,7 @@ use blinc_core::Color;
 use blinc_theme::{ColorToken, ThemeState};
 
 use crate::canvas::canvas;
+use crate::css_parser::{active_stylesheet, ElementState, Stylesheet};
 use crate::div::{div, Div, ElementBuilder};
 use crate::element::RenderProps;
 use crate::stateful::{
@@ -314,6 +315,34 @@ pub fn blur_all_text_inputs() {
     }
 }
 
+/// Get the layout node ID of the currently focused TextInput, if any.
+///
+/// This allows the CSS styling system to bridge TextInput focus state
+/// to the EventRouter, enabling `:focus` pseudo-class matching.
+pub fn focused_text_input_node_id() -> Option<LayoutNodeId> {
+    let focused = FOCUSED_TEXT_INPUT.lock().ok()?;
+    let weak = focused.as_ref()?;
+    let data = weak.upgrade()?;
+    let guard = data.lock().ok()?;
+    let stateful = guard.stateful_state.as_ref()?;
+    let shared = stateful.lock().ok()?;
+    shared.node_id
+}
+
+/// Get the layout node ID of the currently focused TextArea, if any.
+///
+/// This allows the CSS styling system to bridge TextArea focus state
+/// to the EventRouter, enabling `:focus` pseudo-class matching.
+pub fn focused_text_area_node_id() -> Option<LayoutNodeId> {
+    let focused = FOCUSED_TEXT_AREA.lock().ok()?;
+    let weak = focused.as_ref()?;
+    let data = weak.upgrade()?;
+    let guard = data.lock().ok()?;
+    let stateful = guard.stateful_state.as_ref()?;
+    let shared = stateful.lock().ok()?;
+    shared.node_id
+}
+
 // =============================================================================
 // Input Types and Validation
 // =============================================================================
@@ -403,6 +432,8 @@ pub struct TextInputData {
     pub(crate) stateful_state: Option<SharedState<TextFieldState>>,
     /// Callback invoked when text value changes
     pub(crate) on_change_callback: Option<OnChangeCallback>,
+    /// CSS element ID for stylesheet matching (set via TextInput::id())
+    pub(crate) css_element_id: Option<String>,
 }
 
 impl std::fmt::Debug for TextInputData {
@@ -450,6 +481,7 @@ impl TextInputData {
             layout_bounds_storage: Arc::new(Mutex::new(None)),
             stateful_state: None,
             on_change_callback: None,
+            css_element_id: None,
         }
     }
 
@@ -817,6 +849,196 @@ pub fn text_input_state_with_placeholder(placeholder: impl Into<String>) -> Shar
 }
 
 // =============================================================================
+// CSS Override Resolution
+// =============================================================================
+
+/// Apply CSS stylesheet overrides to a TextInputConfig.
+///
+/// Resolves base styles, state-specific styles (:hover/:focus/:disabled),
+/// and ::placeholder styles from the active stylesheet, then mutates the
+/// config with any CSS-specified values.
+fn apply_css_overrides(
+    cfg: &mut TextInputConfig,
+    stylesheet: &Stylesheet,
+    element_id: &str,
+    visual: &TextFieldState,
+) {
+    // 1. Apply base style (e.g. #my-input { ... })
+    if let Some(base) = stylesheet.get(element_id) {
+        apply_style_to_config(cfg, base, visual);
+    }
+
+    // 2. Layer state-specific style on top
+    let state = match visual {
+        TextFieldState::Hovered | TextFieldState::FocusedHovered => Some(ElementState::Hover),
+        TextFieldState::Focused => Some(ElementState::Focus),
+        TextFieldState::Disabled => Some(ElementState::Disabled),
+        TextFieldState::Idle => None,
+    };
+    // For FocusedHovered, apply both :focus and :hover (focus first, hover on top)
+    if matches!(visual, TextFieldState::FocusedHovered) {
+        if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
+            apply_style_to_config(cfg, focus_style, visual);
+        }
+    }
+    if let Some(s) = state {
+        if let Some(state_style) = stylesheet.get_with_state(element_id, s) {
+            apply_style_to_config(cfg, state_style, visual);
+        }
+    }
+
+    // 3. Apply ::placeholder style
+    if let Some(placeholder_style) = stylesheet.get_placeholder_style(element_id) {
+        // In CSS, `color` in ::placeholder maps to placeholder text color
+        if let Some(color) = placeholder_style.text_color {
+            cfg.placeholder_color = color;
+        }
+        // Also check explicit placeholder-color
+        if let Some(color) = placeholder_style.placeholder_color {
+            cfg.placeholder_color = color;
+        }
+    }
+}
+
+/// Apply an ElementStyle to a TextInputConfig (CSS properties override config values)
+fn apply_style_to_config(
+    cfg: &mut TextInputConfig,
+    style: &crate::element_style::ElementStyle,
+    visual: &TextFieldState,
+) {
+    // Background → applies to current state's bg color
+    if let Some(ref bg) = style.background {
+        let color = match bg {
+            blinc_core::Brush::Solid(c) => *c,
+            _ => return, // Gradients not supported for input bg
+        };
+        match visual {
+            TextFieldState::Idle => cfg.bg_color = color,
+            TextFieldState::Hovered => cfg.hover_bg_color = color,
+            TextFieldState::Focused | TextFieldState::FocusedHovered => {
+                cfg.focused_bg_color = color;
+            }
+            TextFieldState::Disabled => {} // Disabled bg is hardcoded
+        }
+    }
+
+    // Border color
+    if let Some(color) = style.border_color {
+        match visual {
+            TextFieldState::Idle => cfg.border_color = color,
+            TextFieldState::Hovered => cfg.hover_border_color = color,
+            TextFieldState::Focused | TextFieldState::FocusedHovered => {
+                cfg.focused_border_color = color;
+            }
+            TextFieldState::Disabled => {}
+        }
+    }
+
+    // Border width
+    if let Some(w) = style.border_width {
+        cfg.border_width = w;
+    }
+
+    // Corner radius
+    if let Some(cr) = style.corner_radius {
+        cfg.corner_radius = cr.top_left; // Use uniform radius
+    }
+
+    // Text color
+    if let Some(color) = style.text_color {
+        cfg.text_color = color;
+    }
+
+    // Font size
+    if let Some(size) = style.font_size {
+        cfg.font_size = size;
+    }
+
+    // Caret (cursor) color
+    if let Some(color) = style.caret_color {
+        cfg.cursor_color = color;
+    }
+
+    // Selection color
+    if let Some(color) = style.selection_color {
+        cfg.selection_color = color;
+    }
+
+    // Placeholder color
+    if let Some(color) = style.placeholder_color {
+        cfg.placeholder_color = color;
+    }
+}
+
+/// Extract outline properties from stylesheet for the current state.
+/// Returns (width, color, offset) if any outline is specified.
+fn extract_outline_from_stylesheet(
+    stylesheet: &Stylesheet,
+    element_id: &str,
+    visual: &TextFieldState,
+) -> Option<(f32, Color, f32)> {
+    let mut width = None;
+    let mut color = None;
+    let mut offset = None;
+
+    // Check base style
+    if let Some(base) = stylesheet.get(element_id) {
+        if let Some(w) = base.outline_width {
+            width = Some(w);
+        }
+        if let Some(c) = base.outline_color {
+            color = Some(c);
+        }
+        if let Some(o) = base.outline_offset {
+            offset = Some(o);
+        }
+    }
+
+    // Layer state-specific style
+    let state = match visual {
+        TextFieldState::Hovered | TextFieldState::FocusedHovered => Some(ElementState::Hover),
+        TextFieldState::Focused => Some(ElementState::Focus),
+        TextFieldState::Disabled => Some(ElementState::Disabled),
+        TextFieldState::Idle => None,
+    };
+    if matches!(visual, TextFieldState::FocusedHovered) {
+        if let Some(focus_style) = stylesheet.get_with_state(element_id, ElementState::Focus) {
+            if let Some(w) = focus_style.outline_width {
+                width = Some(w);
+            }
+            if let Some(c) = focus_style.outline_color {
+                color = Some(c);
+            }
+            if let Some(o) = focus_style.outline_offset {
+                offset = Some(o);
+            }
+        }
+    }
+    if let Some(s) = state {
+        if let Some(state_style) = stylesheet.get_with_state(element_id, s) {
+            if let Some(w) = state_style.outline_width {
+                width = Some(w);
+            }
+            if let Some(c) = state_style.outline_color {
+                color = Some(c);
+            }
+            if let Some(o) = state_style.outline_offset {
+                offset = Some(o);
+            }
+        }
+    }
+
+    // Only return if at least width is specified
+    width.map(|w| {
+        (
+            w,
+            color.unwrap_or(Color::rgba(0.23, 0.51, 0.97, 0.5)),
+            offset.unwrap_or(0.0),
+        )
+    })
+}
+
+// =============================================================================
 // TextInputConfig - visual configuration
 // =============================================================================
 
@@ -856,7 +1078,7 @@ impl Default for TextInputConfig {
             bg_color: theme.color(ColorToken::InputBg),
             hover_bg_color: theme.color(ColorToken::InputBgHover),
             focused_bg_color: theme.color(ColorToken::InputBgFocus),
-            border_color: theme.color(ColorToken::Border),
+            border_color: theme.color(ColorToken::BorderSecondary),
             hover_border_color: theme.color(ColorToken::BorderHover),
             focused_border_color: theme.color(ColorToken::BorderFocus),
             error_border_color: theme.color(ColorToken::BorderError),
@@ -965,8 +1187,21 @@ impl TextInput {
 
             shared.state_callback = Some(Arc::new(
                 move |visual: &TextFieldState, container: &mut Div| {
-                    let cfg = config_for_callback.lock().unwrap().clone();
+                    let mut cfg = config_for_callback.lock().unwrap().clone();
                     let mut data_guard = data_for_callback.lock().unwrap();
+
+                    // Apply CSS stylesheet overrides if element has an ID
+                    let css_outline = if let Some(ref element_id) = data_guard.css_element_id {
+                        if let Some(stylesheet) = active_stylesheet() {
+                            apply_css_overrides(&mut cfg, &stylesheet, element_id, visual);
+                            // Extract outline properties for the inner div
+                            extract_outline_from_stylesheet(&stylesheet, element_id, visual)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
 
                     // Update scroll offset to keep cursor visible
                     let old_scroll = data_guard.scroll_offset_x;
@@ -1004,11 +1239,19 @@ impl TextInput {
                     // Apply visual styling directly to the container (preserves fixed dimensions)
                     // This is the key fix: use set_* methods instead of merge() to avoid
                     // overwriting layout properties like width set on the outer Stateful
-                    let inner = div()
+                    let mut inner = div()
                         .w_full()
                         .bg(bg)
                         .border(cfg.border_width, border_color)
                         .rounded(cfg.corner_radius);
+
+                    // Apply CSS outline if specified
+                    if let Some((width, color, offset)) = css_outline {
+                        inner = inner
+                            .outline_width(width)
+                            .outline_color(color)
+                            .outline_offset(offset);
+                    }
 
                     // Build and set content as a child (not merge)
                     let content = TextInput::build_content(*visual, &data_guard, &cfg);
@@ -1556,6 +1799,25 @@ impl TextInput {
         self
     }
 
+    /// Set the CSS element ID for stylesheet matching
+    ///
+    /// When set, the TextInput will query the active stylesheet for
+    /// styles matching `#id`, `#id:hover`, `#id:focus`, `#id:disabled`,
+    /// and `#id::placeholder`.
+    pub fn id(mut self, id: &str) -> Self {
+        if let Ok(mut d) = self.data.lock() {
+            d.css_element_id = Some(id.to_string());
+        }
+        self.inner = std::mem::take(&mut self.inner).id(id);
+        self
+    }
+
+    /// Add a CSS class name for selector matching
+    pub fn class(mut self, name: &str) -> Self {
+        self.inner = std::mem::take(&mut self.inner).class(name);
+        self
+    }
+
     // ========== Border Color Configuration ==========
 
     /// Set the idle border color (when not hovered or focused)
@@ -1686,11 +1948,13 @@ pub fn text_input(data: &SharedTextInputData) -> TextInput {
 
 impl ElementBuilder for TextInput {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        // Set base render props for incremental updates
+        // Set base render props and layout style for incremental updates
         // Note: callback and handlers are registered in new() so they're available for incremental diff
+        // base_style must be updated here because on_state() captures it before .w()/.h() are applied
         {
             let mut shared = self.stateful_state.lock().unwrap();
             shared.base_render_props = Some(self.inner.inner_render_props());
+            shared.base_style = self.inner.inner_layout_style();
         }
 
         self.inner.build(tree)
@@ -1706,6 +1970,10 @@ impl ElementBuilder for TextInput {
 
     fn element_type_id(&self) -> crate::div::ElementTypeId {
         crate::div::ElementTypeId::Div
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        Some("input")
     }
 
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
