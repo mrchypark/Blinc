@@ -13,7 +13,7 @@
 //!   └── wasm/
 //! - assets/          - Static assets
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use std::fs;
 use std::path::Path;
 
@@ -1296,6 +1296,8 @@ fn template_counter(name: &str) -> String {
 /// This creates a native Rust project with Cargo.toml instead of .blinc DSL files.
 /// Ideal for testing mobile platforms with full control over the Rust code.
 pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
+    validate_rust_project_name(name)?;
+    validate_org_name(org)?;
     let package_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Get blinc workspace path (relative to the generated project)
@@ -1390,9 +1392,15 @@ theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
 use blinc_app::prelude::*;
 use blinc_app::windowed::{{WindowedApp, WindowedContext}};
 use blinc_core::reactive::State;
+use std::collections::HashMap;
+use std::path::Path;
 
 /// Counter button with stateful hover/press states
-fn counter_button(label: &str, count: State<i32>, delta: i32) -> impl ElementBuilder {{
+fn counter_button(
+    label: &str,
+    count: State<i32>,
+    delta: i32,
+) -> impl ElementBuilder {{
     let label = label.to_string();
 
     let count = count.clone();
@@ -1460,6 +1468,107 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {{
         )
 }}
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn parse_headless_args() -> Result<(bool, Option<String>, Option<String>)> {{
+    let mut headless = false;
+    let mut scenario: Option<String> = None;
+    let mut report: Option<String> = None;
+
+    let mut args = std::env::args().skip(1).peekable();
+    let mut next_value = |flag: &str| -> Result<String> {{
+        if args.peek().map_or(true, |next| next.starts_with("--")) {{
+            let msg = match flag {{
+                "--scenario" => "--scenario requires a file path",
+                "--report" => "--report requires a file path",
+                _ => "flag requires a file path",
+            }};
+            return Err(BlincError::Other(msg.to_string()));
+        }}
+        Ok(args.next().expect("peeked value should exist"))
+    }};
+
+    while let Some(arg) = args.next() {{
+        match arg.as_str() {{
+            "--headless" => {{
+                headless = true;
+            }}
+            "--scenario" => {{
+                scenario = Some(next_value("--scenario")?);
+            }}
+            "--report" => {{
+                report = Some(next_value("--report")?);
+            }}
+            _ if arg.starts_with("--") => {{
+                // Allow non-headless flags for compatibility with host/runtime launchers.
+            }}
+            _ => {{}}
+        }}
+    }}
+
+    Ok((headless, scenario, report))
+}}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn default_headless_scenario() -> HeadlessScenario {{
+    HeadlessScenario {{
+        steps: vec![ScenarioStep::Tick {{ frames: 1 }}],
+    }}
+}}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn run_headless_diagnostics(
+    app_name: &str,
+    scenario_path: Option<&str>,
+    report_path: Option<&str>,
+) -> Result<bool> {{
+    // TODO: map probe values from your real app state (signals/store/domain model).
+    let scenario = match scenario_path {{
+        Some(path) => HeadlessScenario::from_path(Path::new(path))?,
+        None => default_headless_scenario(),
+    }};
+
+    let mut probe = |_probe_ctx| {{
+        let mut elements = HashMap::new();
+        elements.insert(
+            "app.title".to_string(),
+            DiagnosticsElement {{
+                text: Some(format!("Welcome to {{}}", app_name)),
+            }},
+        );
+        elements.insert(
+            "counter.value".to_string(),
+            DiagnosticsElement {{
+                text: Some("0".to_string()),
+            }},
+        );
+        DiagnosticsSnapshot {{ elements }}
+    }};
+
+    let outcome = run_loaded_scenario_with_probe(
+        &scenario,
+        HeadlessRunConfig {{
+            width: 400,
+            height: 600,
+            max_frames: 1,
+            tick_ms: 16,
+            probe_every_frames: 4,
+        }},
+        &mut probe,
+    )?;
+
+    let report = outcome.report();
+    if let Some(path) = report_path {{
+        report.write_to_path_under(
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            Path::new(path),
+        )?;
+    }} else {{
+        report.write_to_writer(&mut std::io::stdout())?;
+    }}
+
+    Ok(outcome.is_failed())
+}}
+
 // =============================================================================
 // Desktop Entry Point
 // =============================================================================
@@ -1469,6 +1578,20 @@ fn main() -> Result<()> {{
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
+
+    let (headless, scenario_path, report_path) = parse_headless_args()?;
+
+    if headless {{
+        let failed = run_headless_diagnostics(
+            "{name}",
+            scenario_path.as_deref(),
+            report_path.as_deref(),
+        )?;
+        if failed {{
+            std::process::exit(2);
+        }}
+        return Ok(());
+    }}
 
     let config = WindowConfig {{
         title: "{name}".to_string(),
@@ -1638,6 +1761,42 @@ Cargo.lock
 .DS_Store
 "#,
     )?;
+
+    Ok(())
+}
+
+fn validate_rust_project_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("Project name cannot be empty");
+    }
+
+    let is_valid = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' '));
+    if !is_valid {
+        bail!(
+            "Invalid project name '{}'. Use only ASCII letters, digits, spaces, '-' or '_'",
+            name
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_org_name(org: &str) -> Result<()> {
+    if org.is_empty() {
+        bail!("Organization name cannot be empty");
+    }
+
+    let is_valid = org
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_'));
+    if !is_valid || org.starts_with('.') || org.ends_with('.') || org.contains("..") {
+        bail!(
+            "Invalid organization name '{}'. Use only ASCII letters, digits, '.' or '_'",
+            org
+        );
+    }
 
     Ok(())
 }
@@ -2525,4 +2684,90 @@ open BlincApp.xcodeproj
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn rust_template_contains_headless_diagnostics_branch() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_headless_{nonce}"));
+
+        create_rust_project(&root, "DemoApp", "com.example")
+            .expect("rust project template should be generated");
+
+        let main_rs =
+            fs::read_to_string(root.join("src/main.rs")).expect("generated main.rs should exist");
+
+        assert!(
+            main_rs.contains("--headless"),
+            "generated template should parse --headless flag"
+        );
+        assert!(
+            main_rs.contains("run_headless_diagnostics"),
+            "generated template should include headless diagnostics entrypoint"
+        );
+        assert!(
+            main_rs.contains("run_loaded_scenario_with_probe"),
+            "generated template should wire diagnostics runner"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rust_project_rejects_unsafe_name_chars() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_headless_invalid_{nonce}"));
+
+        let err = create_rust_project(
+            &root,
+            r#"BadName"; std::process::Command::new("calc").spawn().unwrap(); //"#,
+            "com.example",
+        )
+        .expect_err("unsafe rust template name should be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid project name"),
+            "error should explain project name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when name is rejected"
+        );
+    }
+
+    #[test]
+    fn rust_project_rejects_unsafe_org_chars() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_headless_invalid_org_{nonce}"));
+
+        let err = create_rust_project(
+            &root,
+            "DemoApp",
+            r#"com.example"; std::process::Command::new("calc").spawn().unwrap(); //"#,
+        )
+        .expect_err("unsafe org name should be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "error should explain org name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when org is rejected"
+        );
+    }
 }
