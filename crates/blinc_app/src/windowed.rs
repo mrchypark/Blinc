@@ -541,6 +541,8 @@ pub struct WindowedContext {
     pub rebuild_count: u32,
     /// Event router for input event handling
     pub event_router: EventRouter,
+    /// Pointer query state for CSS pointer pressure/touch metadata.
+    pub pointer_query: blinc_layout::pointer_query::PointerQueryState,
     /// Animation scheduler for spring/keyframe animations
     pub animations: SharedAnimationScheduler,
     /// Shared dirty flag for element refs - when set, triggers UI rebuild
@@ -594,6 +596,7 @@ impl WindowedContext {
             focused: window.is_focused(),
             rebuild_count: 0,
             event_router,
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
             animations,
             ref_dirty_flag,
             reactive,
@@ -634,6 +637,7 @@ impl WindowedContext {
             focused,
             rebuild_count: 0,
             event_router: EventRouter::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
             animations,
             ref_dirty_flag,
             reactive,
@@ -674,6 +678,7 @@ impl WindowedContext {
             focused,
             rebuild_count: 0,
             event_router: EventRouter::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
             animations,
             ref_dirty_flag,
             reactive,
@@ -714,6 +719,7 @@ impl WindowedContext {
             focused,
             rebuild_count: 0,
             event_router: EventRouter::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
             animations,
             ref_dirty_flag,
             reactive,
@@ -4069,6 +4075,7 @@ mod tests {
             focused: true,
             rebuild_count: 0,
             event_router: EventRouter::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
             animations,
             ref_dirty_flag,
             reactive,
