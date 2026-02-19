@@ -19,7 +19,8 @@ use std::sync::{
 };
 
 use blinc_core::{
-    BlurQuality, BlurStyle, Brush, ClipPath, Color, CornerRadius, LayerEffect, Shadow, Transform,
+    BlurQuality, BlurStyle, Brush, ClipPath, Color, CornerRadius, CornerShape, LayerEffect,
+    OverflowFade, Shadow, Transform,
 };
 use blinc_theme::ThemeState;
 use taffy::prelude::*;
@@ -371,6 +372,7 @@ pub struct Div {
     pub(crate) children: Vec<Box<dyn ElementBuilder>>,
     pub(crate) background: Option<Brush>,
     pub(crate) border_radius: CornerRadius,
+    pub(crate) corner_shape: CornerShape,
     pub(crate) border_color: Option<Color>,
     pub(crate) border_width: f32,
     pub(crate) border_sides: crate::element::BorderSides,
@@ -403,8 +405,14 @@ pub struct Div {
     pub(crate) translate_z: Option<f32>,
     pub(crate) op_3d: Option<f32>,
     pub(crate) blend_3d: Option<f32>,
+    /// Overflow fade distances (smooth alpha fade at clip edges)
+    pub(crate) overflow_fade: OverflowFade,
     /// CSS clip-path shape function
     pub(crate) clip_path: Option<ClipPath>,
+    /// @flow shader name (references a FlowGraph in the stylesheet)
+    pub(crate) flow_name: Option<String>,
+    /// Direct @flow graph (from `flow!` macro), bypasses stylesheet lookup
+    pub(crate) flow_graph: Option<std::sync::Arc<blinc_core::FlowGraph>>,
     /// Fixed positioning (stays in place when ancestors scroll)
     pub(crate) is_fixed: bool,
     /// Sticky positioning (sticks when scrolled past threshold)
@@ -446,6 +454,7 @@ impl Div {
             children: Vec::new(),
             background: None,
             border_radius: CornerRadius::default(),
+            corner_shape: CornerShape::default(),
             border_color: None,
             border_width: 0.0,
             border_sides: crate::element::BorderSides::default(),
@@ -473,7 +482,10 @@ impl Div {
             translate_z: None,
             op_3d: None,
             blend_3d: None,
+            overflow_fade: OverflowFade::default(),
             clip_path: None,
+            flow_name: None,
+            flow_graph: None,
             outline_width: 0.0,
             outline_color: None,
             outline_offset: 0.0,
@@ -498,6 +510,7 @@ impl Div {
             children: Vec::new(),
             background: None,
             border_radius: CornerRadius::default(),
+            corner_shape: CornerShape::default(),
             border_color: None,
             border_width: 0.0,
             border_sides: crate::element::BorderSides::default(),
@@ -525,7 +538,10 @@ impl Div {
             translate_z: None,
             op_3d: None,
             blend_3d: None,
+            overflow_fade: OverflowFade::default(),
             clip_path: None,
+            flow_name: None,
+            flow_graph: None,
             outline_width: 0.0,
             outline_color: None,
             outline_offset: 0.0,
@@ -922,6 +938,12 @@ impl Div {
         if let Some(radius) = style.corner_radius {
             self.border_radius = radius;
         }
+        if let Some(cs) = style.corner_shape {
+            self.corner_shape = cs;
+        }
+        if let Some(fade) = style.overflow_fade {
+            self.overflow_fade = fade;
+        }
         if let Some(ref shadow) = style.shadow {
             self.shadow = Some(*shadow);
         }
@@ -1165,6 +1187,9 @@ impl Div {
         if let Some(ref cp) = style.clip_path {
             self.clip_path = Some(cp.clone());
         }
+        if let Some(ref f) = style.flow {
+            self.flow_name = Some(f.clone());
+        }
     }
 
     /// Merge properties from another Div into this one
@@ -1286,6 +1311,10 @@ impl Div {
         }
         if other.clip_path.is_some() {
             self.clip_path = other.clip_path;
+        }
+        if other.flow_name.is_some() {
+            self.flow_name = other.flow_name;
+            self.flow_graph = other.flow_graph;
         }
 
         // Note: event_handlers are NOT merged - they're set on the base element
@@ -2536,6 +2565,67 @@ impl Div {
     }
 
     // =========================================================================
+    // Corner Shape (superellipse)
+    // =========================================================================
+
+    /// Set uniform corner shape (superellipse exponent)
+    ///
+    /// Values: 0.0 = bevel, 1.0 = round (default), 2.0 = squircle, -1.0 = scoop
+    pub fn corner_shape(mut self, n: f32) -> Self {
+        self.corner_shape = CornerShape::uniform(n);
+        self
+    }
+
+    /// Set per-corner shape values (top-left, top-right, bottom-right, bottom-left)
+    pub fn corner_shapes(mut self, tl: f32, tr: f32, br: f32, bl: f32) -> Self {
+        self.corner_shape = CornerShape::new(tl, tr, br, bl);
+        self
+    }
+
+    /// Set corners to bevel (diamond/L1 norm)
+    pub fn corner_bevel(self) -> Self {
+        self.corner_shape(0.0)
+    }
+
+    /// Set corners to squircle (L4 superellipse)
+    pub fn corner_squircle(self) -> Self {
+        self.corner_shape(2.0)
+    }
+
+    /// Set corners to scoop (concave)
+    pub fn corner_scoop(self) -> Self {
+        self.corner_shape(-1.0)
+    }
+
+    // =========================================================================
+    // Overflow Fade
+    // =========================================================================
+
+    /// Set uniform overflow fade distance on all edges (in CSS pixels)
+    pub fn overflow_fade(mut self, distance: f32) -> Self {
+        self.overflow_fade = OverflowFade::uniform(distance);
+        self
+    }
+
+    /// Set horizontal overflow fade (left and right edges)
+    pub fn overflow_fade_x(mut self, distance: f32) -> Self {
+        self.overflow_fade = OverflowFade::horizontal(distance);
+        self
+    }
+
+    /// Set vertical overflow fade (top and bottom edges)
+    pub fn overflow_fade_y(mut self, distance: f32) -> Self {
+        self.overflow_fade = OverflowFade::vertical(distance);
+        self
+    }
+
+    /// Set per-edge overflow fade distances (top, right, bottom, left)
+    pub fn overflow_fade_edges(mut self, top: f32, right: f32, bottom: f32, left: f32) -> Self {
+        self.overflow_fade = OverflowFade::new(top, right, bottom, left);
+        self
+    }
+
+    // =========================================================================
     // Border
     // =========================================================================
 
@@ -2838,6 +2928,31 @@ impl Div {
     /// Fully opaque (opacity = 1.0)
     pub fn opaque(self) -> Self {
         self.opacity(1.0)
+    }
+
+    /// Set a @flow shader on this element.
+    ///
+    /// Accepts either a `FlowGraph` (from the `flow!` macro) or a `&str` name
+    /// referencing a flow defined in a CSS stylesheet.
+    ///
+    /// ```rust,ignore
+    /// // Direct flow graph
+    /// div().flow(flow!(ripple, fragment, { ... }))
+    ///
+    /// // Name reference to CSS-defined flow
+    /// div().flow("ripple")
+    /// ```
+    pub fn flow(mut self, f: impl Into<crate::element::FlowRef>) -> Self {
+        match f.into() {
+            crate::element::FlowRef::Name(name) => {
+                self.flow_name = Some(name);
+            }
+            crate::element::FlowRef::Graph(g) => {
+                self.flow_name = Some(g.name.clone());
+                self.flow_graph = Some(g);
+            }
+        }
+        self
     }
 
     /// Semi-transparent (opacity = 0.5)
@@ -3939,6 +4054,7 @@ impl ElementBuilder for Div {
         RenderProps {
             background: self.background.clone(),
             border_radius: self.border_radius,
+            corner_shape: self.corner_shape,
             border_color: self.border_color,
             border_width: self.border_width,
             border_sides: self.border_sides,
@@ -3965,6 +4081,9 @@ impl ElementBuilder for Div {
             op_3d: self.op_3d,
             blend_3d: self.blend_3d,
             clip_path: self.clip_path.clone(),
+            overflow_fade: self.overflow_fade,
+            flow: self.flow_name.clone(),
+            flow_graph: self.flow_graph.clone(),
             outline_color: self.outline_color,
             outline_width: self.outline_width,
             outline_offset: self.outline_offset,

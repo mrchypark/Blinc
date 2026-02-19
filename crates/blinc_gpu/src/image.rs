@@ -99,7 +99,7 @@ impl GpuImage {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             },
@@ -231,10 +231,16 @@ impl GpuImage {
 /// - `dst_rect`: `vec4<f32>` (16 bytes) - destination rectangle
 /// - `src_uv`: `vec4<f32>` (16 bytes) - source UV coordinates
 /// - `tint`: `vec4<f32>` (16 bytes) - tint color
-/// - `params`: `vec4<f32>` (16 bytes) - border_radius, opacity, padding, padding
+/// - `params`: `vec4<f32>` (16 bytes) - border_radius, opacity, border_width, packed_border_color
 /// - `clip_bounds`: `vec4<f32>` (16 bytes) - clip region
 /// - `clip_radius`: `vec4<f32>` (16 bytes) - clip corner radii
-///   Total: 96 bytes
+/// - `filter_a`: `vec4<f32>` (16 bytes) - grayscale, invert, sepia, hue_rotate_rad
+/// - `filter_b`: `vec4<f32>` (16 bytes) - brightness, contrast, saturate, unused
+/// - `transform`: `vec4<f32>` (16 bytes) - 2x2 affine matrix [a, b, c, d]
+/// - `clip2_bounds`: `vec4<f32>` (16 bytes) - secondary sharp clip (scroll boundary)
+/// - `mask_params`: `vec4<f32>` (16 bytes) - mask gradient geometry
+/// - `mask_info`: `vec4<f32>` (16 bytes) - mask type and alpha values
+///   Total: 192 bytes
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuImageInstance {
@@ -244,12 +250,27 @@ pub struct GpuImageInstance {
     pub src_uv: [f32; 4],
     /// Tint color (RGBA)
     pub tint: [f32; 4],
-    /// Parameters: (border_radius, opacity, padding, padding)
+    /// Parameters: (border_radius, opacity, border_width, packed_border_color)
     pub params: [f32; 4],
     /// Clip bounds (x, y, width, height) - set to large negative x for no clip
     pub clip_bounds: [f32; 4],
     /// Clip corner radii (top-left, top-right, bottom-right, bottom-left)
     pub clip_radius: [f32; 4],
+    /// CSS filter A (grayscale, invert, sepia, hue_rotate_rad)
+    pub filter_a: [f32; 4],
+    /// CSS filter B (brightness, contrast, saturate, unused)
+    pub filter_b: [f32; 4],
+    /// 2x2 CSS affine transform [a, b, c, d] applied around quad center.
+    /// Identity = [1, 0, 0, 1]. Supports rotation, scale, and skew.
+    pub transform: [f32; 4],
+    /// Secondary clip bounds (x, y, width, height) — sharp rect, no radius.
+    /// Used for scroll container boundaries separate from the primary rounded clip.
+    /// Set to large negative x for no clip.
+    pub clip2_bounds: [f32; 4],
+    /// Mask gradient params: linear=(x1,y1,x2,y2), radial=(cx,cy,r,0) in OBB space
+    pub mask_params: [f32; 4],
+    /// Mask info: [mask_type, start_alpha, end_alpha, 0] (0=none, 1=linear, 2=radial)
+    pub mask_info: [f32; 4],
 }
 
 impl Default for GpuImageInstance {
@@ -258,10 +279,20 @@ impl Default for GpuImageInstance {
             dst_rect: [0.0, 0.0, 100.0, 100.0],
             src_uv: [0.0, 0.0, 1.0, 1.0],
             tint: [1.0, 1.0, 1.0, 1.0],
-            params: [0.0, 1.0, 0.0, 1.0], // border_radius=0, opacity=1, sin_rot=0, cos_rot=1
+            params: [0.0, 1.0, 0.0, 0.0], // border_radius=0, opacity=1, border_width=0, border_color=0
             // Default: no clip (large negative value disables clipping)
             clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
             clip_radius: [0.0; 4],
+            // Default filter: identity (no effect)
+            filter_a: [0.0, 0.0, 0.0, 0.0], // grayscale=0, invert=0, sepia=0, hue_rotate=0
+            filter_b: [1.0, 1.0, 1.0, 0.0], // brightness=1, contrast=1, saturate=1, unused=0
+            // Default transform: identity (no rotation, scale, or skew)
+            transform: [1.0, 0.0, 0.0, 1.0], // [a, b, c, d] = identity
+            // Default: no secondary clip
+            clip2_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
+            // Default: no mask gradient
+            mask_params: [0.0; 4],
+            mask_info: [0.0; 4],
         }
     }
 }
@@ -299,10 +330,22 @@ impl GpuImageInstance {
         self
     }
 
-    /// Set rotation via sin/cos values (rotates around quad center)
-    pub fn with_rotation_sincos(mut self, sin_rot: f32, cos_rot: f32) -> Self {
-        self.params[2] = sin_rot;
-        self.params[3] = cos_rot;
+    /// Set border (rendered in the image shader for perfect transform alignment).
+    /// params\[2\] = border_width, params\[3\] = RGBA packed as u32 bitcast to f32.
+    pub fn with_image_border(mut self, width: f32, r: f32, g: f32, b: f32, a: f32) -> Self {
+        self.params[2] = width;
+        let ru = (r.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let gu = (g.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let bu = (b.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let au = (a.clamp(0.0, 1.0) * 255.0).round() as u32;
+        self.params[3] = f32::from_bits((ru << 24) | (gu << 16) | (bu << 8) | au);
+        self
+    }
+
+    /// Set full 2x2 affine transform [a, b, c, d] applied around quad center.
+    /// Supports rotation, scale, and skew. Identity = [1, 0, 0, 1].
+    pub fn with_transform(mut self, a: f32, b: f32, c: f32, d: f32) -> Self {
+        self.transform = [a, b, c, d];
         self
     }
 
@@ -349,6 +392,21 @@ impl GpuImageInstance {
     pub fn with_no_clip(mut self) -> Self {
         self.clip_bounds = [-10000.0, -10000.0, 100000.0, 100000.0];
         self.clip_radius = [0.0; 4];
+        self
+    }
+
+    /// Set secondary sharp clip (scroll container boundary, no radius)
+    pub fn with_clip2_rect(mut self, x: f32, y: f32, width: f32, height: f32) -> Self {
+        self.clip2_bounds = [x, y, width, height];
+        self
+    }
+
+    /// Set CSS filter parameters
+    /// filter_a = (grayscale, invert, sepia, hue_rotate_rad)
+    /// filter_b = (brightness, contrast, saturate, 0)
+    pub fn with_filter(mut self, filter_a: [f32; 4], filter_b: [f32; 4]) -> Self {
+        self.filter_a = filter_a;
+        self.filter_b = filter_b;
         self
     }
 

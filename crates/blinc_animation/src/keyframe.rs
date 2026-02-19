@@ -156,6 +156,8 @@ pub struct KeyframeProperties {
     // --- Geometric properties ---
     /// Corner radius [top_left, top_right, bottom_right, bottom_left]
     pub corner_radius: Option<[f32; 4]>,
+    /// Corner shape (superellipse n parameter) [top_left, top_right, bottom_right, bottom_left]
+    pub corner_shape: Option<[f32; 4]>,
     /// Border width in pixels
     pub border_width: Option<f32>,
     /// Outline width in pixels
@@ -168,6 +170,8 @@ pub struct KeyframeProperties {
     pub clip_circle_radius: Option<f32>,
     /// Clip-path ellipse radii [rx, ry] (percent)
     pub clip_ellipse_radii: Option<[f32; 2]>,
+    /// Overflow fade distances [top, right, bottom, left]
+    pub overflow_fade: Option<[f32; 4]>,
 
     // --- Shadow properties ---
     /// Shadow [offset_x, offset_y, blur, spread]
@@ -266,6 +270,23 @@ pub struct KeyframeProperties {
     // --- Stacking ---
     /// z-index (f32 for smooth interpolation, rounded on apply)
     pub z_index: Option<f32>,
+
+    // --- Mask gradient ---
+    /// Combined mask gradient: [mask_type, start_alpha, end_alpha, 0, p0, p1, p2, p3]
+    /// where p0..p3 = linear(x1,y1,x2,y2) or radial(cx,cy,r,0) in OBB space
+    pub mask_gradient: Option<[f32; 8]>,
+
+    // --- SVG properties ---
+    /// SVG fill color RGBA
+    pub svg_fill: Option<[f32; 4]>,
+    /// SVG stroke color RGBA
+    pub svg_stroke: Option<[f32; 4]>,
+    /// SVG stroke width in pixels
+    pub svg_stroke_width: Option<f32>,
+    /// SVG stroke-dashoffset in pixels (for line-drawing animations)
+    pub svg_stroke_dashoffset: Option<f32>,
+    /// SVG path `d` attribute data (for path morphing animations)
+    pub svg_path_data: Option<String>,
 }
 
 impl KeyframeProperties {
@@ -405,6 +426,7 @@ impl KeyframeProperties {
             text_color: lerp_opt_array4(self.text_color, other.text_color, t),
             // Geometric
             corner_radius: lerp_opt_array4(self.corner_radius, other.corner_radius, t),
+            corner_shape: lerp_opt_array4(self.corner_shape, other.corner_shape, t),
             border_width: lerp_opt(self.border_width, other.border_width, t),
             outline_width: lerp_opt(self.outline_width, other.outline_width, t),
             outline_color: lerp_opt_array4(self.outline_color, other.outline_color, t),
@@ -415,6 +437,7 @@ impl KeyframeProperties {
                 other.clip_ellipse_radii,
                 t,
             ),
+            overflow_fade: lerp_opt_array4(self.overflow_fade, other.overflow_fade, t),
             // Shadow
             shadow_params: lerp_opt_array4(self.shadow_params, other.shadow_params, t),
             shadow_color: lerp_opt_array4(self.shadow_color, other.shadow_color, t),
@@ -468,6 +491,18 @@ impl KeyframeProperties {
             transform_origin: lerp_opt_array2(self.transform_origin, other.transform_origin, t),
             // Stacking
             z_index: lerp_opt(self.z_index, other.z_index, t),
+            // Mask gradient
+            mask_gradient: lerp_opt_array8(self.mask_gradient, other.mask_gradient, t),
+            // SVG
+            svg_fill: lerp_opt_array4(self.svg_fill, other.svg_fill, t),
+            svg_stroke: lerp_opt_array4(self.svg_stroke, other.svg_stroke, t),
+            svg_stroke_width: lerp_opt(self.svg_stroke_width, other.svg_stroke_width, t),
+            svg_stroke_dashoffset: lerp_opt(
+                self.svg_stroke_dashoffset,
+                other.svg_stroke_dashoffset,
+                t,
+            ),
+            svg_path_data: lerp_path_data(&self.svg_path_data, &other.svg_path_data, t),
         }
     }
 
@@ -549,6 +584,18 @@ fn lerp_opt_array3(a: Option<[f32; 3]>, b: Option<[f32; 3]>, t: f32) -> Option<[
     }
 }
 
+/// Helper to interpolate optional SVG path data strings via morph engine
+fn lerp_path_data(a: &Option<String>, b: &Option<String>, t: f32) -> Option<String> {
+    match (a, b) {
+        (Some(from), Some(to)) => {
+            crate::morph::interpolate_paths(from, to, t).or_else(|| Some(to.clone()))
+        }
+        (Some(s), None) => Some(s.clone()),
+        (None, Some(s)) => Some(s.clone()),
+        (None, None) => None,
+    }
+}
+
 /// Helper to interpolate optional [f32; 4] arrays
 fn lerp_opt_array4(a: Option<[f32; 4]>, b: Option<[f32; 4]>, t: f32) -> Option<[f32; 4]> {
     match (a, b) {
@@ -557,6 +604,24 @@ fn lerp_opt_array4(a: Option<[f32; 4]>, b: Option<[f32; 4]>, t: f32) -> Option<[
             a[1] + (b[1] - a[1]) * t,
             a[2] + (b[2] - a[2]) * t,
             a[3] + (b[3] - a[3]) * t,
+        ]),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn lerp_opt_array8(a: Option<[f32; 8]>, b: Option<[f32; 8]>, t: f32) -> Option<[f32; 8]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+            a[3] + (b[3] - a[3]) * t,
+            a[4] + (b[4] - a[4]) * t,
+            a[5] + (b[5] - a[5]) * t,
+            a[6] + (b[6] - a[6]) * t,
+            a[7] + (b[7] - a[7]) * t,
         ]),
         (Some(a), None) => Some(a),
         (None, Some(b)) => Some(b),

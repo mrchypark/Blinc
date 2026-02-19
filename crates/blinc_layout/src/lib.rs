@@ -80,9 +80,15 @@ pub mod selector;
 // Global overlay state singleton
 pub mod overlay_state;
 
+// Continuous pointer query system
+pub mod pointer_query;
+
 // Recorder bridge for event capture (blinc_recorder integration)
 #[cfg(feature = "recorder")]
 pub mod recorder_bridge;
+
+// CSS calc() expression engine
+pub mod calc;
 
 // CSS subset parser for ElementStyle
 #[allow(dead_code)]
@@ -96,7 +102,7 @@ pub use key::{reset_call_counters, InstanceKey};
 
 // Core types
 pub use element::{
-    BorderBuilder, BorderSide, BorderSides, CursorStyle, DynRenderProps, ElementBounds,
+    BorderBuilder, BorderSide, BorderSides, CursorStyle, DynRenderProps, ElementBounds, FlowRef,
     MotionAnimation, MotionKeyframe, RenderLayer, RenderProps, ResolvedRenderProps,
 };
 
@@ -433,6 +439,12 @@ pub mod prelude {
         CompoundSelector, CssAnimation, CssKeyframe, CssKeyframes, CssParseResult, CssSelector,
         ElementState as CssElementState, ParseError as CssParseError, SelectorPart,
         Severity as CssSeverity, StructuralPseudo, Stylesheet,
+    };
+
+    // Flow DAG types (re-exported from blinc_core)
+    pub use blinc_core::{
+        FlowError, FlowExpr, FlowFunc, FlowGraph, FlowInput, FlowInputSource, FlowNode, FlowOutput,
+        FlowOutputTarget, FlowTarget, FlowType,
     };
 
     // Stable unique key generation for components

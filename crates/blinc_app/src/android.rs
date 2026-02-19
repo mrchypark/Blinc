@@ -509,6 +509,8 @@ impl AndroidApp {
                                     if pointer_count == 0 {
                                         if action == MotionAction::Cancel {
                                             tracing::debug!("Touch CANCEL");
+                                            windowed_ctx.pointer_query.set_pressure(0.0);
+                                            windowed_ctx.pointer_query.set_touch_count(0);
                                             router.on_mouse_leave();
                                             pinch_state.reset();
                                             last_touch_x = None;
@@ -546,6 +548,12 @@ impl AndroidApp {
                                                     }
                                                 })
                                                 .collect();
+
+                                        // Forward pressure and touch count to pointer query
+                                        if let Some(primary) = pointers.first() {
+                                            windowed_ctx.pointer_query.set_pressure(primary.pressure);
+                                        }
+                                        windowed_ctx.pointer_query.set_touch_count(pointers.len() as u32);
 
                                         let pinch_gesture = detect_pinch(&pointers, &mut pinch_state);
                                         if let Some(gesture) = pinch_gesture {
@@ -648,6 +656,7 @@ impl AndroidApp {
                                                     lx,
                                                     ly
                                                 );
+                                                windowed_ctx.pointer_query.set_pressure(0.0);
                                                 router.on_mouse_up(&*tree, lx, ly, MouseButton::Left);
 
                                                 // Mark touch ended for scroll physics
@@ -670,6 +679,8 @@ impl AndroidApp {
                                             }
                                             MotionAction::Cancel => {
                                                 tracing::debug!("Touch CANCEL");
+                                                windowed_ctx.pointer_query.set_pressure(0.0);
+                                                windowed_ctx.pointer_query.set_touch_count(0);
                                                 router.on_mouse_leave();
                                                 pinch_state.reset();
                                                 // Clear touch tracking on cancel too
@@ -824,6 +835,8 @@ impl AndroidApp {
                         if let Some(ref windowed_ctx) = ctx {
                             tracing::debug!("Subtree rebuilds processed, recomputing layout");
                             tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                            tree.apply_flip_transitions();
+                            tree.update_flip_bounds();
                         }
                     }
                 }
@@ -912,6 +925,7 @@ impl AndroidApp {
                         tree.apply_stylesheet_base_styles();
                         tree.apply_stylesheet_layout_overrides();
                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                        tree.update_flip_bounds();
                         tree.start_all_css_animations();
                         tree.clear_dirty(); // Start clean
                         render_tree = Some(tree);
@@ -925,6 +939,7 @@ impl AndroidApp {
                         tree.apply_stylesheet_base_styles();
                         tree.apply_stylesheet_layout_overrides();
                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                        tree.update_flip_bounds();
                         tree.start_all_css_animations();
                         // Clear dirty on the NEW tree to prevent immediate re-rebuild
                         tree.clear_dirty();
@@ -950,7 +965,9 @@ impl AndroidApp {
                         let mut s = store.lock().unwrap();
                         s.tick(dt_ms);
                     }
-                    let css_active = tree.css_has_active() || !tree.css_transitions_empty();
+                    let flip_active = tree.tick_flip_animations(dt_ms);
+                    let css_active =
+                        tree.css_has_active() || !tree.css_transitions_empty() || flip_active;
 
                     // Apply CSS state styles (:hover, :active, :focus)
                     // This also detects property changes and starts new transitions
@@ -959,9 +976,13 @@ impl AndroidApp {
                             tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
                         }
                     }
-                    if css_active || !tree.css_transitions_empty() {
+                    if css_active
+                        || !tree.css_transitions_empty()
+                        || tree.has_active_flip_animations()
+                    {
                         tree.apply_all_css_animation_props();
                         tree.apply_all_css_transition_props();
+                        tree.apply_flip_animation_props();
                         needs_redraw = true;
                         needs_redraw_next_frame = true;
                         // Apply animated layout properties and recompute layout if needed
