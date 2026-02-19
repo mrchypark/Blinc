@@ -3407,40 +3407,19 @@ impl RenderContext {
             self.render_images_ref(target, &bg_images);
             self.render_images_ref(target, &fg_images);
 
-            // Interleaved z-layer rendering for proper text z-ordering in glass path
+            // Render z>0 primitives as overlays for z-index support
+            // The main batch rendered all primitives in tree order; z>0 elements
+            // need a second pass to appear on top of z=0 elements.
             let max_z = batch.max_z_layer();
-            let max_text_z = glyphs_by_layer.keys().cloned().max().unwrap_or(0);
-            let decorations_by_layer = generate_text_decoration_primitives_by_layer(&texts);
-            let max_decoration_z = decorations_by_layer.keys().cloned().max().unwrap_or(0);
-            let max_glass_layer = max_z.max(max_text_z).max(max_decoration_z);
-
-            // Render z=0 text first (before any z>0 primitives)
-            {
-                let mut scratch = std::mem::take(&mut self.scratch_glyphs);
-                scratch.clear();
-                if let Some(glyphs) = glyphs_by_layer.get(&0) {
-                    scratch.extend_from_slice(glyphs);
-                }
-                if !scratch.is_empty() {
-                    self.render_text(target, &scratch);
-                }
-                self.scratch_glyphs = scratch;
-            }
-            self.render_text_decorations_for_layer(target, &decorations_by_layer, 0);
-
-            if max_glass_layer > 0 {
-                let effect_indices = batch.effect_layer_indices();
-                for z in 1..=max_glass_layer {
-                    // Render primitives for this layer
-                    let layer_primitives = if effect_indices.is_empty() {
-                        batch.primitives_for_layer(z)
-                    } else {
-                        batch.primitives_for_layer_excluding_effects(z, &effect_indices)
-                    };
+            if max_z > 0 {
+                for z in 1..=max_z {
+                    let layer_primitives = batch.primitives_for_layer(z);
                     if !layer_primitives.is_empty() {
                         self.renderer
                             .render_primitives_overlay(target, &layer_primitives);
                     }
+                }
+            }
 
             // Collect all glyphs for glass path using scratch buffer to avoid allocation
             // (TODO: implement interleaved glass rendering)
