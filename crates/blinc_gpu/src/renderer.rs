@@ -13,13 +13,13 @@ use crate::image::GpuImageInstance;
 use crate::path::PathVertex;
 use crate::primitives::{
     BlurUniforms, ColorMatrixUniforms, DropShadowUniforms, GlassType, GlassUniforms, GlowUniforms,
-    GpuGlassPrimitive, GpuGlyph, GpuLineSegment, GpuPrimitive, PathUniforms, PrimitiveBatch,
-    Sdf3DUniform, Uniforms, Viewport3D,
+    GpuGlassPrimitive, GpuGlyph, GpuLineSegment, GpuPrimitive, MaskImageUniforms, PathUniforms,
+    PrimitiveBatch, Sdf3DUniform, Uniforms, Viewport3D,
 };
 use crate::shaders::{
     BLUR_SHADER, COLOR_MATRIX_SHADER, COMPOSITE_SHADER, DROP_SHADOW_SHADER, GLASS_SHADER,
-    GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, LINE_SHADER, PATH_SHADER, SDF_SHADER,
-    SIMPLE_GLASS_SHADER, TEXT_SHADER,
+    GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, LINE_SHADER, MASK_IMAGE_SHADER, PATH_SHADER,
+    SDF_SHADER, SIMPLE_GLASS_SHADER, TEXT_SHADER,
 };
 
 fn env_u64(name: &str) -> Option<u64> {
@@ -5577,7 +5577,7 @@ impl GpuRenderer {
         // Update path buffers
         let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
-            self.update_path_buffers(batch);
+            self.update_path_buffers(&batch.paths);
         }
 
         // Write filtered primitives

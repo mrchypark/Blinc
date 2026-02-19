@@ -896,7 +896,7 @@ impl<'a> GpuPaintContext<'a> {
             ), // bottom_left
         ];
 
-        for (clip, _poly_meta) in &self.clip_stack {
+        for (clip, _poly_meta, _fade) in &self.clip_stack {
             match clip {
                 ClipShape::Rect(rect) => {
                     // Intersect with this rect
