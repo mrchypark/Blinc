@@ -2,8 +2,9 @@
 # Script to publish all Blinc crates to crates.io in dependency order
 # Usage: ./scripts/publish-crates.sh
 #
-# Note: crates.io has a rate limit of ~1 new crate per 10 minutes for new publishers
-# This script waits between publishes to respect the rate limit
+# Note: crates.io has a burst limit of ~30 publishes before rate limiting kicks in.
+# We only need a short delay between publishes to let the index update so that
+# dependent crates can resolve their dependencies.
 
 set -e
 
@@ -12,37 +13,85 @@ if [ -f ".env.cargo" ]; then
     source .env.cargo
 fi
 
-WAIT_TIME=610  # 10 minutes + buffer
+WAIT_TIME=20   # seconds between publishes (index propagation)
+MAX_RETRIES=8   # retries per crate when index hasn't propagated yet
+RETRY_WAIT=45   # seconds between retries (~6 min max wait per crate)
 
 # Publish order (respects dependency graph)
-# Note: blinc_core has blinc_animation as dev-dep only, so core goes first
+# Note: blinc_core's dev-dep on blinc_animation has no version pin (path-only),
+# so it's stripped from the published crate, allowing core to go first.
 PHASE1=(blinc_macros blinc_platform blinc_icons blinc_core)
 PHASE2=(blinc_animation blinc_paint blinc_svg blinc_text)
-PHASE3=(blinc_theme blinc_image blinc_gpu)
-PHASE4=(blinc_layout blinc_cn)
+PHASE3=(blinc_theme blinc_image blinc_layout)
+PHASE4=(blinc_gpu blinc_cn)
 PHASE5=(blinc_platform_desktop blinc_platform_android blinc_platform_ios)
 PHASE6=(blinc_app)
 PHASE7=(blinc_cli)
 
 publish_crate() {
     local crate=$1
+    local version
+    version=$(cargo metadata --no-deps --format-version 1 \
+        | grep -o "\"name\":\"$crate\",\"version\":\"[^\"]*\"" \
+        | head -1 \
+        | sed 's/.*"version":"\([^"]*\)"/\1/')
+
     echo ""
     echo "=========================================="
-    echo "Publishing $crate..."
+    echo "Publishing $crate@$version..."
     echo "=========================================="
 
-    if cargo publish -p "$crate" 2>&1; then
-        echo "Successfully published $crate"
+    # Check if this version already exists on crates.io
+    if cargo search "$crate" 2>/dev/null | grep -q "^$crate = \"$version\""; then
+        echo "Skipping $crate@$version (already published)"
         return 0
-    else
-        echo "Failed to publish $crate"
-        return 1
     fi
+
+    # --no-verify skips local build check. However, the packaging step still
+    # resolves deps against the crates.io index. If a dependency was just published,
+    # the index may not have propagated yet. Retry with backoff to handle this.
+    local attempt=1
+    while [ $attempt -le $MAX_RETRIES ]; do
+        local output
+        output=$(cargo publish -p "$crate" --no-verify 2>&1) || true
+
+        if echo "$output" | grep -q "Successfully published\|uploaded"; then
+            echo "Successfully published $crate@$version"
+            return 0
+        fi
+
+        # No error keywords means success (cargo publish returns empty on success sometimes)
+        if ! echo "$output" | grep -qi "error\|failed"; then
+            echo "Successfully published $crate@$version"
+            return 0
+        fi
+
+        # Check if the error is due to index not yet updated (dep version not found)
+        if echo "$output" | grep -q "failed to select a version\|failed to prepare local package"; then
+            echo "$output" | tail -5
+            echo ""
+            echo ">>> Index not yet propagated (attempt $attempt/$MAX_RETRIES)"
+            echo ">>> Forcing index refresh and waiting ${RETRY_WAIT}s..."
+            # Force cargo to refresh its local index cache
+            cargo update --dry-run 2>/dev/null || true
+            sleep $RETRY_WAIT
+            attempt=$((attempt + 1))
+        else
+            # Non-retryable error
+            echo "$output"
+            echo "Failed to publish $crate"
+            return 1
+        fi
+    done
+
+    echo "$output"
+    echo "Failed to publish $crate after $MAX_RETRIES attempts (index propagation timeout)"
+    return 1
 }
 
 wait_for_rate_limit() {
     echo ""
-    echo "Waiting $WAIT_TIME seconds for rate limit..."
+    echo "Waiting $WAIT_TIME seconds for index propagation..."
     sleep $WAIT_TIME
 }
 
@@ -57,13 +106,14 @@ publish_phase() {
     echo "############################################"
 
     for crate in "${crates[@]}"; do
-        publish_crate "$crate"
-        wait_for_rate_limit
+        if publish_crate "$crate"; then
+            wait_for_rate_limit
+        fi
     done
 }
 
 echo "Starting Blinc crate publishing..."
-echo "This will take approximately $((($WAIT_TIME * 17) / 60)) minutes due to rate limiting."
+echo "This will take approximately $((($WAIT_TIME * 17) / 60)) minutes (17 crates x ${WAIT_TIME}s index wait)."
 echo ""
 
 # Check if CARGO_REGISTRY_TOKEN is set

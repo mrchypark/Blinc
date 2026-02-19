@@ -742,6 +742,32 @@ pub enum LayerEffect {
         ///                                       `[1]`
         matrix: [f32; 20],
     },
+    /// Mask image effect (multiplies layer alpha by mask luminance/alpha)
+    MaskImage {
+        /// Image URL or path
+        image_url: String,
+        /// Mask sizing mode
+        mask_mode: MaskMode,
+    },
+}
+
+/// How a mask image is interpreted
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum MaskMode {
+    /// Use the alpha channel of the mask image
+    #[default]
+    Alpha,
+    /// Use the luminance of the mask image as alpha
+    Luminance,
+}
+
+/// CSS mask-image value
+#[derive(Clone, Debug)]
+pub enum MaskImage {
+    /// URL to an image file
+    Url(String),
+    /// Gradient mask (reuses the existing Gradient type)
+    Gradient(crate::layer::Gradient),
 }
 
 impl LayerEffect {
@@ -883,6 +909,20 @@ impl LayerEffect {
 // Layer Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// 3D perspective transform parameters for layer-based compositing.
+/// When a container has CSS rotate-x/rotate-y, its entire subtree (including text)
+/// is rendered flat to a layer texture, then the layer is composited with perspective
+/// distortion applied to the blit quad.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transform3DParams {
+    pub sin_rx: f32,
+    pub cos_rx: f32,
+    pub sin_ry: f32,
+    pub cos_ry: f32,
+    /// Perspective distance in physical pixels (already DPI-scaled)
+    pub perspective_d: f32,
+}
+
 /// Configuration for offscreen layers
 #[derive(Clone, Debug, Default)]
 pub struct LayerConfig {
@@ -900,6 +940,8 @@ pub struct LayerConfig {
     pub depth: bool,
     /// Post-processing effects to apply when layer is composited
     pub effects: Vec<LayerEffect>,
+    /// 3D perspective transform for layer compositing (rotate-x/rotate-y on containers)
+    pub transform_3d: Option<Transform3DParams>,
 }
 
 impl LayerConfig {
@@ -1168,6 +1210,29 @@ pub trait DrawContext {
 
     /// Reset CSS filter state to identity
     fn clear_css_filter(&mut self) {}
+
+    /// Set mask gradient parameters for the current element
+    /// params: linear=(x1,y1,x2,y2), radial=(cx,cy,r,0) in pixel coords
+    /// info: [mask_type, start_alpha, end_alpha, 0] where mask_type: 0=none, 1=linear, 2=radial
+    fn set_mask_gradient(&mut self, _params: [f32; 4], _info: [f32; 4]) {}
+
+    /// Clear mask gradient state
+    fn clear_mask_gradient(&mut self) {}
+
+    /// Set corner shape (superellipse n parameter) for the current element.
+    /// Values: [top_left, top_right, bottom_right, bottom_left].
+    /// n=1.0 = round (default), n=0.0 = bevel, n=2.0 = squircle, n=-1.0 = scoop.
+    fn set_corner_shape(&mut self, _shape: [f32; 4]) {}
+
+    /// Clear corner shape to default (round, n=1.0)
+    fn clear_corner_shape(&mut self) {}
+
+    /// Set overflow fade distances for the next push_clip.
+    /// Values: [top, right, bottom, left] in CSS pixels.
+    fn set_overflow_fade(&mut self, _fade: [f32; 4]) {}
+
+    /// Clear pending overflow fade
+    fn clear_overflow_fade(&mut self) {}
 
     // ─────────────────────────────────────────────────────────────────────────
     // 2D Drawing Operations

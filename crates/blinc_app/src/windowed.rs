@@ -560,6 +560,8 @@ pub struct WindowedContext {
     /// CSS stylesheet for automatic style application (hover, animations, base styles)
     /// Multiple stylesheets cascade — later rules override earlier ones.
     pub stylesheet: Option<Arc<blinc_layout::css_parser::Stylesheet>>,
+    /// Continuous pointer query state (per-element pointer tracking)
+    pub pointer_query: blinc_layout::pointer_query::PointerQueryState,
 }
 
 impl WindowedContext {
@@ -603,6 +605,7 @@ impl WindowedContext {
             element_registry,
             ready_callbacks,
             stylesheet: None,
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
         }
     }
 
@@ -643,6 +646,7 @@ impl WindowedContext {
             element_registry,
             ready_callbacks,
             stylesheet: None,
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
         }
     }
 
@@ -683,6 +687,7 @@ impl WindowedContext {
             element_registry,
             ready_callbacks,
             stylesheet: None,
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
         }
     }
 
@@ -723,6 +728,7 @@ impl WindowedContext {
             element_registry,
             ready_callbacks,
             stylesheet: None,
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
         }
     }
 
@@ -2546,6 +2552,7 @@ impl WindowedApp {
                                         let lx = x / scale;
                                         let ly = y / scale;
                                         let btn = convert_mouse_button(button);
+                                        windowed_ctx.pointer_query.set_pressure(1.0);
 
                                         if std::env::var_os("BLINC_DEBUG_HIT").is_some() {
                                             if let Some(hit) = router.hit_test(tree, lx, ly) {
@@ -2606,6 +2613,7 @@ impl WindowedApp {
                                         let lx = x / scale;
                                         let ly = y / scale;
                                         let btn = convert_mouse_button(button);
+                                        windowed_ctx.pointer_query.set_pressure(0.0);
 
                                         // Route through main tree (includes overlay content)
                                         router.on_mouse_up(tree, lx, ly, btn);
@@ -2797,62 +2805,85 @@ impl WindowedApp {
                                         }
                                     }
                                 },
-                                InputEvent::Touch(touch_event) => match touch_event {
-                                    TouchEvent::Started { x, y, .. } => {
-                                        let lx = x / scale;
-                                        let ly = y / scale;
-                                        router.on_mouse_down(tree, lx, ly, MouseButton::Left);
-                                        let (local_x, local_y) = router.last_hit_local();
-                                        let (bounds_x, bounds_y) = router.last_hit_bounds_pos();
-                                        let (bounds_width, bounds_height) = router.last_hit_bounds();
-                                        for event in pending_events.iter_mut() {
-                                            event.mouse_x = lx;
-                                            event.mouse_y = ly;
-                                            event.local_x = local_x;
-                                            event.local_y = local_y;
-                                            event.bounds_x = bounds_x;
-                                            event.bounds_y = bounds_y;
-                                            event.bounds_width = bounds_width;
-                                            event.bounds_height = bounds_height;
+                                InputEvent::Touch(touch_event) => {
+                                    // Track active touch IDs for touch count
+                                    match &touch_event {
+                                        TouchEvent::Started { .. } => {
+                                            active_touch_ids.insert(touch_event.id());
+                                            windowed_ctx.pointer_query.set_touch_count(active_touch_ids.len() as u32);
                                         }
+                                        TouchEvent::Ended { .. } => {
+                                            active_touch_ids.remove(&touch_event.id());
+                                            windowed_ctx.pointer_query.set_touch_count(active_touch_ids.len() as u32);
+                                        }
+                                        TouchEvent::Cancelled { .. } => {
+                                            active_touch_ids.remove(&touch_event.id());
+                                            windowed_ctx.pointer_query.set_touch_count(active_touch_ids.len() as u32);
+                                        }
+                                        _ => {}
                                     }
-                                    TouchEvent::Moved { x, y, .. } => {
-                                        let lx = x / scale;
-                                        let ly = y / scale;
+                                    match touch_event {
+                                        TouchEvent::Started { x, y, pressure, .. } => {
+                                            let lx = x / scale;
+                                            let ly = y / scale;
+                                            windowed_ctx.pointer_query.set_pressure(pressure);
+                                            router.on_mouse_down(tree, lx, ly, MouseButton::Left);
+                                            let (local_x, local_y) = router.last_hit_local();
+                                            let (bounds_x, bounds_y) = router.last_hit_bounds_pos();
+                                            let (bounds_width, bounds_height) = router.last_hit_bounds();
+                                            for event in pending_events.iter_mut() {
+                                                event.mouse_x = lx;
+                                                event.mouse_y = ly;
+                                                event.local_x = local_x;
+                                                event.local_y = local_y;
+                                                event.bounds_x = bounds_x;
+                                                event.bounds_y = bounds_y;
+                                                event.bounds_width = bounds_width;
+                                                event.bounds_height = bounds_height;
+                                            }
+                                        }
+                                        TouchEvent::Moved { x, y, pressure, .. } => {
+                                            let lx = x / scale;
+                                            let ly = y / scale;
+                                            windowed_ctx.pointer_query.set_pressure(pressure);
 
-                                        // Use occlusion-aware hit testing for touch move as well
-                                        let overlay_bounds = windowed_ctx.overlay_manager.get_visible_overlay_bounds();
-                                        let overlay_layer_id = tree.query_by_id(
-                                            blinc_layout::widgets::overlay::OVERLAY_LAYER_ID
-                                        );
-                                        router.on_mouse_move_with_occlusion(
-                                            tree,
-                                            lx,
-                                            ly,
-                                            &overlay_bounds,
-                                            overlay_layer_id,
-                                        );
+                                            // Use occlusion-aware hit testing for touch move as well
+                                            let overlay_bounds = windowed_ctx.overlay_manager.get_visible_overlay_bounds();
+                                            let overlay_layer_id = tree.query_by_id(
+                                                blinc_layout::widgets::overlay::OVERLAY_LAYER_ID
+                                            );
+                                            router.on_mouse_move_with_occlusion(
+                                                tree,
+                                                lx,
+                                                ly,
+                                                &overlay_bounds,
+                                                overlay_layer_id,
+                                            );
 
-                                        for event in pending_events.iter_mut() {
-                                            event.mouse_x = lx;
-                                            event.mouse_y = ly;
+                                            for event in pending_events.iter_mut() {
+                                                event.mouse_x = lx;
+                                                event.mouse_y = ly;
+                                            }
+                                        }
+                                        TouchEvent::Ended { x, y, .. } => {
+                                            let lx = x / scale;
+                                            let ly = y / scale;
+                                            windowed_ctx.pointer_query.set_pressure(0.0);
+                                            router.on_mouse_up(tree, lx, ly, MouseButton::Left);
+                                            for event in pending_events.iter_mut() {
+                                                event.mouse_x = lx;
+                                                event.mouse_y = ly;
+                                            }
+                                        }
+                                        TouchEvent::Cancelled { .. } => {
+                                            // Touch cancelled - treat like mouse leave
+                                            // This will emit POINTER_UP if there was a pressed target
+                                            windowed_ctx.pointer_query.set_pressure(0.0);
+                                            windowed_ctx.pointer_query.set_touch_count(0);
+                                            router.on_mouse_leave();
                                         }
                                     }
-                                    TouchEvent::Ended { x, y, .. } => {
-                                        let lx = x / scale;
-                                        let ly = y / scale;
-                                        router.on_mouse_up(tree, lx, ly, MouseButton::Left);
-                                        for event in pending_events.iter_mut() {
-                                            event.mouse_x = lx;
-                                            event.mouse_y = ly;
-                                        }
-                                    }
-                                    TouchEvent::Cancelled { .. } => {
-                                        // Touch cancelled - treat like mouse leave
-                                        // This will emit POINTER_UP if there was a pressed target
-                                        router.on_mouse_leave();
-                                    }
-                                },
+                                }
                                 InputEvent::Scroll { delta_x, delta_y, phase } => {
                                     let (mx, my) = router.mouse_position();
                                     // Scroll deltas are also in physical pixels, convert to logical
@@ -3232,6 +3263,10 @@ impl WindowedApp {
                                         tracing::debug!("Subtree rebuilds processed, recomputing layout");
                                         tree.apply_stylesheet_layout_overrides();
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                        // FLIP: detect position changes and start CSS transitions
+                                        tree.apply_flip_transitions();
+                                        // Update FLIP bounds cache for next rebuild
+                                        tree.update_flip_bounds();
                                         // Begin/end motion frame to track which motions are still in tree
                                         rs.begin_stable_motion_frame();
                                         tree.initialize_motion_animations(rs);
@@ -3320,8 +3355,14 @@ impl WindowedApp {
                                         // Apply stylesheet layout overrides before layout computation
                                         tree.apply_stylesheet_layout_overrides();
 
+                                        // Register pointer-space elements from stylesheet
+                                        if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                                            windowed_ctx.pointer_query.register_from_stylesheet(stylesheet);
+                                        }
+
                                         // Compute layout with new viewport dimensions
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                        tree.update_flip_bounds();
 
                                         // Initialize motion animations for any nodes wrapped in motion() containers
                                         tree.initialize_motion_animations(rs);
@@ -3361,6 +3402,7 @@ impl WindowedApp {
                                                 tracing::debug!("Incremental update: LayoutChanged - recomputing layout");
                                                 existing_tree.apply_stylesheet_layout_overrides();
                                                 existing_tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                                existing_tree.update_flip_bounds();
                                             }
                                             UpdateResult::ChildrenChanged => {
                                                 // Children changed - subtrees were rebuilt in place
@@ -3369,6 +3411,14 @@ impl WindowedApp {
                                                 // Recompute layout since structure changed
                                                 existing_tree.apply_stylesheet_layout_overrides();
                                                 existing_tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                                // FLIP: detect position changes and start CSS transitions
+                                                existing_tree.apply_flip_transitions();
+                                                existing_tree.update_flip_bounds();
+
+                                                // Re-register pointer-space elements (new elements may have pointer-space)
+                                                if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                                                    windowed_ctx.pointer_query.register_from_stylesheet(stylesheet);
+                                                }
 
                                                 // Initialize motion animations for any new nodes wrapped in motion() containers
                                                 existing_tree.initialize_motion_animations(rs);
@@ -3408,8 +3458,14 @@ impl WindowedApp {
                                     // Apply stylesheet layout overrides before layout computation
                                     tree.apply_stylesheet_layout_overrides();
 
+                                    // Register pointer-space elements from stylesheet
+                                    if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                                        windowed_ctx.pointer_query.register_from_stylesheet(stylesheet);
+                                    }
+
                                     // Compute layout in logical pixels
                                     tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                    tree.update_flip_bounds();
 
                                     // Initialize motion animations for any nodes wrapped in motion() containers
                                     tree.initialize_motion_animations(rs);
@@ -3643,12 +3699,13 @@ impl WindowedApp {
                             } else {
                                 16.0
                             };
-                            let css_active = if let Some(ref tree) = render_tree {
+                            let css_active = if let Some(ref mut tree) = render_tree {
                                 let store = tree.css_anim_store();
                                 let mut s = store.lock().unwrap();
                                 let (anim, trans) = s.tick(dt_ms);
                                 drop(s);
-                                anim || trans || tree.css_has_active()
+                                let flip = tree.tick_flip_animations(dt_ms);
+                                anim || trans || flip || tree.css_has_active()
                             } else {
                                 false
                             };
@@ -3687,6 +3744,7 @@ impl WindowedApp {
                                     // (e.g. visibility: hidden → display: none, or height changes on hover)
                                     if state_changed {
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                        tree.update_flip_bounds();
                                     }
                                 }
                             }
@@ -3697,13 +3755,52 @@ impl WindowedApp {
                                 if let Some(ref mut tree) = render_tree {
                                     tree.apply_all_css_animation_props();
                                     tree.apply_all_css_transition_props();
+                                    tree.apply_flip_animation_props();
                                     if tree.apply_animated_layout_props() {
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                        tree.update_flip_bounds();
                                     }
                                 }
                             }
 
+                            // Update continuous pointer query state
+                            if !windowed_ctx.pointer_query.is_empty() {
+                                let (mx, my) = windowed_ctx.event_router.mouse_position();
+                                let is_pressed = windowed_ctx.event_router.pressed_target().is_some();
+                                let dt_sec = dt_ms / 1000.0;
+                                let time_sec = current_time as f64 / 1000.0;
+                                // Use event router's hit test results for hover detection.
+                                // The router already handles scroll offsets, transforms, and occlusion
+                                // correctly, so bounds from get_node_bounds match the rendering pipeline.
+                                windowed_ctx.pointer_query.update(
+                                    mx, my, is_pressed, dt_sec, time_sec,
+                                    |id| {
+                                        let node = element_registry.get(id)?;
+                                        if windowed_ctx.event_router.is_hovered(node) {
+                                            windowed_ctx.event_router.get_node_bounds(node)
+                                        } else {
+                                            None
+                                        }
+                                    },
+                                );
+                                // Evaluate dynamic calc(env(...)) properties with current pointer state
+                                if let Some(ref mut tree) = render_tree {
+                                    tree.apply_pointer_styles(
+                                        &windowed_ctx.pointer_query,
+                                        &windowed_ctx.event_router,
+                                    );
+                                }
+                            }
+
                             if let Some(ref tree) = render_tree {
+                                // Set blend target for mix-blend-mode support
+                                blinc_app.set_blend_target(&frame.texture);
+
+                                // Pass cursor position for @flow pointer input
+                                let (mx, my) = windowed_ctx.event_router.mouse_position();
+                                let sf = windowed_ctx.scale_factor as f32;
+                                blinc_app.set_cursor_position(mx * sf, my * sf);
+
                                 // Render with motion animations
                                 // Use physical pixel dimensions for the render surface
                                 let result = blinc_app.render_tree_with_motion(
@@ -3716,6 +3813,8 @@ impl WindowedApp {
                                 if let Err(e) = result {
                                     tracing::error!("Render error: {}", e);
                                 }
+
+                                blinc_app.clear_blend_target();
                             }
 
                             // Optional: capture + validate rendered pixels for e2e.
@@ -3931,12 +4030,15 @@ impl WindowedApp {
                                 mgr.take_dirty() || mgr.has_visible_overlays()
                             };
 
-                            // Check if CSS animations/transitions need continued redraws
+                            // Check if CSS animations/transitions/FLIP need continued redraws
                             // (includes transitions created during apply_complex_selector_styles)
                             let css_needs_redraw = css_active
                                 || !render_tree
                                     .as_ref()
-                                    .map_or(true, |t| t.css_transitions_empty());
+                                    .map_or(true, |t| t.css_transitions_empty())
+                                || render_tree
+                                    .as_ref()
+                                    .is_some_and(|t| t.has_active_flip_animations());
 
                             let needs_e2e_redraw = e2e_enabled
                                 && e2e_captures_done < e2e_max_captures

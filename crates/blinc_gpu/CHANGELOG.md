@@ -2,7 +2,22 @@
 
 All notable changes to `blinc_gpu` will be documented in this file.
 
-## [Unreleased]
+## [0.1.13] - 2026-02-18
+
+### Added
+
+#### Flow Codegen
+
+- Underscore variants for all `StepType` identifiers (e.g. `pattern_noise` alongside `pattern-noise`) for `flow!` macro compatibility
+
+### Changed
+
+- `GpuImageInstance` params layout: `params[2..3]` changed from sin_rot/cos_rot to border_width/packed_border_color; rotation now uses the `transform` field
+- Image shader (`image.wgsl`) consolidated VertexOutput from 16 locations to 13 by passing combined `params` vec4
+
+### Removed
+
+- `GpuImageInstance::with_rotation_sincos()` — superseded by `with_transform()` for full 2x2 affine support
 
 ### Added
 
@@ -85,6 +100,8 @@ All notable changes to `blinc_gpu` will be documented in this file.
 
 ### Fixed
 
+- Mix blend mode layers were invisible because `has_layer_effects()` didn't check `blend_mode != Normal`, causing the interleaved z-layer path to strip layer commands from the batch
+- Z>0 overlay pass re-rendered blend-mode primitives without blend, overwriting correctly composited results
 - Simple glass shader pixelation: replaced crude 25-sample box blur with 72-sample golden-angle spiral, eliminating visible grid artifacts
 - Glass blur intensity too weak: corrected Gaussian sigma from `radius * 0.5` to `radius` per CSS spec (blur radius = standard deviation)
 - `set_css_filter` and `clear_css_filter` now properly override the `DrawContext` trait (previously only defined as inherent methods, causing no-op dispatch via `&mut dyn DrawContext`)

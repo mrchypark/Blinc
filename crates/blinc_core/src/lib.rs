@@ -38,6 +38,7 @@ pub mod context;
 pub mod context_state;
 pub mod draw;
 pub mod events;
+pub mod flow;
 pub mod fsm;
 pub mod layer;
 pub mod native_bridge;
@@ -48,20 +49,20 @@ pub mod value;
 
 pub use draw::{
     BlurQuality, DrawCommand, DrawContext, DrawContextExt, FontWeight, ImageId, ImageOptions,
-    LayerConfig, LayerEffect, LineCap, LineJoin, MaterialId, MeshId, MeshInstance, Path,
-    PathCommand, RecordingContext, SdfBuilder, ShapeId, Stroke, TextAlign, TextBaseline, TextStyle,
-    Transform,
+    LayerConfig, LayerEffect, LineCap, LineJoin, MaskImage, MaskMode, MaterialId, MeshId,
+    MeshInstance, Path, PathCommand, RecordingContext, SdfBuilder, ShapeId, Stroke, TextAlign,
+    TextBaseline, TextStyle, Transform, Transform3DParams,
 };
 pub use events::{Event, EventData, EventDispatcher, EventType, KeyCode, Modifiers};
 pub use fsm::{FsmId, FsmRuntime, StateId, StateMachine, Transition};
 pub use layer::{
     Affine2D, BillboardFacing, BlendMode, BlurStyle, Brush, CachePolicy, Camera, CameraProjection,
     Canvas2DCommand, Canvas2DCommands, ClipLength, ClipPath, ClipShape, Color, CornerRadius,
-    Environment, GlassStyle, Gradient, GradientSpace, GradientSpread, GradientStop, ImageBrush,
-    ImageFit, ImagePosition, Layer, LayerId, LayerIdGenerator, LayerProperties, Light, Mat4,
-    ParticleBlendMode, ParticleEmitterShape, ParticleForce, ParticleRenderMode, ParticleSystemData,
-    Point, PointerEvents, PostEffect, Rect, Scene3DCommand, Scene3DCommands, SceneGraph,
-    Sdf3DViewport, Shadow, Size, TextureFormat, UiNode, Vec2, Vec3,
+    CornerShape, Environment, GlassStyle, Gradient, GradientSpace, GradientSpread, GradientStop,
+    ImageBrush, ImageFit, ImagePosition, Layer, LayerId, LayerIdGenerator, LayerProperties, Light,
+    Mat4, OverflowFade, ParticleBlendMode, ParticleEmitterShape, ParticleForce, ParticleRenderMode,
+    ParticleSystemData, Point, PointerEvents, PostEffect, Rect, Scene3DCommand, Scene3DCommands,
+    SceneGraph, Sdf3DViewport, Shadow, Size, TextureFormat, UiNode, Vec2, Vec3,
 };
 pub use reactive::{
     Derived, DerivedId, DirtyFlag, Effect, EffectId, ReactiveGraph, SharedReactiveGraph, Signal,
@@ -81,6 +82,13 @@ pub use context_state::{
     MotionStateCallback, QueryCallback, RecordedEventAny, RecorderEventCallback,
     RecorderSnapshotCallback, RecorderUpdateCallback, ScrollCallback, SharedHookState, StateKey,
     TreeSnapshotAny, UpdateCategory,
+};
+
+// Re-export flow DAG types
+pub use flow::{
+    BuiltinVar, ChainLink, FlowChain, FlowError, FlowExpr, FlowFunc, FlowGraph, FlowInput,
+    FlowInputSource, FlowNode, FlowOutput, FlowOutputTarget, FlowStep, FlowTarget, FlowType,
+    FlowUse, StepParam, StepType,
 };
 
 // Re-export store types

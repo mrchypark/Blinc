@@ -92,6 +92,16 @@ struct Primitive {
     filter_a: vec4<f32>,
     // CSS filter B (brightness, contrast, saturate, 0)
     filter_b: vec4<f32>,
+    // Mask gradient params: linear=(x1,y1,x2,y2), radial=(cx,cy,r,0) in OBB (0-1) space
+    mask_params: vec4<f32>,
+    // Mask info: (mask_type, start_alpha, end_alpha, 0)
+    // mask_type: 0=none, 1=linear, 2=radial
+    mask_info: vec4<f32>,
+    // Corner shape (superellipse n parameter per corner)
+    // n=1.0 = round (default), n=0.0 = bevel, n=2.0 = squircle, n=-1.0 = scoop
+    corner_shape: vec4<f32>,
+    // Overflow fade distances (top, right, bottom, left) in pixels
+    clip_fade: vec4<f32>,
     // Type info (primitive_type, fill_type, clip_type, 0)
     type_info: vec4<u32>,
 }
@@ -275,6 +285,72 @@ fn sd_rounded_rect(p: vec2<f32>, origin: vec2<f32>, size: vec2<f32>, radius: vec
     return length(max(q_adjusted, vec2<f32>(0.0))) + min(max(q_adjusted.x, q_adjusted.y), 0.0) - r;
 }
 
+// Shaped rectangle SDF with per-corner superellipse parameter
+// shape.xyzw = superellipse n for (top-left, top-right, bottom-right, bottom-left)
+// n=1.0 = round (circle), n=0.0 = bevel, n=2.0 = squircle
+// n>=100.0 = square, n<=-100.0 = notch, n<0 = concave (scoop)
+fn sd_shaped_rect(p: vec2<f32>, origin: vec2<f32>, size: vec2<f32>, radius: vec4<f32>, shape: vec4<f32>) -> f32 {
+    let half_size = size * 0.5;
+    let center = origin + half_size;
+    let rel = p - center;
+    let q = abs(rel) - half_size;
+
+    // Select corner radius and shape based on quadrant
+    var r: f32;
+    var n: f32;
+    if rel.y < 0.0 {
+        if rel.x > 0.0 {
+            r = radius.y; n = shape.y;  // top-right
+        } else {
+            r = radius.x; n = shape.x;  // top-left
+        }
+    } else {
+        if rel.x > 0.0 {
+            r = radius.z; n = shape.z;  // bottom-right
+        } else {
+            r = radius.w; n = shape.w;  // bottom-left
+        }
+    }
+
+    r = min(r, min(half_size.x, half_size.y));
+
+    // Notch: rectangular step cut at each corner (before guard)
+    // Shape = union of horizontal bar (full width, height-2r) and vertical bar (width-2r, full height)
+    if n <= -100.0 {
+        let d_h = max(q.x, q.y + r);  // horizontal bar SDF
+        let d_v = max(q.x + r, q.y);  // vertical bar SDF
+        return min(d_h, d_v);          // union
+    }
+
+    let q_adj = q + vec2<f32>(r);
+
+    // Fast path: n ~ 1.0 -> standard circular
+    if abs(n - 1.0) < 0.01 {
+        return length(max(q_adj, vec2<f32>(0.0))) + min(max(q_adj.x, q_adj.y), 0.0) - r;
+    }
+
+    // Outside corner region -> flat edge
+    if q_adj.x <= 0.0 || q_adj.y <= 0.0 {
+        return max(q.x, q.y);
+    }
+
+    // Square: sharp corner (L-infinity convex)
+    if n >= 100.0 {
+        return max(q_adj.x, q_adj.y) - r;
+    }
+
+    // Superellipse: p_exp = 2^|n|, clamped to avoid overflow
+    let t = q_adj / max(r, 0.001);
+    let p_exp = pow(2.0, min(abs(n), 5.0));
+    let se = pow(t.x, p_exp) + pow(t.y, p_exp);
+    let se_dist = (pow(se, 1.0 / p_exp) - 1.0) * r;
+
+    if n < 0.0 {
+        return -se_dist;  // concave (scoop)
+    }
+    return se_dist;  // convex
+}
+
 // Circle SDF
 fn sd_circle(p: vec2<f32>, center: vec2<f32>, radius: f32) -> f32 {
     return length(p - center) - radius;
@@ -365,55 +441,60 @@ fn shadow_circle(p: vec2<f32>, center: vec2<f32>, radius: f32, sigma: f32) -> f3
 //   clip_bounds = rect scissor from parent clips [x, y, w, h]
 //   clip_radius = shape-specific data
 // The shader applies BOTH the rect scissor AND the shape clip.
-fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_type: u32) -> f32 {
-    // If no clip, return 1.0 (fully visible)
-    if clip_type == CLIP_NONE {
-        return 1.0;
+// clip_fade = (top, right, bottom, left) overflow fade distances in pixels
+fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_type: u32, clip_fade: vec4<f32>) -> f32 {
+    var alpha: f32 = 1.0;
+
+    if clip_type != CLIP_NONE {
+        let aa_width = 0.75;
+        switch clip_type {
+            case CLIP_RECT: {
+                let clip_origin = clip_bounds.xy;
+                let clip_size = clip_bounds.zw;
+                let clip_d = sd_rounded_rect(p, clip_origin, clip_size, clip_radius);
+                alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
+            }
+            case CLIP_CIRCLE: {
+                let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
+                let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
+                let center = clip_radius.xy;
+                let radius = clip_radius.z;
+                let clip_d = sd_circle(p, center, radius);
+                let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
+                alpha = scissor_alpha * shape_alpha;
+            }
+            case CLIP_ELLIPSE: {
+                let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
+                let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
+                let center = clip_radius.xy;
+                let radii = clip_radius.zw;
+                let clip_d = sd_ellipse(p, center, radii);
+                let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
+                alpha = scissor_alpha * shape_alpha;
+            }
+            case CLIP_POLYGON: {
+                let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
+                let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
+                let vertex_count = u32(clip_radius.z);
+                let aux_offset = u32(clip_radius.w);
+                let shape_alpha = calculate_polygon_clip_alpha(p, vertex_count, aux_offset);
+                alpha = scissor_alpha * shape_alpha;
+            }
+            default: {}
+        }
     }
 
-    let aa_width = 0.75;
-
-    switch clip_type {
-        case CLIP_RECT: {
-            // Rectangular clip with optional rounded corners
-            let clip_origin = clip_bounds.xy;
-            let clip_size = clip_bounds.zw;
-            let clip_d = sd_rounded_rect(p, clip_origin, clip_size, clip_radius);
-            return 1.0 - smoothstep(-aa_width, aa_width, clip_d);
-        }
-        case CLIP_CIRCLE: {
-            // clip_bounds = rect scissor, clip_radius = [cx, cy, radius, 0]
-            let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
-            let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
-            let center = clip_radius.xy;
-            let radius = clip_radius.z;
-            let clip_d = sd_circle(p, center, radius);
-            let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
-            return scissor_alpha * shape_alpha;
-        }
-        case CLIP_ELLIPSE: {
-            // clip_bounds = rect scissor, clip_radius = [cx, cy, rx, ry]
-            let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
-            let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
-            let center = clip_radius.xy;
-            let radii = clip_radius.zw;
-            let clip_d = sd_ellipse(p, center, radii);
-            let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
-            return scissor_alpha * shape_alpha;
-        }
-        case CLIP_POLYGON: {
-            // clip_bounds = rect scissor, clip_radius = [0, 0, vertex_count, aux_offset]
-            let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
-            let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
-            let vertex_count = u32(clip_radius.z);
-            let aux_offset = u32(clip_radius.w);
-            let shape_alpha = calculate_polygon_clip_alpha(p, vertex_count, aux_offset);
-            return scissor_alpha * shape_alpha;
-        }
-        default: {
-            return 1.0;
-        }
+    // Apply overflow fade (smooth alpha ramp at clip edges)
+    if clip_fade.x > 0.0 || clip_fade.y > 0.0 || clip_fade.z > 0.0 || clip_fade.w > 0.0 {
+        let clip_min = clip_bounds.xy;
+        let clip_max = clip_bounds.xy + clip_bounds.zw;
+        if clip_fade.x > 0.0 { alpha *= saturate((p.y - clip_min.y) / clip_fade.x); }  // top
+        if clip_fade.y > 0.0 { alpha *= saturate((clip_max.x - p.x) / clip_fade.y); }  // right
+        if clip_fade.z > 0.0 { alpha *= saturate((clip_max.y - p.y) / clip_fade.z); }  // bottom
+        if clip_fade.w > 0.0 { alpha *= saturate((p.x - clip_min.x) / clip_fade.w); }  // left
     }
+
+    return alpha;
 }
 
 // Polygon clip using winding number test with edge-distance anti-aliasing.
@@ -801,7 +882,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let clip_type = prim.type_info.z;
 
     // Early clip test - discard if completely outside clip region (screen space)
-    let clip_alpha = calculate_clip_alpha(p, prim.clip_bounds, prim.clip_radius, clip_type);
+    let clip_alpha = calculate_clip_alpha(p, prim.clip_bounds, prim.clip_radius, clip_type, prim.clip_fade);
     if clip_alpha < 0.001 {
         discard;
     }
@@ -1087,7 +1168,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var d: f32;
     switch prim_type {
         case PRIM_RECT: {
-            d = sd_rounded_rect(sp, origin, size, prim.corner_radius);
+            d = sd_shaped_rect(sp, origin, size, prim.corner_radius, prim.corner_shape);
         }
         case PRIM_CIRCLE: {
             let radius = min(size.x, size.y) * 0.5;
@@ -1100,7 +1181,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // Shadow-only primitive - mask out the shape interior
             // Shadow should be visible starting from the shape boundary (d >= 0)
             // Use constant AA width to avoid discontinuities at triangle seams on Vulkan
-            let shape_d = sd_rounded_rect(sp, origin, size, prim.corner_radius);
+            let shape_d = sd_shaped_rect(sp, origin, size, prim.corner_radius, prim.corner_shape);
             let aa_width = 0.75;
             let shape_mask = smoothstep(-aa_width, aa_width, shape_d); // 0 inside, 1 outside, AA at edge
             result.a *= shape_mask;
@@ -1109,7 +1190,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         case PRIM_INNER_SHADOW: {
             // Inner shadow - renders INSIDE the shape only
-            let shape_d = sd_rounded_rect(sp, origin, size, prim.corner_radius);
+            let shape_d = sd_shaped_rect(sp, origin, size, prim.corner_radius, prim.corner_shape);
 
             // Hard clip at shape boundary - only render where d < 0 (inside)
             if shape_d > 0.0 {
@@ -1232,7 +1313,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             return text_result;
         }
         default: {
-            d = sd_rounded_rect(sp, origin, size, prim.corner_radius);
+            d = sd_shaped_rect(sp, origin, size, prim.corner_radius, prim.corner_shape);
         }
     }
 
@@ -1398,6 +1479,35 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // This gives smooth edges against the background without shadow bleed
     result.a *= fill_alpha;
 
+    // Apply mask gradient (mask-image: linear-gradient / radial-gradient)
+    // mask_info.x: 0=none, 1=linear, 2=radial
+    // mask_params are in OBB (0-1) space relative to element bounds
+    let mask_type = prim.mask_info.x;
+    if mask_type > 0.5 {
+        // Compute normalized UV relative to element bounds
+        let mask_uv = (sp - origin) / max(size, vec2<f32>(0.001));
+        var mask_t: f32;
+        if mask_type < 1.5 {
+            // Linear mask gradient
+            let m_start = prim.mask_params.xy;
+            let m_end = prim.mask_params.zw;
+            let m_dir = m_end - m_start;
+            let m_len_sq = dot(m_dir, m_dir);
+            if m_len_sq > 0.0001 {
+                mask_t = clamp(dot(mask_uv - m_start, m_dir) / m_len_sq, 0.0, 1.0);
+            } else {
+                mask_t = 0.0;
+            }
+        } else {
+            // Radial mask gradient
+            let m_center = prim.mask_params.xy;
+            let m_radius = prim.mask_params.z;
+            mask_t = clamp(length(mask_uv - m_center) / max(m_radius, 0.001), 0.0, 1.0);
+        }
+        let mask_alpha = mix(prim.mask_info.y, prim.mask_info.z, mask_t);
+        result = vec4<f32>(result.rgb * mask_alpha, result.a * mask_alpha);
+    }
+
     // Apply CSS filters (grayscale, invert, sepia, hue-rotate, brightness, contrast, saturate)
     // Skip if all identity (filter_a all zero, filter_b = (1,1,1,0))
     let fa = prim.filter_a;
@@ -1427,7 +1537,8 @@ struct VertexOutput {
     @location(1) color: vec4<f32>,
     @location(2) world_pos: vec2<f32>,
     @location(3) @interpolate(flat) clip_bounds: vec4<f32>,
-    @location(4) @interpolate(flat) is_color: f32,
+    @location(4) @interpolate(flat) clip_fade: vec4<f32>,
+    @location(5) @interpolate(flat) is_color: f32,
 }
 
 struct TextUniforms {
@@ -1444,6 +1555,8 @@ struct GlyphInstance {
     color: vec4<f32>,
     // Clip bounds (x, y, width, height) - set to large values for no clip
     clip_bounds: vec4<f32>,
+    // Overflow fade distances (top, right, bottom, left) in pixels
+    clip_fade: vec4<f32>,
     // Flags: [is_color, unused, unused, unused]
     // is_color: 1.0 = color emoji (use color_atlas), 0.0 = grayscale (use glyph_atlas)
     flags: vec4<f32>,
@@ -1500,13 +1613,14 @@ fn vs_main(
     out.color = glyph.color;
     out.world_pos = pos;
     out.clip_bounds = glyph.clip_bounds;
+    out.clip_fade = glyph.clip_fade;
     out.is_color = glyph.flags.x;
 
     return out;
 }
 
 // Calculate clip alpha for rectangular clip region
-fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>) -> f32 {
+fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_fade: vec4<f32>) -> f32 {
     // Check if clipping is active (default bounds are very large negative values)
     if clip_bounds.x < -5000.0 {
         return 1.0;
@@ -1526,13 +1640,21 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>) -> f32 {
     let d = min(min(d_left, d_right), min(d_top, d_bottom));
 
     // Soft anti-aliased edge (1 pixel transition)
-    return clamp(d + 0.5, 0.0, 1.0);
+    var alpha = clamp(d + 0.5, 0.0, 1.0);
+
+    // Apply overflow fade
+    if clip_fade.x > 0.0 { alpha *= saturate(d_top / clip_fade.x); }
+    if clip_fade.y > 0.0 { alpha *= saturate(d_right / clip_fade.y); }
+    if clip_fade.z > 0.0 { alpha *= saturate(d_bottom / clip_fade.z); }
+    if clip_fade.w > 0.0 { alpha *= saturate(d_left / clip_fade.w); }
+
+    return alpha;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Calculate clip alpha first - discard if completely outside
-    let clip_alpha = calculate_clip_alpha(in.world_pos, in.clip_bounds);
+    let clip_alpha = calculate_clip_alpha(in.world_pos, in.clip_bounds, in.clip_fade);
     if clip_alpha < 0.001 {
         discard;
     }
@@ -3035,13 +3157,21 @@ struct LayerUniforms {
     clip_radius: vec4<f32>,
     // Clip type: 0=none, 1=rect with optional rounded corners
     clip_type: u32,
+    // 3D perspective transform (0 = disabled)
+    perspective_d: f32,
+    sin_rx: f32,
+    cos_rx: f32,
+    sin_ry: f32,
+    cos_ry: f32,
     // Padding
-    _pad: vec3<f32>,
+    _pad: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: LayerUniforms;
 @group(0) @binding(1) var layer_texture: texture_2d<f32>;
 @group(0) @binding(2) var layer_sampler: sampler;
+@group(0) @binding(3) var dest_texture: texture_2d<f32>;
+@group(0) @binding(4) var dest_sampler: sampler;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -3095,19 +3225,56 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
     let local_pos = positions[vertex_index];
 
-    // Map to destination rectangle in viewport space
-    let dest_pos = uniforms.dest_rect.xy + local_pos * uniforms.dest_rect.zw;
-
-    // Convert to normalized device coordinates (-1 to 1)
-    let ndc = (dest_pos / uniforms.viewport_size) * 2.0 - 1.0;
-
     // Map to source rectangle UV
     let uv = uniforms.source_rect.xy + local_pos * uniforms.source_rect.zw;
 
     var out: VertexOutput;
-    out.position = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);  // Flip Y for wgpu
+
+    if (uniforms.perspective_d > 0.0) {
+        // 3D perspective compositing: distort quad with perspective projection.
+        // The layer was rendered flat; we now apply rotate-x/rotate-y to the composite.
+        let center = uniforms.dest_rect.xy + uniforms.dest_rect.zw * 0.5;
+        let half = uniforms.dest_rect.zw * 0.5;
+
+        // Local position relative to center (in pixels)
+        var p = vec3<f32>(
+            (local_pos.x - 0.5) * 2.0 * half.x,
+            (local_pos.y - 0.5) * 2.0 * half.y,
+            0.0
+        );
+
+        // Rotate around Y axis
+        let ry_x = p.x * uniforms.cos_ry - p.z * uniforms.sin_ry;
+        let ry_z = p.x * uniforms.sin_ry + p.z * uniforms.cos_ry;
+        p.x = ry_x;
+        p.z = ry_z;
+
+        // Rotate around X axis
+        let rx_y = p.y * uniforms.cos_rx - p.z * uniforms.sin_rx;
+        let rx_z = p.y * uniforms.sin_rx + p.z * uniforms.cos_rx;
+        p.y = rx_y;
+        p.z = rx_z;
+
+        // Perspective projection
+        let d = uniforms.perspective_d;
+        let w = (d + p.z) / d;
+        let screen = center + p.xy / w;
+
+        // Convert to NDC
+        let ndc = (screen / uniforms.viewport_size) * 2.0 - 1.0;
+
+        // Output with perspective w for correct UV interpolation
+        out.position = vec4<f32>(ndc.x * w, -ndc.y * w, 0.0, w);
+        out.frag_pos = screen;
+    } else {
+        // Standard flat compositing (no perspective)
+        let dest_pos = uniforms.dest_rect.xy + local_pos * uniforms.dest_rect.zw;
+        let ndc = (dest_pos / uniforms.viewport_size) * 2.0 - 1.0;
+        out.position = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
+        out.frag_pos = dest_pos;
+    }
+
     out.uv = uv;
-    out.frag_pos = dest_pos;  // Pass fragment position in viewport pixels
     return out;
 }
 
@@ -3270,14 +3437,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // For blend modes other than normal, we'd need to read the destination.
-    // Since wgpu doesn't support programmable blending, we use hardware blending
-    // for Normal mode and would need a two-pass approach for other modes.
-    //
-    // For now, output premultiplied alpha for hardware blending:
-    // result = src * src_alpha + dst * (1 - src_alpha)
+    // For non-Normal blend modes, sample the destination texture (pre-copied snapshot)
+    // and apply the CSS blend function. The result is output as premultiplied alpha
+    // so hardware blending (src + dst * (1-srcA)) produces the correct composite:
+    //   final = blended * srcA + dst * (1-srcA) = mix(dst, blended, srcA)
+    if (uniforms.blend_mode != BLEND_NORMAL) {
+        // Compute screen UV from fragment position
+        let screen_uv = in.frag_pos / uniforms.viewport_size;
+        let dst = textureSample(dest_texture, dest_sampler, screen_uv);
 
-    // Premultiply alpha
+        // Unpremultiply source (src.a > 0 since src_alpha > 0.001 and opacity <= 1.0)
+        let src_c = src.rgb / src.a;
+        // Unpremultiply destination
+        let dst_c = select(dst.rgb / dst.a, vec3<f32>(0.0, 0.0, 0.0), dst.a < 0.001);
+
+        // Apply CSS blend mode
+        let blended = apply_blend_mode(src_c, dst_c, uniforms.blend_mode);
+
+        // Output premultiplied for hardware alpha compositing
+        return vec4<f32>(blended * src_alpha, src_alpha);
+    }
+
+    // Normal blend: premultiplied alpha for hardware blending
     let premultiplied = vec4<f32>(src.rgb * src_alpha, src_alpha);
     return premultiplied;
 }
@@ -3520,6 +3701,82 @@ fn fs_color_matrix(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Clamp to valid range
     return clamp(result, vec4<f32>(0.0), vec4<f32>(1.0));
+}
+"#;
+
+/// Mask image shader for CSS mask-image support
+///
+/// Multiplies the layer's alpha by the mask image value.
+/// Supports alpha mode (use mask alpha) and luminance mode (use mask luminance as alpha).
+pub const MASK_IMAGE_SHADER: &str = r#"
+// ============================================================================
+// Mask Image Shader (Layer Effects)
+// ============================================================================
+//
+// Applies a mask image to a layer: output.a = input.a * mask_value
+// mask_mode: 0 = alpha (use mask.a), 1 = luminance (use dot(mask.rgb, luma))
+
+struct MaskUniforms {
+    // 0 = alpha, 1 = luminance
+    mask_mode: u32,
+    _pad: vec3<f32>,
+}
+
+@group(0) @binding(0) var<uniform> uniforms: MaskUniforms;
+@group(0) @binding(1) var input_texture: texture_2d<f32>;
+@group(0) @binding(2) var input_sampler: sampler;
+@group(0) @binding(3) var mask_texture: texture_2d<f32>;
+@group(0) @binding(4) var mask_sampler: sampler;
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+// Full-screen quad vertices
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>( 1.0,  1.0),
+        vec2<f32>(-1.0,  1.0),
+    );
+
+    var uvs = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, 0.0),
+    );
+
+    var out: VertexOutput;
+    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    out.uv = uvs[vertex_index];
+    return out;
+}
+
+@fragment
+fn fs_mask(in: VertexOutput) -> @location(0) vec4<f32> {
+    let src = textureSample(input_texture, input_sampler, in.uv);
+    let mask = textureSample(mask_texture, mask_sampler, in.uv);
+
+    // Compute mask value based on mode
+    var mask_alpha: f32;
+    if (uniforms.mask_mode == 1u) {
+        // Luminance mode: use weighted RGB as alpha
+        mask_alpha = dot(mask.rgb, vec3<f32>(0.2126, 0.7152, 0.0722)) * mask.a;
+    } else {
+        // Alpha mode: use mask alpha channel directly
+        mask_alpha = mask.a;
+    }
+
+    // Multiply source by mask value (premultiplied alpha)
+    return vec4<f32>(src.rgb * mask_alpha, src.a * mask_alpha);
 }
 "#;
 

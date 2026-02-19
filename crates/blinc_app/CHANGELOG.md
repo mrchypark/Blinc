@@ -2,9 +2,41 @@
 
 All notable changes to `blinc_app` will be documented in this file.
 
-## [Unreleased]
+## [0.1.13] - 2026-02-18
 
 ### Added
+
+#### Pointer Query Pressure & Touch Physics
+
+- Desktop: mouse press → binary 0/1 pressure, touch events → hardware pressure via `Force::Normalized`
+- Desktop: `HashSet<u64>` active touch ID tracking for accurate `pointer-touch-count`
+- iOS: forward `touch.force` to `pointer_query.set_pressure()`, track active touch count
+- iOS: `blinc_handle_touch_with_force` FFI for Swift callers to pass force data (backward-compatible)
+- Android: forward primary pointer pressure and touch count from `MotionEvent`
+
+#### Flow Shader Direct Graph Support
+
+- `FlowElement` carries optional `Arc<FlowGraph>` for direct graph rendering (bypasses stylesheet lookup)
+- Render loop prefers direct graph over stylesheet-defined flow when both are available
+- `semantic_flow_demo` example: added `flow!` macro plasma card demonstrating direct `div().flow(graph)` API
+
+#### SVG CSS Animations
+
+- SVG fill, stroke, stroke-width animatable via `@keyframes` and CSS transitions
+- Stroke-dasharray/dashoffset animation for SVG line-drawing effects
+- SVG path morphing via `d: path("...")` CSS animation (cubic bezier interpolation)
+- SVG sub-element metadata extraction (`extract_element_metadata`) for future per-element targeting
+- `svg_animation_demo` example demonstrating all SVG animation phases
+
+### Fixed
+
+- Double border on CSS-transformed image containers: removed redundant `parent_border` overlay from image rendering (border from `render_layer_with_motion` is sufficient and transform-aware)
+- Text in stacked/absolute elements now clips correctly within ancestor scroll containers (sharp clip intersects with existing scroll clip instead of replacing it)
+- Text decorations now render for all z-layers in the fast path (was only rendering z=0, dropping decorations when blend mode layers activated the fast path)
+- Text and SVG elements now clip to scroll container boundaries (regression from dual-clip refactor)
+- SVG own-transform applied correctly (not just inherited parent transforms)
+- CSS `transform: rotate()` animation uses original angle values instead of lossy atan2 decomposition
+- Performance: SVG string manipulation only runs on cache miss (not every frame)
 
 #### 3D SDF & Styling Demo
 

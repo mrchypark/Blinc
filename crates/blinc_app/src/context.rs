@@ -34,6 +34,32 @@ const CANVAS_IMAGE_WARN_LIMIT: u32 = 16;
 /// Max image instances we submit in a single render_images call.
 const MAX_CANVAS_IMAGE_INSTANCES_PER_SUBMIT: usize = 1000;
 
+/// Intersect two axis-aligned clip rects [x, y, w, h], returning their overlap.
+fn intersect_clip_rects(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let x1 = a[0].max(b[0]);
+    let y1 = a[1].max(b[1]);
+    let x2 = (a[0] + a[2]).min(b[0] + b[2]);
+    let y2 = (a[1] + a[3]).min(b[1] + b[3]);
+    [x1, y1, (x2 - x1).max(0.0), (y2 - y1).max(0.0)]
+}
+
+/// Merge a new clip rect with an optional existing one via intersection.
+fn merge_scroll_clip(new_clip: [f32; 4], existing: Option<[f32; 4]>) -> Option<[f32; 4]> {
+    match existing {
+        Some(ex) => Some(intersect_clip_rects(new_clip, ex)),
+        None => Some(new_clip),
+    }
+}
+
+/// Compute effective clip for elements that support only a single clip rect (text, SVG).
+/// Intersects primary clip and scroll clip so nested scroll containers are respected.
+fn effective_single_clip(primary: Option<[f32; 4]>, scroll: Option<[f32; 4]>) -> Option<[f32; 4]> {
+    match (primary, scroll) {
+        (Some(c), Some(s)) => Some(intersect_clip_rects(c, s)),
+        (c, s) => c.or(s),
+    }
+}
+
 /// Maximum number of rasterized SVG textures to cache
 /// Key is (svg_hash, width, height, tint_hash) - separate textures for different sizes/tints
 const RASTERIZED_SVG_CACHE_CAPACITY: usize = 64;
@@ -70,7 +96,23 @@ struct CachedTexture {
     height: u32,
 }
 
+/// Info about a 3D-transformed ancestor layer. When text/SVGs/images are inside a parent
+/// with `perspective` + `rotate-x`/`rotate-y`, this info is used to render them to an
+/// offscreen texture and blit with the same perspective transform.
+#[derive(Clone, Debug)]
+struct Transform3DLayerInfo {
+    /// Node ID of the 3D-transformed ancestor (used as layer grouping key)
+    node_id: LayoutNodeId,
+    /// Screen-space bounds of the 3D layer [x, y, w, h] (DPI-scaled)
+    layer_bounds: [f32; 4],
+    /// Perspective transform parameters
+    transform_3d: blinc_core::Transform3DParams,
+    /// Layer opacity
+    opacity: f32,
+}
+
 /// Text element data for rendering
+#[derive(Clone)]
 struct TextElement {
     content: String,
     x: f32,
@@ -103,14 +145,21 @@ struct TextElement {
     strikethrough: bool,
     /// Whether text has underline decoration
     underline: bool,
+    /// CSS text-decoration-color override (RGBA)
+    decoration_color: Option<[f32; 4]>,
+    /// CSS text-decoration-thickness override in pixels
+    decoration_thickness: Option<f32>,
     /// Inherited CSS transform from ancestor elements (full 6-element affine in layout coords)
     /// [a, b, c, d, tx, ty] where new_x = a*x + c*y + tx, new_y = b*x + d*y + ty
     css_affine: Option<[f32; 6]>,
     /// Text shadow (offset_x, offset_y, blur, color) from CSS text-shadow property
     text_shadow: Option<blinc_core::Shadow>,
+    /// 3D layer info if this text is inside a perspective-transformed parent
+    transform_3d_layer: Option<Transform3DLayerInfo>,
 }
 
 /// Image element data for rendering
+#[derive(Clone)]
 struct ImageElement {
     source: String,
     x: f32,
@@ -140,9 +189,28 @@ struct ImageElement {
     border_width: f32,
     /// Border color
     border_color: blinc_core::Color,
+    /// CSS transform as 6-element affine [a, b, c, d, tx, ty] (None = no transform)
+    css_affine: Option<[f32; 6]>,
+    /// Drop shadow from CSS
+    shadow: Option<blinc_core::Shadow>,
+    /// CSS filter A (grayscale, invert, sepia, hue_rotate_rad) — identity = [0,0,0,0]
+    filter_a: [f32; 4],
+    /// CSS filter B (brightness, contrast, saturate, unused) — identity = [1,1,1,0]
+    filter_b: [f32; 4],
+    /// Secondary clip (scroll container boundary) — sharp rect, no radius.
+    /// Kept separate from primary clip_bounds so rounded corners don't morph
+    /// when the primary clip rect shrinks at scroll boundaries.
+    scroll_clip: Option<[f32; 4]>,
+    /// Mask gradient params: linear=(x1,y1,x2,y2), radial=(cx,cy,r,0) in OBB space
+    mask_params: [f32; 4],
+    /// Mask info: [mask_type, start_alpha, end_alpha, 0] (0=none, 1=linear, 2=radial)
+    mask_info: [f32; 4],
+    /// 3D layer info if this image is inside a perspective-transformed parent
+    transform_3d_layer: Option<Transform3DLayerInfo>,
 }
 
 /// SVG element data for rendering
+#[derive(Clone)]
 struct SvgElement {
     source: String,
     x: f32,
@@ -236,6 +304,28 @@ impl RenderContext {
         }
     }
 
+    /// Update the current cursor position in physical pixels (for @flow pointer input)
+    pub fn set_cursor_position(&mut self, x: f32, y: f32) {
+        self.cursor_pos = [x, y];
+    }
+
+    /// Whether the last render frame contained @flow shader elements.
+    /// Used to trigger continuous redraws for animated flow shaders.
+    pub fn has_active_flows(&self) -> bool {
+        self.has_active_flows
+    }
+
+    /// Set the current render target texture for blend mode two-pass compositing.
+    /// Must be called before rendering when the batch may use non-Normal blend modes.
+    pub fn set_blend_target(&mut self, texture: &wgpu::Texture) {
+        self.renderer.set_blend_target(texture);
+    }
+
+    /// Clear the blend target texture reference after rendering.
+    pub fn clear_blend_target(&mut self) {
+        self.renderer.clear_blend_target();
+    }
+
     /// Load font data into the text rendering registry
     ///
     /// This adds fonts that will be available for text rendering.
@@ -307,8 +397,8 @@ impl RenderContext {
             );
         }
 
-        // Collect text, SVG, and image elements
-        let (texts, svgs, images) = self.collect_render_elements(tree);
+        // Collect text, SVG, image, and flow elements
+        let (texts, svgs, images, _flows) = self.collect_render_elements(tree);
 
         // Pre-load all images into cache before rendering
         self.preload_images(&images, width as f32, height as f32);
@@ -511,6 +601,8 @@ impl RenderContext {
             if has_layer_effects {
                 // Layer effects require batch-based rendering to process layer commands
                 if !fg_batch.is_empty() {
+                    // Pre-load any mask images referenced by layer effects
+                    self.preload_mask_images(&fg_batch);
                     self.renderer.render_overlay(target, &fg_batch);
                 }
                 self.render_foreground_text(target, &all_glyphs, &fg_batch.glyphs);
@@ -606,7 +698,7 @@ impl RenderContext {
             }
 
             // Render images after background primitives
-            self.render_images(target, &images, width as f32, height as f32);
+            self.render_images(target, &images, width as f32, height as f32, scale_factor);
 
             // Render foreground and text
             // Use batch-based rendering when layer effects are present to preserve
@@ -1009,6 +1101,142 @@ impl RenderContext {
         }
     }
 
+    /// Pre-load mask images referenced in a primitive batch's layer effects
+    fn preload_mask_images(&mut self, batch: &PrimitiveBatch) {
+        use blinc_core::LayerEffect;
+        for entry in &batch.layer_commands {
+            if let blinc_gpu::primitives::LayerCommand::Push { config } = &entry.command {
+                for effect in &config.effects {
+                    if let LayerEffect::MaskImage { image_url, .. } = effect {
+                        if self.renderer.has_mask_image(image_url) {
+                            continue;
+                        }
+                        let source = blinc_image::ImageSource::from_uri(image_url);
+                        if let Ok(data) = blinc_image::ImageData::load(source) {
+                            self.renderer.load_mask_image_rgba(
+                                image_url,
+                                data.pixels(),
+                                data.width(),
+                                data.height(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Convert a CssFilter into filter_a/filter_b arrays for the image shader.
+    /// Returns (filter_a, filter_b) where identity = ([0,0,0,0], [1,1,1,0]).
+    /// Extract mask gradient params and info from a MaskImage gradient.
+    /// Returns ([mask_params], [mask_info]) or zero arrays if not a gradient.
+    fn mask_image_to_arrays(mask: Option<&blinc_core::MaskImage>) -> ([f32; 4], [f32; 4]) {
+        match mask {
+            Some(blinc_core::MaskImage::Gradient(gradient)) => match gradient {
+                blinc_core::Gradient::Linear {
+                    start, end, stops, ..
+                } => {
+                    let (sa, ea) = Self::extract_mask_alphas_from_stops(stops);
+                    ([start.x, start.y, end.x, end.y], [1.0, sa, ea, 0.0])
+                }
+                blinc_core::Gradient::Radial {
+                    center,
+                    radius,
+                    stops,
+                    ..
+                } => {
+                    let (sa, ea) = Self::extract_mask_alphas_from_stops(stops);
+                    ([center.x, center.y, *radius, 0.0], [2.0, sa, ea, 0.0])
+                }
+                blinc_core::Gradient::Conic { center, stops, .. } => {
+                    let (sa, ea) = Self::extract_mask_alphas_from_stops(stops);
+                    ([center.x, center.y, 0.5, 0.0], [2.0, sa, ea, 0.0])
+                }
+            },
+            _ => ([0.0; 4], [0.0; 4]),
+        }
+    }
+
+    fn extract_mask_alphas_from_stops(stops: &[blinc_core::GradientStop]) -> (f32, f32) {
+        if stops.is_empty() {
+            return (1.0, 0.0);
+        }
+        (stops[0].color.a, stops[stops.len() - 1].color.a)
+    }
+
+    fn css_filter_to_arrays(
+        filter: &blinc_layout::element_style::CssFilter,
+    ) -> ([f32; 4], [f32; 4]) {
+        (
+            [
+                filter.grayscale,
+                filter.invert,
+                filter.sepia,
+                filter.hue_rotate.to_radians(),
+            ],
+            [filter.brightness, filter.contrast, filter.saturate, 0.0],
+        )
+    }
+
+    /// Transform clip bounds and radii by a CSS affine.
+    /// When a parent div has a CSS transform (e.g. `scale(1.08)` on hover), the image
+    /// clip must follow the same transform so the image fills the visually-scaled parent.
+    fn transform_clip_by_affine(
+        clip: [f32; 4],
+        clip_radius: [f32; 4],
+        affine: [f32; 6],
+        scale_factor: f32,
+    ) -> ([f32; 4], [f32; 4]) {
+        let [a, b, c, d, tx, ty] = affine;
+        let tx_s = tx * scale_factor;
+        let ty_s = ty * scale_factor;
+        // Transform clip center through the affine
+        let ccx = clip[0] + clip[2] * 0.5;
+        let ccy = clip[1] + clip[3] * 0.5;
+        let new_cx = a * ccx + c * ccy + tx_s;
+        let new_cy = b * ccx + d * ccy + ty_s;
+        // Uniform scale for dimensions
+        let s = (a * d - b * c).abs().sqrt().max(1e-6);
+        let new_clip = [
+            new_cx - clip[2] * s * 0.5,
+            new_cy - clip[3] * s * 0.5,
+            clip[2] * s,
+            clip[3] * s,
+        ];
+        let new_radius = [
+            clip_radius[0] * s,
+            clip_radius[1] * s,
+            clip_radius[2] * s,
+            clip_radius[3] * s,
+        ];
+        (new_clip, new_radius)
+    }
+
+    /// Decompose a CSS affine [a,b,c,d,tx,ty] into position and 2x2 transform for image rendering.
+    /// Input: original rect (already DPI-scaled), affine (layout coords), scale_factor.
+    /// Returns: (draw_x, draw_y, draw_w, draw_h, transform_a, transform_b, transform_c, transform_d)
+    /// The 2x2 matrix [a, b, c, d] is passed to the shader for full affine support (rotation, scale, skew).
+    fn decompose_image_affine(
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        affine: [f32; 6],
+        scale_factor: f32,
+    ) -> (f32, f32, f32, f32, f32, f32, f32, f32) {
+        let [a, b, c, d, tx, ty] = affine;
+        // DPI-scale the translation components
+        let tx_s = tx * scale_factor;
+        let ty_s = ty * scale_factor;
+        // Transform center through the affine (positions are already in screen space)
+        let cx = x + w * 0.5;
+        let cy = y + h * 0.5;
+        let new_cx = a * cx + c * cy + tx_s;
+        let new_cy = b * cx + d * cy + ty_s;
+        // Pass original bounds — the 2x2 transform is applied in the shader around the center
+        (new_cx - w * 0.5, new_cy - h * 0.5, w, h, a, b, c, d)
+    }
+
     /// Render images to target (images must be preloaded first)
     fn render_images(
         &mut self,
@@ -1016,6 +1244,7 @@ impl RenderContext {
         images: &[ImageElement],
         viewport_width: f32,
         viewport_height: f32,
+        scale_factor: f32,
     ) {
         use blinc_image::{calculate_fit_rects, src_rect_to_uv, ObjectFit, ObjectPosition};
 
@@ -1084,53 +1313,92 @@ impl RenderContext {
             // Convert src_rect to UV coordinates
             let src_uv = src_rect_to_uv(src_rect, gpu_image.width(), gpu_image.height());
 
-            // Create GPU instance with proper positioning
-            let mut instance = GpuImageInstance::new(
-                image.x + dst_rect[0],
-                image.y + dst_rect[1],
-                dst_rect[2],
-                dst_rect[3],
-            )
-            .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
-            .with_tint(image.tint[0], image.tint[1], image.tint[2], image.tint[3])
-            .with_border_radius(image.border_radius)
-            .with_opacity(image.opacity);
+            // Apply CSS affine transform if present
+            let base_x = image.x + dst_rect[0];
+            let base_y = image.y + dst_rect[1];
+            let base_w = dst_rect[2];
+            let base_h = dst_rect[3];
 
-            // Apply clip bounds if specified
-            if let Some(clip) = image.clip_bounds {
-                instance = instance.with_clip_rounded_rect_corners(
-                    clip[0],
-                    clip[1],
-                    clip[2],
-                    clip[3],
-                    image.clip_radius[0],
-                    image.clip_radius[1],
-                    image.clip_radius[2],
-                    image.clip_radius[3],
+            let (draw_x, draw_y, draw_w, draw_h, ta, tb, tc, td) = if let Some(affine) =
+                image.css_affine
+            {
+                Self::decompose_image_affine(base_x, base_y, base_w, base_h, affine, scale_factor)
+            } else {
+                (base_x, base_y, base_w, base_h, 1.0, 0.0, 0.0, 1.0)
+            };
+
+            // Pre-compute effective clip (transformed by CSS affine if present)
+            let effective_clip = image.clip_bounds.map(|clip| {
+                if let Some(affine) = image.css_affine {
+                    Self::transform_clip_by_affine(clip, image.clip_radius, affine, scale_factor)
+                } else {
+                    (clip, image.clip_radius)
+                }
+            });
+
+            // Render shadow before image if present
+            if let Some(ref shadow) = image.shadow {
+                let mut shadow_ctx = GpuPaintContext::new(viewport_width, viewport_height);
+                // Push scroll/parent clip so shadow doesn't escape the container
+                if let Some(clip) = image.clip_bounds {
+                    shadow_ctx.push_clip(blinc_core::ClipShape::RoundedRect {
+                        rect: blinc_core::Rect::new(clip[0], clip[1], clip[2], clip[3]),
+                        corner_radius: blinc_core::CornerRadius {
+                            top_left: image.clip_radius[0],
+                            top_right: image.clip_radius[1],
+                            bottom_right: image.clip_radius[2],
+                            bottom_left: image.clip_radius[3],
+                        },
+                    });
+                }
+                let shadow_rect =
+                    blinc_core::Rect::new(image.x, image.y, image.width, image.height);
+                let shadow_radius = blinc_core::CornerRadius::uniform(image.border_radius);
+                shadow_ctx.draw_shadow(shadow_rect, shadow_radius, *shadow);
+                let shadow_batch = shadow_ctx.take_batch();
+                self.renderer.render_overlay(target, &shadow_batch);
+            }
+
+            // Create GPU instance with proper positioning
+            let mut instance = GpuImageInstance::new(draw_x, draw_y, draw_w, draw_h)
+                .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
+                .with_tint(image.tint[0], image.tint[1], image.tint[2], image.tint[3])
+                .with_border_radius(image.border_radius)
+                .with_opacity(image.opacity)
+                .with_transform(ta, tb, tc, td)
+                .with_filter(image.filter_a, image.filter_b);
+
+            // Render border inside the image shader (same SDF, perfect transform alignment)
+            if image.border_width > 0.0 {
+                instance = instance.with_image_border(
+                    image.border_width,
+                    image.border_color.r,
+                    image.border_color.g,
+                    image.border_color.b,
+                    image.border_color.a,
                 );
+            }
+
+            // Apply mask gradient
+            if image.mask_info[0] > 0.5 {
+                instance.mask_params = image.mask_params;
+                instance.mask_info = image.mask_info;
+            }
+
+            // Apply clip bounds (primary rounded clip)
+            if let Some((clip, clip_r)) = effective_clip {
+                instance = instance.with_clip_rounded_rect_corners(
+                    clip[0], clip[1], clip[2], clip[3], clip_r[0], clip_r[1], clip_r[2], clip_r[3],
+                );
+            }
+            // Apply secondary scroll clip (sharp rect)
+            if let Some(sc) = image.scroll_clip {
+                instance = instance.with_clip2_rect(sc[0], sc[1], sc[2], sc[3]);
             }
 
             // Render the image
             self.renderer
                 .render_images(target, gpu_image.view(), &[instance]);
-
-            // Render border on top of image if specified
-            if image.border_width > 0.0 {
-                use blinc_gpu::primitives::GpuPrimitive;
-                let border_primitive =
-                    GpuPrimitive::rect(image.x, image.y, image.width, image.height)
-                        .with_color(0.0, 0.0, 0.0, 0.0) // Transparent fill
-                        .with_corner_radius(image.border_radius)
-                        .with_border(
-                            image.border_width,
-                            image.border_color.r,
-                            image.border_color.g,
-                            image.border_color.b,
-                            image.border_color.a,
-                        );
-                self.renderer
-                    .render_primitives_overlay(target, &[border_primitive]);
-            }
         }
     }
 
@@ -1171,53 +1439,70 @@ impl RenderContext {
             // Convert src_rect to UV coordinates
             let src_uv = src_rect_to_uv(src_rect, gpu_image.width(), gpu_image.height());
 
-            // Create GPU instance with proper positioning
-            let mut instance = GpuImageInstance::new(
-                image.x + dst_rect[0],
-                image.y + dst_rect[1],
-                dst_rect[2],
-                dst_rect[3],
-            )
-            .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
-            .with_tint(image.tint[0], image.tint[1], image.tint[2], image.tint[3])
-            .with_border_radius(image.border_radius)
-            .with_opacity(image.opacity);
+            // Apply CSS affine transform if present
+            let base_x = image.x + dst_rect[0];
+            let base_y = image.y + dst_rect[1];
+            let base_w = dst_rect[2];
+            let base_h = dst_rect[3];
 
-            // Apply clip bounds if specified
-            if let Some(clip) = image.clip_bounds {
-                instance = instance.with_clip_rounded_rect_corners(
-                    clip[0],
-                    clip[1],
-                    clip[2],
-                    clip[3],
-                    image.clip_radius[0],
-                    image.clip_radius[1],
-                    image.clip_radius[2],
-                    image.clip_radius[3],
+            // render_images_ref is called for backdrop images; no scale_factor available,
+            // but affine translation is already in screen coords for backdrop path
+            let (draw_x, draw_y, draw_w, draw_h, ta, tb, tc, td) =
+                if let Some(affine) = image.css_affine {
+                    Self::decompose_image_affine(base_x, base_y, base_w, base_h, affine, 1.0)
+                } else {
+                    (base_x, base_y, base_w, base_h, 1.0, 0.0, 0.0, 1.0)
+                };
+
+            // Pre-compute effective clip (transformed by CSS affine if present)
+            let effective_clip = image.clip_bounds.map(|clip| {
+                if let Some(affine) = image.css_affine {
+                    Self::transform_clip_by_affine(clip, image.clip_radius, affine, 1.0)
+                } else {
+                    (clip, image.clip_radius)
+                }
+            });
+
+            // Create GPU instance with proper positioning
+            let mut instance = GpuImageInstance::new(draw_x, draw_y, draw_w, draw_h)
+                .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
+                .with_tint(image.tint[0], image.tint[1], image.tint[2], image.tint[3])
+                .with_border_radius(image.border_radius)
+                .with_opacity(image.opacity)
+                .with_transform(ta, tb, tc, td)
+                .with_filter(image.filter_a, image.filter_b);
+
+            // Render border inside the image shader (same SDF, perfect transform alignment)
+            if image.border_width > 0.0 {
+                instance = instance.with_image_border(
+                    image.border_width,
+                    image.border_color.r,
+                    image.border_color.g,
+                    image.border_color.b,
+                    image.border_color.a,
                 );
+            }
+
+            // Apply mask gradient
+            if image.mask_info[0] > 0.5 {
+                instance.mask_params = image.mask_params;
+                instance.mask_info = image.mask_info;
+            }
+
+            // Apply clip bounds (primary rounded clip)
+            if let Some((clip, clip_r)) = effective_clip {
+                instance = instance.with_clip_rounded_rect_corners(
+                    clip[0], clip[1], clip[2], clip[3], clip_r[0], clip_r[1], clip_r[2], clip_r[3],
+                );
+            }
+            // Apply secondary scroll clip (sharp rect)
+            if let Some(sc) = image.scroll_clip {
+                instance = instance.with_clip2_rect(sc[0], sc[1], sc[2], sc[3]);
             }
 
             // Render the image
             self.renderer
                 .render_images(target, gpu_image.view(), &[instance]);
-
-            // Render border on top of image if specified
-            if image.border_width > 0.0 {
-                use blinc_gpu::primitives::GpuPrimitive;
-                let border_primitive =
-                    GpuPrimitive::rect(image.x, image.y, image.width, image.height)
-                        .with_color(0.0, 0.0, 0.0, 0.0) // Transparent fill
-                        .with_corner_radius(image.border_radius)
-                        .with_border(
-                            image.border_width,
-                            image.border_color.r,
-                            image.border_color.g,
-                            image.border_color.b,
-                            image.border_color.a,
-                        );
-                self.renderer
-                    .render_primitives_overlay(target, &[border_primitive]);
-            }
         }
     }
 
@@ -1571,7 +1856,12 @@ impl RenderContext {
     fn collect_render_elements(
         &mut self,
         tree: &RenderTree,
-    ) -> (Vec<TextElement>, Vec<SvgElement>, Vec<ImageElement>) {
+    ) -> (
+        Vec<TextElement>,
+        Vec<SvgElement>,
+        Vec<ImageElement>,
+        Vec<FlowElement>,
+    ) {
         self.collect_render_elements_with_state(tree, None)
     }
 
@@ -1580,12 +1870,18 @@ impl RenderContext {
         &mut self,
         tree: &RenderTree,
         render_state: Option<&blinc_layout::RenderState>,
-    ) -> (Vec<TextElement>, Vec<SvgElement>, Vec<ImageElement>) {
+    ) -> (
+        Vec<TextElement>,
+        Vec<SvgElement>,
+        Vec<ImageElement>,
+        Vec<FlowElement>,
+    ) {
         // Reuse scratch buffers - take them, clear, populate, and return
         // On next call they'll be reallocated if not returned
         let mut texts = std::mem::take(&mut self.scratch_texts);
         let mut svgs = std::mem::take(&mut self.scratch_svgs);
         let mut images = std::mem::take(&mut self.scratch_images);
+        let mut flows = Vec::new();
         texts.clear();
         svgs.clear();
         images.clear();
@@ -1613,14 +1909,19 @@ impl RenderContext {
                 &mut texts,
                 &mut svgs,
                 &mut images,
+                &mut flows,
                 None, // No initial CSS transform
+                1.0,  // Initial inherited CSS opacity
+                None, // No parent node
+                None, // No initial scroll clip
+                None, // No 3D layer ancestor
             );
         }
 
         // Sort texts by z_index (z_layer) to ensure correct rendering order with primitives
         texts.sort_by_key(|t| t.z_index);
 
-        (texts, svgs, images)
+        (texts, svgs, images, flows)
     }
 
     #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
@@ -1645,9 +1946,24 @@ impl RenderContext {
         texts: &mut Vec<TextElement>,
         svgs: &mut Vec<SvgElement>,
         images: &mut Vec<ImageElement>,
+        flows: &mut Vec<FlowElement>,
         // Accumulated CSS transform from ancestors as a 6-element affine [a,b,c,d,tx,ty]
         // in layout coordinates. Maps pre-transform coords to post-transform visual coords.
         inherited_css_affine: Option<[f32; 6]>,
+        // Accumulated CSS opacity from ancestors (compounds multiplicatively).
+        // CSS `opacity` applies to the element and its entire visual subtree.
+        inherited_css_opacity: f32,
+        // Parent node ID for inheriting non-cascading CSS props (border, shadow, filter)
+        // to child images that render separately from the SDF pipeline.
+        parent_node: Option<LayoutNodeId>,
+        // Scroll container clip — sharp rect kept separate from the primary rounded clip.
+        // This prevents corner radius morphing when a rounded element (card) is partially
+        // scrolled past a sharp scroll boundary.
+        current_scroll_clip: Option<[f32; 4]>,
+        // 3D layer info if inside a perspective-transformed ancestor.
+        // Text/SVGs/images inside 3D layers are rendered to offscreen textures
+        // and blitted with the same perspective transform.
+        inside_3d_layer: Option<Transform3DLayerInfo>,
     ) {
         use blinc_layout::Material;
 
@@ -1776,7 +2092,7 @@ impl RenderContext {
         // When a node clips, we INTERSECT its bounds with any existing clip
         // This ensures nested clipping works correctly (inner clips can't expand outer clips)
         let should_clip = clips_content || has_layout_animation;
-        let (child_clip, child_clip_radius) = if should_clip {
+        let (child_clip, child_clip_radius, child_scroll_clip) = if should_clip {
             // For layout animation, use animated bounds for clipping
             // This ensures content is clipped to the animating size during transition
             let clip_bounds = if has_layout_animation {
@@ -1789,39 +2105,160 @@ impl RenderContext {
             };
             let this_clip = clip_bounds;
 
-            // Extract border radius from this node for rounded clipping
-            // Order: top_left, top_right, bottom_right, bottom_left
+            // Extract border radius from this node for rounded clipping.
+            // Inner corner radius = max(outer_radius − border_width, 0)
             let this_clip_radius = tree.get_render_node(node).map(|n| {
                 let r = &n.props.border_radius;
-                [r.top_left, r.top_right, r.bottom_right, r.bottom_left]
+                [
+                    (r.top_left - bw).max(0.0),
+                    (r.top_right - bw).max(0.0),
+                    (r.bottom_right - bw).max(0.0),
+                    (r.bottom_left - bw).max(0.0),
+                ]
             });
 
-            let new_clip = if let Some(parent_clip) = current_clip {
-                // Intersect: take the overlap of parent_clip and this_clip
-                let x1 = parent_clip[0].max(this_clip[0]);
-                let y1 = parent_clip[1].max(this_clip[1]);
-                let x2 = (parent_clip[0] + parent_clip[2]).min(this_clip[0] + this_clip[2]);
-                let y2 = (parent_clip[1] + parent_clip[3]).min(this_clip[1] + this_clip[3]);
-                let w = (x2 - x1).max(0.0);
-                let h = (y2 - y1).max(0.0);
-                Some([x1, y1, w, h])
-            } else {
-                Some(this_clip)
-            };
+            let this_has_radius = this_clip_radius
+                .map(|r| r.iter().any(|&v| v > 0.5))
+                .unwrap_or(false);
+            let parent_has_radius = current_clip_radius
+                .map(|r| r.iter().any(|&v| v > 0.5))
+                .unwrap_or(false);
 
-            // Use this node's border radius if it has one, otherwise inherit parent's
-            let new_radius = if this_clip_radius
-                .map(|r| r.iter().any(|&v| v > 0.0))
-                .unwrap_or(false)
-            {
-                this_clip_radius
-            } else {
-                current_clip_radius
-            };
+            if let Some(parent_clip) = current_clip {
+                if this_has_radius && !parent_has_radius {
+                    // This node is rounded (card), parent is sharp (scroll container).
+                    // Keep them separate to avoid SDF radius clamping/morphing.
+                    // Primary clip = this node's rounded clip (full card bounds).
+                    // Scroll clip = parent's sharp clip intersected with any existing scroll clip.
+                    (
+                        Some(this_clip),
+                        this_clip_radius,
+                        merge_scroll_clip(parent_clip, current_scroll_clip),
+                    )
+                } else if !this_has_radius && parent_has_radius {
+                    // This node is sharp (scroll), parent is rounded (card).
+                    // Keep parent as primary rounded clip, this as scroll clip
+                    // intersected with any existing scroll clip.
+                    (
+                        current_clip,
+                        current_clip_radius,
+                        merge_scroll_clip(this_clip, current_scroll_clip),
+                    )
+                } else {
+                    // Both have same kind of radius — intersect normally.
+                    let x1 = parent_clip[0].max(this_clip[0]);
+                    let y1 = parent_clip[1].max(this_clip[1]);
+                    let parent_right = parent_clip[0] + parent_clip[2];
+                    let parent_bottom = parent_clip[1] + parent_clip[3];
+                    let this_right = this_clip[0] + this_clip[2];
+                    let this_bottom = this_clip[1] + this_clip[3];
+                    let x2 = parent_right.min(this_right);
+                    let y2 = parent_bottom.min(this_bottom);
+                    let w = (x2 - x1).max(0.0);
+                    let h = (y2 - y1).max(0.0);
+                    let clip = Some([x1, y1, w, h]);
 
-            (new_clip, new_radius)
+                    let child_r = this_clip_radius.unwrap_or([0.0; 4]);
+                    let parent_r = current_clip_radius.unwrap_or([0.0; 4]);
+                    let radius = Some([
+                        child_r[0].max(parent_r[0]),
+                        child_r[1].max(parent_r[1]),
+                        child_r[2].max(parent_r[2]),
+                        child_r[3].max(parent_r[3]),
+                    ]);
+
+                    (clip, radius, current_scroll_clip)
+                }
+            } else {
+                // No parent clip — this is the first clip level.
+                if this_has_radius {
+                    // Rounded clip becomes primary, scroll clip passes through.
+                    (Some(this_clip), this_clip_radius, current_scroll_clip)
+                } else {
+                    // Sharp clip becomes scroll clip; intersect with existing scroll clip
+                    // so nested sharp clips (scroll + stack wrapper) don't lose the outer boundary.
+                    let new_scroll_clip = if let Some(existing) = current_scroll_clip {
+                        let x1 = existing[0].max(this_clip[0]);
+                        let y1 = existing[1].max(this_clip[1]);
+                        let x2 = (existing[0] + existing[2]).min(this_clip[0] + this_clip[2]);
+                        let y2 = (existing[1] + existing[3]).min(this_clip[1] + this_clip[3]);
+                        [x1, y1, (x2 - x1).max(0.0), (y2 - y1).max(0.0)]
+                    } else {
+                        this_clip
+                    };
+                    (None, None, Some(new_scroll_clip))
+                }
+            }
         } else {
-            (current_clip, current_clip_radius)
+            (current_clip, current_clip_radius, current_scroll_clip)
+        };
+
+        // Compute this node's CSS affine: compose its own CSS transform with inherited.
+        // This must happen BEFORE the element-type match block so that SVGs, text, and images
+        // get their own transform applied (not just the parent's inherited transform).
+        // NOTE: 3D rotations (rotate-x/rotate-y/perspective) are NOT included here — they
+        // can't be accurately represented as a 2D affine (perspective is projective, not linear).
+        // Proper 3D text compositing requires layer-based rendering (render to texture, then
+        // apply 3D transform to the composite). For now, text stays flat under 3D parents.
+        let node_css_affine = if let Some(render_node) = tree.get_render_node(node) {
+            let has_non_identity = if let Some(blinc_core::Transform::Affine2D(affine)) =
+                &render_node.props.transform
+            {
+                let [a, b, c, d, tx, ty] = affine.elements;
+                !((a - 1.0).abs() < 0.0001
+                    && b.abs() < 0.0001
+                    && c.abs() < 0.0001
+                    && (d - 1.0).abs() < 0.0001
+                    && tx.abs() < 0.0001
+                    && ty.abs() < 0.0001)
+            } else {
+                false
+            };
+
+            if has_non_identity {
+                let affine = match &render_node.props.transform {
+                    Some(blinc_core::Transform::Affine2D(a)) => a.elements,
+                    _ => unreachable!(),
+                };
+                let [a, b, c, d, tx, ty] = affine;
+                // Compute transform center in absolute layout coords
+                let (cx, cy) = if let Some([ox_pct, oy_pct]) = render_node.props.transform_origin {
+                    (
+                        abs_x + bounds.width * ox_pct / 100.0,
+                        abs_y + bounds.height * oy_pct / 100.0,
+                    )
+                } else {
+                    (abs_x + bounds.width / 2.0, abs_y + bounds.height / 2.0)
+                };
+                // Build full 6-element affine: T(center) * [a,b,c,d,tx,ty] * T(-center)
+                // = [a, b, c, d, cx*(1-a) - cy*c + tx, cy*(1-d) - cx*b + ty]
+                let this_affine = [
+                    a,
+                    b,
+                    c,
+                    d,
+                    cx * (1.0 - a) - cy * c + tx,
+                    cy * (1.0 - d) - cx * b + ty,
+                ];
+                match inherited_css_affine {
+                    Some(parent) => {
+                        let [pa, pb, pc, pd, ptx, pty] = parent;
+                        Some([
+                            a * pa + c * pb,
+                            b * pa + d * pb,
+                            a * pc + c * pd,
+                            b * pc + d * pd,
+                            a * ptx + c * pty + this_affine[4],
+                            b * ptx + d * pty + this_affine[5],
+                        ])
+                    }
+                    None => Some(this_affine),
+                }
+            } else {
+                inherited_css_affine
+            }
+        } else {
+            inherited_css_affine
         };
 
         if let Some(render_node) = tree.get_render_node(node) {
@@ -1890,8 +2327,10 @@ impl RenderContext {
                     let scaled_measured_width =
                         text_data.measured_width * effective_motion_scale.0 * scale;
 
-                    // Scale clip bounds if present
-                    let scaled_clip = current_clip
+                    // Intersect primary clip with scroll clip — text only supports
+                    // a single clip rect so we must merge both boundaries.
+                    let effective_clip = effective_single_clip(current_clip, current_scroll_clip);
+                    let scaled_clip = effective_clip
                         .map(|[cx, cy, cw, ch]| [cx * scale, cy * scale, cw * scale, ch * scale]);
 
                     // Log motion values if non-trivial (for debugging text/shape sync issues)
@@ -1926,8 +2365,82 @@ impl RenderContext {
                         *z_layer
                     );
 
+                    // Apply text-overflow: ellipsis truncation if needed.
+                    // Check both text_data.wrap (set at build time) and render_node.props.white_space
+                    // (set by CSS after build). CSS white-space: nowrap overrides the builder wrap setting.
+                    let is_nowrap = !text_data.wrap
+                        || matches!(
+                            render_node.props.white_space,
+                            Some(blinc_layout::element_style::WhiteSpace::Nowrap)
+                                | Some(blinc_layout::element_style::WhiteSpace::Pre)
+                        );
+                    let content = if is_nowrap
+                        && matches!(
+                            render_node.props.text_overflow,
+                            Some(blinc_layout::element_style::TextOverflow::Ellipsis)
+                        )
+                        && scaled_measured_width > scaled_width
+                        && scaled_width > 0.0
+                    {
+                        // Measure with the same options used for layout
+                        let mut options = blinc_layout::text_measure::TextLayoutOptions::new();
+                        options.font_name = text_data.font_family.name.clone();
+                        options.generic_font = text_data.font_family.generic;
+                        options.font_weight =
+                            match render_node.props.font_weight.unwrap_or(text_data.weight) {
+                                FontWeight::Bold => 700,
+                                FontWeight::Normal => 400,
+                                FontWeight::Light => 300,
+                                _ => 400,
+                            };
+                        options.letter_spacing = render_node
+                            .props
+                            .letter_spacing
+                            .unwrap_or(text_data.letter_spacing);
+
+                        // Measure "..." to know reserved width
+                        let ellipsis = "\u{2026}";
+                        let ellipsis_w = blinc_layout::text_measure::measure_text_with_options(
+                            ellipsis,
+                            scaled_font_size / scale,
+                            &options,
+                        )
+                        .width
+                            * scale;
+                        let target_width = scaled_width - ellipsis_w;
+
+                        if target_width > 0.0 {
+                            // Binary search for the right truncation point
+                            let chars: Vec<char> = text_data.content.chars().collect();
+                            let mut lo = 0usize;
+                            let mut hi = chars.len();
+                            while lo < hi {
+                                let mid = (lo + hi + 1) / 2;
+                                let sub: String = chars[..mid].iter().collect();
+                                let w = blinc_layout::text_measure::measure_text_with_options(
+                                    &sub,
+                                    scaled_font_size / scale,
+                                    &options,
+                                )
+                                .width
+                                    * scale;
+                                if w <= target_width {
+                                    lo = mid;
+                                } else {
+                                    hi = mid - 1;
+                                }
+                            }
+                            let truncated: String = chars[..lo].iter().collect();
+                            format!("{}{}", truncated.trim_end(), ellipsis)
+                        } else {
+                            ellipsis.to_string()
+                        }
+                    } else {
+                        text_data.content.clone()
+                    };
+
                     texts.push(TextElement {
-                        content: text_data.content.clone(),
+                        content,
                         x: scaled_x,
                         y: scaled_y,
                         width: scaled_width,
@@ -1945,10 +2458,26 @@ impl RenderContext {
                         font_family: text_data.font_family.clone(),
                         z_index: *z_layer,
                         ascender: text_data.ascender * effective_motion_scale.1 * scale,
-                        strikethrough: text_data.strikethrough,
-                        underline: text_data.underline,
-                        css_affine: inherited_css_affine,
+                        strikethrough: render_node.props.text_decoration.map_or(
+                            text_data.strikethrough,
+                            |td| {
+                                matches!(
+                                    td,
+                                    blinc_layout::element_style::TextDecoration::LineThrough
+                                )
+                            },
+                        ),
+                        underline: render_node.props.text_decoration.map_or(
+                            text_data.underline,
+                            |td| {
+                                matches!(td, blinc_layout::element_style::TextDecoration::Underline)
+                            },
+                        ),
+                        decoration_color: render_node.props.text_decoration_color,
+                        decoration_thickness: render_node.props.text_decoration_thickness,
+                        css_affine: node_css_affine,
                         text_shadow: render_node.props.text_shadow,
+                        transform_3d_layer: inside_3d_layer.clone(),
                     });
                 }
                 ElementType::Svg(svg_data) => {
@@ -1988,8 +2517,10 @@ impl RenderContext {
                             (final_x, final_y, base_width, base_height)
                         };
 
-                    // Scale clip bounds if present
-                    let scaled_clip = current_clip
+                    // Intersect primary clip with scroll clip — text/SVG only support
+                    // a single clip rect so we must merge both boundaries.
+                    let effective_clip = effective_single_clip(current_clip, current_scroll_clip);
+                    let scaled_clip = effective_clip
                         .map(|[cx, cy, cw, ch]| [cx * scale, cy * scale, cw * scale, ch * scale]);
 
                     svgs.push(SvgElement {
@@ -2013,16 +2544,81 @@ impl RenderContext {
                         .map(|[tl, tr, br, bl]| [tl * scale, tr * scale, br * scale, bl * scale])
                         .unwrap_or([0.0; 4]);
 
+                    // Scale scroll clip by DPI factor
+                    let scaled_scroll_clip = current_scroll_clip
+                        .map(|[cx, cy, cw, ch]| [cx * scale, cy * scale, cw * scale, ch * scale]);
+
+                    // Look up parent render props for CSS property inheritance.
+                    // Images render via a separate pipeline and don't inherit parent CSS
+                    // properties automatically — we must propagate them explicitly.
+                    let parent_props = parent_node
+                        .and_then(|pid| tree.get_render_node(pid))
+                        .map(|pn| &pn.props);
+
+                    // Opacity: own CSS opacity * inherited CSS opacity chain * builder * motion
+                    let own_css_opacity = render_node.props.opacity;
+                    let final_opacity = image_data.opacity
+                        * own_css_opacity
+                        * inherited_css_opacity
+                        * effective_motion_opacity;
+
+                    // Border-radius: prefer own CSS, then builder.
+                    // Parent clip (now at content-box) handles corner rounding.
+                    let own_br = render_node.props.border_radius.top_left;
+                    let final_border_radius = if own_br > 0.0 {
+                        own_br * scale
+                    } else {
+                        image_data.border_radius * scale
+                    };
+
+                    // Border: use image's own CSS border (parent border renders via SDF,
+                    // visible because clip now insets by border-width)
+                    let border_width = render_node.props.border_width * scale;
+                    let border_color = render_node
+                        .props
+                        .border_color
+                        .unwrap_or(blinc_core::Color::TRANSPARENT);
+
+                    // Shadow: use image's own (parent shadow renders via SDF)
+                    let shadow = render_node.props.shadow;
+
+                    // Filter: prefer own, fall back to parent
+                    let own_filter = &render_node.props.filter;
+                    let parent_filter = parent_props.and_then(|p| p.filter.as_ref());
+                    let effective_filter = own_filter.as_ref().or(parent_filter);
+                    let filter_a = effective_filter
+                        .map(|f| Self::css_filter_to_arrays(f).0)
+                        .unwrap_or([0.0, 0.0, 0.0, 0.0]);
+                    let filter_b = effective_filter
+                        .map(|f| Self::css_filter_to_arrays(f).1)
+                        .unwrap_or([1.0, 1.0, 1.0, 0.0]);
+
+                    // object-fit / object-position: CSS overrides builder values
+                    let final_object_fit = render_node
+                        .props
+                        .object_fit
+                        .unwrap_or(image_data.object_fit);
+                    let final_object_position = render_node
+                        .props
+                        .object_position
+                        .unwrap_or(image_data.object_position);
+
+                    // Mask: prefer own, fall back to parent
+                    let own_mask = render_node.props.mask_image.as_ref();
+                    let parent_mask = parent_props.and_then(|p| p.mask_image.as_ref());
+                    let effective_mask = own_mask.or(parent_mask);
+                    let (mask_params, mask_info) = Self::mask_image_to_arrays(effective_mask);
+
                     images.push(ImageElement {
                         source: image_data.source.clone(),
                         x: abs_x * scale,
                         y: abs_y * scale,
                         width: bounds.width * scale,
                         height: bounds.height * scale,
-                        object_fit: image_data.object_fit,
-                        object_position: image_data.object_position,
-                        opacity: image_data.opacity,
-                        border_radius: image_data.border_radius * scale,
+                        object_fit: final_object_fit,
+                        object_position: final_object_position,
+                        opacity: final_opacity,
+                        border_radius: final_border_radius,
                         tint: image_data.tint,
                         clip_bounds: scaled_clip,
                         clip_radius: scaled_clip_radius,
@@ -2031,11 +2627,16 @@ impl RenderContext {
                         placeholder_type: image_data.placeholder_type,
                         placeholder_color: image_data.placeholder_color,
                         z_index: *z_layer,
-                        border_width: render_node.props.border_width * scale,
-                        border_color: render_node
-                            .props
-                            .border_color
-                            .unwrap_or(blinc_core::Color::TRANSPARENT),
+                        border_width,
+                        border_color,
+                        css_affine: node_css_affine,
+                        shadow,
+                        filter_a,
+                        filter_b,
+                        scroll_clip: scaled_scroll_clip,
+                        mask_params,
+                        mask_info,
+                        transform_3d_layer: inside_3d_layer.clone(),
                     });
                 }
                 // Canvas elements are rendered inline during tree traversal (in render_layer)
@@ -2083,7 +2684,9 @@ impl RenderContext {
                     let base_styled_font_size =
                         render_node.props.font_size.unwrap_or(styled_data.font_size);
                     let scaled_font_size = base_styled_font_size * effective_motion_scale.1 * scale;
-                    let scaled_clip = current_clip
+                    // Intersect primary clip with scroll clip for styled text
+                    let effective_clip = effective_single_clip(current_clip, current_scroll_clip);
+                    let scaled_clip = effective_clip
                         .map(|[cx, cy, cw, ch]| [cx * scale, cy * scale, cw * scale, ch * scale]);
 
                     // Build non-overlapping segments from potentially overlapping spans
@@ -2219,7 +2822,9 @@ impl RenderContext {
                             italic,
                             v_align: styled_data.v_align,
                             clip_bounds: scaled_clip,
-                            motion_opacity: effective_motion_opacity,
+                            motion_opacity: effective_motion_opacity
+                                * render_node.props.opacity
+                                * inherited_css_opacity,
                             wrap: false, // Don't wrap individual segments
                             measured_width: segment_width,
                             font_family: styled_data.font_family.clone(),
@@ -2227,13 +2832,31 @@ impl RenderContext {
                             ascender: scaled_ascender * effective_motion_scale.1, // Scale ascender with motion
                             strikethrough,
                             underline,
-                            css_affine: inherited_css_affine,
+                            decoration_color: render_node.props.text_decoration_color,
+                            decoration_thickness: render_node.props.text_decoration_thickness,
+                            css_affine: node_css_affine,
                             text_shadow: render_node.props.text_shadow,
+                            transform_3d_layer: inside_3d_layer.clone(),
                         });
 
                         x_offset += segment_width;
                     }
                 }
+            }
+
+            // Collect flow element if this node has a @flow shader reference.
+            // Flow elements render via custom GPU pipelines instead of (or on top of) the SDF path.
+            if let Some(ref flow_name) = render_node.props.flow {
+                flows.push(FlowElement {
+                    flow_name: flow_name.clone(),
+                    flow_graph: render_node.props.flow_graph.clone(),
+                    x: abs_x * scale,
+                    y: abs_y * scale,
+                    width: bounds.width * scale,
+                    height: bounds.height * scale,
+                    z_index: *z_layer,
+                    corner_radius: render_node.props.border_radius.top_left * scale,
+                });
             }
         }
 
@@ -2252,55 +2875,46 @@ impl RenderContext {
             abs_y + scroll_offset.1 + static_motion_offset.1,
         );
 
-        // Compute CSS affine for children: compose this node's CSS transform with inherited
-        let child_css_affine = if let Some(render_node) = tree.get_render_node(node) {
-            if let Some(blinc_core::Transform::Affine2D(affine)) = &render_node.props.transform {
-                let [a, b, c, d, _tx, _ty] = affine.elements;
-                // Check if transform is non-identity (rotation, skew, or scale)
-                let is_identity = (a - 1.0).abs() < 0.0001
-                    && b.abs() < 0.0001
-                    && c.abs() < 0.0001
-                    && (d - 1.0).abs() < 0.0001;
-                if !is_identity {
-                    // Compute transform center in absolute layout coords
-                    let (cx, cy) =
-                        if let Some([ox_pct, oy_pct]) = render_node.props.transform_origin {
-                            (
-                                abs_x + bounds.width * ox_pct / 100.0,
-                                abs_y + bounds.height * oy_pct / 100.0,
-                            )
-                        } else {
-                            (abs_x + bounds.width / 2.0, abs_y + bounds.height / 2.0)
-                        };
-                    // Build full 6-element affine: T(center) * M * T(-center)
-                    // new_x = a*x + c*y + cx*(1-a) - cy*c
-                    // new_y = b*x + d*y + cy*(1-d) - cx*b
-                    let this_affine =
-                        [a, b, c, d, cx * (1.0 - a) - cy * c, cy * (1.0 - d) - cx * b];
-                    match inherited_css_affine {
-                        Some(parent) => {
-                            // Compose: parent applied first, then this node's transform
-                            // Result = this_affine(parent(x))
-                            let [pa, pb, pc, pd, ptx, pty] = parent;
-                            Some([
-                                a * pa + c * pb,
-                                b * pa + d * pb,
-                                a * pc + c * pd,
-                                b * pc + d * pd,
-                                a * ptx + c * pty + this_affine[4],
-                                b * ptx + d * pty + this_affine[5],
-                            ])
-                        }
-                        None => Some(this_affine),
-                    }
-                } else {
-                    inherited_css_affine
-                }
+        // Compute inherited CSS opacity for children: compound this node's CSS opacity
+        // CSS `opacity` applies to the element AND its visual subtree
+        let child_css_opacity = if let Some(rn) = tree.get_render_node(node) {
+            inherited_css_opacity * rn.props.opacity
+        } else {
+            inherited_css_opacity
+        };
+
+        // Detect 3D layer: if this node has rotate-x/rotate-y/perspective,
+        // create a Transform3DLayerInfo for children to inherit.
+        let child_3d_layer = if let Some(rn) = tree.get_render_node(node) {
+            let has_3d = rn.props.rotate_x.is_some()
+                || rn.props.rotate_y.is_some()
+                || rn.props.perspective.is_some();
+            if has_3d {
+                let rx = rn.props.rotate_x.unwrap_or(0.0).to_radians();
+                let ry = rn.props.rotate_y.unwrap_or(0.0).to_radians();
+                let d = rn.props.perspective.unwrap_or(800.0) * scale;
+                Some(Transform3DLayerInfo {
+                    node_id: node,
+                    layer_bounds: [
+                        abs_x * scale,
+                        abs_y * scale,
+                        bounds.width * scale,
+                        bounds.height * scale,
+                    ],
+                    transform_3d: blinc_core::Transform3DParams {
+                        sin_rx: rx.sin(),
+                        cos_rx: rx.cos(),
+                        sin_ry: ry.sin(),
+                        cos_ry: ry.cos(),
+                        perspective_d: d,
+                    },
+                    opacity: rn.props.opacity,
+                })
             } else {
-                inherited_css_affine
+                inside_3d_layer.clone()
             }
         } else {
-            inherited_css_affine
+            inside_3d_layer.clone()
         };
 
         for child_id in tree.layout().children(node) {
@@ -2322,7 +2936,12 @@ impl RenderContext {
                 texts,
                 svgs,
                 images,
-                child_css_affine,
+                flows,
+                node_css_affine,
+                child_css_opacity,
+                Some(node), // pass current node as parent for children
+                child_scroll_clip,
+                child_3d_layer.clone(),
             );
         }
 
@@ -2426,12 +3045,60 @@ impl RenderContext {
             );
         }
 
-        // Collect text, SVG, and image elements WITH motion state
-        let (texts, svgs, images) =
+        // Collect text, SVG, image, and flow elements WITH motion state
+        let (all_texts, all_svgs, all_images, flow_elements) =
             self.collect_render_elements_with_state(tree, Some(render_state));
 
-        // Pre-load all images into cache before rendering
+        // Partition elements into normal (no 3D ancestor) and 3D-layer groups.
+        // Elements inside a 3D-transformed parent need to be rendered to an offscreen
+        // texture and blitted with the same perspective transform.
+        let mut texts = Vec::new();
+        let mut layer_3d_texts: std::collections::HashMap<
+            LayoutNodeId,
+            (Transform3DLayerInfo, Vec<TextElement>),
+        > = std::collections::HashMap::new();
+        for text in all_texts {
+            if let Some(ref info) = text.transform_3d_layer {
+                layer_3d_texts
+                    .entry(info.node_id)
+                    .or_insert_with(|| (info.clone(), Vec::new()))
+                    .1
+                    .push(text);
+            } else {
+                texts.push(text);
+            }
+        }
+
+        let mut svgs = Vec::new();
+        let mut layer_3d_svgs: std::collections::HashMap<LayoutNodeId, Vec<SvgElement>> =
+            std::collections::HashMap::new();
+        for svg in all_svgs {
+            if let Some(ref info) = svg.transform_3d_layer {
+                layer_3d_svgs.entry(info.node_id).or_default().push(svg);
+            } else {
+                svgs.push(svg);
+            }
+        }
+
+        let mut images = Vec::new();
+        let mut layer_3d_images: std::collections::HashMap<LayoutNodeId, Vec<ImageElement>> =
+            std::collections::HashMap::new();
+        for image in all_images {
+            if let Some(ref info) = image.transform_3d_layer {
+                layer_3d_images.entry(info.node_id).or_default().push(image);
+            } else {
+                images.push(image);
+            }
+        }
+
+        // Collect unique 3D layer IDs for rendering
+        let layer_3d_ids: Vec<LayoutNodeId> = layer_3d_texts.keys().cloned().collect();
+
+        // Pre-load all images into cache before rendering (both normal and 3D-layer)
         self.preload_images(&images, width as f32, height as f32);
+        for layer_imgs in layer_3d_images.values() {
+            self.preload_images(layer_imgs, width as f32, height as f32);
+        }
 
         // Prepare text glyphs with z_layer information
         // Store (z_layer, glyphs) to enable interleaved rendering
@@ -2740,19 +3407,40 @@ impl RenderContext {
             self.render_images_ref(target, &bg_images);
             self.render_images_ref(target, &fg_images);
 
-            // Render z>0 primitives as overlays for z-index support
-            // The main batch rendered all primitives in tree order; z>0 elements
-            // need a second pass to appear on top of z=0 elements.
+            // Interleaved z-layer rendering for proper text z-ordering in glass path
             let max_z = batch.max_z_layer();
-            if max_z > 0 {
-                for z in 1..=max_z {
-                    let layer_primitives = batch.primitives_for_layer(z);
+            let max_text_z = glyphs_by_layer.keys().cloned().max().unwrap_or(0);
+            let decorations_by_layer = generate_text_decoration_primitives_by_layer(&texts);
+            let max_decoration_z = decorations_by_layer.keys().cloned().max().unwrap_or(0);
+            let max_glass_layer = max_z.max(max_text_z).max(max_decoration_z);
+
+            // Render z=0 text first (before any z>0 primitives)
+            {
+                let mut scratch = std::mem::take(&mut self.scratch_glyphs);
+                scratch.clear();
+                if let Some(glyphs) = glyphs_by_layer.get(&0) {
+                    scratch.extend_from_slice(glyphs);
+                }
+                if !scratch.is_empty() {
+                    self.render_text(target, &scratch);
+                }
+                self.scratch_glyphs = scratch;
+            }
+            self.render_text_decorations_for_layer(target, &decorations_by_layer, 0);
+
+            if max_glass_layer > 0 {
+                let effect_indices = batch.effect_layer_indices();
+                for z in 1..=max_glass_layer {
+                    // Render primitives for this layer
+                    let layer_primitives = if effect_indices.is_empty() {
+                        batch.primitives_for_layer(z)
+                    } else {
+                        batch.primitives_for_layer_excluding_effects(z, &effect_indices)
+                    };
                     if !layer_primitives.is_empty() {
                         self.renderer
                             .render_primitives_overlay(target, &layer_primitives);
                     }
-                }
-            }
 
             // Collect all glyphs for glass path using scratch buffer to avoid allocation
             // (TODO: implement interleaved glass rendering)
@@ -2908,6 +3596,14 @@ impl RenderContext {
                     if let Some(layer_images) = images_by_layer.get(&z) {
                         self.render_images_ref(target, layer_images);
                     }
+
+                    // Render text for this layer (interleaved with primitives for proper z-order)
+                    if let Some(glyphs) = glyphs_by_layer.get(&z) {
+                        if !glyphs.is_empty() {
+                            self.render_text(target, glyphs);
+                        }
+                    }
+                    self.render_text_decorations_for_layer(target, &decorations_by_layer, z);
                 }
 
                 // Render SVGs as rasterized images for high-quality anti-aliasing
@@ -3009,28 +3705,105 @@ impl RenderContext {
                     self.render_rasterized_svgs(target, &svgs, scale_factor);
                 }
 
-                // If we have z-layers (e.g. z-index elements) but also layer effects,
-                // render z>0 primitives as overlays on top of the main batch.
-                // The main batch rendered ALL primitives in tree order (including z>0),
-                // but z>0 elements need to appear on top of z=0 elements.
+                // Interleaved z-layer rendering for proper text z-ordering
+                // Render z=0 text before any z>0 primitive overlays
+                if let Some(glyphs) = glyphs_by_layer.get(&0) {
+                    if !glyphs.is_empty() {
+                        self.render_text(target, glyphs);
+                    }
+                }
+                self.render_text_decorations_for_layer(target, &decorations_by_layer, 0);
+
                 if max_layer > 0 {
+                    let effect_indices = batch.effect_layer_indices();
                     for z in 1..=max_layer {
-                        let layer_primitives = batch.primitives_for_layer(z);
+                        // Render primitives for this z-layer
+                        let layer_primitives = if effect_indices.is_empty() {
+                            batch.primitives_for_layer(z)
+                        } else {
+                            batch.primitives_for_layer_excluding_effects(z, &effect_indices)
+                        };
                         if !layer_primitives.is_empty() {
                             self.renderer
                                 .render_primitives_overlay(target, &layer_primitives);
                         }
+
+                        // Render text for this z-layer (interleaved for proper z-order)
+                        if let Some(glyphs) = glyphs_by_layer.get(&z) {
+                            if !glyphs.is_empty() {
+                                self.render_text(target, glyphs);
+                            }
+                        }
+                        self.render_text_decorations_for_layer(target, &decorations_by_layer, z);
                     }
                 }
+            }
+        }
 
-                // Collect all glyphs for flat rendering
-                let all_glyphs: Vec<_> = glyphs_by_layer.values().flatten().cloned().collect();
-                if !all_glyphs.is_empty() {
-                    self.render_text(target, &all_glyphs);
+        // Render 3D-layer text/SVGs/images: for each 3D layer group, render to an
+        // offscreen texture and blit with the same perspective transform as the parent.
+        for layer_id in &layer_3d_ids {
+            if let Some((info, layer_texts)) = layer_3d_texts.get(layer_id) {
+                let layer_svgs_vec = layer_3d_svgs.get(layer_id);
+                let layer_images_vec = layer_3d_images.get(layer_id);
+                self.render_3d_layer_elements(
+                    target,
+                    info,
+                    layer_texts,
+                    layer_svgs_vec.map(|v| v.as_slice()).unwrap_or(&[]),
+                    layer_images_vec.map(|v| v.as_slice()).unwrap_or(&[]),
+                    scale_factor,
+                );
+            }
+        }
+
+        // Render @flow shader elements on top of their SDF base
+        self.has_active_flows = !flow_elements.is_empty();
+        if !flow_elements.is_empty() {
+            let stylesheet = tree.stylesheet();
+
+            // Use monotonic time for smooth animation
+            static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            let start = START_TIME.get_or_init(std::time::Instant::now);
+            let elapsed_secs = start.elapsed().as_secs_f32();
+
+            for flow_el in &flow_elements {
+                // Resolve FlowGraph: direct graph first, then stylesheet lookup
+                let graph = flow_el
+                    .flow_graph
+                    .as_deref()
+                    .or_else(|| stylesheet.and_then(|s| s.get_flow(&flow_el.flow_name)));
+
+                if let Some(graph) = graph {
+                    // Compile on first use (no-op if already cached)
+                    if let Err(e) = self.renderer.flow_pipeline_cache().compile(graph) {
+                        tracing::warn!("@flow '{}' compile error: {}", flow_el.flow_name, e);
+                        continue;
+                    }
+
+                    let uniforms = blinc_gpu::FlowUniformData {
+                        viewport_size: [width as f32, height as f32],
+                        time: elapsed_secs,
+                        frame_index: 0.0, // TODO: track frame counter
+                        element_bounds: [flow_el.x, flow_el.y, flow_el.width, flow_el.height],
+                        pointer: [
+                            (self.cursor_pos[0] - flow_el.x) / flow_el.width.max(1.0),
+                            (self.cursor_pos[1] - flow_el.y) / flow_el.height.max(1.0),
+                        ],
+                        corner_radius: flow_el.corner_radius,
+                        _padding: 0.0,
+                    };
+
+                    let viewport = [flow_el.x, flow_el.y, flow_el.width, flow_el.height];
+                    if !self.renderer.render_flow(
+                        target,
+                        &flow_el.flow_name,
+                        &uniforms,
+                        Some(viewport),
+                    ) {
+                        tracing::warn!("@flow '{}' render failed", flow_el.flow_name);
+                    }
                 }
-
-                // Render text decorations (flat path - no z-layers)
-                self.render_text_decorations_for_layer(target, &decorations_by_layer, 0);
             }
 
             self.process_remaining_canvas_image_ops(&batch.image_ops, &mut image_op_cursor);
@@ -3061,6 +3834,167 @@ impl RenderContext {
         Ok(())
     }
 
+    /// Render 3D-layer text/SVGs/images to an offscreen texture and blit with perspective.
+    ///
+    /// Elements inside a parent with `perspective` + `rotate-x`/`rotate-y` need to be
+    /// rendered to a temporary offscreen texture and then blitted with the same perspective
+    /// transform so they visually tilt with their parent's 3D transform.
+    fn render_3d_layer_elements(
+        &mut self,
+        target: &wgpu::TextureView,
+        info: &Transform3DLayerInfo,
+        texts: &[TextElement],
+        svgs: &[SvgElement],
+        images: &[ImageElement],
+        scale_factor: f32,
+    ) {
+        let [lx, ly, lw, lh] = info.layer_bounds;
+        if lw <= 0.0 || lh <= 0.0 {
+            return;
+        }
+
+        let tex_w = (lw.ceil() as u32).max(1);
+        let tex_h = (lh.ceil() as u32).max(1);
+
+        // Acquire offscreen texture
+        let layer_tex = self.renderer.acquire_layer_texture((tex_w, tex_h), false);
+        self.renderer
+            .clear_target(&layer_tex.view, wgpu::Color::TRANSPARENT);
+
+        // Set viewport to offscreen texture size
+        self.renderer.set_viewport_override((tex_w, tex_h));
+
+        // Render offset text glyphs
+        if !texts.is_empty() {
+            let mut layer_glyphs: Vec<GpuGlyph> = Vec::new();
+            for text in texts {
+                let alignment = match text.align {
+                    TextAlign::Left => TextAlignment::Left,
+                    TextAlign::Center => TextAlignment::Center,
+                    TextAlign::Right => TextAlignment::Right,
+                };
+
+                let color = if text.motion_opacity < 1.0 {
+                    [
+                        text.color[0],
+                        text.color[1],
+                        text.color[2],
+                        text.color[3] * text.motion_opacity,
+                    ]
+                } else {
+                    text.color
+                };
+
+                let effective_width = if let Some(clip) = text.clip_bounds {
+                    clip[2].min(text.width)
+                } else {
+                    text.width
+                };
+                let needs_wrap = text.wrap && effective_width < text.measured_width - 2.0;
+                let wrap_width = Some(text.width);
+                let font_name = text.font_family.name.as_deref();
+                let generic = to_gpu_generic_font(text.font_family.generic);
+                let font_weight = text.weight.weight();
+
+                let (anchor, y_pos, use_layout_height) = match text.v_align {
+                    TextVerticalAlign::Center => {
+                        (TextAnchor::Center, text.y + text.height / 2.0, false)
+                    }
+                    TextVerticalAlign::Top => (TextAnchor::Top, text.y, true),
+                    TextVerticalAlign::Baseline => {
+                        let baseline_y = text.y + text.ascender;
+                        (TextAnchor::Baseline, baseline_y, false)
+                    }
+                };
+                let layout_height = if use_layout_height {
+                    Some(text.height)
+                } else {
+                    None
+                };
+
+                if let Ok(mut glyphs) = self.text_ctx.prepare_text_with_style(
+                    &text.content,
+                    text.x - lx,
+                    y_pos - ly,
+                    text.font_size,
+                    color,
+                    anchor,
+                    alignment,
+                    wrap_width,
+                    needs_wrap,
+                    font_name,
+                    generic,
+                    font_weight,
+                    text.italic,
+                    layout_height,
+                    text.letter_spacing,
+                ) {
+                    // Offset clip bounds to layer-local coords
+                    if let Some(clip) = text.clip_bounds {
+                        for glyph in &mut glyphs {
+                            glyph.clip_bounds = [clip[0] - lx, clip[1] - ly, clip[2], clip[3]];
+                        }
+                    }
+                    layer_glyphs.extend(glyphs);
+                }
+            }
+
+            if !layer_glyphs.is_empty() {
+                self.render_text(&layer_tex.view, &layer_glyphs);
+            }
+        }
+
+        // Render offset images (mutate in place — we own these from partition)
+        if !images.is_empty() {
+            let mut offset_images = images.to_vec();
+            for img in &mut offset_images {
+                img.x -= lx;
+                img.y -= ly;
+                if let Some(ref mut clip) = img.clip_bounds {
+                    clip[0] -= lx;
+                    clip[1] -= ly;
+                }
+                if let Some(ref mut scroll) = img.scroll_clip {
+                    scroll[0] -= lx;
+                    scroll[1] -= ly;
+                }
+            }
+            self.render_images(&layer_tex.view, &offset_images, lw, lh, scale_factor);
+        }
+
+        // Render offset SVGs (mutate in place — we own these from partition)
+        if !svgs.is_empty() {
+            let mut offset_svgs = svgs.to_vec();
+            for svg in &mut offset_svgs {
+                svg.x -= lx;
+                svg.y -= ly;
+                if let Some(ref mut clip) = svg.clip_bounds {
+                    clip[0] -= lx;
+                    clip[1] -= ly;
+                }
+            }
+            self.render_rasterized_svgs(&layer_tex.view, &offset_svgs, scale_factor);
+        }
+
+        // Restore viewport
+        self.renderer.restore_viewport();
+
+        // Blit with perspective transform
+        self.renderer.blit_tight_texture_to_target(
+            &layer_tex.view,
+            (tex_w, tex_h),
+            target,
+            (lx, ly),
+            (lw, lh),
+            info.opacity,
+            blinc_core::BlendMode::Normal,
+            None,
+            Some(info.transform_3d),
+        );
+
+        self.renderer.release_layer_texture(layer_tex);
+    }
+
     /// Render a tree on top of existing content (no clear)
     ///
     /// This is used for overlay trees (modals, toasts, dialogs) that render
@@ -3085,8 +4019,8 @@ impl RenderContext {
         // Take the batch (mutable so CSS-transformed text primitives can be added)
         let mut batch = ctx.take_batch();
 
-        // Collect text, SVG, and image elements WITH motion state
-        let (texts, svgs, images) =
+        // Collect text, SVG, image, and flow elements WITH motion state
+        let (texts, svgs, images, _flows) =
             self.collect_render_elements_with_state(tree, Some(render_state));
 
         // Pre-load all images into cache before rendering
@@ -3265,7 +4199,7 @@ impl RenderContext {
         }
 
         // Images render on top
-        self.render_images(target, &images, width as f32, height as f32);
+        self.render_images(target, &images, width as f32, height as f32, scale_factor);
 
         // Render foreground primitives (e.g. borders on top)
         if !batch.foreground_primitives.is_empty() {
@@ -3449,8 +4383,13 @@ fn generate_text_decoration_primitives_by_layer(
             continue;
         }
 
-        // Line thickness scales with font size (roughly 1/14th of font size, minimum 1px)
-        let line_thickness = (text.font_size / 14.0).clamp(1.0, 3.0);
+        // Line thickness: use CSS text-decoration-thickness if set, else scale with font size
+        let line_thickness = text
+            .decoration_thickness
+            .unwrap_or_else(|| (text.font_size / 14.0).clamp(1.0, 3.0));
+
+        // Decoration color: use CSS text-decoration-color if set, else use text color
+        let dec_color = text.decoration_color.unwrap_or(text.color);
 
         let layer_primitives = primitives_by_layer.entry(text.z_index).or_default();
 
@@ -3495,7 +4434,7 @@ fn generate_text_decoration_primitives_by_layer(
                 decoration_width,
                 line_thickness,
             )
-            .with_color(text.color[0], text.color[1], text.color[2], text.color[3]);
+            .with_color(dec_color[0], dec_color[1], dec_color[2], dec_color[3]);
 
             // Apply clip bounds from text element if present
             if let Some(clip) = text.clip_bounds {
@@ -3514,7 +4453,7 @@ fn generate_text_decoration_primitives_by_layer(
                 decoration_width,
                 line_thickness,
             )
-            .with_color(text.color[0], text.color[1], text.color[2], text.color[3]);
+            .with_color(dec_color[0], dec_color[1], dec_color[2], dec_color[3]);
 
             // Apply clip bounds from text element if present
             if let Some(clip) = text.clip_bounds {

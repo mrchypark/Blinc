@@ -2,9 +2,46 @@
 
 All notable changes to `blinc_layout` will be documented in this file.
 
-## [Unreleased]
+## [0.1.13] - 2026-02-18
 
 ### Added
+
+#### Pointer Query Pressure & Touch Count
+
+- `env(pointer-pressure)` — normalized touch/click pressure (0.0-1.0), smoothed via `pointer-smoothing`
+- `env(pointer-touch-count)` — number of active touch points (0 for mouse input)
+- `set_pressure()` and `set_touch_count()` on `PointerQueryState` for per-event platform input
+- Pressure smoothing using same exponential decay as position smoothing
+- Registered `pointer-pressure` and `pointer-touch-count` env var names in renderer
+
+#### Flow Shader Macro & Builders
+
+- `flow!` macro for defining `@flow` shaders using Rust identifiers and primitives (no raw strings)
+- `parse_flow_string()` public API for parsing `@flow` block strings into `FlowGraph`
+- `FlowRef` enum (`Name`/`Graph`) with `From` impls for `&str`, `String`, and `FlowGraph`
+- `.flow()` builder on `Div` accepting both `FlowRef::Name` (CSS reference) and `FlowRef::Graph` (direct)
+- `.flow()` builder on `ElementStyle` for stylesheet-based flow references
+- `flow:` property in `css!` and `style!` macros
+- `flow_graph: Option<Arc<FlowGraph>>` field on `RenderProps` for direct graph attachment
+- Flow parser: swizzle tolerance for `stringify!()` spaces (`uv . x` → `uv.x`)
+- Flow parser: hex color tolerance for space after `#` (`# ff0000` → `#ff0000`)
+- Flow parser: newline normalization in `parse_flow_string()` for `stringify!()` multi-line output
+
+#### SVG Animation Properties
+
+- `fill`, `stroke`, `stroke-width` as animatable CSS properties for SVG elements
+- `stroke-dasharray`, `stroke-dashoffset` CSS properties for SVG line-drawing effects
+- `d: path("...")` CSS property for SVG path morphing animation
+- `svg_path_data` field on ElementStyle and RenderProps for path data propagation
+- Decomposed transform fields (`rotate`, `scale_x`, `scale_y`) on ElementStyle to avoid lossy atan2 decomposition
+- `parse_scale_values()` helper for extracting original scale factors from CSS
+
+### Fixed
+
+- Border morph/distortion on rounded clipping containers: overflow clip now deferred to after border rendering, preventing double-AA between border SDF and clip SDF at the same boundary
+- Borders on elements with `overflow: clip` now render in the foreground layer (after images), matching CSS painting order (content → border → outline)
+- `style_to_keyframe_properties()` preserves original rotation angle from CSS (avoids 359deg → -1deg via atan2)
+- Clippy: use `Ok(v)` instead of `Some(v) = .ok()` pattern in glass parser
 
 #### CSS Parser & Stylesheet Engine
 
