@@ -29,6 +29,7 @@
 - [Spring Physics](./animation/springs.md)
 - [Keyframe Timelines](./animation/timelines.md)
 - [Motion Containers](./animation/motion.md)
+- [Layout Animations (FLIP)](./animation/layout-animations.md)
 
 # Components
 
@@ -61,7 +62,9 @@
 - [Element Query API](./advanced/element-query.md)
 - [Overlay System](./advanced/overlays.md)
 - [Custom State Machines](./advanced/state-machines.md)
+- [Pointer Query](./advanced/pointer-query.md)
 - [Performance Tips](./advanced/performance.md)
+- [Flow Shaders](./advanced/flow-shaders.md)
 
 # Architecture
 

@@ -3,13 +3,59 @@
 //! Provides the core abstractions for building layout trees that can be
 //! rendered via the DrawContext API.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use blinc_core::{
-    BlurQuality, Brush, ClipPath, Color, CornerRadius, DynFloat, DynValue, LayerEffect, Rect,
-    Shadow, Transform, ValueContext,
+    BlurQuality, Brush, ClipPath, Color, CornerRadius, CornerShape, DynFloat, DynValue, FlowGraph,
+    LayerEffect, OverflowFade, Rect, Shadow, Transform, ValueContext,
 };
 use taffy::Layout;
 
 use crate::tree::LayoutNodeId;
+
+// =============================================================================
+// FlowRef — polymorphic flow reference (name string or direct FlowGraph)
+// =============================================================================
+
+/// A reference to a `@flow` shader — either by name (for CSS-defined flows) or
+/// by direct `FlowGraph` (for `flow!` macro-defined flows).
+#[derive(Clone, Debug)]
+pub enum FlowRef {
+    /// Name of a @flow DAG defined in a CSS stylesheet
+    Name(String),
+    /// Direct FlowGraph (e.g. from `flow!` macro), auto-persisted by name
+    Graph(Arc<FlowGraph>),
+}
+
+impl From<&str> for FlowRef {
+    fn from(s: &str) -> Self {
+        FlowRef::Name(s.to_string())
+    }
+}
+
+impl From<String> for FlowRef {
+    fn from(s: String) -> Self {
+        FlowRef::Name(s)
+    }
+}
+
+impl From<FlowGraph> for FlowRef {
+    fn from(g: FlowGraph) -> Self {
+        FlowRef::Graph(Arc::new(g))
+    }
+}
+
+/// Per-tag SVG style overrides for CSS tag-name selectors (e.g., `path { fill: red; }`)
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SvgTagStyle {
+    pub fill: Option<[f32; 4]>,
+    pub stroke: Option<[f32; 4]>,
+    pub stroke_width: Option<f32>,
+    pub stroke_dasharray: Option<Vec<f32>>,
+    pub stroke_dashoffset: Option<f32>,
+    pub opacity: Option<f32>,
+}
 
 // ============================================================================
 // Cursor Style
@@ -947,6 +993,8 @@ pub struct RenderProps {
     pub background: Option<Brush>,
     /// Corner radius for rounded rectangles
     pub border_radius: CornerRadius,
+    /// Corner shape (superellipse n parameter per corner). Default is ROUND (n=1.0).
+    pub corner_shape: CornerShape,
     /// Border color (None = no border) - used for uniform borders
     pub border_color: Option<Color>,
     /// Border width in pixels - used for uniform borders
@@ -973,6 +1021,8 @@ pub struct RenderProps {
     pub opacity: f32,
     /// Whether this element clips its children (for scroll containers)
     pub clips_content: bool,
+    /// Overflow fade distances (smooth alpha fade at clip edges). Applied when clips_content is true.
+    pub overflow_fade: OverflowFade,
     /// Motion animation configuration (enter/exit animations)
     pub motion: Option<MotionAnimation>,
     /// Stable ID for motion animation tracking across tree rebuilds
@@ -1031,6 +1081,12 @@ pub struct RenderProps {
     pub stroke: Option<[f32; 4]>,
     /// SVG stroke width override
     pub stroke_width: Option<f32>,
+    /// SVG stroke-dasharray pattern (alternating dash/gap lengths)
+    pub stroke_dasharray: Option<Vec<f32>>,
+    /// SVG stroke-dashoffset in pixels
+    pub stroke_dashoffset: Option<f32>,
+    /// SVG path `d` attribute data (for path morphing animations)
+    pub svg_path_data: Option<String>,
     /// Transform origin as percentages [x%, y%] (default 50%, 50% = center)
     pub transform_origin: Option<[f32; 2]>,
     /// Layer effects applied to this element (blur, drop shadow, glow, color matrix)
@@ -1080,6 +1136,30 @@ pub struct RenderProps {
     pub motion_is_exiting: bool,
     /// CSS visibility (false = hidden, keeps layout space but doesn't render)
     pub visible: bool,
+    /// CSS object-fit override for images (0=cover, 1=contain, 2=fill, 3=scale-down, 4=none)
+    pub object_fit: Option<u8>,
+    /// CSS object-position override for images [x, y] in 0.0-1.0 range
+    pub object_position: Option<[f32; 2]>,
+    /// Per-SVG-tag style overrides from CSS tag-name selectors (e.g., `path { fill: red; }`)
+    pub svg_tag_styles: HashMap<String, SvgTagStyle>,
+    /// CSS mix-blend-mode for this element
+    pub mix_blend_mode: Option<blinc_core::BlendMode>,
+    /// Text decoration line color override
+    pub text_decoration_color: Option<[f32; 4]>,
+    /// Text decoration line thickness override
+    pub text_decoration_thickness: Option<f32>,
+    /// CSS text-overflow behavior
+    pub text_overflow: Option<crate::element_style::TextOverflow>,
+    /// CSS white-space behavior
+    pub white_space: Option<crate::element_style::WhiteSpace>,
+    /// CSS mask-image (URL or gradient)
+    pub mask_image: Option<blinc_core::MaskImage>,
+    /// CSS mask-mode
+    pub mask_mode: Option<blinc_core::MaskMode>,
+    /// @flow shader name (references a FlowGraph in the stylesheet)
+    pub flow: Option<String>,
+    /// Direct @flow graph (from `flow!` macro), bypasses stylesheet lookup
+    pub flow_graph: Option<Arc<FlowGraph>>,
 }
 
 impl Default for RenderProps {
@@ -1088,6 +1168,7 @@ impl Default for RenderProps {
         Self {
             background: None,
             border_radius: CornerRadius::default(),
+            corner_shape: CornerShape::default(),
             border_color: None,
             border_width: 0.0,
             border_sides: BorderSides::default(),
@@ -1101,6 +1182,7 @@ impl Default for RenderProps {
             transform: None,
             opacity: 1.0,
             clips_content: false,
+            overflow_fade: OverflowFade::default(),
             motion: None,
             motion_stable_id: None,
             motion_should_replay: false,
@@ -1141,8 +1223,23 @@ impl Default for RenderProps {
             fill: None,
             stroke: None,
             stroke_width: None,
+            stroke_dasharray: None,
+            stroke_dashoffset: None,
+            svg_path_data: None,
             transform_origin: None,
             visible: true,
+            object_fit: None,
+            object_position: None,
+            svg_tag_styles: HashMap::new(),
+            mix_blend_mode: None,
+            text_decoration_color: None,
+            text_decoration_thickness: None,
+            text_overflow: None,
+            white_space: None,
+            mask_image: None,
+            mask_mode: None,
+            flow: None,
+            flow_graph: None,
         }
     }
 }
@@ -1325,6 +1422,8 @@ pub struct DynRenderProps {
     pub background: Option<DynValue<Brush>>,
     /// Corner radius (typically static)
     pub border_radius: CornerRadius,
+    /// Corner shape (superellipse n parameter per corner)
+    pub corner_shape: CornerShape,
     /// Which layer this element renders in
     pub layer: RenderLayer,
     /// Material applied to this element
@@ -1339,6 +1438,8 @@ pub struct DynRenderProps {
     pub opacity: DynFloat,
     /// Whether this element clips its children
     pub clips_content: bool,
+    /// Overflow fade distances
+    pub overflow_fade: OverflowFade,
 }
 
 impl Default for DynRenderProps {
@@ -1346,6 +1447,7 @@ impl Default for DynRenderProps {
         Self {
             background: None,
             border_radius: CornerRadius::default(),
+            corner_shape: CornerShape::default(),
             layer: RenderLayer::default(),
             material: None,
             node_id: None,
@@ -1353,6 +1455,7 @@ impl Default for DynRenderProps {
             transform: None,
             opacity: DynFloat::Static(1.0),
             clips_content: false,
+            overflow_fade: OverflowFade::default(),
         }
     }
 }
@@ -1370,6 +1473,7 @@ impl DynRenderProps {
         ResolvedRenderProps {
             background: self.background.as_ref().map(|v| v.get(ctx)),
             border_radius: self.border_radius,
+            corner_shape: self.corner_shape,
             layer: self.layer,
             material: self.material.clone(),
             node_id: self.node_id,
@@ -1377,6 +1481,7 @@ impl DynRenderProps {
             transform: self.transform.clone(),
             opacity: self.opacity.get(ctx),
             clips_content: self.clips_content,
+            overflow_fade: self.overflow_fade,
         }
     }
 
@@ -1385,6 +1490,7 @@ impl DynRenderProps {
         Self {
             background: props.background.map(DynValue::Static),
             border_radius: props.border_radius,
+            corner_shape: props.corner_shape,
             layer: props.layer,
             material: props.material,
             node_id: props.node_id,
@@ -1392,6 +1498,7 @@ impl DynRenderProps {
             transform: props.transform,
             opacity: DynFloat::Static(props.opacity),
             clips_content: props.clips_content,
+            overflow_fade: props.overflow_fade,
         }
     }
 
@@ -1446,6 +1553,8 @@ pub struct ResolvedRenderProps {
     pub background: Option<Brush>,
     /// Corner radius
     pub border_radius: CornerRadius,
+    /// Corner shape (superellipse n parameter per corner)
+    pub corner_shape: CornerShape,
     /// Render layer
     pub layer: RenderLayer,
     /// Material
@@ -1460,6 +1569,8 @@ pub struct ResolvedRenderProps {
     pub opacity: f32,
     /// Whether this element clips its children
     pub clips_content: bool,
+    /// Overflow fade distances
+    pub overflow_fade: OverflowFade,
 }
 
 impl Default for ResolvedRenderProps {
@@ -1467,6 +1578,7 @@ impl Default for ResolvedRenderProps {
         Self {
             background: None,
             border_radius: CornerRadius::default(),
+            corner_shape: CornerShape::default(),
             layer: RenderLayer::default(),
             material: None,
             node_id: None,
@@ -1474,6 +1586,7 @@ impl Default for ResolvedRenderProps {
             transform: None,
             opacity: 1.0,
             clips_content: false,
+            overflow_fade: OverflowFade::default(),
         }
     }
 }

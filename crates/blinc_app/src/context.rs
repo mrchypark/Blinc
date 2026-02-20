@@ -61,6 +61,8 @@ pub struct RenderContext {
     scratch_images: Vec<ImageElement>,
     canvas_image_eviction_warns: u32,
     canvas_image_missing_warns: u32,
+    cursor_pos: [f32; 2],
+    has_active_flows: bool,
 }
 
 struct CachedTexture {
@@ -233,7 +235,29 @@ impl RenderContext {
             scratch_images: Vec::with_capacity(32),   // Pre-allocate for image elements
             canvas_image_eviction_warns: 0,
             canvas_image_missing_warns: 0,
+            cursor_pos: [0.0; 2],
+            has_active_flows: false,
         }
+    }
+
+    /// Update the current pointer position in physical pixels.
+    pub fn set_cursor_position(&mut self, x: f32, y: f32) {
+        self.cursor_pos = [x, y];
+    }
+
+    /// Whether the last frame contained active @flow elements.
+    pub fn has_active_flows(&self) -> bool {
+        self.has_active_flows
+    }
+
+    /// Set blend target texture for two-pass compositing paths.
+    pub fn set_blend_target(&mut self, texture: &wgpu::Texture) {
+        self.renderer.set_blend_target(texture);
+    }
+
+    /// Clear blend target texture reference.
+    pub fn clear_blend_target(&mut self) {
+        self.renderer.clear_blend_target();
     }
 
     /// Load font data into the text rendering registry

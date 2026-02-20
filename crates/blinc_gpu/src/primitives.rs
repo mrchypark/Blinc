@@ -185,8 +185,12 @@ impl GpuLineSegment {
 /// - light: `vec4<f32>`           (16 bytes) - (dir_x, dir_y, dir_z, intensity)
 /// - filter_a: `vec4<f32>`        (16 bytes) - (grayscale, invert, sepia, hue_rotate_rad)
 /// - filter_b: `vec4<f32>`        (16 bytes) - (brightness, contrast, saturate, 0)
+/// - mask_params: `vec4<f32>`     (16 bytes) - mask gradient geometry (x1,y1,x2,y2 or cx,cy,r,0)
+/// - mask_info: `vec4<f32>`       (16 bytes) - (mask_type, start_alpha, end_alpha, 0)
+/// - corner_shape: `vec4<f32>`    (16 bytes) - superellipse n per corner (1.0=round, 0.0=bevel, 2.0=squircle)
+/// - clip_fade: `vec4<f32>`       (16 bytes) - overflow fade distances (top, right, bottom, left) in pixels
 /// - type_info: `vec4<u32>`       (16 bytes) - (primitive_type, fill_type, clip_type, z_layer)
-///   Total: 304 bytes
+///   Total: 368 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuPrimitive {
@@ -230,6 +234,18 @@ pub struct GpuPrimitive {
     pub filter_a: [f32; 4],
     /// CSS filter B (brightness, contrast, saturate, 0)
     pub filter_b: [f32; 4],
+    /// Mask gradient params: linear=(x1,y1,x2,y2), radial=(cx,cy,r,0) in pixel coords
+    pub mask_params: [f32; 4],
+    /// Mask info: [mask_type, start_alpha, end_alpha, 0]
+    /// mask_type: 0=none, 1=linear, 2=radial
+    pub mask_info: [f32; 4],
+    /// Corner shape (superellipse n parameter per corner)
+    /// n=1.0 = round (default), n=0.0 = bevel, n=2.0 = squircle, n=-1.0 = scoop
+    /// n>=100.0 = square, n<=-100.0 = notch
+    pub corner_shape: [f32; 4],
+    /// Overflow fade distances (top, right, bottom, left) in pixels.
+    /// Non-zero values create a smooth alpha ramp at clip edges.
+    pub clip_fade: [f32; 4],
     /// Type info (primitive_type, fill_type, clip_type, z_layer)
     pub type_info: [u32; 4],
 }
@@ -263,7 +279,14 @@ impl Default for GpuPrimitive {
             // Default filter: identity (no effect)
             filter_a: [0.0, 0.0, 0.0, 0.0], // grayscale=0, invert=0, sepia=0, hue_rotate=0
             filter_b: [1.0, 1.0, 1.0, 0.0], // brightness=1, contrast=1, saturate=1, unused=0
-            type_info: [0; 4],              // clip_type defaults to None (0)
+            // Default mask: none
+            mask_params: [0.0; 4],
+            mask_info: [0.0; 4], // mask_type=0 (none)
+            // Default corner shape: round (n=1.0)
+            corner_shape: [1.0; 4],
+            // Default clip fade: none (hard clip)
+            clip_fade: [0.0; 4],
+            type_info: [0; 4], // clip_type defaults to None (0)
         }
     }
 }
@@ -512,6 +535,10 @@ impl GpuPrimitive {
             light: [0.0, -1.0, 0.5, 0.8],
             filter_a: [0.0, 0.0, 0.0, 0.0],
             filter_b: [1.0, 1.0, 1.0, 0.0],
+            mask_params: [0.0; 4],
+            mask_info: [0.0; 4],
+            corner_shape: [1.0; 4],
+            clip_fade: glyph.clip_fade,
             type_info: [
                 PrimitiveType::Text as u32,
                 is_color_flag,
@@ -553,6 +580,10 @@ impl GpuPrimitive {
             light: [0.0, -1.0, 0.5, 0.8],
             filter_a: [0.0, 0.0, 0.0, 0.0],
             filter_b: [1.0, 1.0, 1.0, 0.0],
+            mask_params: [0.0; 4],
+            mask_info: [0.0; 4],
+            corner_shape: [1.0; 4],
+            clip_fade: [0.0; 4],
             type_info: [PrimitiveType::Text as u32, 0, ClipType::None as u32, 0],
         }
     }
@@ -861,44 +892,6 @@ impl GpuGlassPrimitive {
     }
 }
 
-/// Convert a layout GlassPanel to GPU primitive
-///
-/// This bridges the layout system's material definitions to the GPU rendering system.
-#[allow(deprecated)]
-impl From<&blinc_layout::GlassPanel> for GpuGlassPrimitive {
-    fn from(panel: &blinc_layout::GlassPanel) -> Self {
-        let mat = &panel.material;
-        let bounds = &panel.bounds;
-        let cr = &panel.corner_radius;
-
-        let mut glass = GpuGlassPrimitive::new(bounds.x, bounds.y, bounds.width, bounds.height)
-            .with_corner_radius_per_corner(
-                cr.top_left,
-                cr.top_right,
-                cr.bottom_right,
-                cr.bottom_left,
-            )
-            .with_blur(mat.blur)
-            .with_tint(mat.tint.r, mat.tint.g, mat.tint.b, mat.tint.a)
-            .with_saturation(mat.saturation)
-            .with_brightness(mat.brightness)
-            .with_noise(mat.noise)
-            .with_border_thickness(mat.border_thickness);
-
-        // Apply shadow if present
-        if let Some(ref shadow) = mat.shadow {
-            glass = glass.with_shadow_offset(
-                shadow.blur,
-                shadow.opacity,
-                shadow.offset.0,
-                shadow.offset.1,
-            );
-        }
-
-        glass
-    }
-}
-
 /// A GPU text glyph instance (matches shader `GlyphInstance` struct)
 ///
 /// Memory layout:
@@ -906,7 +899,8 @@ impl From<&blinc_layout::GlassPanel> for GpuGlassPrimitive {
 /// - uv_bounds: `vec4<f32>`    (16 bytes) - UV coordinates in atlas
 /// - color: `vec4<f32>`        (16 bytes) - text color
 /// - clip_bounds: `vec4<f32>`  (16 bytes) - clip region (x, y, width, height)
-///   Total: 80 bytes
+/// - clip_fade: `vec4<f32>`   (16 bytes) - overflow fade distances (top, right, bottom, left)
+///   Total: 96 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuGlyph {
@@ -918,6 +912,8 @@ pub struct GpuGlyph {
     pub color: [f32; 4],
     /// Clip bounds (x, y, width, height) - set to large values for no clip
     pub clip_bounds: [f32; 4],
+    /// Overflow fade distances (top, right, bottom, left) in pixels
+    pub clip_fade: [f32; 4],
     /// Flags: [is_color, unused, unused, unused]
     /// is_color: 1.0 for color emoji (use color atlas), 0.0 for grayscale (use main atlas)
     pub flags: [f32; 4],
@@ -931,7 +927,8 @@ impl Default for GpuGlyph {
             color: [0.0, 0.0, 0.0, 1.0],
             // Default: no clip (large bounds that won't clip anything)
             clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
-            flags: [0.0; 4], // Not a color glyph by default
+            clip_fade: [0.0; 4], // No fade (hard clip)
+            flags: [0.0; 4],     // Not a color glyph by default
         }
     }
 }
@@ -987,7 +984,12 @@ pub struct CompositeUniforms {
 /// - clip_bounds: `vec4<f32>` (16 bytes) - Clip region (x, y, width, height)
 /// - clip_radius: `vec4<f32>` (16 bytes) - Corner radii (tl, tr, br, bl)
 /// - clip_type: u32 (4 bytes) - 0=none, 1=rect
-/// - _pad: 28 bytes (12 bytes alignment + 16 bytes for vec3 stored as vec4)
+/// - perspective_d: f32 (4 bytes) - Perspective distance (0 = no 3D)
+/// - sin_rx: f32 (4 bytes) - sin(rotate-x angle)
+/// - cos_rx: f32 (4 bytes) - cos(rotate-x angle)
+/// - sin_ry: f32 (4 bytes) - sin(rotate-y angle)
+/// - cos_ry: f32 (4 bytes) - cos(rotate-y angle)
+/// - _pad: 8 bytes alignment
 ///   Total: 112 bytes
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1008,8 +1010,18 @@ pub struct LayerCompositeUniforms {
     pub clip_radius: [f32; 4],
     /// Clip type: 0=none, 1=rect with optional rounded corners
     pub clip_type: u32,
-    /// Padding (12 bytes to align vec3 to 16, then 16 bytes for vec3 stored as vec4)
-    pub _pad: [f32; 7],
+    /// Perspective distance in physical pixels (0 = no 3D transform)
+    pub perspective_d: f32,
+    /// sin(rotate-x angle)
+    pub sin_rx: f32,
+    /// cos(rotate-x angle)
+    pub cos_rx: f32,
+    /// sin(rotate-y angle)
+    pub sin_ry: f32,
+    /// cos(rotate-y angle)
+    pub cos_ry: f32,
+    /// Padding for alignment
+    pub _pad: [f32; 2],
 }
 
 impl LayerCompositeUniforms {
@@ -1031,7 +1043,12 @@ impl LayerCompositeUniforms {
             clip_bounds: [0.0, 0.0, viewport_size.0, viewport_size.1], // No clipping
             clip_radius: [0.0, 0.0, 0.0, 0.0],
             clip_type: 0, // No clip
-            _pad: [0.0; 7],
+            perspective_d: 0.0,
+            sin_rx: 0.0,
+            cos_rx: 1.0,
+            sin_ry: 0.0,
+            cos_ry: 1.0,
+            _pad: [0.0; 2],
         }
     }
 
@@ -1052,7 +1069,12 @@ impl LayerCompositeUniforms {
             clip_bounds: [0.0, 0.0, viewport_size.0, viewport_size.1], // No clipping
             clip_radius: [0.0, 0.0, 0.0, 0.0],
             clip_type: 0, // No clip
-            _pad: [0.0; 7],
+            perspective_d: 0.0,
+            sin_rx: 0.0,
+            cos_rx: 1.0,
+            sin_ry: 0.0,
+            cos_ry: 1.0,
+            _pad: [0.0; 2],
         }
     }
 
@@ -1298,6 +1320,15 @@ impl Default for GlowUniforms {
     }
 }
 
+/// Uniforms for the mask image effect shader
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct MaskImageUniforms {
+    /// 0 = alpha, 1 = luminance
+    pub mask_mode: u32,
+    pub _pad: [f32; 3],
+}
+
 /// A batch of tessellated path geometry
 #[derive(Clone, Default)]
 pub struct PathBatch {
@@ -1511,7 +1542,7 @@ impl PrimitiveBatch {
     pub fn has_layer_effects(&self) -> bool {
         self.layer_commands.iter().any(|entry| {
             if let LayerCommand::Push { config } = &entry.command {
-                !config.effects.is_empty()
+                !config.effects.is_empty() || config.blend_mode != blinc_core::BlendMode::Normal
             } else {
                 false
             }
@@ -1999,6 +2030,46 @@ impl PrimitiveBatch {
             .filter(|p| p.z_layer() == z_layer)
             .cloned()
             .collect()
+    }
+
+    /// Filter primitives by z_layer, excluding those in effect/blend layers
+    pub fn primitives_for_layer_excluding_effects(
+        &self,
+        z_layer: u32,
+        effect_indices: &std::collections::HashSet<usize>,
+    ) -> Vec<GpuPrimitive> {
+        self.primitives
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| p.z_layer() == z_layer && !effect_indices.contains(i))
+            .map(|(_, p)| *p)
+            .collect()
+    }
+
+    /// Get the set of primitive indices that belong to effect/blend layers
+    pub fn effect_layer_indices(&self) -> std::collections::HashSet<usize> {
+        let mut indices = std::collections::HashSet::new();
+        let mut stack: Vec<(usize, &blinc_core::LayerConfig)> = Vec::new();
+        for entry in &self.layer_commands {
+            match &entry.command {
+                LayerCommand::Push { config } => {
+                    stack.push((entry.primitive_index, config));
+                }
+                LayerCommand::Pop => {
+                    if let Some((start_idx, config)) = stack.pop() {
+                        if !config.effects.is_empty()
+                            || config.blend_mode != blinc_core::BlendMode::Normal
+                        {
+                            for i in start_idx..entry.primitive_index {
+                                indices.insert(i);
+                            }
+                        }
+                    }
+                }
+                LayerCommand::Sample { .. } => {}
+            }
+        }
+        indices
     }
 
     /// Filter foreground primitives by z_layer

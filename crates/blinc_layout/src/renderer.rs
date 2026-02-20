@@ -454,6 +454,17 @@ pub struct RenderTree {
     /// Nodes that were affected by complex selector state rules (e.g. .class:hover)
     /// Used to reset render props when the state rule no longer matches
     complex_state_affected: HashSet<LayoutNodeId>,
+
+    // ========================================================================
+    // FLIP Animation Support (CSS transitions on layout position changes)
+    // ========================================================================
+    /// Persistent element bounds by string ID, updated after every compute_layout().
+    /// Used by apply_flip_transitions() to detect position changes on subtree rebuild.
+    flip_previous_bounds: HashMap<String, ElementBounds>,
+    /// Active FLIP animations keyed by element string ID (stable across subtree rebuilds).
+    /// Unlike css_anim_store.transitions (keyed by LayoutNodeId), these survive node recreation
+    /// because they resolve string IDs → LayoutNodeIds at apply time via element_registry.
+    flip_animations: HashMap<String, crate::render_state::ActiveCssAnimation>,
 }
 
 /// Result of an incremental update attempt
@@ -517,6 +528,8 @@ impl RenderTree {
             css_anim_store: Arc::new(Mutex::new(crate::render_state::CssAnimationStore::new())),
             hover_css_animations: HashSet::new(),
             complex_state_affected: HashSet::new(),
+            flip_previous_bounds: HashMap::new(),
+            flip_animations: HashMap::new(),
         }
     }
 
@@ -1167,6 +1180,9 @@ impl RenderTree {
             }
         }
 
+        // Inherit CSS text properties from parent (text-decoration, white-space, etc.)
+        self.inherit_text_props_from_parent(&mut props, node_id);
+
         // Determine element type using the trait methods
         let element_type = Self::determine_element_type(element);
 
@@ -1299,6 +1315,9 @@ impl RenderTree {
             }
         }
 
+        // Inherit CSS text properties from parent (text-decoration, white-space, etc.)
+        self.inherit_text_props_from_parent(&mut props, node_id);
+
         // Use the element_type_id to determine type
         let type_id_boxed = element.element_type_id();
         if matches!(type_id_boxed, ElementTypeId::Canvas) {
@@ -1311,24 +1330,7 @@ impl RenderTree {
         let element_type = match type_id_boxed {
             ElementTypeId::Text => {
                 if let Some(info) = element.text_render_info() {
-                    ElementType::Text(TextData {
-                        content: info.content,
-                        font_size: info.font_size,
-                        color: info.color,
-                        align: info.align,
-                        weight: info.weight,
-                        italic: info.italic,
-                        v_align: info.v_align,
-                        wrap: info.wrap,
-                        line_height: info.line_height,
-                        measured_width: info.measured_width,
-                        font_family: info.font_family,
-                        word_spacing: info.word_spacing,
-                        letter_spacing: info.letter_spacing,
-                        ascender: info.ascender,
-                        strikethrough: info.strikethrough,
-                        underline: info.underline,
-                    })
+                    ElementType::Text(Self::build_text_data(info, &props))
                 } else {
                     ElementType::Div
                 }
@@ -1619,28 +1621,14 @@ impl RenderTree {
             }
         }
 
+        // Inherit CSS text properties from parent (text-decoration, white-space, etc.)
+        self.inherit_text_props_from_parent(&mut props, node_id);
+
         // Use the element_type_id to determine type
         let element_type = match element.element_type_id() {
             ElementTypeId::Text => {
                 if let Some(info) = element.text_render_info() {
-                    ElementType::Text(TextData {
-                        content: info.content,
-                        font_size: info.font_size,
-                        color: info.color,
-                        align: info.align,
-                        weight: info.weight,
-                        italic: info.italic,
-                        v_align: info.v_align,
-                        wrap: info.wrap,
-                        line_height: info.line_height,
-                        measured_width: info.measured_width,
-                        font_family: info.font_family,
-                        word_spacing: info.word_spacing,
-                        letter_spacing: info.letter_spacing,
-                        ascender: info.ascender,
-                        strikethrough: info.strikethrough,
-                        underline: info.underline,
-                    })
+                    ElementType::Text(Self::build_text_data(info, &props))
                 } else {
                     ElementType::Div
                 }
@@ -1805,27 +1793,11 @@ impl RenderTree {
         if matches!(type_id, ElementTypeId::Canvas) {
             tracing::trace!("determine_element_type: ElementTypeId::Canvas detected!");
         }
+        let default_props = RenderProps::default();
         match type_id {
             ElementTypeId::Text => {
                 if let Some(info) = element.text_render_info() {
-                    ElementType::Text(TextData {
-                        content: info.content,
-                        font_size: info.font_size,
-                        color: info.color,
-                        align: info.align,
-                        weight: info.weight,
-                        italic: info.italic,
-                        v_align: info.v_align,
-                        wrap: info.wrap,
-                        line_height: info.line_height,
-                        measured_width: info.measured_width,
-                        font_family: info.font_family,
-                        word_spacing: info.word_spacing,
-                        letter_spacing: info.letter_spacing,
-                        ascender: info.ascender,
-                        strikethrough: info.strikethrough,
-                        underline: info.underline,
-                    })
+                    ElementType::Text(Self::build_text_data(info, &default_props))
                 } else {
                     ElementType::Div
                 }
@@ -1907,27 +1879,11 @@ impl RenderTree {
         if matches!(type_id, ElementTypeId::Canvas) {
             tracing::trace!("determine_element_type_boxed: ElementTypeId::Canvas detected!");
         }
+        let default_props = RenderProps::default();
         match type_id {
             ElementTypeId::Text => {
                 if let Some(info) = element.text_render_info() {
-                    ElementType::Text(TextData {
-                        content: info.content,
-                        font_size: info.font_size,
-                        color: info.color,
-                        align: info.align,
-                        weight: info.weight,
-                        italic: info.italic,
-                        v_align: info.v_align,
-                        wrap: info.wrap,
-                        line_height: info.line_height,
-                        measured_width: info.measured_width,
-                        font_family: info.font_family,
-                        word_spacing: info.word_spacing,
-                        letter_spacing: info.letter_spacing,
-                        ascender: info.ascender,
-                        strikethrough: info.strikethrough,
-                        underline: info.underline,
-                    })
+                    ElementType::Text(Self::build_text_data(info, &default_props))
                 } else {
                     ElementType::Div
                 }
@@ -4453,6 +4409,97 @@ impl RenderTree {
         applied
     }
 
+    /// Inherit CSS text properties from the parent RenderNode.
+    ///
+    /// CSS text properties like text-decoration, white-space, text-overflow, etc.
+    /// need to cascade from parent divs to child text elements. Without this,
+    /// CSS like `.my-class { text-decoration: underline; }` on a parent div
+    /// wouldn't affect the child text node.
+    fn inherit_text_props_from_parent(&self, props: &mut RenderProps, node_id: LayoutNodeId) {
+        let parent_id = match self.element_registry.get_parent(node_id) {
+            Some(id) => id,
+            None => return,
+        };
+        let parent_props = match self.render_nodes.get(&parent_id) {
+            Some(node) => &node.props,
+            None => return,
+        };
+
+        // text-decoration (CSS spec: not inherited, but decorations paint across inline content)
+        if props.text_decoration.is_none() {
+            if let Some(td) = parent_props.text_decoration {
+                props.text_decoration = Some(td);
+            }
+        }
+        if props.text_decoration_color.is_none() {
+            if let Some(c) = parent_props.text_decoration_color {
+                props.text_decoration_color = Some(c);
+            }
+        }
+        if props.text_decoration_thickness.is_none() {
+            if let Some(t) = parent_props.text_decoration_thickness {
+                props.text_decoration_thickness = Some(t);
+            }
+        }
+        // white-space (CSS spec: inherited)
+        if props.white_space.is_none() {
+            if let Some(ws) = parent_props.white_space {
+                props.white_space = Some(ws);
+            }
+        }
+        // text-overflow (CSS spec: not inherited, but child text must know)
+        if props.text_overflow.is_none() {
+            if let Some(to) = parent_props.text_overflow {
+                props.text_overflow = Some(to);
+            }
+        }
+    }
+
+    /// Build TextData from TextRenderInfo, applying CSS overrides from RenderProps
+    fn build_text_data(info: crate::div::TextRenderInfo, props: &RenderProps) -> TextData {
+        let mut strikethrough = info.strikethrough;
+        let mut underline = info.underline;
+        let mut wrap = info.wrap;
+        // CSS text-decoration overrides builder values
+        if let Some(td) = props.text_decoration {
+            use crate::element_style::TextDecoration;
+            match td {
+                TextDecoration::Underline => underline = true,
+                TextDecoration::LineThrough => strikethrough = true,
+                TextDecoration::None => {
+                    underline = false;
+                    strikethrough = false;
+                }
+            }
+        }
+        // CSS white-space overrides wrap
+        if let Some(ws) = props.white_space {
+            use crate::element_style::WhiteSpace;
+            match ws {
+                WhiteSpace::Nowrap | WhiteSpace::Pre => wrap = false,
+                WhiteSpace::Normal | WhiteSpace::PreWrap => wrap = true,
+            }
+        }
+        TextData {
+            content: info.content,
+            font_size: info.font_size,
+            color: info.color,
+            align: info.align,
+            weight: info.weight,
+            italic: info.italic,
+            v_align: info.v_align,
+            wrap,
+            line_height: info.line_height,
+            measured_width: info.measured_width,
+            font_family: info.font_family,
+            word_spacing: info.word_spacing,
+            letter_spacing: info.letter_spacing,
+            ascender: info.ascender,
+            strikethrough,
+            underline,
+        }
+    }
+
     /// Apply ElementStyle properties to RenderProps
     fn apply_element_style_to_props(
         props: &mut RenderProps,
@@ -4463,6 +4510,12 @@ impl RenderTree {
         }
         if let Some(ref cr) = style.corner_radius {
             props.border_radius = *cr;
+        }
+        if let Some(cs) = style.corner_shape {
+            props.corner_shape = cs;
+        }
+        if let Some(fade) = style.overflow_fade {
+            props.overflow_fade = fade;
         }
         if let Some(shadow) = style.shadow {
             props.shadow = Some(shadow);
@@ -4554,6 +4607,16 @@ impl RenderTree {
                     .retain(|e| !matches!(e, LayerEffect::DropShadow { .. }));
             }
         }
+        // Mask image → LayerEffect (URL only; gradients handled per-primitive)
+        if let Some(blinc_core::MaskImage::Url(ref url)) = style.mask_image {
+            props
+                .layer_effects
+                .retain(|e| !matches!(e, LayerEffect::MaskImage { .. }));
+            props.layer_effects.push(LayerEffect::MaskImage {
+                image_url: url.clone(),
+                mask_mode: style.mask_mode.clone().unwrap_or_default(),
+            });
+        }
         // Text color
         if let Some(c) = &style.text_color {
             props.text_color = Some([c.r, c.g, c.b, c.a]);
@@ -4595,6 +4658,15 @@ impl RenderTree {
         }
         if let Some(sw) = style.stroke_width {
             props.stroke_width = Some(sw);
+        }
+        if let Some(ref da) = style.stroke_dasharray {
+            props.stroke_dasharray = Some(da.clone());
+        }
+        if let Some(offset) = style.stroke_dashoffset {
+            props.stroke_dashoffset = Some(offset);
+        }
+        if let Some(ref path_data) = style.svg_path_data {
+            props.svg_path_data = Some(path_data.clone());
         }
         // Transform origin
         if let Some(to) = style.transform_origin {
@@ -4682,6 +4754,49 @@ impl RenderTree {
         if let Some(vis) = style.visibility {
             use crate::element_style::StyleVisibility;
             props.visible = matches!(vis, StyleVisibility::Visible);
+        }
+        // Image properties
+        if let Some(of) = style.object_fit {
+            props.object_fit = Some(of);
+        }
+        if let Some(op) = style.object_position {
+            props.object_position = Some(op);
+        }
+        // Pointer events
+        if let Some(pe) = style.pointer_events {
+            props.pointer_events_none = matches!(pe, blinc_core::PointerEvents::None);
+        }
+        // Cursor
+        if let Some(cursor) = style.cursor {
+            props.cursor = Some(cursor);
+        }
+        // Mix blend mode
+        if let Some(mode) = style.mix_blend_mode {
+            props.mix_blend_mode = Some(mode);
+        }
+        // Text decoration enhancements
+        if let Some(c) = style.text_decoration_color {
+            props.text_decoration_color = Some([c.r, c.g, c.b, c.a]);
+        }
+        if let Some(t) = style.text_decoration_thickness {
+            props.text_decoration_thickness = Some(t);
+        }
+        // Text overflow
+        if let Some(to) = style.text_overflow {
+            props.text_overflow = Some(to);
+        }
+        if let Some(ws) = style.white_space {
+            props.white_space = Some(ws);
+        }
+        if let Some(ref mask) = style.mask_image {
+            props.mask_image = Some(mask.clone());
+        }
+        if let Some(ref mode) = style.mask_mode {
+            props.mask_mode = Some(mode.clone());
+        }
+        // @flow shader
+        if let Some(ref flow_name) = style.flow {
+            props.flow = Some(flow_name.clone());
         }
     }
 
@@ -4925,6 +5040,10 @@ impl RenderTree {
                 }
                 if cp.background_color.is_some() {
                     kp.background_color = cp.background_color;
+                }
+                // Mask gradient
+                if cp.mask_gradient.is_some() {
+                    kp.mask_gradient = cp.mask_gradient;
                 }
             }
             kp
@@ -5969,6 +6088,186 @@ impl RenderTree {
         any_applied
     }
 
+    /// Apply SVG tag-name CSS rules (e.g., `path { fill: red; }`, `#my-svg circle { stroke: blue; }`)
+    ///
+    /// For each complex rule targeting an SVG tag name, finds SVG layout nodes whose
+    /// ancestor chain matches the remaining selector segments and stores per-tag
+    /// style overrides on those nodes' RenderProps.
+    fn apply_svg_tag_styles(&mut self, router: &crate::event_router::EventRouter) -> bool {
+        let stylesheet = match &self.stylesheet {
+            Some(s) => s.clone(),
+            None => return false,
+        };
+
+        let svg_tag_rules = stylesheet.svg_tag_rules();
+        if svg_tag_rules.is_empty() {
+            return false;
+        }
+
+        // Collect interaction state
+        let hovered_nodes: std::collections::HashSet<LayoutNodeId> =
+            router.hovered_nodes().collect();
+        let pressed_nodes: std::collections::HashSet<LayoutNodeId> =
+            router.pressed_target().into_iter().collect();
+        let focused_node: Option<LayoutNodeId> = {
+            let mut focused = None;
+            for id in self.element_registry.all_ids() {
+                if let Some(nid) = self.element_registry.get(&id) {
+                    if router.is_focused(nid) {
+                        focused = Some(nid);
+                        break;
+                    }
+                }
+            }
+            focused
+        };
+
+        // Find all SVG layout nodes
+        let svg_nodes: Vec<LayoutNodeId> = self
+            .render_nodes
+            .keys()
+            .copied()
+            .filter(|&nid| self.element_registry.get_element_type(nid).as_deref() == Some("svg"))
+            .collect();
+
+        if svg_nodes.is_empty() {
+            return false;
+        }
+
+        let mut any_changed = false;
+
+        for &svg_node in &svg_nodes {
+            let mut tag_styles: std::collections::HashMap<String, crate::element::SvgTagStyle> =
+                std::collections::HashMap::new();
+
+            for &(tag_name, ancestor_segments, style) in &svg_tag_rules {
+                // Check if ancestor segments match the SVG node
+                let matches = if ancestor_segments.is_empty() {
+                    // Bare tag selector (e.g., `path { ... }`) — matches all SVGs
+                    true
+                } else {
+                    // Build a temporary ComplexSelector with ancestor segments + SVG node as target
+                    // The last ancestor segment targets the SVG node itself
+                    let last_idx = ancestor_segments.len() - 1;
+                    let (last_compound, _) = &ancestor_segments[last_idx];
+
+                    // Check if the SVG node matches the last ancestor compound
+                    let svg_hovered = hovered_nodes.contains(&svg_node);
+                    let svg_pressed = pressed_nodes.contains(&svg_node);
+                    let svg_focused = focused_node == Some(svg_node);
+
+                    if !self.compound_matches(
+                        last_compound,
+                        svg_node,
+                        svg_hovered,
+                        svg_pressed,
+                        svg_focused,
+                    ) {
+                        false
+                    } else if ancestor_segments.len() == 1 {
+                        // Only one ancestor segment and it matched the SVG node
+                        true
+                    } else {
+                        // Walk remaining ancestor segments up the tree
+                        let mut current_node = svg_node;
+                        let mut all_matched = true;
+                        for i in (0..last_idx).rev() {
+                            let (compound, combinator) = &ancestor_segments[i];
+                            let combinator =
+                                combinator.unwrap_or(crate::css_parser::Combinator::Descendant);
+                            match combinator {
+                                crate::css_parser::Combinator::Child => {
+                                    let parent =
+                                        match self.element_registry.get_parent(current_node) {
+                                            Some(p) => p,
+                                            None => {
+                                                all_matched = false;
+                                                break;
+                                            }
+                                        };
+                                    let p_hov = hovered_nodes.contains(&parent);
+                                    let p_prs = pressed_nodes.contains(&parent);
+                                    let p_foc = focused_node == Some(parent);
+                                    if !self.compound_matches(compound, parent, p_hov, p_prs, p_foc)
+                                    {
+                                        all_matched = false;
+                                        break;
+                                    }
+                                    current_node = parent;
+                                }
+                                crate::css_parser::Combinator::Descendant => {
+                                    let ancestors = self.element_registry.ancestors(current_node);
+                                    let mut found = false;
+                                    for ancestor in &ancestors {
+                                        let a_hov = hovered_nodes.contains(ancestor);
+                                        let a_prs = pressed_nodes.contains(ancestor);
+                                        let a_foc = focused_node == Some(*ancestor);
+                                        if self.compound_matches(
+                                            compound, *ancestor, a_hov, a_prs, a_foc,
+                                        ) {
+                                            current_node = *ancestor;
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if !found {
+                                        all_matched = false;
+                                        break;
+                                    }
+                                }
+                                _ => {
+                                    all_matched = false;
+                                    break;
+                                }
+                            }
+                        }
+                        all_matched
+                    }
+                };
+
+                if matches {
+                    // Extract SVG-relevant properties from ElementStyle into SvgTagStyle
+                    let entry = tag_styles.entry(tag_name.to_string()).or_default();
+                    if let Some(fill) = style.fill {
+                        entry.fill = Some([fill.r, fill.g, fill.b, fill.a]);
+                    }
+                    if let Some(stroke) = style.stroke {
+                        entry.stroke = Some([stroke.r, stroke.g, stroke.b, stroke.a]);
+                    }
+                    if let Some(sw) = style.stroke_width {
+                        entry.stroke_width = Some(sw);
+                    }
+                    if let Some(ref da) = style.stroke_dasharray {
+                        entry.stroke_dasharray = Some(da.clone());
+                    }
+                    if let Some(offset) = style.stroke_dashoffset {
+                        entry.stroke_dashoffset = Some(offset);
+                    }
+                    if let Some(opacity) = style.opacity {
+                        entry.opacity = Some(opacity);
+                    }
+                }
+            }
+
+            // Apply tag styles to render props
+            if !tag_styles.is_empty() {
+                if let Some(render_node) = self.render_nodes.get_mut(&svg_node) {
+                    if render_node.props.svg_tag_styles != tag_styles {
+                        render_node.props.svg_tag_styles = tag_styles;
+                        any_changed = true;
+                    }
+                }
+            } else if let Some(render_node) = self.render_nodes.get_mut(&svg_node) {
+                if !render_node.props.svg_tag_styles.is_empty() {
+                    render_node.props.svg_tag_styles.clear();
+                    any_changed = true;
+                }
+            }
+        }
+
+        any_changed
+    }
+
     // =========================================================================
     // CSS Keyframe Animation Methods
     // =========================================================================
@@ -6424,6 +6723,8 @@ impl RenderTree {
         check_transition!(outline_width, "outline-width");
         check_transition!(outline_offset, "outline-offset");
         check_transition!(corner_radius, "border-radius");
+        check_transition!(corner_shape, "corner-shape");
+        check_transition!(overflow_fade, "overflow-fade");
         check_transition!(shadow_params, "box-shadow");
         check_transition!(shadow_color, "box-shadow");
         check_transition!(clip_inset, "clip-path");
@@ -6478,6 +6779,15 @@ impl RenderTree {
         check_transition!(skew_y, "transform", default 0.0);
         check_transition!(transform_origin, "transform-origin");
 
+        // Mask gradient
+        check_transition!(mask_gradient, "mask-image");
+
+        // SVG properties
+        check_transition!(svg_fill, "fill");
+        check_transition!(svg_stroke, "stroke");
+        check_transition!(svg_stroke_width, "stroke-width");
+        check_transition!(svg_stroke_dashoffset, "stroke-dashoffset");
+
         if has_any && duration_ms > 0 {
             // If a transition already exists heading to the same target, let it continue
             // rather than restarting with a fresh duration each frame
@@ -6522,6 +6832,15 @@ impl RenderTree {
     /// Check if there are no active CSS transitions
     pub fn css_transitions_empty(&self) -> bool {
         self.css_anim_store.lock().unwrap().transitions.is_empty()
+    }
+
+    /// Remove completed transitions from the store.
+    /// Must be called AFTER `apply_all_css_transition_props()`.
+    pub fn remove_completed_transitions(&mut self) {
+        self.css_anim_store
+            .lock()
+            .unwrap()
+            .remove_completed_transitions();
     }
 
     /// Rebuild gradient stops, interpolating the first and last stop colors
@@ -6811,6 +7130,16 @@ impl RenderTree {
             };
         }
 
+        // Corner shape (superellipse)
+        if let Some([tl, tr, br, bl]) = anim_props.corner_shape {
+            props.corner_shape = blinc_core::CornerShape::new(tl, tr, br, bl);
+        }
+
+        // Overflow fade
+        if let Some([t, r, b, l]) = anim_props.overflow_fade {
+            props.overflow_fade = blinc_core::OverflowFade::new(t, r, b, l);
+        }
+
         // Border
         if let Some(bw) = anim_props.border_width {
             props.border_width = bw;
@@ -6946,6 +7275,67 @@ impl RenderTree {
         if let Some(to) = anim_props.transform_origin {
             props.transform_origin = Some(to);
         }
+
+        // Mask gradient: reconstruct MaskImage::Gradient from combined [f32; 8]
+        if let Some(mg) = anim_props.mask_gradient {
+            let mask_type = mg[0];
+            let start_alpha = mg[1];
+            let end_alpha = mg[2];
+            let gradient = if mask_type < 1.5 {
+                blinc_core::Gradient::Linear {
+                    start: blinc_core::Point::new(mg[4], mg[5]),
+                    end: blinc_core::Point::new(mg[6], mg[7]),
+                    stops: vec![
+                        blinc_core::GradientStop::new(
+                            0.0,
+                            blinc_core::Color::rgba(0.0, 0.0, 0.0, start_alpha),
+                        ),
+                        blinc_core::GradientStop::new(
+                            1.0,
+                            blinc_core::Color::rgba(0.0, 0.0, 0.0, end_alpha),
+                        ),
+                    ],
+                    space: blinc_core::GradientSpace::ObjectBoundingBox,
+                    spread: blinc_core::GradientSpread::Pad,
+                }
+            } else {
+                blinc_core::Gradient::Radial {
+                    center: blinc_core::Point::new(mg[4], mg[5]),
+                    radius: mg[6],
+                    focal: None,
+                    stops: vec![
+                        blinc_core::GradientStop::new(
+                            0.0,
+                            blinc_core::Color::rgba(0.0, 0.0, 0.0, start_alpha),
+                        ),
+                        blinc_core::GradientStop::new(
+                            1.0,
+                            blinc_core::Color::rgba(0.0, 0.0, 0.0, end_alpha),
+                        ),
+                    ],
+                    space: blinc_core::GradientSpace::ObjectBoundingBox,
+                    spread: blinc_core::GradientSpread::Pad,
+                }
+            };
+            props.mask_image = Some(blinc_core::MaskImage::Gradient(gradient));
+        }
+
+        // SVG properties
+        if let Some([r, g, b, a]) = anim_props.svg_fill {
+            props.fill = Some([r, g, b, a]);
+        }
+        if let Some([r, g, b, a]) = anim_props.svg_stroke {
+            props.stroke = Some([r, g, b, a]);
+        }
+        if let Some(sw) = anim_props.svg_stroke_width {
+            props.stroke_width = Some(sw);
+        }
+        if let Some(offset) = anim_props.svg_stroke_dashoffset {
+            props.stroke_dashoffset = Some(offset);
+        }
+        if let Some(ref path_data) = anim_props.svg_path_data {
+            props.svg_path_data = Some(path_data.clone());
+        }
     }
 
     /// Extract animatable properties from RenderProps into KeyframeProperties
@@ -7079,6 +7469,12 @@ impl RenderTree {
         let cr = &props.border_radius;
         kp.corner_radius = Some([cr.top_left, cr.top_right, cr.bottom_right, cr.bottom_left]);
 
+        // Corner shape (superellipse) — always snapshot for transitions
+        kp.corner_shape = Some(props.corner_shape.to_array());
+
+        // Overflow fade — always snapshot for transitions
+        kp.overflow_fade = Some(props.overflow_fade.to_array());
+
         // Border
         kp.border_width = Some(props.border_width);
         if let Some(bc) = &props.border_color {
@@ -7135,6 +7531,49 @@ impl RenderTree {
 
         // Transform origin
         kp.transform_origin = props.transform_origin;
+
+        // Mask gradient (combined [mask_type, start_alpha, end_alpha, 0, p0, p1, p2, p3])
+        if let Some(blinc_core::MaskImage::Gradient(ref gradient)) = props.mask_image {
+            let lum = matches!(props.mask_mode, Some(blinc_core::MaskMode::Luminance));
+            kp.mask_gradient = Some(match gradient {
+                blinc_core::Gradient::Linear {
+                    start, end, stops, ..
+                } => {
+                    let (sa, ea) = Self::extract_mask_alphas(stops, lum);
+                    [1.0, sa, ea, 0.0, start.x, start.y, end.x, end.y]
+                }
+                blinc_core::Gradient::Radial {
+                    center,
+                    radius,
+                    stops,
+                    ..
+                } => {
+                    let (sa, ea) = Self::extract_mask_alphas(stops, lum);
+                    [2.0, sa, ea, 0.0, center.x, center.y, *radius, 0.0]
+                }
+                blinc_core::Gradient::Conic { center, stops, .. } => {
+                    let (sa, ea) = Self::extract_mask_alphas(stops, lum);
+                    [2.0, sa, ea, 0.0, center.x, center.y, 0.5, 0.0]
+                }
+            });
+        }
+
+        // SVG properties
+        if let Some(fill) = &props.fill {
+            kp.svg_fill = Some(*fill);
+        }
+        if let Some(stroke) = &props.stroke {
+            kp.svg_stroke = Some(*stroke);
+        }
+        if let Some(sw) = props.stroke_width {
+            kp.svg_stroke_width = Some(sw);
+        }
+        if let Some(offset) = props.stroke_dashoffset {
+            kp.svg_stroke_dashoffset = Some(offset);
+        }
+        if let Some(ref path_data) = props.svg_path_data {
+            kp.svg_path_data = Some(path_data.clone());
+        }
 
         kp
     }
@@ -7209,6 +7648,442 @@ impl RenderTree {
                 }
             }
         }
+
+        // Apply base (non-state) SVG tag-name rules to SVG nodes
+        let svg_tag_rules = stylesheet.svg_tag_rules();
+        if !svg_tag_rules.is_empty() {
+            let empty_set: std::collections::HashSet<LayoutNodeId> =
+                std::collections::HashSet::new();
+            let svg_nodes: Vec<LayoutNodeId> = self
+                .render_nodes
+                .keys()
+                .copied()
+                .filter(|&nid| {
+                    self.element_registry.get_element_type(nid).as_deref() == Some("svg")
+                })
+                .collect();
+
+            for &svg_node in &svg_nodes {
+                let mut tag_styles: std::collections::HashMap<String, crate::element::SvgTagStyle> =
+                    std::collections::HashMap::new();
+                for &(tag_name, ancestor_segments, style) in &svg_tag_rules {
+                    // Skip state-dependent rules (handled by apply_svg_tag_styles)
+                    let has_state = ancestor_segments.iter().any(|(c, _)| c.has_state());
+                    if has_state {
+                        continue;
+                    }
+                    let matches = if ancestor_segments.is_empty() {
+                        true
+                    } else {
+                        // Check if ancestor segments match the SVG node's chain
+                        let last_idx = ancestor_segments.len() - 1;
+                        let (last_compound, _) = &ancestor_segments[last_idx];
+                        if !self.compound_matches(last_compound, svg_node, false, false, false) {
+                            false
+                        } else if ancestor_segments.len() == 1 {
+                            true
+                        } else {
+                            let mut current_node = svg_node;
+                            let mut all_matched = true;
+                            for i in (0..last_idx).rev() {
+                                let (compound, combinator) = &ancestor_segments[i];
+                                let combinator =
+                                    combinator.unwrap_or(crate::css_parser::Combinator::Descendant);
+                                match combinator {
+                                    crate::css_parser::Combinator::Child => {
+                                        match self.element_registry.get_parent(current_node) {
+                                            Some(parent) => {
+                                                if !self.compound_matches(
+                                                    compound, parent, false, false, false,
+                                                ) {
+                                                    all_matched = false;
+                                                    break;
+                                                }
+                                                current_node = parent;
+                                            }
+                                            None => {
+                                                all_matched = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    crate::css_parser::Combinator::Descendant => {
+                                        let ancestors =
+                                            self.element_registry.ancestors(current_node);
+                                        let mut found = false;
+                                        for ancestor in &ancestors {
+                                            if self.compound_matches(
+                                                compound, *ancestor, false, false, false,
+                                            ) {
+                                                current_node = *ancestor;
+                                                found = true;
+                                                break;
+                                            }
+                                        }
+                                        if !found {
+                                            all_matched = false;
+                                            break;
+                                        }
+                                    }
+                                    _ => {
+                                        all_matched = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            all_matched
+                        }
+                    };
+                    if matches {
+                        let entry = tag_styles.entry(tag_name.to_string()).or_default();
+                        if let Some(fill) = style.fill {
+                            entry.fill = Some([fill.r, fill.g, fill.b, fill.a]);
+                        }
+                        if let Some(stroke) = style.stroke {
+                            entry.stroke = Some([stroke.r, stroke.g, stroke.b, stroke.a]);
+                        }
+                        if let Some(sw) = style.stroke_width {
+                            entry.stroke_width = Some(sw);
+                        }
+                        if let Some(ref da) = style.stroke_dasharray {
+                            entry.stroke_dasharray = Some(da.clone());
+                        }
+                        if let Some(offset) = style.stroke_dashoffset {
+                            entry.stroke_dashoffset = Some(offset);
+                        }
+                        if let Some(opacity) = style.opacity {
+                            entry.opacity = Some(opacity);
+                        }
+                    }
+                }
+                if !tag_styles.is_empty() {
+                    if let Some(render_node) = self.render_nodes.get_mut(&svg_node) {
+                        render_node.props.svg_tag_styles = tag_styles;
+                    }
+                }
+            }
+        }
+
+        // Post-pass: propagate inherited text properties (text-decoration, white-space,
+        // text-overflow) from parent to child nodes. This must run AFTER all CSS styles
+        // are applied above, because during initial tree construction the stylesheet
+        // wasn't set yet and inherit_text_props_from_parent found no parent values.
+        let all_node_ids: Vec<LayoutNodeId> = self.render_nodes.keys().copied().collect();
+        for node_id in all_node_ids {
+            let parent_id = match self.element_registry.get_parent(node_id) {
+                Some(id) => id,
+                None => continue,
+            };
+            // Read parent text props (need separate borrow)
+            let parent_text_props = self.render_nodes.get(&parent_id).map(|n| {
+                (
+                    n.props.text_decoration,
+                    n.props.text_decoration_color,
+                    n.props.text_decoration_thickness,
+                    n.props.white_space,
+                    n.props.text_overflow,
+                )
+            });
+            if let Some((td, td_color, td_thick, ws, to)) = parent_text_props {
+                if let Some(node) = self.render_nodes.get_mut(&node_id) {
+                    if node.props.text_decoration.is_none() {
+                        node.props.text_decoration = td;
+                    }
+                    if node.props.text_decoration_color.is_none() {
+                        node.props.text_decoration_color = td_color;
+                    }
+                    if node.props.text_decoration_thickness.is_none() {
+                        node.props.text_decoration_thickness = td_thick;
+                    }
+                    if node.props.white_space.is_none() {
+                        node.props.white_space = ws;
+                    }
+                    if node.props.text_overflow.is_none() {
+                        node.props.text_overflow = to;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply CSS base styles (class and ID selectors) to a subtree after rebuild.
+    ///
+    /// Called after `process_pending_subtree_rebuilds` builds new child nodes.
+    /// `collect_render_props_boxed` only applies `#id` styles inline; class-based
+    /// selectors (`.sort-item`, `.grid-item`, etc.) are resolved by
+    /// `apply_stylesheet_base_styles()` which only runs at full tree creation.
+    /// This method fills that gap for incrementally rebuilt subtrees.
+    fn apply_stylesheet_base_styles_for_subtree(&mut self, parent_id: LayoutNodeId) {
+        let stylesheet = match &self.stylesheet {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        // Collect all node IDs in the subtree (parent + descendants)
+        let mut subtree_nodes = Vec::new();
+        self.collect_subtree_ids(parent_id, &mut subtree_nodes);
+
+        if subtree_nodes.is_empty() {
+            return;
+        }
+
+        // Apply complex base rules (class selectors, combinators) — lower specificity first
+        let complex_rules = stylesheet.complex_rules();
+        if !complex_rules.is_empty() {
+            let empty_set = std::collections::HashSet::new();
+
+            let mut base_rules: Vec<&(
+                crate::css_parser::ComplexSelector,
+                crate::element_style::ElementStyle,
+            )> = complex_rules
+                .iter()
+                .filter(|(selector, _)| !selector.has_state())
+                .collect();
+            base_rules.sort_by_key(|(selector, _)| Self::selector_specificity(selector));
+
+            for (selector, style) in base_rules {
+                for &node_id in &subtree_nodes {
+                    if self
+                        .complex_selector_matches(selector, node_id, &empty_set, &empty_set, None)
+                    {
+                        if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                            Self::apply_element_style_to_props(&mut render_node.props, style);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply simple ID rules (highest specificity, overrides class selectors)
+        for &node_id in &subtree_nodes {
+            if let Some(element_id) = self.element_registry.get_id(node_id) {
+                if let Some(base_style) = stylesheet.get(&element_id) {
+                    if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                        Self::apply_element_style_to_props(&mut render_node.props, base_style);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Collect all node IDs in a subtree (the node itself + all descendants).
+    fn collect_subtree_ids(&self, node_id: LayoutNodeId, out: &mut Vec<LayoutNodeId>) {
+        out.push(node_id);
+        for child_id in self.layout_tree.children(node_id) {
+            self.collect_subtree_ids(child_id, out);
+        }
+    }
+
+    // ========================================================================
+    // FLIP Animation for Subtree Rebuilds
+    // ========================================================================
+
+    /// Update persistent element bounds for FLIP tracking.
+    ///
+    /// Called after every `compute_layout()` to record current absolute positions
+    /// by element string ID. This data survives across subtree rebuilds since it's
+    /// keyed by stable string IDs, not volatile LayoutNodeIds.
+    pub fn update_flip_bounds(&mut self) {
+        self.flip_previous_bounds.clear();
+        for (node_id, _render_node) in &self.render_nodes {
+            if let Some(element_id) = self.element_registry.get_id(*node_id) {
+                if let Some(bounds) = self.layout_tree.get_absolute_bounds(*node_id) {
+                    self.flip_previous_bounds.insert(element_id, bounds);
+                }
+            }
+        }
+    }
+
+    /// Apply FLIP transitions for elements that moved during subtree rebuild.
+    ///
+    /// Called AFTER layout recomputation (in windowed.rs, after compute_layout()).
+    /// Compares new layout positions to snapshots taken before the rebuild.
+    /// For elements that moved AND have a CSS `transition` on `transform`,
+    /// creates a CSS transition from `translate(dx, dy)` to `translate(0, 0)`.
+    pub fn apply_flip_transitions(&mut self) {
+        tracing::trace!(
+            "FLIP: apply_flip_transitions called, flip_previous_bounds has {} entries",
+            self.flip_previous_bounds.len()
+        );
+        if self.flip_previous_bounds.is_empty() {
+            return;
+        }
+
+        let stylesheet = self.stylesheet.clone();
+
+        // Collect elements that moved: compare previous bounds with current absolute bounds
+        let mut moved: Vec<(String, f32, f32, crate::tree::LayoutNodeId)> = Vec::new();
+
+        for (node_id, render_node) in &self.render_nodes {
+            // Skip elements that already have a transform set by the app (e.g. the dragged item).
+            // FLIP should only animate elements whose position changed passively due to reflow,
+            // not elements being actively positioned via Transform::translate().
+            if render_node.props.transform.is_some() {
+                continue;
+            }
+
+            let Some(element_id) = self.element_registry.get_id(*node_id) else {
+                continue;
+            };
+            let Some(old_bounds) = self.flip_previous_bounds.get(&element_id) else {
+                continue;
+            };
+            let Some(new_bounds) = self.layout_tree.get_absolute_bounds(*node_id) else {
+                continue;
+            };
+
+            let dx = old_bounds.x - new_bounds.x;
+            let dy = old_bounds.y - new_bounds.y;
+
+            if dx.abs() < 1.0 && dy.abs() < 1.0 {
+                continue;
+            }
+
+            tracing::trace!("FLIP: '{}' moved: delta=({:.1},{:.1})", element_id, dx, dy);
+            moved.push((element_id, dx, dy, *node_id));
+        }
+
+        if moved.is_empty() {
+            return;
+        }
+
+        tracing::debug!("FLIP: {} elements moved, creating transitions", moved.len());
+
+        for (element_id, dx, dy, new_node_id) in &moved {
+            // Find CSS transition spec for "transform" (CssTransitionSet::get also matches "all")
+            // Check: 1) ID-based style, 2) class-based complex selector rules
+            let transition = stylesheet.as_ref().and_then(|ss| {
+                // Check by element ID first
+                ss.get(element_id)
+                    .and_then(|style| style.transition.as_ref())
+                    .and_then(|ts| ts.get("transform"))
+                    .or_else(|| {
+                        // Check class-based complex selector rules
+                        let empty = std::collections::HashSet::new();
+                        for rule in ss.complex_rules() {
+                            if rule.0.has_state() {
+                                continue;
+                            }
+                            if self.complex_selector_matches(
+                                &rule.0,
+                                *new_node_id,
+                                &empty,
+                                &empty,
+                                None,
+                            ) {
+                                if let Some(ts) = rule.1.transition.as_ref() {
+                                    if let Some(t) = ts.get("transform") {
+                                        return Some(t);
+                                    }
+                                }
+                            }
+                        }
+                        None
+                    })
+            });
+
+            let Some(transition) = transition else {
+                tracing::trace!(
+                    "FLIP: '{}' has no CSS transition for 'transform'",
+                    element_id
+                );
+                continue;
+            };
+
+            let duration_ms = transition.duration_ms;
+            let delay_ms = transition.delay_ms;
+            let easing = transition.timing.to_easing();
+
+            if duration_ms == 0 {
+                continue;
+            }
+
+            tracing::debug!(
+                "FLIP: '{}' translate({:.1}, {:.1}) → (0,0) over {}ms",
+                element_id,
+                dx,
+                dy,
+                duration_ms
+            );
+
+            // Create a CSS transition from translate(dx, dy) to translate(0, 0)
+            use blinc_animation::{FillMode, KeyframeProperties, MultiKeyframeAnimation};
+
+            let from = KeyframeProperties {
+                translate_x: Some(*dx),
+                translate_y: Some(*dy),
+                ..Default::default()
+            };
+
+            let to = KeyframeProperties {
+                translate_x: Some(0.0),
+                translate_y: Some(0.0),
+                ..Default::default()
+            };
+
+            let anim = MultiKeyframeAnimation::new(duration_ms)
+                .keyframe(0.0, from, easing)
+                .keyframe(1.0, to, easing)
+                .delay(delay_ms)
+                .fill_mode(FillMode::Forwards);
+
+            // Store in flip_animations keyed by string ID (survives subtree rebuilds).
+            // Unlike css_anim_store.transitions which are keyed by LayoutNodeId,
+            // these persist when nodes are recreated because we resolve to the
+            // current LayoutNodeId at apply time via element_registry.
+            self.flip_animations.insert(
+                element_id.clone(),
+                crate::render_state::ActiveCssAnimation::new(anim),
+            );
+        }
+    }
+
+    /// Tick all active FLIP animations by `dt_ms` milliseconds.
+    /// Removes completed animations. Returns `true` if any are still playing.
+    pub fn tick_flip_animations(&mut self, dt_ms: f32) -> bool {
+        if self.flip_animations.is_empty() {
+            return false;
+        }
+        let mut any_playing = false;
+        for anim in self.flip_animations.values_mut() {
+            if anim.tick(dt_ms) {
+                any_playing = true;
+            }
+        }
+        // Remove completed animations
+        self.flip_animations.retain(|_, a| a.is_playing);
+        any_playing
+    }
+
+    /// Apply current FLIP animation values to render props.
+    /// Resolves string element IDs → LayoutNodeIds via element_registry.
+    pub fn apply_flip_animation_props(&mut self) {
+        if self.flip_animations.is_empty() {
+            return;
+        }
+        // Collect data first to avoid borrow conflict with render_nodes
+        let props_data: Vec<(
+            crate::tree::LayoutNodeId,
+            blinc_animation::KeyframeProperties,
+        )> = self
+            .flip_animations
+            .iter()
+            .filter_map(|(element_id, anim)| {
+                let node_id = self.element_registry.get(element_id)?;
+                Some((node_id, anim.current_properties.clone()))
+            })
+            .collect();
+
+        for (node_id, anim_props) in props_data {
+            if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                Self::apply_keyframe_props_to_render(&mut render_node.props, &anim_props);
+            }
+        }
+    }
+
+    /// Check if any FLIP animations are currently active.
+    pub fn has_active_flip_animations(&self) -> bool {
+        !self.flip_animations.is_empty()
     }
 
     /// Apply stylesheet state styles based on EventRouter state
@@ -7301,7 +8176,119 @@ impl RenderTree {
             any_applied = true;
         }
 
+        // Apply SVG tag-name CSS rules (e.g., `path { fill: red; }`)
+        if self.apply_svg_tag_styles(router) {
+            any_applied = true;
+        }
+
         any_applied
+    }
+
+    /// Evaluate dynamic `calc(env(...))` properties for pointer-tracked elements.
+    ///
+    /// Called per-frame after `apply_stylesheet_state_styles()` and before rendering.
+    /// For each element in the pointer query, collects dynamic properties from the
+    /// active stylesheet entries (base + hover/active/focus) and evaluates them with
+    /// the current pointer state, writing results directly to RenderProps.
+    pub fn apply_pointer_styles(
+        &mut self,
+        pointer_query: &crate::pointer_query::PointerQueryState,
+        router: &crate::event_router::EventRouter,
+    ) {
+        let stylesheet = match &self.stylesheet {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        for (element_id, pointer_state) in pointer_query.iter() {
+            let node_id = match self.element_registry.get(element_id) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Build CalcContext with pointer env vars
+            let mut ctx = crate::calc::CalcContext::default();
+            for name in &[
+                "pointer-x",
+                "pointer-y",
+                "pointer-vx",
+                "pointer-vy",
+                "pointer-speed",
+                "pointer-distance",
+                "pointer-angle",
+                "pointer-inside",
+                "pointer-active",
+                "pointer-pressure",
+                "pointer-touch-count",
+                "pointer-hover-duration",
+            ] {
+                if let Some(val) = pointer_state.resolve_env(name) {
+                    ctx.env_vars.insert(name.to_string(), val);
+                }
+            }
+
+            // Collect dynamic properties from applicable stylesheet entries
+            // (base first, then state overrides in precedence order)
+            let mut dynamic_props: Vec<&crate::element_style::DynamicProperty> = Vec::new();
+
+            // Base style
+            if let Some(base) = stylesheet.get(element_id) {
+                if let Some(ref dps) = base.dynamic_properties {
+                    dynamic_props.extend(dps.iter());
+                }
+            }
+
+            // Hover state (overrides base)
+            if router.is_hovered(node_id) {
+                if let Some(hover) = stylesheet.get_with_state(element_id, ElementState::Hover) {
+                    if let Some(ref dps) = hover.dynamic_properties {
+                        dynamic_props.extend(dps.iter());
+                    }
+                }
+            }
+
+            // Active/pressed state (overrides hover)
+            if router.is_pressed(node_id) {
+                if let Some(active) = stylesheet.get_with_state(element_id, ElementState::Active) {
+                    if let Some(ref dps) = active.dynamic_properties {
+                        dynamic_props.extend(dps.iter());
+                    }
+                }
+            }
+
+            // Focus state
+            if router.is_focused(node_id) {
+                if let Some(focus) = stylesheet.get_with_state(element_id, ElementState::Focus) {
+                    if let Some(ref dps) = focus.dynamic_properties {
+                        dynamic_props.extend(dps.iter());
+                    }
+                }
+            }
+
+            if dynamic_props.is_empty() {
+                continue;
+            }
+
+            // Evaluate and apply to RenderProps
+            if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
+                // If any dynamic properties are transform-related (SkewX, SkewY, Rotate, etc.),
+                // reset props.transform to its base value first to prevent frame-compounding.
+                // Without this, compose_affine() would accumulate onto the previous frame's
+                // dynamic transform, causing exponential growth.
+                let has_transform_dynamics = dynamic_props.iter().any(|dp| dp.is_transform());
+                if has_transform_dynamics {
+                    let base_transform = self
+                        .base_styles
+                        .get(&node_id)
+                        .and_then(|base| base.transform.clone());
+                    render_node.props.transform = base_transform;
+                }
+
+                for dp in &dynamic_props {
+                    dp.apply(&mut render_node.props, &ctx);
+                }
+            }
+        }
     }
 
     /// Rebuild only the children of a specific node
@@ -7432,6 +8419,13 @@ impl RenderTree {
                     self.layout_tree.add_child(rebuild.parent_id, child_id);
                     self.collect_render_props_boxed(child.as_ref(), child_id);
                 }
+
+                // Apply CSS base styles (class/complex selectors) to new subtree nodes.
+                // collect_render_props_boxed only applies #id styles; class-based
+                // styles are applied by apply_stylesheet_base_styles() which only
+                // runs at full tree creation. Without this, new children from
+                // stateful rebuilds lose CSS class styles (border-radius, etc.).
+                self.apply_stylesheet_base_styles_for_subtree(rebuild.parent_id);
             } else {
                 // Visual-only update - just update render props of existing children
                 // Don't remove/rebuild, just walk the tree and update props
@@ -7460,6 +8454,10 @@ impl RenderTree {
     }
 
     /// Update subtree props from a generic ElementBuilder (for recursion)
+    ///
+    /// Uses full replacement (not merge) so that properties cleared back to defaults
+    /// (e.g. transform removed on drag end) are properly reflected. Preserves node_id
+    /// and motion which are not set by builders.
     fn update_subtree_props_from_builder(
         &mut self,
         parent_id: LayoutNodeId,
@@ -7470,10 +8468,12 @@ impl RenderTree {
 
         for (i, child_id) in existing_children.iter().enumerate() {
             if let Some(new_child) = new_children.get(i) {
-                // Update this child's render props
-                let new_props = new_child.render_props();
+                // Full replace of visual props, preserving node_id and motion
+                let mut new_props = new_child.render_props();
                 if let Some(render_node) = self.render_nodes.get_mut(child_id) {
-                    render_node.props.merge_from(&new_props);
+                    new_props.node_id = render_node.props.node_id;
+                    new_props.motion = render_node.props.motion.clone();
+                    render_node.props = new_props;
                 }
 
                 // Recursively update grandchildren
@@ -7482,6 +8482,9 @@ impl RenderTree {
                 }
             }
         }
+
+        // Re-apply CSS base styles since the full replace cleared them
+        self.apply_stylesheet_base_styles_for_subtree(parent_id);
     }
 
     /// Transfer node states from another tree
@@ -7635,8 +8638,12 @@ impl RenderTree {
             }
         }
 
-        // For glass elements, borders must render in the foreground layer (after glass)
-        if is_glass {
+        // Borders render in the foreground layer when the element clips content
+        // (e.g., images inside a bordered container). This ensures borders draw ON TOP
+        // of child images, matching CSS painting order (content → border → outline).
+        // For glass elements, borders also need foreground to avoid being hidden.
+        let border_in_foreground = is_glass || render_node.props.clips_content;
+        if border_in_foreground {
             ctx.set_foreground_layer(true);
         }
 
@@ -7815,8 +8822,8 @@ impl RenderTree {
             }
         }
 
-        // Restore foreground layer state after glass border rendering
-        if is_glass {
+        // Restore foreground layer state after border/outline rendering
+        if border_in_foreground {
             ctx.set_foreground_layer(false);
         }
 
@@ -7864,6 +8871,10 @@ impl RenderTree {
             } else {
                 CornerRadius::default()
             };
+            // Set overflow fade before pushing clip
+            if !render_node.props.overflow_fade.is_none() {
+                ctx.set_overflow_fade(render_node.props.overflow_fade.to_array());
+            }
             let clip_shape = if inset_radius.top_left > 0.0 {
                 ClipShape::rounded_rect(clip_rect, inset_radius)
             } else {
@@ -8317,13 +9328,28 @@ impl RenderTree {
             render_node.props.layer
         };
 
-        // Push layer if this node has partial opacity OR layer effects
-        // Children inside the layer automatically inherit the opacity via GPU composition
-        // Layer effects (blur, drop shadow, glow, color matrix) are applied when layer is composited
+        // Push layer if this node has partial opacity OR layer effects OR 3D CSS transform.
+        // Children inside the layer automatically inherit the opacity via GPU composition.
+        // Layer effects (blur, drop shadow, glow, color matrix) are applied when layer is composited.
+        // 3D CSS transforms (rotate-x/rotate-y) use layer-based compositing: the entire subtree
+        // (including text) renders flat to a texture, then the texture is composited with perspective
+        // distortion. This ensures ALL children visually transform with the parent.
         // IMPORTANT: Only push layer when element's layer matches current target to avoid duplicate
         // layer commands across multiple render passes
         let has_layer_effects = !render_node.props.layer_effects.is_empty();
-        let has_opacity_layer = node_motion_opacity < 1.0 || has_layer_effects;
+        let node_blend_mode = render_node
+            .props
+            .mix_blend_mode
+            .unwrap_or(BlendMode::Normal);
+        let has_blend_mode = node_blend_mode != BlendMode::Normal;
+        // Detect 3D CSS transform (rotate-x/rotate-y on a FLAT container, not a 3D SDF shape)
+        let has_3d_css_transform =
+            render_node.props.rotate_x.is_some() || render_node.props.rotate_y.is_some();
+        let has_3d_shape =
+            render_node.props.depth.unwrap_or(0.0) > 0.0 || render_node.props.shape_3d.is_some();
+        let use_3d_layer = has_3d_css_transform && !has_3d_shape;
+        let has_opacity_layer =
+            node_motion_opacity < 1.0 || has_layer_effects || has_blend_mode || use_3d_layer;
         let should_push_layer = has_opacity_layer && effective_layer == target_layer;
         if should_push_layer {
             // Scale layer effect radii by DPI factor (CSS px → physical px)
@@ -8352,14 +9378,30 @@ impl RenderTree {
                     other => other.clone(),
                 })
                 .collect();
+            // Build 3D transform params for layer compositing
+            let transform_3d = if use_3d_layer {
+                let rx = render_node.props.rotate_x.unwrap_or(0.0).to_radians();
+                let ry = render_node.props.rotate_y.unwrap_or(0.0).to_radians();
+                let d = render_node.props.perspective.unwrap_or(800.0);
+                Some(blinc_core::Transform3DParams {
+                    sin_rx: rx.sin(),
+                    cos_rx: rx.cos(),
+                    sin_ry: ry.sin(),
+                    cos_ry: ry.cos(),
+                    perspective_d: d * self.scale_factor,
+                })
+            } else {
+                None
+            };
             ctx.push_layer(LayerConfig {
                 id: None,
                 position: Some(blinc_core::Point::new(bounds.x, bounds.y)),
                 size: Some(blinc_core::Size::new(bounds.width, bounds.height)),
-                blend_mode: BlendMode::Normal,
+                blend_mode: node_blend_mode,
                 opacity: node_motion_opacity,
                 depth: false,
                 effects: scaled_effects,
+                transform_3d,
             });
         }
 
@@ -8391,20 +9433,12 @@ impl RenderTree {
             }
         }
 
-        // Push clip if needed (either from element or from layout animation)
-        // Layout animations need clipping to hide content that exceeds animated bounds
-        // NOTE: This clip is for the element itself. Children get an INSET clip pushed later
-        // to prevent them from rendering over the border.
+        // Determine if this element clips its content (overflow:hidden, scroll, or layout animation).
+        // The actual clip push is deferred to after border/outline drawing so that the
+        // overflow clip doesn't double-AA with the border SDF at the same boundary.
+        // Per CSS spec, overflow clips the element's *content* (children), not its decoration
+        // (background/border), which are already SDF-constrained to the element bounds.
         let clips_content = render_node.props.clips_content || has_layout_animation;
-        if clips_content {
-            let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
-            let clip_shape = if radius.is_uniform() && radius.top_left > 0.0 {
-                ClipShape::rounded_rect(clip_rect, radius)
-            } else {
-                ClipShape::rect(clip_rect)
-            };
-            ctx.push_clip(clip_shape);
-        }
 
         // Push clip-path if set on this element
         let has_clip_path = render_node.props.clip_path.is_some();
@@ -8429,7 +9463,9 @@ impl RenderTree {
             //     eprintln!("  >>> Canvas layer MATCHES - will invoke callback");
             // }
         }
-        // Set up 3D transform params on the paint context if this element has any
+        // Set up 3D transform params on the paint context if this element has any.
+        // When use_3d_layer is true, 3D CSS rotation is handled by layer compositing
+        // (perspective distortion applied to the blit quad), NOT per-primitive.
         let has_3d = render_node.props.rotate_x.is_some()
             || render_node.props.rotate_y.is_some()
             || render_node.props.perspective.is_some()
@@ -8437,7 +9473,7 @@ impl RenderTree {
             || render_node.props.translate_z.is_some()
             || render_node.props.shape_3d.is_some();
 
-        if has_3d {
+        if has_3d && !use_3d_layer {
             let rx = render_node.props.rotate_x.unwrap_or(0.0).to_radians();
             let ry = render_node.props.rotate_y.unwrap_or(0.0).to_radians();
             let d = render_node.props.perspective.unwrap_or(800.0);
@@ -8479,6 +9515,58 @@ impl RenderTree {
                     f.saturate,
                 );
             }
+        }
+
+        // Mask gradient setup (gradient masks are per-primitive, URL masks use LayerEffect)
+        let has_mask_gradient = matches!(
+            render_node.props.mask_image,
+            Some(blinc_core::MaskImage::Gradient(_))
+        );
+        if let Some(blinc_core::MaskImage::Gradient(ref gradient)) = render_node.props.mask_image {
+            let mask_mode_luminance = matches!(
+                render_node.props.mask_mode,
+                Some(blinc_core::MaskMode::Luminance)
+            );
+            match gradient {
+                blinc_core::Gradient::Linear {
+                    start, end, stops, ..
+                } => {
+                    let (start_alpha, end_alpha) =
+                        Self::extract_mask_alphas(stops, mask_mode_luminance);
+                    ctx.set_mask_gradient(
+                        [start.x, start.y, end.x, end.y],
+                        [1.0, start_alpha, end_alpha, 0.0],
+                    );
+                }
+                blinc_core::Gradient::Radial {
+                    center,
+                    radius,
+                    stops,
+                    ..
+                } => {
+                    let (start_alpha, end_alpha) =
+                        Self::extract_mask_alphas(stops, mask_mode_luminance);
+                    ctx.set_mask_gradient(
+                        [center.x, center.y, *radius, 0.0],
+                        [2.0, start_alpha, end_alpha, 0.0],
+                    );
+                }
+                blinc_core::Gradient::Conic { center, stops, .. } => {
+                    // Treat conic as radial for mask purposes
+                    let (start_alpha, end_alpha) =
+                        Self::extract_mask_alphas(stops, mask_mode_luminance);
+                    ctx.set_mask_gradient(
+                        [center.x, center.y, 0.5, 0.0],
+                        [2.0, start_alpha, end_alpha, 0.0],
+                    );
+                }
+            }
+        }
+
+        // Corner shape setup (superellipse per-corner)
+        let has_corner_shape = !render_node.props.corner_shape.is_round();
+        if has_corner_shape {
+            ctx.set_corner_shape(render_node.props.corner_shape.to_array());
         }
 
         // 3D Group composition: collect child shapes into compound SDF
@@ -8588,9 +9676,12 @@ impl RenderTree {
                 }
             }
 
-            // For glass elements, borders must render in the foreground layer (after glass)
-            // Otherwise they'd go into the background batch and be hidden behind the glass.
-            if is_glass {
+            // Borders render in the foreground layer when the element clips content
+            // (e.g., images inside a bordered container). This ensures borders draw ON TOP
+            // of child images, matching CSS painting order (content → border → outline).
+            // For glass elements, borders also need foreground to avoid being hidden.
+            let border_in_foreground = is_glass || clips_content;
+            if border_in_foreground {
                 ctx.set_foreground_layer(true);
             }
 
@@ -8733,8 +9824,8 @@ impl RenderTree {
                 }
             }
 
-            // Restore foreground layer state after glass border rendering
-            if is_glass {
+            // Restore foreground layer state after border/outline rendering
+            if border_in_foreground {
                 ctx.set_foreground_layer(false);
             }
 
@@ -8757,15 +9848,31 @@ impl RenderTree {
             }
         }
 
-        // Apply scroll offset
-        let scroll_offset = self.get_scroll_offset(node);
-        let has_scroll = scroll_offset.0.abs() > 0.001 || scroll_offset.1.abs() > 0.001;
-        if has_scroll {
-            ctx.push_transform(Transform::translate(scroll_offset.0, scroll_offset.1));
+        // Push overflow clip for children. This is deferred from before the render block
+        // so that the border/outline SDF doesn't get double-AA'd by an overlapping clip.
+        // Background and borders are SDF-constrained; only children need the overflow clip.
+        if clips_content {
+            // Set overflow fade before pushing clip — fade distances consumed by push_clip
+            if !render_node.props.overflow_fade.is_none() {
+                ctx.set_overflow_fade(render_node.props.overflow_fade.to_array());
+            }
+            let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+            let clip_shape = if radius.is_uniform() && radius.top_left > 0.0 {
+                ClipShape::rounded_rect(clip_rect, radius)
+            } else {
+                ClipShape::rect(clip_rect)
+            };
+            ctx.push_clip(clip_shape);
         }
 
-        // Push inset clip for children if this element has borders
-        // This prevents children from rendering over the parent's border
+        // Push inset clip for children if this element has borders.
+        // This prevents children (including their shadows) from rendering
+        // over the parent's border stroke.  The clip is at the padding box
+        // (inside border, but padding area is still visible) per CSS spec.
+        //
+        // IMPORTANT: This clip must be pushed BEFORE the scroll transform so it
+        // stays fixed in the element's viewport space.  If pushed after the
+        // scroll transform the clip would drift with the scrolled content.
         let has_border =
             render_node.props.border_width > 0.0 || render_node.props.border_sides.has_any();
         let push_children_clip = clips_content && has_border;
@@ -8774,39 +9881,42 @@ impl RenderTree {
             let sides = &render_node.props.border_sides;
             let uniform_border = render_node.props.border_width;
 
-            let left_inset = sides
+            let border_left = sides
                 .left
                 .as_ref()
                 .map(|b| b.width)
                 .unwrap_or(uniform_border);
-            let right_inset = sides
+            let border_right = sides
                 .right
                 .as_ref()
                 .map(|b| b.width)
                 .unwrap_or(uniform_border);
-            let top_inset = sides
+            let border_top = sides
                 .top
                 .as_ref()
                 .map(|b| b.width)
                 .unwrap_or(uniform_border);
-            let bottom_inset = sides
+            let border_bottom = sides
                 .bottom
                 .as_ref()
                 .map(|b| b.width)
                 .unwrap_or(uniform_border);
 
             let clip_rect = Rect::new(
-                left_inset,
-                top_inset,
-                (bounds.width - left_inset - right_inset).max(0.0),
-                (bounds.height - top_inset - bottom_inset).max(0.0),
+                border_left,
+                border_top,
+                (bounds.width - border_left - border_right).max(0.0),
+                (bounds.height - border_top - border_bottom).max(0.0),
             );
 
-            // Adjust corner radius for inset
+            // Adjust corner radius for border inset
             let radius = render_node.props.border_radius;
-            let max_border = left_inset.max(right_inset).max(top_inset).max(bottom_inset);
-            let inset_radius = if radius.is_uniform() && radius.top_left > max_border {
-                CornerRadius::uniform((radius.top_left - max_border).max(0.0))
+            let max_inset = border_left
+                .max(border_right)
+                .max(border_top)
+                .max(border_bottom);
+            let inset_radius = if radius.is_uniform() && radius.top_left > max_inset {
+                CornerRadius::uniform((radius.top_left - max_inset).max(0.0))
             } else {
                 CornerRadius::default()
             };
@@ -8817,6 +9927,13 @@ impl RenderTree {
                 ClipShape::rect(clip_rect)
             };
             ctx.push_clip(clip_shape);
+        }
+
+        // Apply scroll offset (AFTER children inset clip so clip stays fixed)
+        let scroll_offset = self.get_scroll_offset(node);
+        let has_scroll = scroll_offset.0.abs() > 0.001 || scroll_offset.1.abs() > 0.001;
+        if has_scroll {
+            ctx.push_transform(Transform::translate(scroll_offset.0, scroll_offset.1));
         }
 
         // Render children, passing down the effective opacity and layer inheritance
@@ -8906,19 +10023,14 @@ impl RenderTree {
             }
         }
 
-        // Pop children inset clip
-        if push_children_clip {
-            ctx.pop_clip();
-        }
-
-        // Pop scroll transform
+        // Pop scroll transform (reverse of push order: scroll was pushed after children clip)
         if has_scroll {
             ctx.pop_transform();
         }
 
         // Render scrollbar overlay if this is a scroll container
         // Scrollbar is rendered after scroll transform is popped (in viewport space)
-        // but before clip is popped (clipped within scroll container)
+        // but before children inset clip is popped (clipped within content area)
         if effective_layer == target_layer {
             if let Some(physics) = self.scroll_physics.get(&node) {
                 if let Ok(p) = physics.try_lock() {
@@ -8928,6 +10040,11 @@ impl RenderTree {
                     }
                 }
             }
+        }
+
+        // Pop children inset clip (pushed before scroll, so popped after)
+        if push_children_clip {
+            ctx.pop_clip();
         }
 
         // Pop clip
@@ -8999,6 +10116,16 @@ impl RenderTree {
             ctx.clear_css_filter();
         }
 
+        // Clear mask gradient transient state
+        if has_mask_gradient {
+            ctx.clear_mask_gradient();
+        }
+
+        // Clear corner shape transient state
+        if has_corner_shape {
+            ctx.clear_corner_shape();
+        }
+
         // Restore z_layer after this subtree
         if has_z_index {
             ctx.set_z_layer(saved_z_layer);
@@ -9006,6 +10133,24 @@ impl RenderTree {
 
         // Pop position transform
         ctx.pop_transform();
+    }
+
+    /// Extract start and end alpha values from gradient stops for mask gradient
+    fn extract_mask_alphas(stops: &[blinc_core::GradientStop], luminance: bool) -> (f32, f32) {
+        if stops.is_empty() {
+            return (1.0, 0.0);
+        }
+        let first = &stops[0].color;
+        let last = &stops[stops.len() - 1].color;
+        if luminance {
+            // Luminance mode: use perceived luminance * alpha
+            let lum_first = (0.2126 * first.r + 0.7152 * first.g + 0.0722 * first.b) * first.a;
+            let lum_last = (0.2126 * last.r + 0.7152 * last.g + 0.0722 * last.b) * last.a;
+            (lum_first, lum_last)
+        } else {
+            // Alpha mode: use color's alpha channel directly
+            (first.a, last.a)
+        }
     }
 
     /// Render with layer separation and explicit context control
@@ -9186,6 +10331,10 @@ impl RenderTree {
             } else {
                 CornerRadius::default()
             };
+            // Set overflow fade before pushing clip
+            if !render_node.props.overflow_fade.is_none() {
+                ctx.set_overflow_fade(render_node.props.overflow_fade.to_array());
+            }
             let clip_shape = if inset_radius.top_left > 0.0 {
                 ClipShape::rounded_rect(clip_rect, inset_radius)
             } else {
@@ -9238,8 +10387,9 @@ impl RenderTree {
                 }
             }
 
-            // For glass elements, borders must render in the foreground layer
-            if is_glass {
+            // Borders render in foreground when element clips content or is glass
+            let border_in_foreground = is_glass || render_node.props.clips_content;
+            if border_in_foreground {
                 ctx.set_foreground_layer(true);
             }
 
@@ -9358,8 +10508,8 @@ impl RenderTree {
                 }
             }
 
-            // Restore foreground layer state after glass border rendering
-            if is_glass {
+            // Restore foreground layer state after border/outline rendering
+            if border_in_foreground {
                 ctx.set_foreground_layer(false);
             }
 
@@ -9476,11 +10626,17 @@ impl RenderTree {
         self.layout_tree.get_bounds(node, (0.0, 0.0))
     }
 
-    /// Get absolute bounds for a node (traversing up the tree)
+    /// Get absolute bounds for a node (traversing up the tree, accounting for scroll)
     pub fn get_absolute_bounds(&self, node: LayoutNodeId) -> Option<ElementBounds> {
-        // For now, just return bounds from root (0,0)
-        // A more complete implementation would track parent offsets
-        self.layout_tree.get_bounds(node, (0.0, 0.0))
+        let mut bounds = self.layout_tree.get_absolute_bounds(node)?;
+        // Walk up ancestors and apply scroll offsets from scroll containers
+        for ancestor in self.layout_tree.ancestors(node) {
+            if let Some(&(sx, sy)) = self.scroll_offsets.get(&ancestor) {
+                bounds.x += sx;
+                bounds.y += sy;
+            }
+        }
+        Some(bounds)
     }
 
     /// Get render node data
@@ -9681,6 +10837,10 @@ impl RenderTree {
             } else {
                 CornerRadius::default()
             };
+            // Set overflow fade before pushing clip
+            if !render_node.props.overflow_fade.is_none() {
+                ctx.set_overflow_fade(render_node.props.overflow_fade.to_array());
+            }
             let clip_shape = if inset_radius.top_left > 0.0 {
                 ClipShape::rounded_rect(clip_rect, inset_radius)
             } else {
@@ -9734,8 +10894,9 @@ impl RenderTree {
                         }
                     }
 
-                    // For glass elements, borders must render in the foreground layer
-                    if is_glass {
+                    // Borders render in foreground when element clips content or is glass
+                    let border_in_foreground = is_glass || render_node.props.clips_content;
+                    if border_in_foreground {
                         ctx.set_foreground_layer(true);
                     }
 
@@ -9841,8 +11002,8 @@ impl RenderTree {
                         }
                     }
 
-                    // Restore foreground layer state after glass border rendering
-                    if is_glass {
+                    // Restore foreground layer state after border/outline rendering
+                    if border_in_foreground {
                         ctx.set_foreground_layer(false);
                     }
                 }

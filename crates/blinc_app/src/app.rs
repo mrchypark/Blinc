@@ -259,6 +259,26 @@ impl BlincApp {
         &mut self.ctx
     }
 
+    /// Update the current cursor position in physical pixels (for @flow pointer input)
+    pub fn set_cursor_position(&mut self, x: f32, y: f32) {
+        self.ctx.set_cursor_position(x, y);
+    }
+
+    /// Set the current render target texture for blend mode two-pass compositing.
+    pub fn set_blend_target(&mut self, texture: &wgpu::Texture) {
+        self.ctx.set_blend_target(texture);
+    }
+
+    /// Clear the blend target texture reference after rendering.
+    pub fn clear_blend_target(&mut self) {
+        self.ctx.clear_blend_target();
+    }
+
+    /// Whether the last render frame contained @flow shader elements.
+    pub fn has_active_flows(&self) -> bool {
+        self.ctx.has_active_flows()
+    }
+
     /// Get the configuration
     pub fn config(&self) -> &BlincConfig {
         &self.config
