@@ -932,7 +932,13 @@ private final class IOSSensorCollector: NSObject, CLLocationManagerDelegate {
         return current
     }
 
-    private func appendFrame(kind: String, monotonicNs: UInt64, accuracy: String, values: [Double]) {
+    private func appendFrame(
+        kind: String,
+        monotonicNs: UInt64,
+        accuracy: String,
+        values: [Double],
+        unixTimeMs: Int64? = nil
+    ) {
         lock.lock()
         defer { lock.unlock() }
 
@@ -942,7 +948,7 @@ private final class IOSSensorCollector: NSObject, CLLocationManagerDelegate {
             "seq": NSNumber(value: seq),
             "sensor": kind,
             "time_monotonic_ns": NSNumber(value: monotonicNs),
-            "time_unix_ms": NSNumber(value: monotonicToUnixMs(monotonicNs)),
+            "time_unix_ms": NSNumber(value: unixTimeMs ?? monotonicToUnixMs(monotonicNs)),
             "accuracy": accuracy,
             "values": values
         ]
@@ -955,6 +961,7 @@ private final class IOSSensorCollector: NSObject, CLLocationManagerDelegate {
     private func appendLocationFrame(_ location: CLLocation) {
         let localConfig = currentConfig()
         let monotonicNs = locationToMonotonicNs(location)
+        let unixTimeMs = Int64(location.timestamp.timeIntervalSince1970 * 1000.0)
         let minIntervalNs = UInt64(1_000_000_000 / max(localConfig.gpsHz, 1))
 
         lock.lock()
@@ -978,7 +985,8 @@ private final class IOSSensorCollector: NSObject, CLLocationManagerDelegate {
                 location.speed,
                 location.course,
                 location.horizontalAccuracy
-            ]
+            ],
+            unixTimeMs: unixTimeMs
         )
     }
 

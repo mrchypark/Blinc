@@ -873,6 +873,7 @@ private class AndroidSensorCollector {
         } else {
             SystemClock.elapsedRealtimeNanos()
         }
+        val unixTimeMs = location.time
         val values = floatArrayOf(
             location.latitude.toFloat(),
             location.longitude.toFloat(),
@@ -886,10 +887,17 @@ private class AndroidSensorCollector {
             monotonicNs = monotonicNs,
             accuracy = mapLocationAccuracy(location.accuracy),
             values = values,
+            unixTimeMs = unixTimeMs,
         )
     }
 
-    private fun appendFrame(kind: String, monotonicNs: Long, accuracy: String, values: FloatArray) {
+    private fun appendFrame(
+        kind: String,
+        monotonicNs: Long,
+        accuracy: String,
+        values: FloatArray,
+        unixTimeMs: Long? = null,
+    ) {
         synchronized(lock) {
             if (!running) {
                 return
@@ -898,7 +906,7 @@ private class AndroidSensorCollector {
             frame.put("seq", ++seq)
             frame.put("sensor", kind)
             frame.put("time_monotonic_ns", monotonicNs)
-            frame.put("time_unix_ms", monotonicToUnixMs(monotonicNs))
+            frame.put("time_unix_ms", unixTimeMs ?: monotonicToUnixMs(monotonicNs))
             frame.put("accuracy", accuracy)
             val valueArray = JSONArray()
             values.forEach { valueArray.put(it.toDouble()) }

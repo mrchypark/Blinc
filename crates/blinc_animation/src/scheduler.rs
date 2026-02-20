@@ -420,7 +420,8 @@ impl AnimationScheduler {
 
         let has_active_animations = inner.springs.iter().any(|(_, s)| !s.is_settled())
             || inner.keyframes.iter().any(|(_, k)| k.is_playing())
-            || inner.timelines.iter().any(|(_, t)| t.is_playing());
+            || inner.timelines.iter().any(|(_, t)| t.is_playing())
+            || !inner.tick_callbacks.is_empty();
 
         drop(inner);
 
@@ -434,8 +435,7 @@ impl AnimationScheduler {
         // Springs, keyframes, and timelines are only removed when their wrappers drop.
         // This ensures animations can be restarted after completing.
 
-        // Return true only for active animations.
-        // Tick callbacks themselves should not force continuous redraw in main-thread mode.
+        // Return true while active animations or tick callbacks remain registered.
         has_active_animations
     }
 
@@ -445,6 +445,7 @@ impl AnimationScheduler {
         inner.springs.iter().any(|(_, s)| !s.is_settled())
             || inner.keyframes.iter().any(|(_, k)| k.is_playing())
             || inner.timelines.iter().any(|(_, t)| t.is_playing())
+            || !inner.tick_callbacks.is_empty()
     }
 
     /// Get the number of active springs
