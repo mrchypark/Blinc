@@ -23,6 +23,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use std::{collections::BTreeMap, fmt::Write as _};
 
 use android_activity::input::{InputEvent as AndroidInputEvent, MotionAction};
 use android_activity::{AndroidApp as NdkAndroidApp, InputStatus, MainEvent, PollEvent};
@@ -30,6 +31,7 @@ use ndk::native_window::NativeWindow;
 
 use blinc_animation::AnimationScheduler;
 use blinc_core::context_state::{BlincContextState, HookState, SharedHookState};
+use blinc_core::native_bridge::native_call;
 use blinc_core::reactive::{ReactiveGraph, SignalId};
 use blinc_layout::event_router::MouseButton;
 use blinc_layout::overlay_state::OverlayContext;
@@ -38,6 +40,8 @@ use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager};
 use blinc_platform::assets::set_global_asset_loader;
 use blinc_platform_android::input::{detect_pinch, PinchPhase, PinchState, TouchPointer};
 use blinc_platform_android::AndroidAssetLoader;
+use blinc_sensors::native_bridge::NativeBridgeBackend;
+use blinc_sensors::{SensorClient, SensorConfig};
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
@@ -52,7 +56,29 @@ use crate::windowed::{
 /// with automatic event handling and rendering.
 pub struct AndroidApp;
 
+#[derive(Default)]
+struct SensorProbeState {
+    last_poll_ms: u64,
+    total_frames: u64,
+    poll_count: u64,
+}
+
 impl AndroidApp {
+    const SENSOR_SESSION_ID: &'static str = "blinc-mobile-default";
+    const SENSOR_LOG_INTERVAL_MS: u64 = 1_000;
+    const TOUCH_SCROLL_MIN_DELTA: f32 = 0.1;
+    const TOUCH_SCROLL_SENSITIVITY: f32 = 1.0;
+
+    fn sensor_autoprobe_enabled() -> bool {
+        std::env::var("BLINC_ANDROID_SENSOR_AUTOPROBE")
+            .ok()
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                matches!(v.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false)
+    }
+
     /// Initialize the Android asset loader
     fn init_asset_loader(app: NdkAndroidApp) {
         let loader = AndroidAssetLoader::new(app);
@@ -108,6 +134,134 @@ impl AndroidApp {
             tracing::debug!("Locale changed - requesting full rebuild");
             blinc_layout::widgets::request_full_rebuild();
         });
+    }
+
+    /// Initialize mobile sensors using the native bridge.
+    ///
+    /// If the bridge handlers are not available, this returns `None` and the app
+    /// continues without sensor lifecycle control.
+    fn init_sensors() -> Option<SensorClient<NativeBridgeBackend>> {
+        let client = SensorClient::new(NativeBridgeBackend);
+        let config = SensorConfig::default();
+        match client.configure(&config) {
+            Ok(()) => {
+                tracing::info!("Mobile sensor client initialized");
+                Self::log_supported_sensors(&client);
+                Some(client)
+            }
+            Err(err) => {
+                tracing::debug!("Mobile sensors unavailable: {}", err);
+                None
+            }
+        }
+    }
+
+    fn request_sensor_permissions() {
+        let request_location =
+            native_call::<bool, _>("permissions", "request_location_when_in_use", ())
+                .unwrap_or(false);
+        let request_motion =
+            native_call::<bool, _>("permissions", "request_motion", ()).unwrap_or(false);
+        tracing::debug!(
+            "Sensor permissions requested: location_when_in_use={}, motion={}",
+            request_location,
+            request_motion
+        );
+    }
+
+    fn log_supported_sensors(client: &SensorClient<NativeBridgeBackend>) {
+        match client.supported_kinds() {
+            Ok(kinds) => tracing::info!("Supported mobile sensors: {:?}", kinds),
+            Err(err) => tracing::debug!("Failed to query supported mobile sensors: {}", err),
+        }
+    }
+
+    fn poll_sensor_frames(
+        client: &SensorClient<NativeBridgeBackend>,
+        probe: &mut SensorProbeState,
+    ) {
+        let now_ms = blinc_layout::prelude::elapsed_ms();
+        if probe.last_poll_ms > 0
+            && now_ms.saturating_sub(probe.last_poll_ms) < Self::SENSOR_LOG_INTERVAL_MS
+        {
+            return;
+        }
+        probe.last_poll_ms = now_ms;
+
+        let frames = match client.drain_frames(256) {
+            Ok(frames) => frames,
+            Err(err) => {
+                tracing::debug!("Failed to drain mobile sensor frames: {}", err);
+                return;
+            }
+        };
+
+        if frames.is_empty() {
+            return;
+        }
+
+        probe.poll_count += 1;
+        probe.total_frames += frames.len() as u64;
+
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for frame in &frames {
+            *counts.entry(format!("{:?}", frame.sensor)).or_insert(0) += 1;
+        }
+
+        let mut summary = String::new();
+        for (index, (kind, count)) in counts.iter().enumerate() {
+            if index > 0 {
+                summary.push_str(", ");
+            }
+            let _ = write!(&mut summary, "{}={}", kind, count);
+        }
+
+        let sample = frames.last();
+        tracing::info!(
+            "Sensor batch #{}: frames={} total={} kinds=[{}] sample={:?}",
+            probe.poll_count,
+            frames.len(),
+            probe.total_frames,
+            summary,
+            sample.map(|frame| (&frame.sensor, frame.values.as_slice()))
+        );
+    }
+
+    fn start_sensors_if_needed(
+        client: Option<&SensorClient<NativeBridgeBackend>>,
+        running: &mut bool,
+    ) {
+        if *running {
+            return;
+        }
+        if let Some(client) = client {
+            Self::request_sensor_permissions();
+            match client.start_session(Self::SENSOR_SESSION_ID) {
+                Ok(()) => {
+                    *running = true;
+                    tracing::debug!("Mobile sensors started");
+                }
+                Err(err) => {
+                    tracing::debug!("Failed to start mobile sensors: {}", err);
+                }
+            }
+        }
+    }
+
+    fn stop_sensors_if_running(
+        client: Option<&SensorClient<NativeBridgeBackend>>,
+        running: &mut bool,
+    ) {
+        if !*running {
+            return;
+        }
+        if let Some(client) = client {
+            match client.stop_session(Self::SENSOR_SESSION_ID) {
+                Ok(()) => tracing::debug!("Mobile sensors stopped"),
+                Err(err) => tracing::debug!("Failed to stop mobile sensors: {}", err),
+            }
+        }
+        *running = false;
     }
 
     /// Initialize Android logging
@@ -167,6 +321,15 @@ impl AndroidApp {
 
         // Initialize i18n (locale + redraw hook)
         Self::init_i18n(&app);
+        let sensor_client = if Self::sensor_autoprobe_enabled() {
+            tracing::info!("Android sensor autoprobe enabled");
+            Self::init_sensors()
+        } else {
+            tracing::debug!("Android sensor autoprobe disabled (set BLINC_ANDROID_SENSOR_AUTOPROBE=1 to enable)");
+            None
+        };
+        let mut sensors_running = false;
+        let mut sensor_probe = SensorProbeState::default();
 
         // Shared state
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
@@ -276,13 +439,20 @@ impl AndroidApp {
         tracing::info!("Entering Android event loop");
 
         while running {
+            let has_tick_callbacks = animations
+                .lock()
+                .ok()
+                .map(|sched| sched.tick_callback_count() > 0)
+                .unwrap_or(false);
+
             // When animating: don't wait - vsync in present() handles frame pacing
             // When idle: wait for events to save power
-            let poll_timeout = if needs_rebuild || needs_redraw_next_frame {
-                Some(std::time::Duration::ZERO) // Don't wait - vsync paces us
-            } else {
-                Some(std::time::Duration::from_millis(100)) // Idle - save power
-            };
+            let poll_timeout = Some(crate::runloop::android_poll_timeout(
+                needs_rebuild,
+                needs_redraw_next_frame,
+                has_tick_callbacks,
+                focused,
+            ));
             needs_redraw_next_frame = false;
 
             app.poll_events(poll_timeout, |event| {
@@ -417,6 +587,10 @@ impl AndroidApp {
                             if let Some(ref mut windowed_ctx) = ctx {
                                 windowed_ctx.focused = true;
                             }
+                            Self::start_sensors_if_needed(
+                                sensor_client.as_ref(),
+                                &mut sensors_running,
+                            );
                         }
 
                         MainEvent::LostFocus => {
@@ -425,20 +599,36 @@ impl AndroidApp {
                             if let Some(ref mut windowed_ctx) = ctx {
                                 windowed_ctx.focused = false;
                             }
+                            Self::stop_sensors_if_running(
+                                sensor_client.as_ref(),
+                                &mut sensors_running,
+                            );
                         }
 
                         MainEvent::Resume { .. } => {
                             tracing::info!("App resumed");
                             focused = true;
+                            Self::start_sensors_if_needed(
+                                sensor_client.as_ref(),
+                                &mut sensors_running,
+                            );
                         }
 
                         MainEvent::Pause => {
                             tracing::info!("App paused");
                             focused = false;
+                            Self::stop_sensors_if_running(
+                                sensor_client.as_ref(),
+                                &mut sensors_running,
+                            );
                         }
 
                         MainEvent::Destroy => {
                             tracing::info!("App destroyed");
+                            Self::stop_sensors_if_running(
+                                sensor_client.as_ref(),
+                                &mut sensors_running,
+                            );
                             running = false;
                         }
 
@@ -459,6 +649,12 @@ impl AndroidApp {
                 }
             });
 
+            if sensors_running {
+                if let Some(ref client) = sensor_client {
+                    Self::poll_sensor_frames(client, &mut sensor_probe);
+                }
+            }
+
             // Process touch/input events from android-activity
             // Collect pending events for dispatch (like desktop windowed.rs)
             #[derive(Clone, Default)]
@@ -470,7 +666,8 @@ impl AndroidApp {
             }
 
             let mut pending_events: Vec<PendingEvent> = Vec::new();
-            // Track scroll info for dispatch after event processing (mouse_x, mouse_y, delta_x, delta_y)
+            // Track accumulated scroll delta for dispatch after event processing
+            // (mouse_x, mouse_y, accumulated_delta_x, accumulated_delta_y).
             let mut scroll_info: Option<(f32, f32, f32, f32)> = None;
             // Track if touch ended (for scroll physics)
             let mut touch_ended = false;
@@ -613,17 +810,26 @@ impl AndroidApp {
                                                         let delta_x = lx - prev_x;
                                                         let delta_y = ly - prev_y;
 
-                                                        // Only collect scroll if there's actual movement
-                                                        // Small threshold to avoid jitter
-                                                        if delta_x.abs() > 0.5 || delta_y.abs() > 0.5 {
+                                                        // Collect scroll movement with a tiny deadzone to avoid jitter.
+                                                        if delta_x.abs() > Self::TOUCH_SCROLL_MIN_DELTA
+                                                            || delta_y.abs()
+                                                                > Self::TOUCH_SCROLL_MIN_DELTA
+                                                        {
                                                             is_scrolling = true;
-                                                            // Store scroll info for dispatch after event loop
-                                                            scroll_info =
-                                                                Some((lx, ly, delta_x, delta_y));
+                                                            let dx = delta_x * Self::TOUCH_SCROLL_SENSITIVITY;
+                                                            let dy = delta_y * Self::TOUCH_SCROLL_SENSITIVITY;
+                                                            // Accumulate all MOVE deltas seen in this poll cycle so
+                                                            // fast finger motion is not dampened by event coalescing.
+                                                            scroll_info = Some(match scroll_info {
+                                                                Some((_, _, acc_x, acc_y)) => {
+                                                                    (lx, ly, acc_x + dx, acc_y + dy)
+                                                                }
+                                                                None => (lx, ly, dx, dy),
+                                                            });
                                                             tracing::trace!(
-                                                                "Touch scroll: delta=({:.1}, {:.1})",
-                                                                delta_x,
-                                                                delta_y
+                                                                "Touch scroll(accum): delta=({:.1}, {:.1})",
+                                                                dx,
+                                                                dy
                                                             );
                                                         }
                                                     }
@@ -1086,12 +1292,6 @@ impl AndroidApp {
             unified_text_rendering: true,
         };
 
-        // Create instance with Vulkan backend
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
-            ..Default::default()
-        });
-
         // Create surface from native window using raw handles
         // Safety: The native window handle is valid for the lifetime of the window
         use raw_window_handle::{
@@ -1102,25 +1302,63 @@ impl AndroidApp {
         let raw_window = NonNull::new(window.ptr().as_ptr() as *mut std::ffi::c_void)
             .ok_or_else(|| BlincError::GpuInit("Invalid native window pointer".to_string()))?;
 
-        let window_handle = AndroidNdkWindowHandle::new(raw_window);
-        let display_handle = AndroidDisplayHandle::new();
+        // Backend policy:
+        // 1) Try GL first.
+        // 2) If GL init fails, retry with Vulkan.
+        let backend_attempts = Self::android_backend_attempt_order();
+        tracing::info!("Android GPU backend attempt order: {:?}", backend_attempts);
 
-        let surface_target = wgpu::SurfaceTargetUnsafe::RawHandle {
-            raw_display_handle: RawDisplayHandle::Android(display_handle),
-            raw_window_handle: RawWindowHandle::AndroidNdk(window_handle),
-        };
+        let mut last_error = String::from("unknown");
+        let mut chosen_backend: Option<wgpu::Backends> = None;
+        let mut renderer_and_surface: Option<(GpuRenderer, wgpu::Surface<'static>)> = None;
 
-        let surface = unsafe {
-            instance
-                .create_surface_unsafe(surface_target)
-                .map_err(|e| BlincError::GpuInit(e.to_string()))?
-        };
+        for backend in backend_attempts.iter().copied() {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: backend,
+                ..Default::default()
+            });
 
-        // Create renderer
-        let renderer = pollster::block_on(async {
-            GpuRenderer::with_instance_and_surface(instance, &surface, renderer_config).await
-        })
-        .map_err(|e| BlincError::GpuInit(e.to_string()))?;
+            let window_handle = AndroidNdkWindowHandle::new(raw_window);
+            let display_handle = AndroidDisplayHandle::new();
+            let surface_target = wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: RawDisplayHandle::Android(display_handle),
+                raw_window_handle: RawWindowHandle::AndroidNdk(window_handle),
+            };
+
+            let surface = match unsafe { instance.create_surface_unsafe(surface_target) } {
+                Ok(surface) => surface,
+                Err(err) => {
+                    last_error = format!("surface create failed on {:?}: {}", backend, err);
+                    tracing::warn!("{}", last_error);
+                    continue;
+                }
+            };
+
+            match pollster::block_on(async {
+                GpuRenderer::with_instance_and_surface(instance, &surface, renderer_config.clone())
+                    .await
+            }) {
+                Ok(renderer) => {
+                    tracing::info!("Android GPU initialized with backend {:?}", backend);
+                    chosen_backend = Some(backend);
+                    renderer_and_surface = Some((renderer, surface));
+                    break;
+                }
+                Err(err) => {
+                    last_error = format!("renderer init failed on {:?}: {}", backend, err);
+                    tracing::warn!("{}", last_error);
+                }
+            }
+        }
+
+        let (renderer, surface) = renderer_and_surface.ok_or_else(|| {
+            BlincError::GpuInit(format!(
+                "Failed to initialize Android GPU; attempts={:?}, last_error={}",
+                backend_attempts, last_error
+            ))
+        })?;
+
+        tracing::info!("Android GPU backends selected: {:?}", chosen_backend);
 
         let device = renderer.device_arc();
         let queue = renderer.queue_arc();
@@ -1171,5 +1409,100 @@ impl AndroidApp {
         let app = BlincApp::from_context(ctx, config);
 
         Ok((app, surface))
+    }
+
+    fn android_backend_attempt_order() -> Vec<wgpu::Backends> {
+        if let Ok(backend) = std::env::var("BLINC_ANDROID_GPU_BACKEND") {
+            match backend.trim().to_ascii_lowercase().as_str() {
+                "gl" | "gles" | "opengl" => return vec![wgpu::Backends::GL],
+                "vk" | "vulkan" => return vec![wgpu::Backends::VULKAN],
+                "auto" => {}
+                other => {
+                    tracing::warn!(
+                        "Unknown BLINC_ANDROID_GPU_BACKEND='{}'; falling back to auto detect",
+                        other
+                    );
+                }
+            }
+        }
+
+        if Self::is_android_emulator() {
+            tracing::info!("Android emulator detected; using GL-first fallback order");
+        }
+
+        vec![wgpu::Backends::GL, wgpu::Backends::VULKAN]
+    }
+
+    fn is_android_emulator() -> bool {
+        let qemu_boot = Self::android_getprop("ro.boot.qemu")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let qemu_kernel = Self::android_getprop("ro.kernel.qemu")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if qemu_boot || qemu_kernel {
+            return true;
+        }
+
+        if let Some(hardware) = Self::android_getprop("ro.hardware") {
+            if hardware.contains("ranchu")
+                || hardware.contains("goldfish")
+                || hardware.contains("cuttlefish")
+            {
+                return true;
+            }
+        }
+
+        if let Some(device) = Self::android_getprop("ro.product.device") {
+            if device.contains("emu") || device.contains("generic") {
+                return true;
+            }
+        }
+
+        if let Some(fingerprint) = Self::android_getprop("ro.build.fingerprint") {
+            if fingerprint.contains("generic") || fingerprint.contains("/emu") {
+                return true;
+            }
+        }
+
+        let mut props = String::new();
+        for path in ["/system/build.prop", "/vendor/build.prop"] {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                props.push_str(&contents);
+                props.push('\n');
+            }
+        }
+
+        let props = props.to_ascii_lowercase();
+        [
+            "ro.boot.qemu=1",
+            "ro.kernel.qemu=1",
+            "ro.hardware=ranchu",
+            "ro.hardware=goldfish",
+            "ro.product.device=generic",
+            "ro.product.device=emu",
+            "ro.build.fingerprint=generic",
+            "/emu",
+        ]
+        .iter()
+        .any(|needle| props.contains(needle))
+    }
+
+    fn android_getprop(name: &str) -> Option<String> {
+        let output = std::process::Command::new("/system/bin/getprop")
+            .arg(name)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let value = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_ascii_lowercase();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
     }
 }

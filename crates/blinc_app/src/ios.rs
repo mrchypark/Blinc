@@ -31,6 +31,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use std::{collections::BTreeMap, fmt::Write as _};
 
 use blinc_animation::AnimationScheduler;
 use blinc_core::context_state::{BlincContextState, HookState, SharedHookState};
@@ -41,6 +42,8 @@ use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager};
 use blinc_platform::assets::set_global_asset_loader;
 use blinc_platform_ios::{Gesture, GestureDetector, IOSAssetLoader, IOSWakeProxy, TouchPhase};
+use blinc_sensors::native_bridge::NativeBridgeBackend;
+use blinc_sensors::{SensorClient, SensorConfig};
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
@@ -57,6 +60,9 @@ use crate::windowed::{
 pub struct IOSApp;
 
 impl IOSApp {
+    const SENSOR_SESSION_ID: &'static str = "blinc-mobile-default";
+    const SENSOR_LOG_INTERVAL_MS: u64 = 1_000;
+
     /// Initialize the iOS asset loader
     fn init_asset_loader() {
         let loader = IOSAssetLoader::new();
@@ -103,6 +109,29 @@ impl IOSApp {
             tracing::debug!("Locale changed - requesting full rebuild");
             blinc_layout::widgets::request_full_rebuild();
         });
+    }
+
+    fn init_sensors() -> Option<SensorClient<NativeBridgeBackend>> {
+        let client = SensorClient::new(NativeBridgeBackend);
+        let config = SensorConfig::default();
+        match client.configure(&config) {
+            Ok(()) => {
+                tracing::info!("Mobile sensor client initialized");
+                Self::log_supported_sensors(&client);
+                Some(client)
+            }
+            Err(err) => {
+                tracing::debug!("Mobile sensors unavailable: {}", err);
+                None
+            }
+        }
+    }
+
+    fn log_supported_sensors(client: &SensorClient<NativeBridgeBackend>) {
+        match client.supported_kinds() {
+            Ok(kinds) => tracing::info!("Supported mobile sensors: {:?}", kinds),
+            Err(err) => tracing::debug!("Failed to query supported mobile sensors: {}", err),
+        }
     }
 
     /// Create a new Blinc context for iOS rendering
@@ -284,6 +313,11 @@ impl IOSApp {
             is_scrolling: false,
             gesture_detector: GestureDetector::new(),
             last_frame_time_ms: 0,
+            sensor_client: Self::init_sensors(),
+            sensor_running: false,
+            sensor_probe_last_ms: 0,
+            sensor_total_frames: 0,
+            sensor_poll_count: 0,
         })
     }
 
@@ -323,9 +357,58 @@ pub struct IOSRenderContext {
     gesture_detector: GestureDetector,
     /// Last frame time for CSS animation delta calculation
     last_frame_time_ms: u64,
+    /// Sensor client backed by native bridge handlers.
+    sensor_client: Option<SensorClient<NativeBridgeBackend>>,
+    /// Whether a mobile sensor session is currently active.
+    sensor_running: bool,
+    /// Last sensor polling timestamp (ms).
+    sensor_probe_last_ms: u64,
+    /// Running total of drained frames.
+    sensor_total_frames: u64,
+    /// Number of non-empty sensor frame polls.
+    sensor_poll_count: u64,
 }
 
 impl IOSRenderContext {
+    fn stop_sensor_session_if_running(&mut self) {
+        let Some(client) = self.sensor_client.as_ref() else {
+            self.sensor_running = false;
+            return;
+        };
+
+        let status = client.status().ok();
+        let running_now =
+            self.sensor_running || status.as_ref().map(|s| s.running).unwrap_or(false);
+        if !running_now {
+            self.sensor_running = false;
+            return;
+        }
+
+        let stop_session_id = status
+            .and_then(|status| status.active_session_id)
+            .filter(|session_id| !session_id.trim().is_empty())
+            .unwrap_or_else(|| IOSApp::SENSOR_SESSION_ID.to_string());
+
+        match client.stop_session(&stop_session_id) {
+            Ok(()) => {
+                self.sensor_running = false;
+                tracing::debug!("Mobile sensors stopped (session={})", stop_session_id);
+            }
+            Err(err) => {
+                tracing::debug!(
+                    "Failed to stop mobile sensors (session={}): {}",
+                    stop_session_id,
+                    err
+                );
+                if let Ok(status) = client.status() {
+                    if !status.running {
+                        self.sensor_running = false;
+                    }
+                }
+            }
+        }
+    }
+
     /// Check if a frame needs to be rendered
     ///
     /// Returns true if:
@@ -762,6 +845,85 @@ impl IOSRenderContext {
     /// Set focus state
     pub fn set_focused(&mut self, focused: bool) {
         self.windowed_ctx.focused = focused;
+        if focused {
+            if !self.sensor_running {
+                if let Some(ref client) = self.sensor_client {
+                    match client.start_session(IOSApp::SENSOR_SESSION_ID) {
+                        Ok(()) => {
+                            self.sensor_running = true;
+                            tracing::debug!("Mobile sensors started");
+                        }
+                        Err(err) => {
+                            tracing::debug!("Failed to start mobile sensors: {}", err);
+                        }
+                    }
+                }
+            }
+        } else {
+            self.stop_sensor_session_if_running();
+        }
+    }
+
+    fn poll_sensor_frames(&mut self) {
+        if !self.sensor_running {
+            return;
+        }
+
+        let now_ms = blinc_layout::prelude::elapsed_ms();
+        if self.sensor_probe_last_ms > 0
+            && now_ms.saturating_sub(self.sensor_probe_last_ms) < IOSApp::SENSOR_LOG_INTERVAL_MS
+        {
+            return;
+        }
+        self.sensor_probe_last_ms = now_ms;
+
+        let client = match self.sensor_client.as_ref() {
+            Some(client) => client,
+            None => return,
+        };
+
+        let frames = match client.drain_frames(256) {
+            Ok(frames) => frames,
+            Err(err) => {
+                tracing::debug!("Failed to drain mobile sensor frames: {}", err);
+                return;
+            }
+        };
+        if frames.is_empty() {
+            return;
+        }
+
+        self.sensor_poll_count += 1;
+        self.sensor_total_frames += frames.len() as u64;
+
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for frame in &frames {
+            *counts.entry(format!("{:?}", frame.sensor)).or_insert(0) += 1;
+        }
+
+        let mut summary = String::new();
+        for (index, (kind, count)) in counts.iter().enumerate() {
+            if index > 0 {
+                summary.push_str(", ");
+            }
+            let _ = write!(&mut summary, "{}={}", kind, count);
+        }
+
+        let sample = frames.last();
+        tracing::info!(
+            "Sensor batch #{}: frames={} total={} kinds=[{}] sample={:?}",
+            self.sensor_poll_count,
+            frames.len(),
+            self.sensor_total_frames,
+            summary,
+            sample.map(|frame| (&frame.sensor, frame.values.as_slice()))
+        );
+    }
+}
+
+impl Drop for IOSRenderContext {
+    fn drop(&mut self) {
+        self.stop_sensor_session_if_running();
     }
 }
 
@@ -883,6 +1045,7 @@ pub extern "C" fn blinc_build_frame(ctx: *mut IOSRenderContext) {
 
     unsafe {
         let ctx = &mut *ctx;
+        ctx.poll_sensor_frames();
 
         // Tick animations
         if let Ok(sched) = ctx.animations.lock() {
@@ -935,6 +1098,7 @@ pub extern "C" fn blinc_build_frame(ctx: *mut IOSRenderContext) {
 
         if !needs_rebuild && !no_tree_yet {
             // No full rebuild needed - incremental updates already applied
+            ctx.poll_sensor_frames();
             return;
         }
 

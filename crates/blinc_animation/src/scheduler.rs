@@ -384,6 +384,7 @@ impl AnimationScheduler {
     ///
     /// Returns true if any animations are still active (need another tick).
     pub fn tick(&self) -> bool {
+        let run_tick_callbacks_here = !self.is_background_running();
         let mut inner = self.inner.lock().unwrap();
         let now = Instant::now();
         let dt = (now - inner.last_frame).as_secs_f32();
@@ -405,14 +406,37 @@ impl AnimationScheduler {
             timeline.tick(dt_ms);
         }
 
+        // In single-threaded mode (mobile), tick callbacks must run from this path.
+        // In background-thread mode, callbacks are executed by start_background().
+        let tick_callbacks_to_call = if run_tick_callbacks_here {
+            inner
+                .tick_callbacks
+                .iter()
+                .map(|(_, cb)| Arc::clone(cb))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        let has_active_animations = inner.springs.iter().any(|(_, s)| !s.is_settled())
+            || inner.keyframes.iter().any(|(_, k)| k.is_playing())
+            || inner.timelines.iter().any(|(_, t)| t.is_playing());
+
+        drop(inner);
+
+        for callback in tick_callbacks_to_call {
+            if let Ok(mut cb) = callback.lock() {
+                cb(dt);
+            }
+        }
+
         // NOTE: We do NOT remove animations here!
         // Springs, keyframes, and timelines are only removed when their wrappers drop.
         // This ensures animations can be restarted after completing.
 
-        // Return true if there are still active (playing, not just present) animations
-        inner.springs.iter().any(|(_, s)| !s.is_settled())
-            || inner.keyframes.iter().any(|(_, k)| k.is_playing())
-            || inner.timelines.iter().any(|(_, t)| t.is_playing())
+        // Return true only for active animations.
+        // Tick callbacks themselves should not force continuous redraw in main-thread mode.
+        has_active_animations
     }
 
     /// Check if any animations are still active

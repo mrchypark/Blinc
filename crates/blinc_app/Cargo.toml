@@ -59,6 +59,7 @@ blinc_platform_desktop = { path = "../../extensions/blinc_platform_desktop", ver
 
 [target.'cfg(target_os = "android")'.dependencies]
 blinc_platform_android = { path = "../../extensions/blinc_platform_android", version = "0.1.12", optional = true }
+blinc_sensors = { path = "../blinc_sensors", version = "0.1.12" }
 android-activity = { workspace = true, optional = true }
 ndk = { workspace = true, optional = true }
 jni = { workspace = true, optional = true }
@@ -69,6 +70,7 @@ tracing-subscriber = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 blinc_platform_ios = { path = "../../extensions/blinc_platform_ios", version = "0.1.12", optional = true }
+blinc_sensors = { path = "../blinc_sensors", version = "0.1.12" }
 
 
 # HarmonyOS uses "ohos" as target_os
