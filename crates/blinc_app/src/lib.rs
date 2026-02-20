@@ -131,6 +131,7 @@ pub mod headless_report;
 pub mod headless_runner;
 pub mod headless_runtime;
 pub mod headless_scenario;
+mod runloop;
 mod text_measurer;
 
 // Windowed module is compiled for desktop (windowed feature), Android, iOS, Fuchsia, and HarmonyOS

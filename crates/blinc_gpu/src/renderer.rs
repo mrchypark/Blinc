@@ -46,14 +46,11 @@ fn has_path_geometry(paths: &crate::primitives::PathBatch) -> bool {
 }
 
 fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
-    // Default wgpu limits include `max_buffer_size = 256 MiB`.
-    // This is conservative and may be smaller than what the hardware supports.
-    //
-    // If you want to raise this limit (e.g. for large path buffers), set:
-    //   BLINC_WGPU_MAX_BUFFER_MB=512
-    // The value is clamped to the adapter-supported maximum.
+    // Start from adapter-supported limits so backend-specific edge cases
+    // (e.g. GLES reporting zero for some compute limits) won't fail device creation.
+    // Then clamp max_buffer_size conservatively unless overridden.
     let supported = adapter.limits();
-    let mut limits = wgpu::Limits::default();
+    let mut limits = supported.clone();
 
     if let Some(mib) = env_u64("BLINC_WGPU_MAX_BUFFER_MB") {
         let requested = mib.saturating_mul(1024 * 1024);
@@ -67,6 +64,9 @@ fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
             supported.max_buffer_size / (1024 * 1024)
         );
     } else {
+        limits.max_buffer_size = wgpu::Limits::default()
+            .max_buffer_size
+            .min(supported.max_buffer_size);
         tracing::debug!(
             "wgpu limits: max_buffer_size={} MiB (supported {} MiB)",
             limits.max_buffer_size / (1024 * 1024),

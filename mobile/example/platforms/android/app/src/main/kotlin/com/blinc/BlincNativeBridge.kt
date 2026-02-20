@@ -43,6 +43,7 @@ import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.Log
 import androidx.core.content.getSystemService
 import org.json.JSONArray
 import org.json.JSONObject
@@ -430,6 +431,8 @@ private class AndroidSensorCollector {
     private val frameBuffer: ArrayDeque<JSONObject> = ArrayDeque()
     private val accuracyBySensor: MutableMap<Int, Int> = mutableMapOf()
     private val recentStepDetectorNs: ArrayDeque<Long> = ArrayDeque()
+    private val frameCountsByKind: MutableMap<String, Long> = mutableMapOf()
+    private val latestSampleByKind: MutableMap<String, String> = mutableMapOf()
 
     private var context: Context? = null
     private var foregroundActivityRef: WeakReference<Activity>? = null
@@ -439,6 +442,8 @@ private class AndroidSensorCollector {
     private var running: Boolean = false
     private var activeSessionId: String? = null
     private var seq: Long = 0L
+    private var totalFrameCount: Long = 0L
+    private var lastStatsLogMs: Long = 0L
     private var locationListener: LocationListener? = null
 
     private val maxBufferedFrames = 4096
@@ -510,6 +515,7 @@ private class AndroidSensorCollector {
             return false
         }
         val ctx = context ?: return false
+        val localConfig: AndroidSensorConfig
         var restarting = false
 
         synchronized(lock) {
@@ -519,16 +525,23 @@ private class AndroidSensorCollector {
             }
             running = true
             activeSessionId = normalizedId
+            resetFrameStatsLocked()
+            localConfig = config
         }
 
         if (restarting) {
             stopSensors()
         }
         startSensors(ctx)
+        Log.i(
+            TAG,
+            "start: session=$normalizedId enabled=${localConfig.enabled} gpsHz=${localConfig.gpsHz} imuHz=${localConfig.imuHz}",
+        )
         return true
     }
 
     fun stop(sessionId: String): Boolean {
+        var stoppedSession: String? = null
         synchronized(lock) {
             if (!running) {
                 return true
@@ -536,9 +549,11 @@ private class AndroidSensorCollector {
             if (sessionId.isNotBlank() && sessionId != activeSessionId) {
                 return false
             }
+            stoppedSession = activeSessionId
             stopInternalLocked()
         }
         stopSensors()
+        Log.i(TAG, "stop: session=${stoppedSession ?: "-"}")
         return true
     }
 
@@ -703,6 +718,8 @@ private class AndroidSensorCollector {
     }
 
     companion object {
+        private const val TAG = "BlincSensor"
+        private const val STATS_LOG_INTERVAL_MS = 1_000L
         private const val REQUEST_CODE_LOCATION_WHEN_IN_USE = 3101
         private const val REQUEST_CODE_LOCATION_ALWAYS = 3102
         private const val REQUEST_CODE_MOTION = 3103
@@ -780,6 +797,7 @@ private class AndroidSensorCollector {
         if (localConfig.enabled.contains("gps")) {
             startLocationUpdates(ctx, localConfig.gpsHz)
         }
+        Log.d(TAG, "registered sensors: enabled=${localConfig.enabled}")
     }
 
     @SuppressLint("MissingPermission")
@@ -823,6 +841,7 @@ private class AndroidSensorCollector {
         activeSessionId = null
         accuracyBySensor.clear()
         recentStepDetectorNs.clear()
+        resetFrameStatsLocked()
     }
 
     private fun handleStepDetectorEvent(monotonicNs: Long, accuracy: String, rawValues: FloatArray) {
@@ -898,6 +917,7 @@ private class AndroidSensorCollector {
         values: FloatArray,
         unixTimeMs: Long? = null,
     ) {
+        var statsLog: String? = null
         synchronized(lock) {
             if (!running) {
                 return
@@ -916,7 +936,43 @@ private class AndroidSensorCollector {
                 frameBuffer.removeFirst()
             }
             frameBuffer.addLast(frame)
+
+            totalFrameCount += 1
+            frameCountsByKind[kind] = (frameCountsByKind[kind] ?: 0L) + 1L
+            latestSampleByKind[kind] = formatValues(values)
+
+            val nowMs = SystemClock.elapsedRealtime()
+            if (nowMs - lastStatsLogMs >= STATS_LOG_INTERVAL_MS) {
+                lastStatsLogMs = nowMs
+                val counts = frameCountsByKind
+                    .entries
+                    .sortedBy { it.key }
+                    .joinToString(", ") { "${it.key}=${it.value}" }
+                val latest = listOf("gps", "accelerometer", "gyroscope", "magnetometer", "barometer")
+                    .mapNotNull { key ->
+                        latestSampleByKind[key]?.let { sample -> "$key=[$sample]" }
+                    }
+                    .joinToString(" ")
+                val session = activeSessionId ?: "-"
+                statsLog = "session=$session buffered=${frameBuffer.size} total=$totalFrameCount kinds={$counts} latest=$latest"
+            }
         }
+        if (statsLog != null) {
+            Log.d(TAG, "frame-stats ${statsLog}")
+        }
+    }
+
+    private fun formatValues(values: FloatArray, maxElements: Int = 3): String {
+        return values
+            .take(maxElements)
+            .joinToString(",") { value -> String.format(Locale.US, "%.3f", value) }
+    }
+
+    private fun resetFrameStatsLocked() {
+        totalFrameCount = 0L
+        lastStatsLogMs = 0L
+        frameCountsByKind.clear()
+        latestSampleByKind.clear()
     }
 
     private fun monotonicToUnixMs(monotonicNs: Long): Long {

@@ -47,6 +47,9 @@ use jni::sys::jstring;
 use jni::{JNIEnv, JavaVM};
 
 #[cfg(target_os = "android")]
+use std::mem::ManuallyDrop;
+
+#[cfg(target_os = "android")]
 use std::sync::Arc;
 
 #[cfg(target_os = "android")]
@@ -69,6 +72,65 @@ pub struct AndroidNativeBridgeAdapter {
 
 #[cfg(target_os = "android")]
 impl AndroidNativeBridgeAdapter {
+    const BRIDGE_CLASS_DOT: &'static str = "com.blinc.BlincNativeBridge";
+    const BRIDGE_CLASS_SLASH: &'static str = "com/blinc/BlincNativeBridge";
+
+    fn resolve_bridge_global_ref(
+        env: &mut JNIEnv,
+        activity: Option<&JObject>,
+    ) -> Result<GlobalRef, NativeBridgeError> {
+        if activity.is_none() {
+            let class = env.find_class(Self::BRIDGE_CLASS_SLASH).map_err(|e| {
+                NativeBridgeError::PlatformError(format!(
+                    "Failed to find bridge class via default class loader: {}",
+                    e
+                ))
+            })?;
+            return env.new_global_ref(class).map_err(|e| {
+                NativeBridgeError::PlatformError(format!(
+                    "Failed to create bridge global ref: {}",
+                    e
+                ))
+            });
+        }
+
+        let activity = activity.expect("checked is_some");
+
+        let class_loader = env
+            .call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+            .and_then(|v| v.l())
+            .map_err(|e| {
+                NativeBridgeError::PlatformError(format!(
+                    "Failed to get Activity class loader: {}",
+                    e
+                ))
+            })?;
+
+        let class_name = env.new_string(Self::BRIDGE_CLASS_DOT).map_err(|e| {
+            NativeBridgeError::PlatformError(format!("Failed to create class name string: {}", e))
+        })?;
+
+        let class_obj = env
+            .call_method(
+                class_loader,
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&class_name)],
+            )
+            .and_then(|v| v.l())
+            .map_err(|e| {
+                NativeBridgeError::PlatformError(format!(
+                    "Failed to load bridge class via Activity class loader: {}",
+                    e
+                ))
+            })?;
+
+        let class = JClass::from(class_obj);
+        env.new_global_ref(class).map_err(|e| {
+            NativeBridgeError::PlatformError(format!("Failed to create bridge global ref: {}", e))
+        })
+    }
+
     /// Create a new Android native bridge adapter
     ///
     /// # Arguments
@@ -79,7 +141,7 @@ impl AndroidNativeBridgeAdapter {
     /// * Adapter instance or JNI error
     pub fn new(vm: JavaVM, env: &mut JNIEnv) -> Result<Self, jni::errors::Error> {
         // Find the BlincNativeBridge class
-        let class = env.find_class("com/blinc/BlincNativeBridge")?;
+        let class = env.find_class(Self::BRIDGE_CLASS_SLASH)?;
         let bridge_class = env.new_global_ref(class)?;
 
         debug!("AndroidNativeBridgeAdapter initialized");
@@ -103,16 +165,16 @@ impl AndroidNativeBridgeAdapter {
                 NativeBridgeError::PlatformError(format!("Failed to attach thread: {}", e))
             })?;
 
-            // Find the BlincNativeBridge class
-            let class = env.find_class("com/blinc/BlincNativeBridge").map_err(|e| {
-                NativeBridgeError::PlatformError(format!(
-                    "Failed to find BlincNativeBridge class: {}",
-                    e
-                ))
-            })?;
-            env.new_global_ref(class).map_err(|e| {
-                NativeBridgeError::PlatformError(format!("Failed to create global ref: {}", e))
-            })?
+            let activity_ptr = app.activity_as_ptr();
+            let activity_obj = if activity_ptr.is_null() {
+                None
+            } else {
+                Some(ManuallyDrop::new(unsafe {
+                    JObject::from_raw(activity_ptr as *mut _)
+                }))
+            };
+
+            Self::resolve_bridge_global_ref(&mut env, activity_obj.as_ref().map(|obj| &**obj))?
         };
 
         debug!("AndroidNativeBridgeAdapter initialized from AndroidApp");

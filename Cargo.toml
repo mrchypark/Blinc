@@ -22,6 +22,7 @@ members = [
     "crates/blinc_debugger",
     "crates/blinc_runtime",
     "crates/blinc_test_suite",
+    "crates/blinc_sensors",
     "extensions/blinc_platform_desktop",
     "extensions/blinc_platform_android",
     "extensions/blinc_platform_ios",
