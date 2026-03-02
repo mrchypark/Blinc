@@ -73,17 +73,17 @@ impl SvgDocument {
     /// Extract all drawing commands from the SVG
     pub fn commands(&self) -> Vec<SvgDrawCommand> {
         let mut commands = Vec::new();
-        self.extract_commands(self.tree.root(), &mut commands);
+        Self::extract_commands(self.tree.root(), &mut commands);
         commands
     }
 
     /// Recursively extract commands from the node tree
-    fn extract_commands(&self, group: &usvg::Group, commands: &mut Vec<SvgDrawCommand>) {
+    fn extract_commands(group: &usvg::Group, commands: &mut Vec<SvgDrawCommand>) {
         for child in group.children() {
             match child {
                 usvg::Node::Group(g) => {
                     // Recurse into groups (transforms are handled per-path via abs_transform)
-                    self.extract_commands(g, commands);
+                    Self::extract_commands(g, commands);
                 }
                 usvg::Node::Path(p) => {
                     // Convert path to Blinc path and apply the absolute transform
