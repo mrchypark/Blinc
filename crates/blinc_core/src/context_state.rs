@@ -439,18 +439,18 @@ impl BlincContextState {
         F: FnOnce() -> T,
     {
         let state_key = StateKey::from_string::<T>(key);
-        let mut hooks = self.hooks.lock().unwrap();
+        // IMPORTANT: Do not execute `init()` while holding internal locks.
+        // Otherwise, `init()` may call back into keyed state APIs and deadlock.
+        let existing_raw_id = { self.hooks.lock().unwrap().get(&state_key) };
 
-        // Check if we have an existing signal with this key
-        let signal = if let Some(raw_id) = hooks.get(&state_key) {
-            // Reconstruct the signal from stored ID
+        let signal = if let Some(raw_id) = existing_raw_id {
             let signal_id = SignalId::from_raw(raw_id);
             Signal::from_id(signal_id)
         } else {
-            // First time - create a new signal and store it
-            let signal = self.reactive.lock().unwrap().create_signal(init());
+            let initial = init();
+            let signal = self.reactive.lock().unwrap().create_signal(initial);
             let raw_id = signal.id().to_raw();
-            hooks.insert(state_key, raw_id);
+            self.hooks.lock().unwrap().insert(state_key, raw_id);
             signal
         };
 
@@ -481,15 +481,17 @@ impl BlincContextState {
         F: FnOnce() -> T,
     {
         let state_key = StateKey::from_string::<T>(key);
-        let mut hooks = self.hooks.lock().unwrap();
+        // Same locking rule as `use_state_keyed`: run `init()` lock-free.
+        let existing_raw_id = { self.hooks.lock().unwrap().get(&state_key) };
 
-        if let Some(raw_id) = hooks.get(&state_key) {
+        if let Some(raw_id) = existing_raw_id {
             let signal_id = SignalId::from_raw(raw_id);
             Signal::from_id(signal_id)
         } else {
-            let signal = self.reactive.lock().unwrap().create_signal(init());
+            let initial = init();
+            let signal = self.reactive.lock().unwrap().create_signal(initial);
             let raw_id = signal.id().to_raw();
-            hooks.insert(state_key, raw_id);
+            self.hooks.lock().unwrap().insert(state_key, raw_id);
             signal
         }
     }
@@ -1000,6 +1002,28 @@ pub fn query_motion(key: &str) -> MotionAnimationState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    fn make_test_state() -> BlincContextState {
+        BlincContextState {
+            reactive: Arc::new(Mutex::new(ReactiveGraph::new())),
+            hooks: Arc::new(Mutex::new(HookState::new())),
+            dirty_flag: Arc::new(AtomicBool::new(false)),
+            stateful_callback: None,
+            query_callback: RwLock::new(None),
+            bounds_callback: RwLock::new(None),
+            focus_callback: RwLock::new(None),
+            scroll_callback: RwLock::new(None),
+            viewport_size: RwLock::new((0.0, 0.0)),
+            focused_element: RwLock::new(None),
+            element_registry: RwLock::new(None),
+            motion_state_callback: RwLock::new(None),
+            motion_cancel_exit_callback: RwLock::new(None),
+            recorder_event_callback: RwLock::new(None),
+            recorder_snapshot_callback: RwLock::new(None),
+            recorder_update_callback: RwLock::new(None),
+        }
+    }
 
     #[test]
     fn test_state_key() {
@@ -1020,5 +1044,30 @@ mod tests {
 
         hooks.insert(key.clone(), 42);
         assert_eq!(hooks.get(&key), Some(42));
+    }
+
+    #[test]
+    fn test_use_state_keyed_init_can_call_use_state_keyed_without_deadlock() {
+        let state = make_test_state();
+
+        let outer: State<i32> = state.use_state_keyed("outer", || {
+            let inner: State<i32> = state.use_state_keyed("inner", || 123);
+            // This read used to deadlock because `outer` init ran while holding the reactive lock.
+            inner.get() + 1
+        });
+
+        assert_eq!(outer.get(), 124);
+    }
+
+    #[test]
+    fn test_use_signal_keyed_init_can_call_use_state_keyed_without_deadlock() {
+        let state = make_test_state();
+
+        let sig: Signal<i32> = state.use_signal_keyed("sig", || {
+            let inner: State<i32> = state.use_state_keyed("inner2", || 7);
+            inner.get() * 3
+        });
+
+        assert_eq!(state.reactive.lock().unwrap().get(sig), Some(21));
     }
 }

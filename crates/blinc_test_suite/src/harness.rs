@@ -368,6 +368,7 @@ impl TestHarness {
     pub fn with_config(config: TestHarnessConfig) -> Result<Self> {
         let renderer_config = RendererConfig {
             max_primitives: config.max_primitives,
+            max_line_segments: config.max_primitives.saturating_mul(20),
             max_glass_primitives: config.max_glass_primitives,
             max_glyphs: config.max_glyphs,
             sample_count: config.sample_count,
