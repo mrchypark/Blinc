@@ -62,6 +62,7 @@ type NativeSensorRuntimeController =
 
 impl AndroidApp {
     const SENSOR_SESSION_ID: &'static str = "blinc-mobile-default";
+    const SENSOR_POLL_INTERVAL_MS: u64 = 1_000;
     const TOUCH_SCROLL_MIN_DELTA: f32 = 0.1;
     const TOUCH_SCROLL_SENSITIVITY: f32 = 1.0;
 
@@ -113,7 +114,7 @@ impl AndroidApp {
         let config = SensorConfig::default();
         match runtime.configure(&config) {
             Ok(()) => {
-                runtime.set_poll_interval_ms(1_000);
+                runtime.set_poll_interval_ms(Self::SENSOR_POLL_INTERVAL_MS);
                 tracing::info!("Mobile sensor runtime initialized");
                 Self::log_supported_sensors(&runtime);
                 Some(runtime)

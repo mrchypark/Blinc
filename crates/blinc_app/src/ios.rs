@@ -66,6 +66,7 @@ type NativeSensorRuntimeController =
 
 impl IOSApp {
     const SENSOR_SESSION_ID: &'static str = "blinc-mobile-default";
+    const SENSOR_POLL_INTERVAL_MS: u64 = 1_000;
 
     /// Initialize the iOS asset loader
     fn init_asset_loader() {
@@ -105,7 +106,7 @@ impl IOSApp {
         let config = SensorConfig::default();
         match runtime.configure(&config) {
             Ok(()) => {
-                runtime.set_poll_interval_ms(1_000);
+                runtime.set_poll_interval_ms(Self::SENSOR_POLL_INTERVAL_MS);
                 tracing::info!("Mobile sensor runtime initialized");
                 Self::log_supported_sensors(&runtime);
                 Some(runtime)
