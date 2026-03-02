@@ -36,6 +36,27 @@ cd Blinc
 cargo build --release
 ```
 
+### Team Bootstrap
+
+```bash
+# Install optional local tooling used by CI
+rustup component add rustfmt clippy
+cargo install cargo-nextest cargo-audit cargo-deny
+```
+
+### Local P0 Check Parity
+
+```bash
+# Keep checks aligned with CI hardening commands
+cargo fmt --all -- --check
+cargo clippy --workspace --all-features -- -W clippy::all -A clippy::type_complexity -A dead_code
+cargo check --workspace --all-features
+cargo nextest run --workspace --all-features
+cargo test --doc --workspace --all-features
+cargo audit
+cargo deny check
+```
+
 ### Hello World
 
 ```rust
@@ -477,6 +498,20 @@ Easing::EaseOutBounce    // Bounce effect
 | iOS | Stable | wgpu (Metal) |
 | Fuschia | In progress | wgpu (Vulkan/Scenic) |
 | HarmonyOS | In progress | wgpu (Vulkan/OpenGL ES) |
+
+## BlincCharts D3 Capability Policy
+
+BlincCharts follows an explicit capability contract against D3 modules:
+
+- `Full`: equivalent capability exists in BlincCharts.
+- `Partial`: capability exists with a narrower surface or constraints.
+- `Missing`: no practical equivalent yet.
+- `Out-of-scope`: runtime/data/DOM helpers intentionally outside `blinc_charts`.
+
+Reference docs:
+
+- Capability matrix: `docs/references/2026-02-11-d3-blinccharts-capability-matrix.md`
+- Gap closure backlog/implementation plan: `docs/plans/2026-02-11-d3-blinccharts-gap-backlog.md`
 
 ## Roadmap
 
