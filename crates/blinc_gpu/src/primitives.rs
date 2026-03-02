@@ -4,6 +4,8 @@
 //! All structures use `#[repr(C)]` and implement `bytemuck::Pod` for safe
 //! GPU buffer copies.
 
+use blinc_core::{ImageId, Rect};
+
 /// Primitive types (must match shader constants)
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -59,6 +61,108 @@ pub enum ClipType {
     Ellipse = 3,
     /// Polygon clip (winding number test via aux_data vertices)
     Polygon = 4,
+}
+
+/// Image upload operations recorded during painting
+#[derive(Clone, Debug)]
+pub enum ImageOp {
+    /// Create a new image (optionally with initial pixels)
+    Create {
+        order: u64,
+        image: ImageId,
+        width: u32,
+        height: u32,
+        label: Option<String>,
+        pixels: Option<Vec<u8>>,
+    },
+    /// Write RGBA pixels into a sub-rect of an existing image
+    Write {
+        order: u64,
+        image: ImageId,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    },
+}
+
+impl ImageOp {
+    pub fn order(&self) -> u64 {
+        match self {
+            ImageOp::Create { order, .. } | ImageOp::Write { order, .. } => *order,
+        }
+    }
+}
+
+/// Image draw call recorded during painting
+#[derive(Clone, Debug)]
+pub struct ImageDraw {
+    pub order: u64,
+    pub image: ImageId,
+    pub dst_rect: Rect,
+    pub source_rect: Option<Rect>,
+    pub tint: [f32; 4],
+    pub opacity: f32,
+    pub clip_bounds: [f32; 4],
+    pub clip_radius: [f32; 4],
+    pub clip_type: ClipType,
+}
+
+/// A GPU line segment instance.
+///
+/// This is a compact per-segment representation intended for large polylines
+/// (e.g., time-series charts). The GPU generates quad geometry per instance.
+///
+/// Notes:
+/// - Coordinates are in screen space (post-transform).
+/// - Clipping is rectangular only for now (bounds in screen space).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuLineSegment {
+    /// (x0, y0, x1, y1) in screen pixels
+    pub p0p1: [f32; 4],
+    /// Clip bounds (x, y, width, height). Use "no clip" sentinel like primitives.
+    pub clip_bounds: [f32; 4],
+    /// Premultiplied RGBA
+    pub color: [f32; 4],
+    /// Params: (half_width, z_layer, reserved, reserved)
+    pub params: [f32; 4],
+}
+
+impl GpuLineSegment {
+    pub fn new(x0: f32, y0: f32, x1: f32, y1: f32) -> Self {
+        Self {
+            p0p1: [x0, y0, x1, y1],
+            clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+            params: [0.5, 0.0, 0.0, 0.0],
+        }
+    }
+
+    pub fn with_clip_bounds(mut self, clip_bounds: [f32; 4]) -> Self {
+        self.clip_bounds = clip_bounds;
+        self
+    }
+
+    pub fn with_half_width(mut self, half_width: f32) -> Self {
+        self.params[0] = half_width.max(0.0);
+        self
+    }
+
+    pub fn with_z_layer(mut self, z_layer: u32) -> Self {
+        self.params[1] = z_layer as f32;
+        self
+    }
+
+    pub fn with_premul_color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
+        self.color = [r, g, b, a];
+        self
+    }
+
+    pub fn z_layer(&self) -> u32 {
+        self.params[1].max(0.0) as u32
+    }
 }
 
 /// A GPU primitive ready for rendering (matches shader `Primitive` struct)
@@ -1232,12 +1336,11 @@ pub struct PathBatch {
     pub vertices: Vec<crate::path::PathVertex>,
     /// Indices for all paths in this batch
     pub indices: Vec<u32>,
-    /// Clip bounds for this batch: (x, y, width, height) or (cx, cy, rx, ry)
-    pub clip_bounds: [f32; 4],
-    /// Clip corner radii for this batch
-    pub clip_radius: [f32; 4],
-    /// Clip type for this batch: 0=none, 1=rect, 2=circle, 3=ellipse
-    pub clip_type: u32,
+    /// Draw ranges for paths in this batch.
+    ///
+    /// This is required because clipping is stateful: different paths may be
+    /// rendered under different clip regions.
+    pub draws: Vec<PathDraw>,
     /// Whether to use gradient texture (for >2 stop gradients)
     pub use_gradient_texture: bool,
     /// Gradient stops for texture rasterization (when use_gradient_texture is true)
@@ -1254,6 +1357,47 @@ pub struct PathBatch {
     pub glass_params: [f32; 4],
     /// Glass tint color (RGBA)
     pub glass_tint: [f32; 4],
+}
+
+/// A draw call for a sub-range of indices within a [`PathBatch`], with clip state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PathDraw {
+    /// Z-layer index for interleaved rendering (used by Stack for proper z-ordering).
+    ///
+    /// This is a CPU-side ordering key only; it is not part of the shader uniforms.
+    pub z_layer: u32,
+    pub index_start: u32,
+    pub index_count: u32,
+    /// Clip bounds: (x, y, width, height) or (cx, cy, rx, ry)
+    pub clip_bounds: [f32; 4],
+    /// Clip corner radii (rounded rect) or (rx, ry, 0, 0) for ellipse
+    pub clip_radius: [f32; 4],
+    /// Clip type: 0=none, 1=rect, 2=circle, 3=ellipse
+    pub clip_type: u32,
+}
+
+const PATH_NO_CLIP_BOUNDS: [f32; 4] = [-10000.0, -10000.0, 100000.0, 100000.0];
+const PATH_NO_CLIP_RADIUS: [f32; 4] = [0.0; 4];
+
+impl PathBatch {
+    fn push_draw(&mut self, draw: PathDraw) {
+        if draw.index_count == 0 {
+            return;
+        }
+        if let Some(last) = self.draws.last_mut() {
+            let last_end = last.index_start.saturating_add(last.index_count);
+            if last_end == draw.index_start
+                && last.z_layer == draw.z_layer
+                && last.clip_bounds == draw.clip_bounds
+                && last.clip_radius == draw.clip_radius
+                && last.clip_type == draw.clip_type
+            {
+                last.index_count = last.index_count.saturating_add(draw.index_count);
+                return;
+            }
+        }
+        self.draws.push(draw);
+    }
 }
 
 /// Commands for layer operations during rendering
@@ -1295,14 +1439,22 @@ pub struct PrimitiveBatch {
     pub primitives: Vec<GpuPrimitive>,
     /// Foreground primitives (rendered after glass)
     pub foreground_primitives: Vec<GpuPrimitive>,
+    /// Background line segments (compact polyline rendering)
+    pub line_segments: Vec<GpuLineSegment>,
+    /// Foreground line segments (rendered after glass)
+    pub foreground_line_segments: Vec<GpuLineSegment>,
     pub glass_primitives: Vec<GpuGlassPrimitive>,
-    /// Nested glass primitives (glass inside another glass element, rendered in a second pass)
-    pub nested_glass_primitives: Vec<GpuGlassPrimitive>,
     pub glyphs: Vec<GpuGlyph>,
     /// Tessellated path geometry
     pub paths: PathBatch,
     /// Foreground tessellated path geometry
     pub foreground_paths: PathBatch,
+    /// Image upload operations
+    pub image_ops: Vec<ImageOp>,
+    /// Background image draw calls
+    pub image_draws: Vec<ImageDraw>,
+    /// Foreground image draw calls
+    pub foreground_image_draws: Vec<ImageDraw>,
     /// Layer commands for offscreen rendering and composition
     pub layer_commands: Vec<LayerCommandEntry>,
     /// 3D viewports to render via raymarching
@@ -1319,11 +1471,15 @@ impl PrimitiveBatch {
         Self {
             primitives: Vec::new(),
             foreground_primitives: Vec::new(),
+            line_segments: Vec::new(),
+            foreground_line_segments: Vec::new(),
             glass_primitives: Vec::new(),
-            nested_glass_primitives: Vec::new(),
             glyphs: Vec::new(),
             paths: PathBatch::default(),
             foreground_paths: PathBatch::default(),
+            image_ops: Vec::new(),
+            image_draws: Vec::new(),
+            foreground_image_draws: Vec::new(),
             layer_commands: Vec::new(),
             viewports_3d: Vec::new(),
             particle_viewports: Vec::new(),
@@ -1334,11 +1490,15 @@ impl PrimitiveBatch {
     pub fn clear(&mut self) {
         self.primitives.clear();
         self.foreground_primitives.clear();
+        self.line_segments.clear();
+        self.foreground_line_segments.clear();
         self.glass_primitives.clear();
-        self.nested_glass_primitives.clear();
         self.glyphs.clear();
         self.paths = PathBatch::default();
         self.foreground_paths = PathBatch::default();
+        self.image_ops.clear();
+        self.image_draws.clear();
+        self.foreground_image_draws.clear();
         self.layer_commands.clear();
         self.viewports_3d.clear();
         self.particle_viewports.clear();
@@ -1398,12 +1558,73 @@ impl PrimitiveBatch {
         self.foreground_primitives.push(primitive);
     }
 
+    pub fn push_line_segment(&mut self, seg: GpuLineSegment) {
+        self.line_segments.push(seg);
+    }
+
+    pub fn push_foreground_line_segment(&mut self, seg: GpuLineSegment) {
+        self.foreground_line_segments.push(seg);
+    }
+
     pub fn push_glass(&mut self, glass: GpuGlassPrimitive) {
         self.glass_primitives.push(glass);
     }
 
+    /// Compatibility shim for nested glass call sites.
     pub fn push_nested_glass(&mut self, glass: GpuGlassPrimitive) {
-        self.nested_glass_primitives.push(glass);
+        self.glass_primitives.push(glass);
+    }
+
+    pub fn push_image_op(&mut self, op: ImageOp) {
+        if let Some(prev) = self.image_ops.last() {
+            assert!(
+                prev.order() <= op.order(),
+                "canvas image ops must be recorded in non-decreasing order: prev={}, next={}",
+                prev.order(),
+                op.order()
+            );
+        }
+        self.image_ops.push(op);
+    }
+
+    pub fn push_image_draw(&mut self, draw: ImageDraw) {
+        if let Some(prev) = self.image_draws.last() {
+            assert!(
+                prev.order <= draw.order,
+                "background canvas image draws must be recorded in non-decreasing order: prev={}, next={}",
+                prev.order,
+                draw.order
+            );
+        }
+        if let Some(first_fg) = self.foreground_image_draws.first() {
+            assert!(
+                draw.order <= first_fg.order,
+                "background canvas image draw order cannot exceed foreground draw order: bg_order={}, first_fg_order={}",
+                draw.order,
+                first_fg.order
+            );
+        }
+        self.image_draws.push(draw);
+    }
+
+    pub fn push_foreground_image_draw(&mut self, draw: ImageDraw) {
+        if let Some(last_bg) = self.image_draws.last() {
+            assert!(
+                last_bg.order <= draw.order,
+                "foreground canvas image draw order cannot precede background draw order: last_bg_order={}, fg_order={}",
+                last_bg.order,
+                draw.order
+            );
+        }
+        if let Some(prev) = self.foreground_image_draws.last() {
+            assert!(
+                prev.order <= draw.order,
+                "foreground canvas image draws must be recorded in non-decreasing order: prev={}, next={}",
+                prev.order,
+                draw.order
+            );
+        }
+        self.foreground_image_draws.push(draw);
     }
 
     pub fn push_glyph(&mut self, glyph: GpuGlyph) {
@@ -1445,27 +1666,61 @@ impl PrimitiveBatch {
 
     /// Add tessellated path geometry to the batch
     pub fn push_path(&mut self, tessellated: crate::path::TessellatedPath) {
+        self.push_path_at_z(0, tessellated);
+    }
+
+    /// Add tessellated path geometry to the batch at a given z-layer.
+    pub fn push_path_at_z(&mut self, z_layer: u32, tessellated: crate::path::TessellatedPath) {
         if tessellated.is_empty() {
             return;
         }
         // Offset indices by current vertex count
         let base_vertex = self.paths.vertices.len() as u32;
+        let index_start = self.paths.indices.len() as u32;
         self.paths.vertices.extend(tessellated.vertices);
         self.paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.paths.indices.len() as u32 - index_start;
+        self.paths.push_draw(PathDraw {
+            z_layer,
+            index_start,
+            index_count,
+            clip_bounds: PATH_NO_CLIP_BOUNDS,
+            clip_radius: PATH_NO_CLIP_RADIUS,
+            clip_type: ClipType::None as u32,
+        });
     }
 
     /// Add tessellated path geometry to the foreground batch
     pub fn push_foreground_path(&mut self, tessellated: crate::path::TessellatedPath) {
+        self.push_foreground_path_at_z(0, tessellated);
+    }
+
+    /// Add tessellated path geometry to the foreground batch at a given z-layer.
+    pub fn push_foreground_path_at_z(
+        &mut self,
+        z_layer: u32,
+        tessellated: crate::path::TessellatedPath,
+    ) {
         if tessellated.is_empty() {
             return;
         }
         let base_vertex = self.foreground_paths.vertices.len() as u32;
+        let index_start = self.foreground_paths.indices.len() as u32;
         self.foreground_paths.vertices.extend(tessellated.vertices);
         self.foreground_paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.foreground_paths.indices.len() as u32 - index_start;
+        self.foreground_paths.push_draw(PathDraw {
+            z_layer,
+            index_start,
+            index_count,
+            clip_bounds: PATH_NO_CLIP_BOUNDS,
+            clip_radius: PATH_NO_CLIP_RADIUS,
+            clip_type: ClipType::None as u32,
+        });
     }
 
     /// Add tessellated path geometry with clip data to the batch
@@ -1476,20 +1731,38 @@ impl PrimitiveBatch {
         clip_radius: [f32; 4],
         clip_type: ClipType,
     ) {
+        self.push_path_with_clip_at_z(0, tessellated, clip_bounds, clip_radius, clip_type);
+    }
+
+    /// Add tessellated path geometry with clip data to the batch at a given z-layer.
+    pub fn push_path_with_clip_at_z(
+        &mut self,
+        z_layer: u32,
+        tessellated: crate::path::TessellatedPath,
+        clip_bounds: [f32; 4],
+        clip_radius: [f32; 4],
+        clip_type: ClipType,
+    ) {
         if tessellated.is_empty() {
             return;
         }
-        // Update clip data on the batch (last path's clip wins)
-        self.paths.clip_bounds = clip_bounds;
-        self.paths.clip_radius = clip_radius;
-        self.paths.clip_type = clip_type as u32;
 
         // Offset indices by current vertex count
         let base_vertex = self.paths.vertices.len() as u32;
+        let index_start = self.paths.indices.len() as u32;
         self.paths.vertices.extend(tessellated.vertices);
         self.paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.paths.indices.len() as u32 - index_start;
+        self.paths.push_draw(PathDraw {
+            z_layer,
+            index_start,
+            index_count,
+            clip_bounds,
+            clip_radius,
+            clip_type: clip_type as u32,
+        });
     }
 
     /// Add tessellated path geometry with clip data to the foreground batch
@@ -1500,19 +1773,42 @@ impl PrimitiveBatch {
         clip_radius: [f32; 4],
         clip_type: ClipType,
     ) {
+        self.push_foreground_path_with_clip_at_z(
+            0,
+            tessellated,
+            clip_bounds,
+            clip_radius,
+            clip_type,
+        );
+    }
+
+    /// Add tessellated path geometry with clip data to the foreground batch at a given z-layer.
+    pub fn push_foreground_path_with_clip_at_z(
+        &mut self,
+        z_layer: u32,
+        tessellated: crate::path::TessellatedPath,
+        clip_bounds: [f32; 4],
+        clip_radius: [f32; 4],
+        clip_type: ClipType,
+    ) {
         if tessellated.is_empty() {
             return;
         }
-        // Update clip data on the batch (last path's clip wins)
-        self.foreground_paths.clip_bounds = clip_bounds;
-        self.foreground_paths.clip_radius = clip_radius;
-        self.foreground_paths.clip_type = clip_type as u32;
-
         let base_vertex = self.foreground_paths.vertices.len() as u32;
+        let index_start = self.foreground_paths.indices.len() as u32;
         self.foreground_paths.vertices.extend(tessellated.vertices);
         self.foreground_paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.foreground_paths.indices.len() as u32 - index_start;
+        self.foreground_paths.push_draw(PathDraw {
+            z_layer,
+            index_start,
+            index_count,
+            clip_bounds,
+            clip_radius,
+            clip_type: clip_type as u32,
+        });
     }
 
     /// Add tessellated path geometry with clip data and brush info to the batch
@@ -1524,14 +1820,29 @@ impl PrimitiveBatch {
         clip_type: ClipType,
         brush_info: &crate::path::PathBrushInfo,
     ) {
+        self.push_path_with_brush_info_at_z(
+            0,
+            tessellated,
+            clip_bounds,
+            clip_radius,
+            clip_type,
+            brush_info,
+        );
+    }
+
+    /// Add tessellated path geometry with clip data and brush info to the batch at a given z-layer.
+    pub fn push_path_with_brush_info_at_z(
+        &mut self,
+        z_layer: u32,
+        tessellated: crate::path::TessellatedPath,
+        clip_bounds: [f32; 4],
+        clip_radius: [f32; 4],
+        clip_type: ClipType,
+        brush_info: &crate::path::PathBrushInfo,
+    ) {
         if tessellated.is_empty() {
             return;
         }
-
-        // Update clip data
-        self.paths.clip_bounds = clip_bounds;
-        self.paths.clip_radius = clip_radius;
-        self.paths.clip_type = clip_type as u32;
 
         // Update brush metadata
         self.paths.use_gradient_texture = brush_info.needs_gradient_texture;
@@ -1552,10 +1863,20 @@ impl PrimitiveBatch {
 
         // Offset indices by current vertex count
         let base_vertex = self.paths.vertices.len() as u32;
+        let index_start = self.paths.indices.len() as u32;
         self.paths.vertices.extend(tessellated.vertices);
         self.paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.paths.indices.len() as u32 - index_start;
+        self.paths.push_draw(PathDraw {
+            z_layer,
+            index_start,
+            index_count,
+            clip_bounds,
+            clip_radius,
+            clip_type: clip_type as u32,
+        });
     }
 
     /// Add tessellated path geometry with clip data and brush info to the foreground batch
@@ -1567,14 +1888,29 @@ impl PrimitiveBatch {
         clip_type: ClipType,
         brush_info: &crate::path::PathBrushInfo,
     ) {
+        self.push_foreground_path_with_brush_info_at_z(
+            0,
+            tessellated,
+            clip_bounds,
+            clip_radius,
+            clip_type,
+            brush_info,
+        );
+    }
+
+    /// Add tessellated path geometry with clip data and brush info to the foreground batch at a given z-layer.
+    pub fn push_foreground_path_with_brush_info_at_z(
+        &mut self,
+        z_layer: u32,
+        tessellated: crate::path::TessellatedPath,
+        clip_bounds: [f32; 4],
+        clip_radius: [f32; 4],
+        clip_type: ClipType,
+        brush_info: &crate::path::PathBrushInfo,
+    ) {
         if tessellated.is_empty() {
             return;
         }
-
-        // Update clip data
-        self.foreground_paths.clip_bounds = clip_bounds;
-        self.foreground_paths.clip_radius = clip_radius;
-        self.foreground_paths.clip_type = clip_type as u32;
 
         // Update brush metadata
         self.foreground_paths.use_gradient_texture = brush_info.needs_gradient_texture;
@@ -1594,20 +1930,33 @@ impl PrimitiveBatch {
         ];
 
         let base_vertex = self.foreground_paths.vertices.len() as u32;
+        let index_start = self.foreground_paths.indices.len() as u32;
         self.foreground_paths.vertices.extend(tessellated.vertices);
         self.foreground_paths
             .indices
             .extend(tessellated.indices.iter().map(|i| i + base_vertex));
+        let index_count = self.foreground_paths.indices.len() as u32 - index_start;
+        self.foreground_paths.push_draw(PathDraw {
+            z_layer,
+            index_start,
+            index_count,
+            clip_bounds,
+            clip_radius,
+            clip_type: clip_type as u32,
+        });
     }
 
     pub fn is_empty(&self) -> bool {
         self.primitives.is_empty()
             && self.foreground_primitives.is_empty()
+            && self.line_segments.is_empty()
+            && self.foreground_line_segments.is_empty()
             && self.glass_primitives.is_empty()
             && self.glyphs.is_empty()
             && self.paths.vertices.is_empty()
             && self.foreground_paths.vertices.is_empty()
             && self.viewports_3d.is_empty()
+            && self.particle_viewports.is_empty()
     }
 
     /// Check if the batch contains any tessellated path geometry
@@ -1649,12 +1998,29 @@ impl PrimitiveBatch {
 
     /// Get the maximum z_layer used by primitives in this batch
     pub fn max_z_layer(&self) -> u32 {
-        self.primitives
+        let prim_max = self
+            .primitives
             .iter()
             .chain(self.foreground_primitives.iter())
             .map(|p| p.z_layer())
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        let line_max = self
+            .line_segments
+            .iter()
+            .chain(self.foreground_line_segments.iter())
+            .map(|l| l.z_layer())
+            .max()
+            .unwrap_or(0);
+        let path_max = self
+            .paths
+            .draws
+            .iter()
+            .chain(self.foreground_paths.draws.iter())
+            .map(|d| d.z_layer)
+            .max()
+            .unwrap_or(0);
+        prim_max.max(line_max).max(path_max)
     }
 
     /// Filter primitives by z_layer, returning a new batch with only matching primitives
@@ -1730,28 +2096,63 @@ impl PrimitiveBatch {
         self.primitives.extend(other.primitives);
         self.foreground_primitives
             .extend(other.foreground_primitives);
+        self.line_segments.extend(other.line_segments);
+        self.foreground_line_segments
+            .extend(other.foreground_line_segments);
         self.glass_primitives.extend(other.glass_primitives);
         self.glyphs.extend(other.glyphs);
+        self.image_ops.extend(other.image_ops);
+        self.image_draws.extend(other.image_draws);
+        self.foreground_image_draws
+            .extend(other.foreground_image_draws);
 
-        // Merge paths with index offset
+        // Merge paths with vertex+index offset (and preserve per-draw clip metadata).
+        let mut other_paths = other.paths;
         let base_vertex = self.paths.vertices.len() as u32;
-        self.paths.vertices.extend(other.paths.vertices);
+        let base_index = self.paths.indices.len() as u32;
+        self.paths.vertices.extend(other_paths.vertices);
         self.paths
             .indices
-            .extend(other.paths.indices.iter().map(|i| i + base_vertex));
+            .extend(other_paths.indices.into_iter().map(|i| i + base_vertex));
+        for mut d in other_paths.draws.drain(..) {
+            d.index_start = d.index_start.saturating_add(base_index);
+            self.paths.push_draw(d);
+        }
+        // Preserve legacy "last brush wins" semantics for batch-wide metadata.
+        self.paths.use_gradient_texture = other_paths.use_gradient_texture;
+        self.paths.gradient_stops = other_paths.gradient_stops;
+        self.paths.use_image_texture = other_paths.use_image_texture;
+        self.paths.image_source = other_paths.image_source;
+        self.paths.image_uv_bounds = other_paths.image_uv_bounds;
+        self.paths.use_glass_effect = other_paths.use_glass_effect;
+        self.paths.glass_params = other_paths.glass_params;
+        self.paths.glass_tint = other_paths.glass_tint;
 
         // Merge foreground paths
+        let mut other_fg_paths = other.foreground_paths;
         let fg_base_vertex = self.foreground_paths.vertices.len() as u32;
+        let fg_base_index = self.foreground_paths.indices.len() as u32;
         self.foreground_paths
             .vertices
-            .extend(other.foreground_paths.vertices);
+            .extend(other_fg_paths.vertices);
         self.foreground_paths.indices.extend(
-            other
-                .foreground_paths
+            other_fg_paths
                 .indices
-                .iter()
+                .into_iter()
                 .map(|i| i + fg_base_vertex),
         );
+        for mut d in other_fg_paths.draws.drain(..) {
+            d.index_start = d.index_start.saturating_add(fg_base_index);
+            self.foreground_paths.push_draw(d);
+        }
+        self.foreground_paths.use_gradient_texture = other_fg_paths.use_gradient_texture;
+        self.foreground_paths.gradient_stops = other_fg_paths.gradient_stops;
+        self.foreground_paths.use_image_texture = other_fg_paths.use_image_texture;
+        self.foreground_paths.image_source = other_fg_paths.image_source;
+        self.foreground_paths.image_uv_bounds = other_fg_paths.image_uv_bounds;
+        self.foreground_paths.use_glass_effect = other_fg_paths.use_glass_effect;
+        self.foreground_paths.glass_params = other_fg_paths.glass_params;
+        self.foreground_paths.glass_tint = other_fg_paths.glass_tint;
 
         // Merge layer commands with offset primitive indices
         for mut entry in other.layer_commands {
@@ -1761,6 +2162,7 @@ impl PrimitiveBatch {
 
         // Merge 3D viewports
         self.viewports_3d.extend(other.viewports_3d);
+        self.particle_viewports.extend(other.particle_viewports);
 
         // Merge aux_data (offsets in primitives already point to correct positions
         // because aux_data offsets are absolute within a batch — callers must rebind)
@@ -1914,7 +2316,6 @@ impl Default for ParticleViewport3D {
 /// Legacy rectangle primitive (deprecated - use GpuPrimitive instead)
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-#[deprecated(note = "Use GpuPrimitive instead")]
 pub struct GpuRect {
     pub position: [f32; 2],
     pub size: [f32; 2],

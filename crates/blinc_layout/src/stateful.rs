@@ -2134,7 +2134,7 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
             });
 
         // Create Stateful using the existing infrastructure
-        let mut stateful = Stateful::with_shared_state(shared_state);
+        let stateful = Stateful::with_shared_state(shared_state);
 
         // Set the callback
         stateful.shared_state.lock().unwrap().state_callback = Some(legacy_callback);
@@ -3966,16 +3966,6 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
         ElementTypeId::Div
     }
 
-    fn element_id(&self) -> Option<&str> {
-        // SAFETY: Same pattern as children_builders/layout_style - stable during rendering
-        unsafe { (*self.inner.as_ptr()).element_id.as_deref() }
-    }
-
-    fn element_classes(&self) -> &[String] {
-        // SAFETY: Same pattern as children_builders/layout_style - stable during rendering
-        unsafe { &(*self.inner.as_ptr()).classes }
-    }
-
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
         // SAFETY: We use a raw pointer here because we need to return a reference
         // to the event handlers cache. The cache is stable during rendering.
@@ -4017,6 +4007,26 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
     fn visual_animation_config(&self) -> Option<crate::visual_animation::VisualAnimationConfig> {
         self.ensure_callback_invoked();
         self.inner.borrow().visual_animation_config()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.ensure_callback_invoked();
+        // SAFETY: See layout_style()/event_handlers(). This is safe as long as element_id()
+        // is only called during build/render phases where the inner Div isn't being mutated
+        // concurrently (UI is single-threaded).
+        unsafe {
+            let inner = self.inner.as_ptr();
+            (*inner).element_id()
+        }
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.ensure_callback_invoked();
+        // SAFETY: Same reasoning as element_id().
+        unsafe {
+            let inner = self.inner.as_ptr();
+            (*inner).classes()
+        }
     }
 }
 
@@ -4118,9 +4128,26 @@ pub fn text_field() -> TextField {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{div, reset_call_counters, EventRouter, MouseButton, RenderTree};
     use blinc_core::events::event_types;
     use blinc_core::{Brush, Color, CornerRadius};
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Once;
+
+    fn ensure_context_state() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let reactive: blinc_core::reactive::SharedReactiveGraph = std::sync::Arc::new(
+                std::sync::Mutex::new(blinc_core::reactive::ReactiveGraph::new()),
+            );
+            let hooks: blinc_core::context_state::SharedHookState = std::sync::Arc::new(
+                std::sync::Mutex::new(blinc_core::context_state::HookState::new()),
+            );
+            let dirty: blinc_core::context_state::DirtyFlag =
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            blinc_core::context_state::BlincContextState::init(reactive, hooks, dirty);
+        });
+    }
 
     #[test]
 
@@ -4133,6 +4160,124 @@ mod tests {
 
         let mut tree = LayoutTree::new();
         let _node = elem.build(&mut tree);
+    }
+
+    #[test]
+    fn test_stateful_builder_merges_id_from_on_state() {
+        // Regression test: `.id()` set on the Div returned from StatefulBuilder::on_state
+        // must be merged into the base container so the element is queryable by ID.
+        ensure_context_state();
+        reset_call_counters();
+
+        let ui =
+            stateful::<NoState>().on_state(|_ctx| div().id("stateful-test-id").w(100.0).h(40.0));
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 200.0);
+
+        assert!(
+            tree.element_registry().contains("stateful-test-id"),
+            "expected stateful element id to be registered"
+        );
+    }
+
+    #[test]
+    fn test_stateful_builder_click_after_scroll_hits_visible_item() {
+        use std::sync::{Arc, Mutex};
+
+        ensure_context_state();
+        reset_call_counters();
+
+        let item_h = 40.0;
+        let item_count = 20usize;
+        let clicks: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let mut list = div().flex_col().w_full();
+        for i in 0..item_count {
+            let clicks = Arc::clone(&clicks);
+            list = list.child(
+                stateful::<ButtonState>()
+                    .initial(ButtonState::Idle)
+                    .on_state(move |_ctx| {
+                        div()
+                            .id(format!("item-{i}"))
+                            .w_full()
+                            .h(item_h)
+                            .flex_shrink_0()
+                    })
+                    .on_click(move |_| {
+                        clicks.lock().unwrap().push(i);
+                    }),
+            );
+        }
+
+        let ui = div().w(200.0).h(200.0).child(
+            div()
+                .id("scroll")
+                .w_full()
+                .h_full()
+                .overflow_y_scroll()
+                .child(list),
+        );
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 200.0);
+
+        assert!(
+            tree.element_registry().contains("item-10"),
+            "expected item id set in on_state() to be registered"
+        );
+
+        // Scroll down by 10 items (visual content moves up).
+        let scroll_id = tree
+            .element_registry()
+            .get("scroll")
+            .expect("scroll container id registered");
+        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 10.0));
+
+        // Simulate a click in the top-left of the scroll viewport.
+        let (x, y) = (10.0, item_h / 2.0);
+        let mut router = EventRouter::new();
+
+        for (node, event_type) in router.on_mouse_down(&tree, x, y, MouseButton::Left) {
+            let (bx, by, bw, bh) = router.get_node_bounds(node).unwrap_or((0.0, 0.0, 0.0, 0.0));
+            tree.dispatch_event_full(
+                node,
+                event_type,
+                x,
+                y,
+                x - bx,
+                y - by,
+                bx,
+                by,
+                bw,
+                bh,
+                0.0,
+                0.0,
+                1.0,
+            );
+        }
+
+        for (node, event_type) in router.on_mouse_up(&tree, x, y, MouseButton::Left) {
+            let (bx, by, bw, bh) = router.get_node_bounds(node).unwrap_or((0.0, 0.0, 0.0, 0.0));
+            tree.dispatch_event_full(
+                node,
+                event_type,
+                x,
+                y,
+                x - bx,
+                y - by,
+                bx,
+                by,
+                bw,
+                bh,
+                0.0,
+                0.0,
+                1.0,
+            );
+        }
+
+        assert_eq!(clicks.lock().unwrap().as_slice(), &[10]);
     }
 
     #[test]

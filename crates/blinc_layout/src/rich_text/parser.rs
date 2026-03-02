@@ -362,7 +362,7 @@ impl<'a> Parser<'a> {
 
     fn handle_closing_tag(&mut self, name: &str) {
         // Find matching opening tag on stack
-        let tag_matches = |tag_name: &str| match name {
+        let _tag_matches = |tag_name: &str| match name {
             "b" | "strong" => tag_name == "b" || tag_name == "strong",
             "i" | "em" => tag_name == "i" || tag_name == "em",
             "u" => tag_name == "u",
@@ -626,7 +626,7 @@ mod tests {
         let (text, spans) = parse("<b>bold <i>and italic</i></b>");
         assert_eq!(text, "bold and italic");
         // Should have span for inner italic, then outer bold
-        assert!(spans.len() >= 1);
+        assert!(!spans.is_empty());
     }
 
     #[test]

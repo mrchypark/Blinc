@@ -1242,6 +1242,15 @@ impl Div {
         if other.cursor.is_some() {
             self.cursor = other.cursor;
         }
+        if other.pointer_events_none != default.pointer_events_none {
+            self.pointer_events_none = other.pointer_events_none;
+        }
+        if other.element_id.is_some() {
+            self.element_id = other.element_id;
+        }
+        if !other.classes.is_empty() {
+            self.classes = other.classes;
+        }
 
         // Merge children - if other has children, replace ours
         if !other.children.is_empty() {
@@ -2344,6 +2353,18 @@ impl Div {
             // Merge scroll handlers into existing event handlers
             self.event_handlers.merge(handlers);
             self.scroll_physics = Some(physics);
+
+            // Match `scroll()` widget defaults: lay out children at natural size
+            // by avoiding stretch/center alignment defaults when enabling scroll.
+            if self.style.align_items.is_none() {
+                self.style.align_items = Some(AlignItems::Start);
+            }
+            if self.style.justify_content.is_none() {
+                self.style.justify_content = Some(JustifyContent::Start);
+            }
+            if self.style.align_content.is_none() {
+                self.style.align_content = Some(taffy::AlignContent::Start);
+            }
         }
     }
 
@@ -3903,6 +3924,126 @@ pub trait ElementBuilder {
     }
 }
 
+impl ElementBuilder for std::sync::Arc<dyn ElementBuilder> {
+    fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
+        self.as_ref().build(tree)
+    }
+
+    fn render_props(&self) -> RenderProps {
+        self.as_ref().render_props()
+    }
+
+    fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
+        self.as_ref().children_builders()
+    }
+
+    fn element_type_id(&self) -> ElementTypeId {
+        self.as_ref().element_type_id()
+    }
+
+    fn text_render_info(&self) -> Option<TextRenderInfo> {
+        self.as_ref().text_render_info()
+    }
+
+    fn styled_text_render_info(&self) -> Option<StyledTextRenderInfo> {
+        self.as_ref().styled_text_render_info()
+    }
+
+    fn svg_render_info(&self) -> Option<SvgRenderInfo> {
+        self.as_ref().svg_render_info()
+    }
+
+    fn image_render_info(&self) -> Option<ImageRenderInfo> {
+        self.as_ref().image_render_info()
+    }
+
+    fn canvas_render_info(&self) -> Option<crate::canvas::CanvasRenderFn> {
+        self.as_ref().canvas_render_info()
+    }
+
+    fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
+        self.as_ref().event_handlers()
+    }
+
+    fn scroll_info(&self) -> Option<crate::scroll::ScrollRenderInfo> {
+        self.as_ref().scroll_info()
+    }
+
+    fn scroll_physics(&self) -> Option<crate::scroll::SharedScrollPhysics> {
+        self.as_ref().scroll_physics()
+    }
+
+    fn motion_animation_for_child(
+        &self,
+        child_index: usize,
+    ) -> Option<crate::element::MotionAnimation> {
+        self.as_ref().motion_animation_for_child(child_index)
+    }
+
+    fn motion_bindings(&self) -> Option<crate::motion::MotionBindings> {
+        self.as_ref().motion_bindings()
+    }
+
+    fn motion_stable_id(&self) -> Option<&str> {
+        self.as_ref().motion_stable_id()
+    }
+
+    fn motion_should_replay(&self) -> bool {
+        self.as_ref().motion_should_replay()
+    }
+
+    fn motion_is_suspended(&self) -> bool {
+        self.as_ref().motion_is_suspended()
+    }
+
+    #[allow(deprecated)]
+    fn motion_is_exiting(&self) -> bool {
+        self.as_ref().motion_is_exiting()
+    }
+
+    fn layout_style(&self) -> Option<&taffy::Style> {
+        self.as_ref().layout_style()
+    }
+
+    fn layout_bounds_storage(&self) -> Option<crate::renderer::LayoutBoundsStorage> {
+        self.as_ref().layout_bounds_storage()
+    }
+
+    fn layout_bounds_callback(&self) -> Option<crate::renderer::LayoutBoundsCallback> {
+        self.as_ref().layout_bounds_callback()
+    }
+
+    fn semantic_type_name(&self) -> Option<&'static str> {
+        self.as_ref().semantic_type_name()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.as_ref().element_id()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.as_ref().element_classes()
+    }
+
+    fn bound_scroll_ref(&self) -> Option<&crate::selector::ScrollRef> {
+        self.as_ref().bound_scroll_ref()
+    }
+
+    fn motion_on_ready_callback(
+        &self,
+    ) -> Option<std::sync::Arc<dyn Fn(crate::element::ElementBounds) + Send + Sync>> {
+        self.as_ref().motion_on_ready_callback()
+    }
+
+    fn layout_animation_config(&self) -> Option<crate::layout_animation::LayoutAnimationConfig> {
+        self.as_ref().layout_animation_config()
+    }
+
+    fn visual_animation_config(&self) -> Option<crate::visual_animation::VisualAnimationConfig> {
+        self.as_ref().visual_animation_config()
+    }
+}
+
 impl ElementBuilder for Div {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         let node = tree.create_node(self.style.clone());
@@ -4295,7 +4436,7 @@ mod tests {
         assert!(div_ref.is_bound());
 
         // Read from the ref
-        let width = div_ref.with(|d| d.style.size.width.clone());
+        let width = div_ref.with(|d| d.style.size.width);
         assert!(matches!(width, Some(Dimension::Length(100.0))));
     }
 
@@ -4311,7 +4452,7 @@ mod tests {
         });
 
         // Verify modification
-        let height = div_ref.with(|d| d.style.size.height.clone());
+        let height = div_ref.with(|d| d.style.size.height);
         assert!(matches!(height, Some(Dimension::Length(200.0))));
     }
 
@@ -4325,7 +4466,7 @@ mod tests {
 
         // Should be visible on clone (shared storage)
         assert!(div_ref_clone.is_bound());
-        let width = div_ref_clone.with(|d| d.style.size.width.clone());
+        let width = div_ref_clone.with(|d| d.style.size.width);
         assert!(matches!(width, Some(Dimension::Length(100.0))));
     }
 }

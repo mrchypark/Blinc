@@ -339,7 +339,7 @@ impl crate::div::ElementBuilder for TableCell {
 /// th("Column Name")
 /// th("Right Aligned").justify_end()
 /// ```
-pub fn th(content: impl Into<String>) -> TableCell {
+pub fn th(content: impl ToString) -> TableCell {
     let txt = text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(header_text_color())
@@ -358,7 +358,7 @@ pub fn th(content: impl Into<String>) -> TableCell {
 /// td("Cell content")
 /// td("123.45").justify_end()  // Right-align numbers
 /// ```
-pub fn td(content: impl Into<String>) -> TableCell {
+pub fn td(content: impl ToString) -> TableCell {
     let txt = text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(cell_text_color());
@@ -524,7 +524,7 @@ impl Default for TableBuilder {
 ///
 /// Returns a Text element that you can further style.
 /// Use `th()` if you need cell-level styling (padding, background).
-pub fn th_text(content: impl Into<String>) -> Text {
+pub fn th_text(content: impl ToString) -> Text {
     text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(header_text_color())
@@ -535,7 +535,7 @@ pub fn th_text(content: impl Into<String>) -> Text {
 ///
 /// Returns a Text element that you can further style.
 /// Use `td()` if you need cell-level styling (padding, background).
-pub fn td_text(content: impl Into<String>) -> Text {
+pub fn td_text(content: impl ToString) -> Text {
     text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(cell_text_color())
@@ -565,7 +565,7 @@ mod tests {
             .child(tbody().child(tr().child(td("Data"))));
 
         tbl.build(&mut tree);
-        assert!(tree.len() > 0);
+        assert!(!tree.is_empty());
     }
 
     #[test]
@@ -581,7 +581,7 @@ mod tests {
             .build();
 
         tbl.build(&mut tree);
-        assert!(tree.len() > 0);
+        assert!(!tree.is_empty());
     }
 
     #[test]
@@ -595,6 +595,6 @@ mod tests {
             .bg(Color::from_hex(0x333333));
 
         cell.build(&mut tree);
-        assert!(tree.len() > 0);
+        assert!(!tree.is_empty());
     }
 }
