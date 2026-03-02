@@ -1729,20 +1729,6 @@ impl WindowedContext {
     }
 
     // =========================================================================
-    // i18n API
-    // =========================================================================
-
-    /// Get the current locale identifier (e.g., "en-US", "ko-KR")
-    pub fn locale(&self) -> String {
-        "en-US".to_string()
-    }
-
-    /// Set the current locale (triggers a full UI rebuild via i18n redraw callback)
-    pub fn set_locale(&self, _locale: impl Into<String>) {
-        tracing::debug!("WindowedContext::set_locale is a no-op (i18n is externalized)");
-    }
-
-    // =========================================================================
     // CSS Stylesheet API
     // =========================================================================
 
@@ -2018,14 +2004,6 @@ impl WindowedApp {
         });
     }
 
-    #[cfg(all(
-        feature = "windowed",
-        not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
-    ))]
-    fn init_i18n() {
-        // i18n integration is externalized; no framework-level initialization here.
-    }
-
     /// Run a windowed Blinc application on desktop platforms
     ///
     /// This is the main entry point for desktop applications. It creates
@@ -2079,9 +2057,6 @@ impl WindowedApp {
 
         // Initialize the theme system with platform detection
         Self::init_theme();
-
-        // Initialize i18n (locale + redraw hook)
-        Self::init_i18n();
 
         let platform = DesktopPlatform::new().map_err(|e| BlincError::Platform(e.to_string()))?;
         let event_loop = platform

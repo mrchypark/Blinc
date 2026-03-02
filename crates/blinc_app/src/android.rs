@@ -102,10 +102,6 @@ impl AndroidApp {
         });
     }
 
-    fn init_i18n(_app: &NdkAndroidApp) {
-        // i18n integration is externalized; no framework-level initialization here.
-    }
-
     fn init_sensors() -> Option<NativeSensorRuntimeController> {
         let client = SensorClient::new(NativeBridgeBackend);
         let permissions = SensorPermissionService::new(NativeBridgePermissionBackend);
@@ -227,8 +223,6 @@ impl AndroidApp {
         // Initialize the theme system
         Self::init_theme();
 
-        // Initialize i18n (locale + redraw hook)
-        Self::init_i18n(&app);
         let mut sensor_runtime = if Self::sensor_autoprobe_enabled() {
             tracing::info!("Android sensor autoprobe enabled");
             Self::init_sensors()
@@ -953,7 +947,7 @@ impl AndroidApp {
                 needs_rebuild = true;
             }
 
-            // Check if a full rebuild was requested by widgets (e.g., theme/locale changes).
+            // Check if a full rebuild was requested by widgets (e.g., theme changes).
             if blinc_layout::widgets::take_needs_rebuild() {
                 tracing::debug!("Rebuild triggered by: widgets::request_full_rebuild()");
                 needs_rebuild = true;

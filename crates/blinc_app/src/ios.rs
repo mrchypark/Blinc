@@ -94,10 +94,6 @@ impl IOSApp {
         });
     }
 
-    fn init_i18n() {
-        // i18n integration is externalized; no framework-level initialization here.
-    }
-
     fn init_sensors() -> Option<NativeSensorRuntimeController> {
         let client = SensorClient::new(NativeBridgeBackend);
         let permissions = SensorPermissionService::new(NativeBridgePermissionBackend);
@@ -181,9 +177,6 @@ impl IOSApp {
 
         // Initialize the theme system
         Self::init_theme();
-
-        // Initialize i18n (locale + redraw hook)
-        Self::init_i18n();
 
         // Shared state
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
@@ -1018,7 +1011,7 @@ pub extern "C" fn blinc_build_frame(ctx: *mut IOSRenderContext) {
         // PHASE 2: Check if full rebuild is needed
         let mut needs_rebuild = ctx.ref_dirty_flag.swap(false, Ordering::SeqCst);
 
-        // Check if widgets requested a full rebuild (e.g., theme/locale changes).
+        // Check if widgets requested a full rebuild (e.g., theme changes).
         if blinc_layout::widgets::take_needs_rebuild() {
             needs_rebuild = true;
         }
