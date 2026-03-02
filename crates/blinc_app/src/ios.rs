@@ -41,6 +41,11 @@ use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager};
 use blinc_platform::assets::set_global_asset_loader;
 use blinc_platform_ios::{Gesture, GestureDetector, IOSAssetLoader, IOSWakeProxy, TouchPhase};
+use blinc_sensors::native_bridge::NativeBridgeBackend;
+use blinc_sensors::{
+    NativeBridgePermissionBackend, SensorBatchSummary, SensorClient, SensorConfig,
+    SensorPermissionService, SensorRuntimeController,
+};
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
@@ -56,7 +61,13 @@ use crate::windowed::{
 /// UIKit application lifecycle.
 pub struct IOSApp;
 
+type NativeSensorRuntimeController =
+    SensorRuntimeController<NativeBridgeBackend, NativeBridgePermissionBackend>;
+
 impl IOSApp {
+    const SENSOR_SESSION_ID: &'static str = "blinc-mobile-default";
+    const SENSOR_POLL_INTERVAL_MS: u64 = 1_000;
+
     /// Initialize the iOS asset loader
     fn init_asset_loader() {
         let loader = IOSAssetLoader::new();
@@ -81,6 +92,44 @@ impl IOSApp {
             tracing::debug!("Theme changed - requesting full rebuild");
             blinc_layout::widgets::request_full_rebuild();
         });
+    }
+
+    fn init_sensors() -> Option<NativeSensorRuntimeController> {
+        let client = SensorClient::new(NativeBridgeBackend);
+        let permissions = SensorPermissionService::new(NativeBridgePermissionBackend);
+        let mut runtime =
+            SensorRuntimeController::new(client, permissions, Self::SENSOR_SESSION_ID);
+        let config = SensorConfig::default();
+        match runtime.configure(&config) {
+            Ok(()) => {
+                runtime.set_poll_interval_ms(Self::SENSOR_POLL_INTERVAL_MS);
+                tracing::info!("Mobile sensor runtime initialized");
+                Self::log_supported_sensors(&runtime);
+                Some(runtime)
+            }
+            Err(err) => {
+                tracing::debug!("Mobile sensors unavailable: {}", err);
+                None
+            }
+        }
+    }
+
+    fn log_supported_sensors(runtime: &NativeSensorRuntimeController) {
+        match runtime.supported_kinds() {
+            Ok(kinds) => tracing::info!("Supported mobile sensors: {:?}", kinds),
+            Err(err) => tracing::debug!("Failed to query supported mobile sensors: {}", err),
+        }
+    }
+
+    fn log_sensor_batch(batch: &SensorBatchSummary) {
+        tracing::info!(
+            "Sensor batch #{}: frames={} total={} kinds=[{}] sample_sensor={:?}",
+            batch.poll_count,
+            batch.frame_count,
+            batch.total_frames,
+            batch.counts_compact(),
+            batch.sample.as_ref().map(|frame| frame.sensor)
+        );
     }
 
     /// Create a new Blinc context for iOS rendering
@@ -259,6 +308,7 @@ impl IOSApp {
             is_scrolling: false,
             gesture_detector: GestureDetector::new(),
             last_frame_time_ms: 0,
+            sensor_runtime: Self::init_sensors(),
         })
     }
 
@@ -298,9 +348,20 @@ pub struct IOSRenderContext {
     gesture_detector: GestureDetector,
     /// Last frame time for CSS animation delta calculation
     last_frame_time_ms: u64,
+    /// Cross-platform sensor runtime controller.
+    sensor_runtime: Option<NativeSensorRuntimeController>,
 }
 
 impl IOSRenderContext {
+    fn stop_sensor_session_if_running(&mut self) {
+        if let Some(runtime) = self.sensor_runtime.as_mut() {
+            match runtime.stop_if_running() {
+                Ok(()) => tracing::debug!("Mobile sensors stopped"),
+                Err(err) => tracing::debug!("Failed to stop mobile sensors: {}", err),
+            }
+        }
+    }
+
     /// Check if a frame needs to be rendered
     ///
     /// Returns true if:
@@ -467,8 +528,7 @@ impl IOSRenderContext {
                 tree.apply_all_css_transition_props();
                 tree.apply_flip_animation_props();
                 if tree.apply_animated_layout_props() {
-                    tree.compute_layout(self.width, self.height);
-                    tree.update_flip_bounds();
+                    tree.compute_layout(self.windowed_ctx.width, self.windowed_ctx.height);
                 }
             }
             self.last_frame_time_ms = current_time;
@@ -758,6 +818,35 @@ impl IOSRenderContext {
     /// Set focus state
     pub fn set_focused(&mut self, focused: bool) {
         self.windowed_ctx.focused = focused;
+        if focused {
+            if let Some(runtime) = self.sensor_runtime.as_mut() {
+                if !runtime.running() {
+                    match runtime.ensure_started() {
+                        Ok(()) => tracing::debug!("Mobile sensors started"),
+                        Err(err) => tracing::debug!("Failed to start mobile sensors: {}", err),
+                    }
+                }
+            }
+        } else {
+            self.stop_sensor_session_if_running();
+        }
+    }
+
+    fn poll_sensor_frames(&mut self) {
+        let Some(runtime) = self.sensor_runtime.as_mut() else {
+            return;
+        };
+        match runtime.poll_batch(256, blinc_layout::prelude::elapsed_ms()) {
+            Ok(Some(batch)) => IOSApp::log_sensor_batch(&batch),
+            Ok(None) => {}
+            Err(err) => tracing::debug!("Failed to drain mobile sensor frames: {}", err),
+        }
+    }
+}
+
+impl Drop for IOSRenderContext {
+    fn drop(&mut self) {
+        self.stop_sensor_session_if_running();
     }
 }
 
@@ -880,6 +969,7 @@ pub extern "C" fn blinc_build_frame(ctx: *mut IOSRenderContext) {
 
     unsafe {
         let ctx = &mut *ctx;
+        ctx.poll_sensor_frames();
 
         // Tick animations
         if let Ok(sched) = ctx.animations.lock() {
@@ -919,11 +1009,22 @@ pub extern "C" fn blinc_build_frame(ctx: *mut IOSRenderContext) {
         }
 
         // PHASE 2: Check if full rebuild is needed
-        let needs_rebuild = ctx.ref_dirty_flag.swap(false, Ordering::SeqCst);
+        let mut needs_rebuild = ctx.ref_dirty_flag.swap(false, Ordering::SeqCst);
+
+        // Check if widgets requested a full rebuild (e.g., theme changes).
+        if blinc_layout::widgets::take_needs_rebuild() {
+            needs_rebuild = true;
+        }
+
+        // A relayout request implies a full rebuild on iOS path.
+        if blinc_layout::widgets::take_needs_relayout() {
+            needs_rebuild = true;
+        }
         let no_tree_yet = ctx.render_tree.is_none();
 
         if !needs_rebuild && !no_tree_yet {
             // No full rebuild needed - incremental updates already applied
+            ctx.poll_sensor_frames();
             return;
         }
 
@@ -1160,8 +1261,7 @@ pub extern "C" fn blinc_tick_animations(ctx: *mut IOSRenderContext) -> bool {
                 tree.apply_all_css_transition_props();
                 tree.apply_flip_animation_props();
                 if tree.apply_animated_layout_props() {
-                    tree.compute_layout(ctx.width, ctx.height);
-                    tree.update_flip_bounds();
+                    tree.compute_layout(ctx.windowed_ctx.width, ctx.windowed_ctx.height);
                 }
             }
             ctx.last_frame_time_ms = current_time;
@@ -1335,6 +1435,7 @@ pub extern "C" fn blinc_init_gpu(
 
     let renderer_config = RendererConfig {
         max_primitives: config.max_primitives,
+        max_line_segments: config.max_line_segments,
         max_glass_primitives: config.max_glass_primitives,
         max_glyphs: config.max_glyphs,
         sample_count: 1,

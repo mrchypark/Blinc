@@ -14,6 +14,7 @@
 		A1000005 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000005 /* Metal.framework */; };
 		A1000006 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000006 /* MetalKit.framework */; };
 		A1000007 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000007 /* QuartzCore.framework */; };
+		A1000008 /* BlincNativeBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000011 /* BlincNativeBridge.swift */; };
 		A1000010 /* Arial.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A2000010 /* Arial.ttf */; };
 /* End PBXBuildFile section */
 
@@ -28,6 +29,7 @@
 		A2000008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000009 /* Blinc-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Blinc-Bridging-Header.h"; sourceTree = "<group>"; };
 		A2000010 /* Arial.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Arial.ttf; sourceTree = "<group>"; };
+		A2000011 /* BlincNativeBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlincNativeBridge.swift; sourceTree = "<group>"; };
 		A3000001 /* BlincApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BlincApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -61,6 +63,7 @@
 				A2000001 /* AppDelegate.swift */,
 				A2000002 /* BlincViewController.swift */,
 				A2000003 /* BlincMetalView.swift */,
+				A2000011 /* BlincNativeBridge.swift */,
 				A2000008 /* Info.plist */,
 				A2000009 /* Blinc-Bridging-Header.h */,
 				A5000005 /* Fonts */,
@@ -167,6 +170,7 @@
 				A1000001 /* AppDelegate.swift in Sources */,
 				A1000002 /* BlincViewController.swift in Sources */,
 				A1000003 /* BlincMetalView.swift in Sources */,
+				A1000008 /* BlincNativeBridge.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -184,16 +188,23 @@
 				INFOPLIST_FILE = BlincApp/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = "";
-				INFOPLIST_KEY_UIRequiresFullScreen = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				LIBRARY_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/libs/simulator",
-				);
+					INFOPLIST_KEY_UIRequiresFullScreen = YES;
+					INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+					"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
+						"$(inherited)",
+						"$(PROJECT_DIR)/libs/device",
+					);
+					"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+						"$(inherited)",
+						"$(PROJECT_DIR)/libs/simulator",
+					);
+					LD_RUNPATH_SEARCH_PATHS = (
+						"$(inherited)",
+						"@executable_path/Frameworks",
+					);
+					LIBRARY_SEARCH_PATHS = (
+						"$(inherited)",
+					);
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"-lexample",
@@ -220,16 +231,23 @@
 				INFOPLIST_FILE = BlincApp/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = "";
-				INFOPLIST_KEY_UIRequiresFullScreen = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				LIBRARY_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/libs/device",
-				);
+					INFOPLIST_KEY_UIRequiresFullScreen = YES;
+					INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+					"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
+						"$(inherited)",
+						"$(PROJECT_DIR)/libs/device",
+					);
+					"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+						"$(inherited)",
+						"$(PROJECT_DIR)/libs/simulator",
+					);
+					LD_RUNPATH_SEARCH_PATHS = (
+						"$(inherited)",
+						"@executable_path/Frameworks",
+					);
+					LIBRARY_SEARCH_PATHS = (
+						"$(inherited)",
+					);
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
 					"-lexample",

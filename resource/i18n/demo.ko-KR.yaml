@@ -1,0 +1,5 @@
+demo-title: "Blinc i18n 데모"
+demo-locale: "언어: {locale}"
+demo-toggle: "영어/한국어 전환"
+demo-hello: "안녕하세요, {name}!"
+

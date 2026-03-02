@@ -41,6 +41,12 @@
     <true/>
     <key>UIStatusBarHidden</key>
     <true/>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Blinc uses location to provide GPS-based sensor features.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Blinc may use location in the background for active sensor sessions.</string>
+    <key>NSMotionUsageDescription</key>
+    <string>Blinc uses motion sensors to collect accelerometer and gyroscope data.</string>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
