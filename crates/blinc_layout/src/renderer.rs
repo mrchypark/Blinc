@@ -4453,6 +4453,12 @@ impl RenderTree {
                 props.text_overflow = Some(to);
             }
         }
+        // color (CSS spec: inherited)
+        if props.text_color.is_none() {
+            if let Some(c) = parent_props.text_color {
+                props.text_color = Some(c);
+            }
+        }
     }
 
     /// Build TextData from TextRenderInfo, applying CSS overrides from RenderProps
@@ -7782,9 +7788,10 @@ impl RenderTree {
                     n.props.text_decoration_thickness,
                     n.props.white_space,
                     n.props.text_overflow,
+                    n.props.text_color,
                 )
             });
-            if let Some((td, td_color, td_thick, ws, to)) = parent_text_props {
+            if let Some((td, td_color, td_thick, ws, to, tc)) = parent_text_props {
                 if let Some(node) = self.render_nodes.get_mut(&node_id) {
                     if node.props.text_decoration.is_none() {
                         node.props.text_decoration = td;
@@ -7800,6 +7807,9 @@ impl RenderTree {
                     }
                     if node.props.text_overflow.is_none() {
                         node.props.text_overflow = to;
+                    }
+                    if node.props.text_color.is_none() {
+                        node.props.text_color = tc;
                     }
                 }
             }
@@ -7860,6 +7870,47 @@ impl RenderTree {
                 if let Some(base_style) = stylesheet.get(&element_id) {
                     if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
                         Self::apply_element_style_to_props(&mut render_node.props, base_style);
+                    }
+                }
+            }
+        }
+
+        // Propagate inherited text properties (color, text-decoration, etc.)
+        // from parent to child nodes within the rebuilt subtree.
+        for &node_id in &subtree_nodes {
+            let parent_id = match self.element_registry.get_parent(node_id) {
+                Some(id) => id,
+                None => continue,
+            };
+            let parent_text_props = self.render_nodes.get(&parent_id).map(|n| {
+                (
+                    n.props.text_decoration,
+                    n.props.text_decoration_color,
+                    n.props.text_decoration_thickness,
+                    n.props.white_space,
+                    n.props.text_overflow,
+                    n.props.text_color,
+                )
+            });
+            if let Some((td, td_color, td_thick, ws, to, tc)) = parent_text_props {
+                if let Some(node) = self.render_nodes.get_mut(&node_id) {
+                    if node.props.text_decoration.is_none() {
+                        node.props.text_decoration = td;
+                    }
+                    if node.props.text_decoration_color.is_none() {
+                        node.props.text_decoration_color = td_color;
+                    }
+                    if node.props.text_decoration_thickness.is_none() {
+                        node.props.text_decoration_thickness = td_thick;
+                    }
+                    if node.props.white_space.is_none() {
+                        node.props.white_space = ws;
+                    }
+                    if node.props.text_overflow.is_none() {
+                        node.props.text_overflow = to;
+                    }
+                    if node.props.text_color.is_none() {
+                        node.props.text_color = tc;
                     }
                 }
             }
@@ -8474,6 +8525,13 @@ impl RenderTree {
                     new_props.node_id = render_node.props.node_id;
                     new_props.motion = render_node.props.motion.clone();
                     render_node.props = new_props;
+                }
+
+                // Re-register event handlers from the new element builder.
+                // During visual-only rebuilds the tree structure doesn't change,
+                // but callbacks may capture new closure state that needs updating.
+                if let Some(handlers) = new_child.event_handlers() {
+                    self.handler_registry.register(*child_id, handlers.clone());
                 }
 
                 // Recursively update grandchildren
