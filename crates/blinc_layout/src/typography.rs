@@ -86,7 +86,7 @@ enum HeadingWeight {
 /// ```ignore
 /// h1("Page Title").color(Color::WHITE)
 /// ```
-pub fn h1(content: impl Into<String>) -> Text {
+pub fn h1(content: impl ToString) -> Text {
     heading(1, content)
 }
 
@@ -97,7 +97,7 @@ pub fn h1(content: impl Into<String>) -> Text {
 /// ```ignore
 /// h2("Section Title").color(Color::WHITE)
 /// ```
-pub fn h2(content: impl Into<String>) -> Text {
+pub fn h2(content: impl ToString) -> Text {
     heading(2, content)
 }
 
@@ -108,7 +108,7 @@ pub fn h2(content: impl Into<String>) -> Text {
 /// ```ignore
 /// h3("Subsection").color(Color::WHITE)
 /// ```
-pub fn h3(content: impl Into<String>) -> Text {
+pub fn h3(content: impl ToString) -> Text {
     heading(3, content)
 }
 
@@ -119,7 +119,7 @@ pub fn h3(content: impl Into<String>) -> Text {
 /// ```ignore
 /// h4("Minor Section").color(Color::WHITE)
 /// ```
-pub fn h4(content: impl Into<String>) -> Text {
+pub fn h4(content: impl ToString) -> Text {
     heading(4, content)
 }
 
@@ -130,7 +130,7 @@ pub fn h4(content: impl Into<String>) -> Text {
 /// ```ignore
 /// h5("Small Heading").color(Color::WHITE)
 /// ```
-pub fn h5(content: impl Into<String>) -> Text {
+pub fn h5(content: impl ToString) -> Text {
     heading(5, content)
 }
 
@@ -141,7 +141,7 @@ pub fn h5(content: impl Into<String>) -> Text {
 /// ```ignore
 /// h6("Smallest Heading").color(Color::WHITE)
 /// ```
-pub fn h6(content: impl Into<String>) -> Text {
+pub fn h6(content: impl ToString) -> Text {
     heading(6, content)
 }
 
@@ -159,20 +159,11 @@ pub fn h6(content: impl Into<String>) -> Text {
 /// // Equivalent to h2()
 /// heading(2, "Section Title")
 /// ```
-pub fn heading(level: u8, content: impl Into<String>) -> Text {
+pub fn heading(level: u8, content: impl ToString) -> Text {
     let idx = (level.saturating_sub(1).min(5)) as usize;
     let (size, weight) = HEADING_CONFIG[idx];
 
-    let semantic = match level {
-        1 => "h1",
-        2 => "h2",
-        3 => "h3",
-        4 => "h4",
-        5 => "h5",
-        _ => "h6",
-    };
-
-    let t = text(content).size(size).no_wrap().semantic_type(semantic);
+    let t = text(content).size(size).no_wrap();
 
     match weight {
         HeadingWeight::Medium => t.medium(),
@@ -192,7 +183,7 @@ pub fn heading(level: u8, content: impl Into<String>) -> Text {
 /// ```ignore
 /// div().child(b("Important")).child(text(" regular text"))
 /// ```
-pub fn b(content: impl Into<String>) -> Text {
+pub fn b(content: impl ToString) -> Text {
     text(content).bold().no_wrap().v_baseline()
 }
 
@@ -203,7 +194,7 @@ pub fn b(content: impl Into<String>) -> Text {
 /// ```ignore
 /// strong("Very important")
 /// ```
-pub fn strong(content: impl Into<String>) -> Text {
+pub fn strong(content: impl ToString) -> Text {
     b(content)
 }
 
@@ -217,8 +208,8 @@ pub fn strong(content: impl Into<String>) -> Text {
 /// ```ignore
 /// span("Some text").color(Color::BLUE)
 /// ```
-pub fn span(content: impl Into<String>) -> Text {
-    text(content).no_wrap().v_baseline().semantic_type("span")
+pub fn span(content: impl ToString) -> Text {
+    text(content).no_wrap().v_baseline()
 }
 
 /// Create small text (12px, inline)
@@ -228,7 +219,7 @@ pub fn span(content: impl Into<String>) -> Text {
 /// ```ignore
 /// small("Fine print").color(Color::GRAY)
 /// ```
-pub fn small(content: impl Into<String>) -> Text {
+pub fn small(content: impl ToString) -> Text {
     text(content).size(12.0).no_wrap().v_baseline()
 }
 
@@ -245,7 +236,7 @@ pub fn small(content: impl Into<String>) -> Text {
 ///     .child(label("Username"))
 ///     .child(text_input(&state))
 /// ```
-pub fn label(content: impl Into<String>) -> Text {
+pub fn label(content: impl ToString) -> Text {
     text(content).size(14.0).medium().no_wrap().v_baseline()
 }
 
@@ -258,7 +249,7 @@ pub fn label(content: impl Into<String>) -> Text {
 /// ```ignore
 /// muted("Less important information")
 /// ```
-pub fn muted(content: impl Into<String>) -> Text {
+pub fn muted(content: impl ToString) -> Text {
     let theme = ThemeState::get();
     text(content)
         .color(theme.color(ColorToken::TextSecondary))
@@ -275,8 +266,8 @@ pub fn muted(content: impl Into<String>) -> Text {
 /// ```ignore
 /// p("This is a paragraph of text that may span multiple lines...")
 /// ```
-pub fn p(content: impl Into<String>) -> Text {
-    text(content).size(16.0).line_height(1.5).semantic_type("p")
+pub fn p(content: impl ToString) -> Text {
+    text(content).size(16.0).line_height(1.5)
 }
 
 /// Create caption text (12px, muted, inline)
@@ -288,7 +279,7 @@ pub fn p(content: impl Into<String>) -> Text {
 /// ```ignore
 /// caption("Figure 1: Architecture diagram")
 /// ```
-pub fn caption(content: impl Into<String>) -> Text {
+pub fn caption(content: impl ToString) -> Text {
     let theme = ThemeState::get();
     text(content)
         .size(12.0)
@@ -312,7 +303,7 @@ pub fn caption(content: impl Into<String>) -> Text {
 ///     .child(inline_code("div()"))
 ///     .child(text(" function"))
 /// ```
-pub fn inline_code(content: impl Into<String>) -> Text {
+pub fn inline_code(content: impl ToString) -> Text {
     let theme = ThemeState::get();
     text(content)
         .monospace()
