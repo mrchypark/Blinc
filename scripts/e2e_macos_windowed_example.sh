@@ -6,13 +6,13 @@ set -euo pipefail
 #   require("hs.ipc")
 #
 # Usage:
-#   scripts/e2e_macos_windowed_example.sh charts_gallery_demo "blinc_charts: Gallery"
+#   scripts/e2e_macos_windowed_example.sh windowed "Blinc Windowed Example"
 #
 # Notes:
 # - We intentionally keep N small to avoid long startup times.
 # - The example is terminated after the window is detected.
 
-example="${1:-charts_gallery_demo}"
+example="${1:-windowed}"
 expected_title="${2:-}"
 
 if [[ -z "${expected_title}" ]]; then
