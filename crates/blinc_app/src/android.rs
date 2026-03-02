@@ -161,15 +161,12 @@ impl AndroidApp {
 
     fn log_sensor_batch(batch: &SensorBatchSummary) {
         tracing::info!(
-            "Sensor batch #{}: frames={} total={} kinds=[{}] sample={:?}",
+            "Sensor batch #{}: frames={} total={} kinds=[{}] sample_sensor={:?}",
             batch.poll_count,
             batch.frame_count,
             batch.total_frames,
             batch.counts_compact(),
-            batch
-                .sample
-                .as_ref()
-                .map(|frame| (&frame.sensor, frame.values.as_slice()))
+            batch.sample.as_ref().map(|frame| frame.sensor)
         );
     }
 

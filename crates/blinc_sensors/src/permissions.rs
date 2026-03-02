@@ -64,14 +64,13 @@ impl<P: SensorPermissionBackend> SensorPermissionService<P> {
 
     /// Best-effort permission request for location + motion access.
     pub fn request_required_permissions(&self) -> Result<SensorPermissionState, SensorError> {
-        let mut state = self.state()?;
-        if !state.has_location {
+        let initial_state = self.state()?;
+        if !initial_state.has_location {
             let _ = self.backend.request_location_when_in_use()?;
         }
-        if !state.has_motion {
+        if !initial_state.has_motion {
             let _ = self.backend.request_motion()?;
         }
-        state = self.state()?;
-        Ok(state)
+        self.state()
     }
 }

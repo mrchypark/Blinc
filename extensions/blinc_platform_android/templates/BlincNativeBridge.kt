@@ -939,7 +939,9 @@ private class AndroidSensorCollector {
 
             totalFrameCount += 1
             frameCountsByKind[kind] = (frameCountsByKind[kind] ?: 0L) + 1L
-            latestSampleByKind[kind] = formatValues(values)
+            if (kind != "gps") {
+                latestSampleByKind[kind] = formatValues(values)
+            }
 
             val nowMs = SystemClock.elapsedRealtime()
             if (nowMs - lastStatsLogMs >= STATS_LOG_INTERVAL_MS) {
@@ -948,7 +950,7 @@ private class AndroidSensorCollector {
                     .entries
                     .sortedBy { it.key }
                     .joinToString(", ") { "${it.key}=${it.value}" }
-                val latest = listOf("gps", "accelerometer", "gyroscope", "magnetometer", "barometer")
+                val latest = listOf("accelerometer", "gyroscope", "magnetometer", "barometer")
                     .mapNotNull { key ->
                         latestSampleByKind[key]?.let { sample -> "$key=[$sample]" }
                     }
