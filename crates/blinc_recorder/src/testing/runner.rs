@@ -223,7 +223,7 @@ impl TestContext {
     /// Note: Full element assertions require integration with RenderTree.
     /// This is a placeholder for the assertion API.
     pub fn assert_element(&self, _id: &str) -> ElementAssertion {
-        ElementAssertion { exists: false }
+        ElementAssertion { _exists: false }
     }
 }
 
@@ -231,7 +231,7 @@ impl TestContext {
 ///
 /// This is a placeholder - full implementation requires RenderTree integration.
 pub struct ElementAssertion {
-    exists: bool,
+    _exists: bool,
 }
 
 impl ElementAssertion {

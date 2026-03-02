@@ -13,11 +13,16 @@
 //!   └── wasm/
 //! - assets/          - Static assets
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use std::fs;
 use std::path::Path;
 
 use crate::config::BlincProject;
+
+const ANDROID_NATIVE_BRIDGE_TEMPLATE: &str =
+    include_str!("../../../extensions/blinc_platform_android/templates/BlincNativeBridge.kt");
+const IOS_NATIVE_BRIDGE_TEMPLATE: &str =
+    include_str!("../../../extensions/blinc_platform_ios/templates/BlincNativeBridge.swift");
 
 /// Create a new Blinc project with full workspace structure
 pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Result<()> {
@@ -1296,6 +1301,8 @@ fn template_counter(name: &str) -> String {
 /// This creates a native Rust project with Cargo.toml instead of .blinc DSL files.
 /// Ideal for testing mobile platforms with full control over the Rust code.
 pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
+    validate_rust_project_name(name)?;
+    validate_org_name(org)?;
     let package_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Get blinc workspace path (relative to the generated project)
@@ -1390,9 +1397,15 @@ theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
 use blinc_app::prelude::*;
 use blinc_app::windowed::{{WindowedApp, WindowedContext}};
 use blinc_core::reactive::State;
+use std::collections::HashMap;
+use std::path::Path;
 
 /// Counter button with stateful hover/press states
-fn counter_button(label: &str, count: State<i32>, delta: i32) -> impl ElementBuilder {{
+fn counter_button(
+    label: &str,
+    count: State<i32>,
+    delta: i32,
+) -> impl ElementBuilder {{
     let label = label.to_string();
 
     let count = count.clone();
@@ -1460,6 +1473,107 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {{
         )
 }}
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn parse_headless_args() -> Result<(bool, Option<String>, Option<String>)> {{
+    let mut headless = false;
+    let mut scenario: Option<String> = None;
+    let mut report: Option<String> = None;
+
+    let mut args = std::env::args().skip(1).peekable();
+    let mut next_value = |flag: &str| -> Result<String> {{
+        if args.peek().map_or(true, |next| next.starts_with("--")) {{
+            let msg = match flag {{
+                "--scenario" => "--scenario requires a file path",
+                "--report" => "--report requires a file path",
+                _ => "flag requires a file path",
+            }};
+            return Err(BlincError::Other(msg.to_string()));
+        }}
+        Ok(args.next().expect("peeked value should exist"))
+    }};
+
+    while let Some(arg) = args.next() {{
+        match arg.as_str() {{
+            "--headless" => {{
+                headless = true;
+            }}
+            "--scenario" => {{
+                scenario = Some(next_value("--scenario")?);
+            }}
+            "--report" => {{
+                report = Some(next_value("--report")?);
+            }}
+            _ if arg.starts_with("--") => {{
+                // Allow non-headless flags for compatibility with host/runtime launchers.
+            }}
+            _ => {{}}
+        }}
+    }}
+
+    Ok((headless, scenario, report))
+}}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn default_headless_scenario() -> HeadlessScenario {{
+    HeadlessScenario {{
+        steps: vec![ScenarioStep::Tick {{ frames: 1 }}],
+    }}
+}}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn run_headless_diagnostics(
+    app_name: &str,
+    scenario_path: Option<&str>,
+    report_path: Option<&str>,
+) -> Result<bool> {{
+    // TODO: map probe values from your real app state (signals/store/domain model).
+    let scenario = match scenario_path {{
+        Some(path) => HeadlessScenario::from_path(Path::new(path))?,
+        None => default_headless_scenario(),
+    }};
+
+    let mut probe = |_probe_ctx| {{
+        let mut elements = HashMap::new();
+        elements.insert(
+            "app.title".to_string(),
+            DiagnosticsElement {{
+                text: Some(format!("Welcome to {{}}", app_name)),
+            }},
+        );
+        elements.insert(
+            "counter.value".to_string(),
+            DiagnosticsElement {{
+                text: Some("0".to_string()),
+            }},
+        );
+        DiagnosticsSnapshot {{ elements }}
+    }};
+
+    let outcome = run_loaded_scenario_with_probe(
+        &scenario,
+        HeadlessRunConfig {{
+            width: 400,
+            height: 600,
+            max_frames: 1,
+            tick_ms: 16,
+            probe_every_frames: 4,
+        }},
+        &mut probe,
+    )?;
+
+    let report = outcome.report();
+    if let Some(path) = report_path {{
+        report.write_to_path_under(
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            Path::new(path),
+        )?;
+    }} else {{
+        report.write_to_writer(&mut std::io::stdout())?;
+    }}
+
+    Ok(outcome.is_failed())
+}}
+
 // =============================================================================
 // Desktop Entry Point
 // =============================================================================
@@ -1469,6 +1583,20 @@ fn main() -> Result<()> {{
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
+
+    let (headless, scenario_path, report_path) = parse_headless_args()?;
+
+    if headless {{
+        let failed = run_headless_diagnostics(
+            "{name}",
+            scenario_path.as_deref(),
+            report_path.as_deref(),
+        )?;
+        if failed {{
+            std::process::exit(2);
+        }}
+        return Ok(());
+    }}
 
     let config = WindowConfig {{
         title: "{name}".to_string(),
@@ -1642,6 +1770,42 @@ Cargo.lock
     Ok(())
 }
 
+fn validate_rust_project_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("Project name cannot be empty");
+    }
+
+    let is_valid = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' '));
+    if !is_valid {
+        bail!(
+            "Invalid project name '{}'. Use only ASCII letters, digits, spaces, '-' or '_'",
+            name
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_org_name(org: &str) -> Result<()> {
+    if org.is_empty() {
+        bail!("Organization name cannot be empty");
+    }
+
+    let is_valid = org
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_'));
+    if !is_valid || org.starts_with('.') || org.ends_with('.') || org.contains("..") {
+        bail!(
+            "Invalid organization name '{}'. Use only ASCII letters, digits, '.' or '_'",
+            org
+        );
+    }
+
+    Ok(())
+}
+
 fn create_rust_android_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
     let android_path = path.join("platforms/android");
 
@@ -1774,6 +1938,10 @@ tasks.named("preBuild") {{
 
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
     <application
         android:allowBackup="true"
@@ -1802,13 +1970,19 @@ tasks.named("preBuild") {{
     )?;
 
     // MainActivity.kt
-    let kotlin_path = android_path.join("app/src/main/kotlin/com/blinc");
-    fs::create_dir_all(&kotlin_path)?;
+    let app_package_path = format!(
+        "app/src/main/kotlin/{}/{}",
+        org.replace('.', "/"),
+        package_name
+    );
+    let app_kotlin_path = android_path.join(app_package_path);
+    fs::create_dir_all(&app_kotlin_path)?;
     fs::write(
-        kotlin_path.join("MainActivity.kt"),
+        app_kotlin_path.join("MainActivity.kt"),
         format!(
             r#"package {org}.{package_name}
 
+import com.blinc.BlincNativeBridge
 import android.app.NativeActivity
 import android.os.Bundle
 
@@ -1820,11 +1994,36 @@ class MainActivity : NativeActivity() {{
     }}
 
     override fun onCreate(savedInstanceState: Bundle?) {{
+        BlincNativeBridge.setForegroundActivity(this)
+        BlincNativeBridge.registerDefaults(applicationContext)
         super.onCreate(savedInstanceState)
+    }}
+
+    override fun onResume() {{
+        super.onResume()
+        BlincNativeBridge.setForegroundActivity(this)
+    }}
+
+    override fun onPause() {{
+        BlincNativeBridge.setForegroundActivity(null)
+        super.onPause()
+    }}
+
+    override fun onDestroy() {{
+        BlincNativeBridge.setForegroundActivity(null)
+        super.onDestroy()
     }}
 }}
 "#
         ),
+    )?;
+
+    // BlincNativeBridge.kt
+    let bridge_kotlin_path = android_path.join("app/src/main/kotlin/com/blinc");
+    fs::create_dir_all(&bridge_kotlin_path)?;
+    fs::write(
+        bridge_kotlin_path.join("BlincNativeBridge.kt"),
+        ANDROID_NATIVE_BRIDGE_TEMPLATE,
     )?;
 
     // gradle.properties
@@ -1862,6 +2061,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
+        BlincNativeBridge.shared.registerDefaults()
+        BlincNativeBridge.shared.connectToRust()
         window = UIWindow(frame: UIScreen.main.bounds)
         window?.rootViewController = BlincViewController()
         window?.makeKeyAndVisible()
@@ -1869,6 +2070,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 }
 "#,
+    )?;
+
+    // BlincNativeBridge.swift
+    fs::write(
+        app_path.join("BlincNativeBridge.swift"),
+        IOS_NATIVE_BRIDGE_TEMPLATE,
     )?;
 
     // BlincMetalView.swift
@@ -2159,6 +2366,12 @@ void blinc_destroy_gpu(IOSGpuRenderer* gpu);
     <true/>
     <key>UIStatusBarHidden</key>
     <true/>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Blinc uses location to provide GPS-based sensor features.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Blinc may use location in the background for active sensor sessions.</string>
+    <key>NSMotionUsageDescription</key>
+    <string>Blinc uses motion sensors to collect accelerometer and gyroscope data.</string>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
@@ -2190,6 +2403,7 @@ void blinc_destroy_gpu(IOSGpuRenderer* gpu);
 		A1000005 /* Metal.framework in Frameworks */ = {{isa = PBXBuildFile; fileRef = A2000005; }};
 		A1000006 /* MetalKit.framework in Frameworks */ = {{isa = PBXBuildFile; fileRef = A2000006; }};
 		A1000007 /* QuartzCore.framework in Frameworks */ = {{isa = PBXBuildFile; fileRef = A2000007; }};
+		A1000008 /* BlincNativeBridge.swift in Sources */ = {{isa = PBXBuildFile; fileRef = A2000010; }};
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -2202,6 +2416,7 @@ void blinc_destroy_gpu(IOSGpuRenderer* gpu);
 		A2000007 /* QuartzCore.framework */ = {{isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; }};
 		A2000008 /* Info.plist */ = {{isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; }};
 		A2000009 /* Blinc-Bridging-Header.h */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Blinc-Bridging-Header.h"; sourceTree = "<group>"; }};
+		A2000010 /* BlincNativeBridge.swift */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlincNativeBridge.swift; sourceTree = "<group>"; }};
 		A3000001 /* BlincApp.app */ = {{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BlincApp.app; sourceTree = BUILT_PRODUCTS_DIR; }};
 /* End PBXFileReference section */
 
@@ -2222,7 +2437,7 @@ void blinc_destroy_gpu(IOSGpuRenderer* gpu);
 		}};
 		A5000002 /* BlincApp */ = {{
 			isa = PBXGroup;
-			children = (A2000001, A2000002, A2000003, A2000008, A2000009);
+			children = (A2000001, A2000002, A2000003, A2000010, A2000008, A2000009);
 			path = BlincApp;
 			sourceTree = "<group>";
 		}};
@@ -2279,7 +2494,7 @@ void blinc_destroy_gpu(IOSGpuRenderer* gpu);
 		A6000002 /* Sources */ = {{
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A1000001, A1000002, A1000003);
+			files = (A1000001, A1000002, A1000003, A1000008);
 			runOnlyForDeploymentPostprocessing = 0;
 		}};
 /* End PBXSourcesBuildPhase section */
@@ -2447,6 +2662,7 @@ cd "$SCRIPT_DIR/../.."
 LIB_NAME="lib{package_name}.a"
 TARGET_ARM64="aarch64-apple-ios"
 TARGET_SIM_ARM64="aarch64-apple-ios-sim"
+TARGET_SIM_X86="x86_64-apple-ios"
 
 BUILD_MODE="${{1:-debug}}"
 CARGO_FLAGS=""
@@ -2467,6 +2683,9 @@ fi
 if ! rustup target list --installed | grep -q "$TARGET_SIM_ARM64"; then
     rustup target add "$TARGET_SIM_ARM64"
 fi
+if ! rustup target list --installed | grep -q "$TARGET_SIM_X86"; then
+    rustup target add "$TARGET_SIM_X86"
+fi
 
 # Build for device and simulator
 echo "Building for device ($TARGET_ARM64)..."
@@ -2475,11 +2694,22 @@ cargo build --features ios $CARGO_FLAGS --target "$TARGET_ARM64"
 echo "Building for simulator ($TARGET_SIM_ARM64)..."
 cargo build --features ios $CARGO_FLAGS --target "$TARGET_SIM_ARM64"
 
+echo "Building for simulator ($TARGET_SIM_X86)..."
+cargo build --features ios $CARGO_FLAGS --target "$TARGET_SIM_X86"
+
 # Copy libraries
 LIBS_DIR="$SCRIPT_DIR/libs"
 mkdir -p "$LIBS_DIR/device" "$LIBS_DIR/simulator"
 cp "target/$TARGET_ARM64/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/device/"
-cp "target/$TARGET_SIM_ARM64/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/simulator/"
+cp "target/$TARGET_SIM_ARM64/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/simulator/$LIB_NAME.arm64"
+cp "target/$TARGET_SIM_X86/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/simulator/$LIB_NAME.x86_64"
+
+echo "Creating universal simulator library..."
+lipo -create \
+    "$LIBS_DIR/simulator/$LIB_NAME.arm64" \
+    "$LIBS_DIR/simulator/$LIB_NAME.x86_64" \
+    -output "$LIBS_DIR/simulator/$LIB_NAME"
+rm -f "$LIBS_DIR/simulator/$LIB_NAME.arm64" "$LIBS_DIR/simulator/$LIB_NAME.x86_64"
 
 echo ""
 echo "Build complete! Libraries at:"
@@ -2519,10 +2749,171 @@ open BlincApp.xcodeproj
 
 - Xcode 15+
 - iOS 15+ deployment target
-- Rust iOS targets: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`
+- Rust iOS targets: `rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios`
 "#
         ),
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn rust_template_contains_headless_diagnostics_branch() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_headless_{nonce}"));
+
+        create_rust_project(&root, "DemoApp", "com.example")
+            .expect("rust project template should be generated");
+
+        let main_rs =
+            fs::read_to_string(root.join("src/main.rs")).expect("generated main.rs should exist");
+
+        assert!(
+            main_rs.contains("--headless"),
+            "generated template should parse --headless flag"
+        );
+        assert!(
+            main_rs.contains("run_headless_diagnostics"),
+            "generated template should include headless diagnostics entrypoint"
+        );
+        assert!(
+            main_rs.contains("run_loaded_scenario_with_probe"),
+            "generated template should wire diagnostics runner"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rust_template_includes_mobile_native_bridge_scaffold() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_bridge_{nonce}"));
+
+        create_rust_project(&root, "DemoApp", "com.example")
+            .expect("rust project template should be generated");
+
+        let android_manifest =
+            fs::read_to_string(root.join("platforms/android/app/src/main/AndroidManifest.xml"))
+                .expect("generated AndroidManifest.xml should exist");
+        assert!(
+            android_manifest.contains("android.permission.ACCESS_FINE_LOCATION"),
+            "generated Android manifest should include location permission"
+        );
+        assert!(
+            android_manifest.contains("android.permission.ACTIVITY_RECOGNITION"),
+            "generated Android manifest should include motion permission"
+        );
+
+        let main_activity = fs::read_to_string(
+            root.join("platforms/android/app/src/main/kotlin/com/example/demoapp/MainActivity.kt"),
+        )
+        .expect("generated MainActivity.kt should exist");
+        assert!(
+            main_activity.contains("BlincNativeBridge.registerDefaults"),
+            "generated MainActivity should initialize native bridge defaults"
+        );
+
+        let android_bridge = fs::read_to_string(
+            root.join("platforms/android/app/src/main/kotlin/com/blinc/BlincNativeBridge.kt"),
+        )
+        .expect("generated BlincNativeBridge.kt should exist");
+        assert!(
+            android_bridge.contains("registerString(\"sensor\", \"supported_kinds\")"),
+            "generated Android bridge should expose sensor.supported_kinds"
+        );
+
+        let app_delegate =
+            fs::read_to_string(root.join("platforms/ios/BlincApp/AppDelegate.swift"))
+                .expect("generated AppDelegate.swift should exist");
+        assert!(
+            app_delegate.contains("BlincNativeBridge.shared.connectToRust()"),
+            "generated AppDelegate should connect iOS native bridge"
+        );
+
+        let ios_plist = fs::read_to_string(root.join("platforms/ios/BlincApp/Info.plist"))
+            .expect("generated iOS Info.plist should exist");
+        assert!(
+            ios_plist.contains("NSMotionUsageDescription"),
+            "generated iOS Info.plist should include motion usage description"
+        );
+
+        let ios_bridge =
+            fs::read_to_string(root.join("platforms/ios/BlincApp/BlincNativeBridge.swift"))
+                .expect("generated BlincNativeBridge.swift should exist");
+        assert!(
+            ios_bridge.contains("registerString(namespace: \"sensor\", name: \"supported_kinds\")"),
+            "generated iOS bridge should expose sensor.supported_kinds"
+        );
+
+        let xcodeproj =
+            fs::read_to_string(root.join("platforms/ios/BlincApp.xcodeproj/project.pbxproj"))
+                .expect("generated Xcode project should exist");
+        assert!(
+            xcodeproj.contains("BlincNativeBridge.swift in Sources"),
+            "generated Xcode project should compile BlincNativeBridge.swift"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rust_project_rejects_unsafe_name_chars() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_headless_invalid_{nonce}"));
+
+        let err = create_rust_project(
+            &root,
+            r#"BadName"; std::process::Command::new("calc").spawn().unwrap(); //"#,
+            "com.example",
+        )
+        .expect_err("unsafe rust template name should be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid project name"),
+            "error should explain project name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when name is rejected"
+        );
+    }
+
+    #[test]
+    fn rust_project_rejects_unsafe_org_chars() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_headless_invalid_org_{nonce}"));
+
+        let err = create_rust_project(
+            &root,
+            "DemoApp",
+            r#"com.example"; std::process::Command::new("calc").spawn().unwrap(); //"#,
+        )
+        .expect_err("unsafe org name should be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "error should explain org name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when org is rejected"
+        );
+    }
 }

@@ -150,3 +150,38 @@ cargo run -p blinc_app --example hello_world --features windowed
 ## License
 
 MIT OR Apache-2.0
+
+## Headless Diagnostics (Developer Tooling)
+
+`blinc_app` provides headless diagnostics primitives for goal-driven UI development:
+
+- `HeadlessScenario` / `ScenarioStep`: scenario steps (`wait`, `tick`, assertions)
+- `run_loaded_scenario_with_probe`: execute checks against app-observable snapshots
+- `HeadlessReport`: machine-readable pass/fail output for CI or local debugging
+
+Minimal flow:
+
+```rust
+use blinc_app::headless_assert::{DiagnosticsElement, DiagnosticsSnapshot};
+use blinc_app::headless_runner::run_loaded_scenario_with_probe;
+use blinc_app::headless_runtime::HeadlessRunConfig;
+use blinc_app::headless_scenario::HeadlessScenario;
+
+let scenario = HeadlessScenario::from_path("scenario.json".as_ref())?;
+let mut probe = |_ctx: &blinc_app::ProbeContext| {
+    let mut snapshot = DiagnosticsSnapshot::default();
+    snapshot.elements.insert(
+        "app.title".to_string(),
+        DiagnosticsElement { text: Some("Welcome".to_string()) },
+    );
+    snapshot
+};
+
+let outcome = run_loaded_scenario_with_probe(
+    &scenario,
+    HeadlessRunConfig::default(),
+    &mut probe,
+)?;
+outcome.report().write_to_writer(&mut std::io::stdout())?;
+# Ok::<(), anyhow::Error>(())
+```
