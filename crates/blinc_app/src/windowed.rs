@@ -498,7 +498,10 @@ pub type SharedAnimationScheduler = Arc<Mutex<AnimationScheduler>>;
 
 // SharedAnimatedValue and SharedAnimatedTimeline are re-exported from blinc_animation
 
-#[cfg(all(feature = "windowed", not(target_os = "android")))]
+#[cfg(all(
+    feature = "windowed",
+    not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
+))]
 use blinc_platform_desktop::DesktopPlatform;
 
 /// Shared dirty flag type for element refs
@@ -1968,7 +1971,10 @@ impl WindowedApp {
     ///
     /// On desktop, this sets up a filesystem-based loader.
     /// On Android, this would use the NDK AssetManager.
-    #[cfg(all(feature = "windowed", not(target_os = "android")))]
+    #[cfg(all(
+        feature = "windowed",
+        not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
+    ))]
     fn init_asset_loader() {
         use blinc_platform::assets::{set_global_asset_loader, FilesystemAssetLoader};
 
@@ -1985,7 +1991,10 @@ impl WindowedApp {
     /// - Platform-appropriate theme bundle (macOS, Windows, Linux, etc.)
     /// - System color scheme detection (light/dark mode)
     /// - Redraw callback to trigger UI updates on theme changes
-    #[cfg(all(feature = "windowed", not(target_os = "android")))]
+    #[cfg(all(
+        feature = "windowed",
+        not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
+    ))]
     fn init_theme() {
         use blinc_theme::{
             detect_system_color_scheme, platform_theme_bundle, set_redraw_callback, ThemeState,
@@ -2009,7 +2018,10 @@ impl WindowedApp {
         });
     }
 
-    #[cfg(all(feature = "windowed", not(target_os = "android")))]
+    #[cfg(all(
+        feature = "windowed",
+        not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
+    ))]
     fn init_i18n() {
         use blinc_i18n::I18nState;
 
@@ -2068,7 +2080,10 @@ impl WindowedApp {
     ///         )
     /// })
     /// ```
-    #[cfg(all(feature = "windowed", not(target_os = "android")))]
+    #[cfg(all(
+        feature = "windowed",
+        not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
+    ))]
     pub fn run<F, E>(config: WindowConfig, ui_builder: F) -> Result<()>
     where
         F: FnMut(&mut WindowedContext) -> E + 'static,
@@ -2077,7 +2092,10 @@ impl WindowedApp {
         Self::run_desktop(config, ui_builder)
     }
 
-    #[cfg(all(feature = "windowed", not(target_os = "android")))]
+    #[cfg(all(
+        feature = "windowed",
+        not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
+    ))]
     fn run_desktop<F, E>(config: WindowConfig, mut ui_builder: F) -> Result<()>
     where
         F: FnMut(&mut WindowedContext) -> E + 'static,
@@ -3995,7 +4013,10 @@ impl WindowedApp {
 }
 
 /// Convert platform mouse button to layout mouse button
-#[cfg(all(feature = "windowed", not(target_os = "android")))]
+#[cfg(all(
+    feature = "windowed",
+    not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
+))]
 fn convert_mouse_button(button: blinc_platform::MouseButton) -> MouseButton {
     match button {
         blinc_platform::MouseButton::Left => MouseButton::Left,
@@ -4008,7 +4029,10 @@ fn convert_mouse_button(button: blinc_platform::MouseButton) -> MouseButton {
 }
 
 /// Convert layout cursor style to platform cursor
-#[cfg(all(feature = "windowed", not(target_os = "android")))]
+#[cfg(all(
+    feature = "windowed",
+    not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
+))]
 fn convert_cursor_style(cursor: CursorStyle) -> blinc_platform::Cursor {
     match cursor {
         CursorStyle::Default => blinc_platform::Cursor::Default,
@@ -4030,7 +4054,10 @@ fn convert_cursor_style(cursor: CursorStyle) -> blinc_platform::Cursor {
 }
 
 /// Convenience function to run a windowed app with default configuration
-#[cfg(all(feature = "windowed", not(target_os = "android")))]
+#[cfg(all(
+    feature = "windowed",
+    not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
+))]
 pub fn run_windowed<F, E>(ui_builder: F) -> Result<()>
 where
     F: FnMut(&mut WindowedContext) -> E + 'static,
@@ -4040,7 +4067,10 @@ where
 }
 
 /// Convenience function to run a windowed app with a title
-#[cfg(all(feature = "windowed", not(target_os = "android")))]
+#[cfg(all(
+    feature = "windowed",
+    not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
+))]
 pub fn run_windowed_with_title<F, E>(title: &str, ui_builder: F) -> Result<()>
 where
     F: FnMut(&mut WindowedContext) -> E + 'static,

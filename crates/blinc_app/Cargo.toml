@@ -27,6 +27,7 @@ blinc_platform = { path = "../blinc_platform", version = "0.1.14" }
 blinc_animation = { path = "../blinc_animation", version = "0.1.14" }
 blinc_macros = { path = "../blinc_macros", version = "0.1.14" }
 blinc_theme = { path = "../blinc_theme", version = "0.1.14" }
+blinc_i18n = { path = "../blinc_i18n", version = "0.1.14" }
 
 # GPU
 wgpu.workspace = true
@@ -42,6 +43,10 @@ pollster.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
 # Logging
 tracing.workspace = true
 
@@ -54,6 +59,7 @@ blinc_platform_desktop = { path = "../../extensions/blinc_platform_desktop", ver
 
 [target.'cfg(target_os = "android")'.dependencies]
 blinc_platform_android = { path = "../../extensions/blinc_platform_android", version = "0.1.14", optional = true }
+blinc_sensors = { path = "../blinc_sensors", version = "0.1.14" }
 android-activity = { workspace = true, optional = true }
 ndk = { workspace = true, optional = true }
 jni = { workspace = true, optional = true }
@@ -64,6 +70,7 @@ tracing-subscriber = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 blinc_platform_ios = { path = "../../extensions/blinc_platform_ios", version = "0.1.14", optional = true }
+blinc_sensors = { path = "../blinc_sensors", version = "0.1.14" }
 
 
 # HarmonyOS uses "ohos" as target_os
@@ -76,6 +83,7 @@ tracing-subscriber.workspace = true
 blinc_cn = { path = "../blinc_cn", version = "0.1.14" }
 blinc_icons = { path = "../blinc_icons", version = "0.1.14" }
 blinc_canvas_kit = { path = "../blinc_canvas_kit", version = "0.1.14" }
+blinc_charts = { path = "../blinc_charts", version = "0.1.14" }
 
 [features]
 default = ["windowed"]
