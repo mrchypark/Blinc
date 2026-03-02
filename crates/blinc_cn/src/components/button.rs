@@ -26,7 +26,6 @@
 //! ```
 
 use blinc_core::Color;
-use blinc_i18n::Label;
 use blinc_layout::div::ElementBuilder;
 use blinc_layout::element::CursorStyle;
 use blinc_layout::prelude::*;
@@ -245,11 +244,11 @@ pub(crate) fn reset_button_state(key: &str) {
 /// }
 /// ```
 #[track_caller]
-pub fn button(label: impl Into<Label>) -> ButtonBuilder {
+pub fn button(label: impl ToString) -> ButtonBuilder {
     ButtonBuilder {
         key: InstanceKey::new("button"),
         config: ButtonConfig {
-            label: label.into(),
+            label: label.to_string(),
             variant: ButtonVariant::default(),
             btn_size: ButtonSize::default(),
             disabled: false,
@@ -265,7 +264,7 @@ pub fn button(label: impl Into<Label>) -> ButtonBuilder {
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
 struct ButtonConfig {
-    label: Label,
+    label: String,
     variant: ButtonVariant,
     btn_size: ButtonSize,
     disabled: bool,
@@ -325,9 +324,7 @@ impl Button {
 
                 // Build content with icon + label or just label
                 let mut content = blinc_layout::div::div().flex_row().items_center().gap(6.0);
-                // Resolve label inside the callback so locale changes propagate even if the button
-                // element is cached.
-                let resolved_label = blinc_i18n::resolve_label_ref(&label);
+                let resolved_label = label.clone();
                 let label_is_empty = resolved_label.is_empty();
                 let label_text = text(resolved_label)
                     .size(font_size)
@@ -466,11 +463,11 @@ impl ButtonBuilder {
     ///
     /// For most use cases, prefer `button()` which auto-generates a unique key.
     /// Use this when you need a deterministic key for programmatic access.
-    pub fn with_key(key: impl Into<String>, label: impl Into<Label>) -> Self {
+    pub fn with_key(key: impl Into<String>, label: impl ToString) -> Self {
         Self {
             key: InstanceKey::explicit(key),
             config: ButtonConfig {
-                label: label.into(),
+                label: label.to_string(),
                 variant: ButtonVariant::default(),
                 btn_size: ButtonSize::default(),
                 disabled: false,
@@ -507,8 +504,8 @@ impl ButtonBuilder {
     }
 
     /// Set an icon for the button
-    pub fn icon(mut self, icon: impl Into<String>) -> Self {
-        self.config.icon = Some(icon.into());
+    pub fn icon(mut self, icon: impl ToString) -> Self {
+        self.config.icon = Some(icon.to_string());
         self
     }
 

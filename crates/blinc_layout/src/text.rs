@@ -20,7 +20,6 @@
 //! ```
 
 use blinc_core::{Color, Shadow, Transform};
-use blinc_i18n::{resolve_label_ref, Label};
 use html_escape::decode_html_entities;
 use taffy::prelude::*;
 
@@ -90,9 +89,8 @@ impl Text {
     /// - Named entities: `&amp;`, `&nbsp;`, `&copy;`, etc.
     /// - Decimal entities: `&#65;`, `&#8364;`, etc.
     /// - Hexadecimal entities: `&#x41;`, `&#x20AC;`, etc.
-    pub fn new(content: impl Into<Label>) -> Self {
-        let label = content.into();
-        let resolved = resolve_label_ref(&label);
+    pub fn new(content: impl ToString) -> Self {
+        let resolved = content.to_string();
         // Decode HTML entities (e.g., &amp; -> &, &copy; -> ©)
         let decoded_content = decode_html_entities(&resolved).into_owned();
 
@@ -660,7 +658,7 @@ impl ElementBuilder for Text {
 }
 
 /// Convenience function to create a new text element
-pub fn text(content: impl Into<Label>) -> Text {
+pub fn text(content: impl ToString) -> Text {
     let mut t = Text::new(content);
     t.update_size_estimate();
     t

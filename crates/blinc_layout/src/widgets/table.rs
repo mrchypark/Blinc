@@ -59,7 +59,6 @@
 //! ```
 
 use blinc_core::Color;
-use blinc_i18n::Label;
 use blinc_theme::{ColorToken, ThemeState};
 
 use crate::div::{div, Div};
@@ -340,7 +339,7 @@ impl crate::div::ElementBuilder for TableCell {
 /// th("Column Name")
 /// th("Right Aligned").justify_end()
 /// ```
-pub fn th(content: impl Into<Label>) -> TableCell {
+pub fn th(content: impl ToString) -> TableCell {
     let txt = text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(header_text_color())
@@ -359,7 +358,7 @@ pub fn th(content: impl Into<Label>) -> TableCell {
 /// td("Cell content")
 /// td("123.45").justify_end()  // Right-align numbers
 /// ```
-pub fn td(content: impl Into<Label>) -> TableCell {
+pub fn td(content: impl ToString) -> TableCell {
     let txt = text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(cell_text_color());
@@ -525,7 +524,7 @@ impl Default for TableBuilder {
 ///
 /// Returns a Text element that you can further style.
 /// Use `th()` if you need cell-level styling (padding, background).
-pub fn th_text(content: impl Into<Label>) -> Text {
+pub fn th_text(content: impl ToString) -> Text {
     text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(header_text_color())
@@ -536,7 +535,7 @@ pub fn th_text(content: impl Into<Label>) -> Text {
 ///
 /// Returns a Text element that you can further style.
 /// Use `td()` if you need cell-level styling (padding, background).
-pub fn td_text(content: impl Into<Label>) -> Text {
+pub fn td_text(content: impl ToString) -> Text {
     text(content)
         .size(DEFAULT_FONT_SIZE)
         .color(cell_text_color())

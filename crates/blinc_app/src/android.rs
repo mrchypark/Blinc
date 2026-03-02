@@ -101,35 +101,8 @@ impl AndroidApp {
         });
     }
 
-    fn init_i18n(app: &NdkAndroidApp) {
-        use blinc_i18n::I18nState;
-
-        // Only initialize if not already initialized
-        if I18nState::try_get().is_none() {
-            let mut locale: Option<String> = None;
-
-            // Best-effort: wire up the JNI native bridge if the Kotlin class exists.
-            // If the app didn't include the bridge, we fall back to English.
-            #[cfg(target_os = "android")]
-            {
-                if blinc_platform_android::init_android_native_bridge(app).is_ok() {
-                    // `native_call` will fail if the bridge isn't initialized.
-                    locale = blinc_core::native_bridge::native_call::<String, _>(
-                        "device",
-                        "get_locale",
-                        (),
-                    )
-                    .ok();
-                }
-            }
-
-            I18nState::init(locale.unwrap_or_else(|| "en-US".to_string()));
-        }
-
-        blinc_i18n::set_redraw_callback(|| {
-            tracing::debug!("Locale changed - requesting full rebuild");
-            blinc_layout::widgets::request_full_rebuild();
-        });
+    fn init_i18n(_app: &NdkAndroidApp) {
+        // i18n integration is externalized; no framework-level initialization here.
     }
 
     fn init_sensors() -> Option<NativeSensorRuntimeController> {

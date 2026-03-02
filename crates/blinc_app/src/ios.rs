@@ -94,25 +94,7 @@ impl IOSApp {
     }
 
     fn init_i18n() {
-        use blinc_i18n::I18nState;
-
-        if I18nState::try_get().is_none() {
-            let mut locale: Option<String> = None;
-
-            // If the native bridge has been wired by Swift, use it to get the device locale.
-            if blinc_core::native_bridge::NativeBridgeState::is_initialized() {
-                locale =
-                    blinc_core::native_bridge::native_call::<String, _>("device", "get_locale", ())
-                        .ok();
-            }
-
-            I18nState::init(locale.unwrap_or_else(|| "en-US".to_string()));
-        }
-
-        blinc_i18n::set_redraw_callback(|| {
-            tracing::debug!("Locale changed - requesting full rebuild");
-            blinc_layout::widgets::request_full_rebuild();
-        });
+        // i18n integration is externalized; no framework-level initialization here.
     }
 
     fn init_sensors() -> Option<NativeSensorRuntimeController> {

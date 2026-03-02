@@ -28,7 +28,6 @@ use std::sync::{Arc, Mutex};
 
 use blinc_core::reactive::SignalId;
 use blinc_core::Color;
-use blinc_i18n::Label;
 use blinc_theme::{ColorToken, ThemeState};
 
 use crate::css_parser::{active_stylesheet, ElementState};
@@ -44,7 +43,7 @@ pub use crate::stateful::ButtonState as ButtonVisualState;
 /// Button-specific configuration (colors)
 #[derive(Clone)]
 pub struct ButtonConfig {
-    pub label: Option<Label>,
+    pub label: Option<String>,
     pub text_color: Color,
     pub text_size: f32,
     pub bg_color: Color,
@@ -76,7 +75,7 @@ type StateCallback = Arc<dyn Fn(ButtonState, &mut Div) + Send + Sync>;
 /// Button widget - wraps `Stateful<ButtonState>`
 ///
 /// Buttons can have custom content via `button_with()` or use the simple
-/// `button("Label")` constructor for text-only buttons.
+/// `button("String")` constructor for text-only buttons.
 pub struct Button {
     inner: Stateful<ButtonState>,
     config: Arc<Mutex<ButtonConfig>>,
@@ -98,9 +97,9 @@ impl Button {
     /// Button::new(btn_state, "Click me")
     ///     .on_click(|_| println!("Clicked!"))
     /// ```
-    pub fn new(state: SharedState<ButtonState>, label: impl Into<Label>) -> Self {
+    pub fn new(state: SharedState<ButtonState>, label: impl ToString) -> Self {
         let config = Arc::new(Mutex::new(ButtonConfig {
-            label: Some(label.into()),
+            label: Some(label.to_string()),
             ..Default::default()
         }));
 
@@ -179,7 +178,7 @@ impl Button {
         self
     }
 
-    /// Set text color for simple text buttons created with `button("Label")`
+    /// Set text color for simple text buttons created with `button("String")`
     ///
     /// Note: This has no effect on buttons created with `button_with()`.
     /// For custom content buttons, style the text directly in your content builder.
@@ -188,7 +187,7 @@ impl Button {
         self
     }
 
-    /// Set text size for simple text buttons created with `button("Label")`
+    /// Set text size for simple text buttons created with `button("String")`
     ///
     /// Note: This has no effect on buttons created with `button_with()`.
     pub fn text_size(self, size: f32) -> Self {
@@ -469,7 +468,7 @@ impl Button {
 ///     .on_click(|_| save_data())
 ///     .bg_color(Color::GREEN)
 /// ```
-pub fn button(state: SharedState<ButtonState>, label: impl Into<Label>) -> Button {
+pub fn button(state: SharedState<ButtonState>, label: impl ToString) -> Button {
     Button::new(state, label)
         .px(12.0)
         .py(6.0)

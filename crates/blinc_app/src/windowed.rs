@@ -1734,12 +1734,12 @@ impl WindowedContext {
 
     /// Get the current locale identifier (e.g., "en-US", "ko-KR")
     pub fn locale(&self) -> String {
-        blinc_i18n::I18nState::get().locale()
+        "en-US".to_string()
     }
 
     /// Set the current locale (triggers a full UI rebuild via i18n redraw callback)
-    pub fn set_locale(&self, locale: impl Into<String>) {
-        blinc_i18n::I18nState::get().set_locale(locale);
+    pub fn set_locale(&self, _locale: impl Into<String>) {
+        tracing::debug!("WindowedContext::set_locale is a no-op (i18n is externalized)");
     }
 
     // =========================================================================
@@ -2023,37 +2023,7 @@ impl WindowedApp {
         not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
     ))]
     fn init_i18n() {
-        use blinc_i18n::I18nState;
-
-        fn parse_env_locale(raw: &str) -> Option<String> {
-            // Examples: "en_US.UTF-8", "ko_KR", "en-US", "C"
-            let s = raw.trim();
-            let s = s.split_once('.').map_or(s, |(part, _)| part);
-            let s = s.split_once('@').map_or(s, |(part, _)| part);
-            let s = s.trim();
-            if s.is_empty() || s == "C" || s == "POSIX" {
-                return None;
-            }
-            Some(s.replace('_', "-"))
-        }
-
-        fn detect_locale_from_env() -> Option<String> {
-            ["LC_ALL", "LC_MESSAGES", "LANG"]
-                .iter()
-                .find_map(|key| std::env::var(key).ok().and_then(|v| parse_env_locale(&v)))
-        }
-
-        // Only initialize if not already initialized
-        if I18nState::try_get().is_none() {
-            let locale = detect_locale_from_env().unwrap_or_else(|| "en-US".to_string());
-            I18nState::init(locale);
-        }
-
-        // Trigger full rebuild on locale changes (same behavior as theme changes).
-        blinc_i18n::set_redraw_callback(|| {
-            tracing::debug!("Locale changed - requesting full rebuild");
-            blinc_layout::widgets::request_full_rebuild();
-        });
+        // i18n integration is externalized; no framework-level initialization here.
     }
 
     /// Run a windowed Blinc application on desktop platforms
