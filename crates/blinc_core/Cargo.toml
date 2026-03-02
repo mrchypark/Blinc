@@ -27,6 +27,7 @@ thiserror.workspace = true
 
 # Logging
 tracing.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 blinc_animation = { path = "../blinc_animation" }

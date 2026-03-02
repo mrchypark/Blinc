@@ -36,6 +36,13 @@ class BlincViewController: UIViewController {
     private var touchIds: [ObjectIdentifier: UInt64] = [:]
     private var nextTouchId: UInt64 = 1
 
+    /// Sensor debug panel shown on top of the app for runtime verification.
+    private var sensorDebugCardView: UIView?
+    private var sensorDebugStatusLabel: UILabel?
+    private var sensorDebugBodyLabel: UILabel?
+    private var sensorDebugTimer: Timer?
+    private var sensorPollBatch: UInt64 = 0
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -51,6 +58,8 @@ class BlincViewController: UIViewController {
 
         // Set up display link
         setupDisplayLink()
+        setupSensorDebugOverlay()
+        refreshSensorDebugOverlay()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -61,6 +70,7 @@ class BlincViewController: UIViewController {
         if let ctx = renderContext {
             blinc_set_focused(ctx, true)
         }
+        startSensorDebugTimer()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -71,6 +81,7 @@ class BlincViewController: UIViewController {
         if let ctx = renderContext {
             blinc_set_focused(ctx, false)
         }
+        stopSensorDebugTimer()
     }
 
     override func viewDidLayoutSubviews() {
@@ -94,6 +105,7 @@ class BlincViewController: UIViewController {
         // Stop display link
         displayLink?.invalidate()
         displayLink = nil
+        stopSensorDebugTimer()
 
         // Clean up Blinc resources
         if let gpu = gpuRenderer {
@@ -173,6 +185,196 @@ class BlincViewController: UIViewController {
         }
 
         displayLink?.add(to: .main, forMode: .common)
+    }
+
+    // MARK: - Sensor Debug Overlay
+
+    private func setupSensorDebugOverlay() {
+        let card = UIView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.backgroundColor = UIColor(red: 0.18, green: 0.18, blue: 0.23, alpha: 0.94)
+        card.layer.cornerRadius = 12
+        card.layer.borderWidth = 1
+        card.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
+        card.layer.masksToBounds = true
+        card.isUserInteractionEnabled = false
+
+        let titleLabel = UILabel()
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.text = "Sensor Debug"
+        titleLabel.textColor = .white
+        titleLabel.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+
+        let statusLabel = UILabel()
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.text = "IDLE"
+        statusLabel.textAlignment = .center
+        statusLabel.textColor = UIColor(red: 0.68, green: 0.92, blue: 1.0, alpha: 1.0)
+        statusLabel.font = UIFont.monospacedSystemFont(ofSize: 10, weight: .bold)
+        statusLabel.backgroundColor = UIColor(red: 0.13, green: 0.24, blue: 0.33, alpha: 1.0)
+        statusLabel.layer.cornerRadius = 7
+        statusLabel.layer.masksToBounds = true
+
+        let bodyLabel = UILabel()
+        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
+        bodyLabel.numberOfLines = 0
+        bodyLabel.textColor = UIColor(red: 0.90, green: 0.94, blue: 1.0, alpha: 1.0)
+        bodyLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        bodyLabel.text = "initializing..."
+
+        card.addSubview(titleLabel)
+        card.addSubview(statusLabel)
+        card.addSubview(bodyLabel)
+        view.addSubview(card)
+        view.bringSubviewToFront(card)
+
+        sensorDebugCardView = card
+        sensorDebugStatusLabel = statusLabel
+        sensorDebugBodyLabel = bodyLabel
+
+        NSLayoutConstraint.activate([
+            card.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 8),
+            card.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            card.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            card.heightAnchor.constraint(equalToConstant: 170),
+
+            titleLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            titleLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+
+            statusLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            statusLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            statusLabel.widthAnchor.constraint(equalToConstant: 62),
+            statusLabel.heightAnchor.constraint(equalToConstant: 18),
+
+            bodyLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            bodyLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            bodyLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+            bodyLabel.bottomAnchor.constraint(lessThanOrEqualTo: card.bottomAnchor, constant: -10),
+        ])
+    }
+
+    private func startSensorDebugTimer() {
+        stopSensorDebugTimer()
+        sensorDebugTimer = Timer.scheduledTimer(
+            timeInterval: 0.6,
+            target: self,
+            selector: #selector(sensorDebugTimerFired),
+            userInfo: nil,
+            repeats: true
+        )
+        if let timer = sensorDebugTimer {
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
+    private func stopSensorDebugTimer() {
+        sensorDebugTimer?.invalidate()
+        sensorDebugTimer = nil
+    }
+
+    @objc private func sensorDebugTimerFired() {
+        refreshSensorDebugOverlay()
+    }
+
+    private func refreshSensorDebugOverlay() {
+        guard let bodyLabel = sensorDebugBodyLabel else { return }
+
+        let statusObject = sensorStatusObject()
+        let frames = sensorPeekFrames(maxFrames: 32)
+        sensorPollBatch += 1
+
+        var counts: [String: Int] = [:]
+        for frame in frames {
+            let kind = frame["sensor"] as? String ?? "unknown"
+            counts[kind, default: 0] += 1
+        }
+
+        let sortedKinds = counts.keys.sorted()
+        let kindsSummary = sortedKinds
+            .map { "\($0)=\(counts[$0] ?? 0)" }
+            .joined(separator: ", ")
+
+        let sampleText: String
+        if let frame = frames.last {
+            let sensor = frame["sensor"] as? String ?? "unknown"
+            let values = (frame["values"] as? [NSNumber]) ?? []
+            let compact = values.prefix(4).map { String(format: "%.3f", $0.doubleValue) }.joined(separator: ", ")
+            sampleText = "\(sensor): [\(compact)]"
+        } else {
+            sampleText = "no frames yet"
+        }
+
+        let buffered = statusObject?["buffered_frames"] as? Int ?? 0
+        let running = statusObject?["running"] as? Bool ?? false
+        let sessionId = statusObject?["active_session_id"] as? String ?? "-"
+        let supported = sensorSupportedKinds().joined(separator: ", ")
+
+        sensorDebugStatusLabel?.text = running ? "RUNNING" : "IDLE"
+        sensorDebugStatusLabel?.textColor = running
+            ? UIColor(red: 0.77, green: 1.0, blue: 0.84, alpha: 1.0)
+            : UIColor(red: 0.68, green: 0.92, blue: 1.0, alpha: 1.0)
+        sensorDebugStatusLabel?.backgroundColor = running
+            ? UIColor(red: 0.14, green: 0.38, blue: 0.22, alpha: 1.0)
+            : UIColor(red: 0.13, green: 0.24, blue: 0.33, alpha: 1.0)
+
+        bodyLabel.text = """
+        session: \(sessionId)  buffered: \(buffered)
+        poll: \(sensorPollBatch)  peeked: \(frames.count)
+        supported: [\(supported)]
+        kinds: [\(kindsSummary)]
+        sample: \(sampleText)
+        """
+    }
+
+    private func callBridgeValue(namespace: String, name: String, args: [Any] = []) -> Any? {
+        guard JSONSerialization.isValidJSONObject(args),
+              let argsData = try? JSONSerialization.data(withJSONObject: args),
+              let argsJson = String(data: argsData, encoding: .utf8) else {
+            return nil
+        }
+
+        let responseJson = BlincNativeBridge.shared.callNative(
+            namespace: namespace,
+            name: name,
+            argsJson: argsJson
+        )
+
+        guard let responseData = responseJson.data(using: .utf8),
+              let response = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              let success = response["success"] as? Bool else {
+            return nil
+        }
+        if !success {
+            return nil
+        }
+        return response["value"]
+    }
+
+    private func sensorStatusObject() -> [String: Any]? {
+        guard let statusJson = callBridgeValue(namespace: "sensor", name: "status") as? String,
+              let data = statusJson.data(using: .utf8),
+              let status = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return status
+    }
+
+    private func sensorPeekFrames(maxFrames: Int) -> [[String: Any]] {
+        guard let framesJson = callBridgeValue(namespace: "sensor", name: "peek_frames", args: [maxFrames]) as? String,
+              let data = framesJson.data(using: .utf8),
+              let frames = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+        return frames
+    }
+
+    private func sensorSupportedKinds() -> [String] {
+        guard let kindsJson = callBridgeValue(namespace: "sensor", name: "supported_kinds") as? String,
+              let data = kindsJson.data(using: .utf8),
+              let kinds = try? JSONSerialization.jsonObject(with: data) as? [String] else {
+            return []
+        }
+        return kinds
     }
 
     // MARK: - Rendering

@@ -150,6 +150,9 @@ namespace permissions {
     /// Check if location permission is granted
     fn has_location() -> Bool;
 
+    /// Check if motion/activity permission is granted
+    fn has_motion() -> Bool;
+
     /// Check if notification permission is granted
     fn has_notifications() -> Bool;
 
@@ -158,6 +161,42 @@ namespace permissions {
 
     /// Request microphone permission (returns true if granted)
     fn request_microphone() -> Bool;
+
+    /// Request location when-in-use permission (returns true if granted)
+    fn request_location_when_in_use() -> Bool;
+
+    /// Request location always permission (returns true if granted)
+    fn request_location_always() -> Bool;
+
+    /// Request motion/activity permission (returns true if granted)
+    fn request_motion() -> Bool;
+}
+
+// =============================================================================
+// Sensors
+// =============================================================================
+
+namespace sensor {
+    /// Configure sensor collection parameters using JSON payload
+    fn configure(config_json: String) -> Bool;
+
+    /// Start a sensor session by ID
+    fn start(session_id: String) -> Bool;
+
+    /// Stop a sensor session by ID
+    fn stop(session_id: String) -> Bool;
+
+    /// Get current sensor runtime status as JSON object string
+    fn status() -> String;
+
+    /// Drain up to max_frames sensor frames as JSON array string
+    fn drain_frames(max_frames: Int32) -> String;
+
+    /// List currently supported sensor kinds as JSON array string
+    fn supported_kinds() -> String;
+
+    /// Clear buffered sensor frames
+    fn clear_buffer() -> Void;
 }
 
 // =============================================================================

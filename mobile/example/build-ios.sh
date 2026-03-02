@@ -40,6 +40,10 @@ if ! rustup target list --installed | grep -q "$TARGET_SIM_ARM64"; then
     echo "Installing $TARGET_SIM_ARM64..."
     rustup target add "$TARGET_SIM_ARM64"
 fi
+if ! rustup target list --installed | grep -q "$TARGET_SIM_X86"; then
+    echo "Installing $TARGET_SIM_X86..."
+    rustup target add "$TARGET_SIM_X86"
+fi
 
 # Step 1: Build Rust static library
 echo ""
@@ -54,6 +58,10 @@ cargo build --lib --features ios $CARGO_FLAGS --target "$TARGET_ARM64"
 echo "Building for simulator ($TARGET_SIM_ARM64)..."
 cargo build --lib --features ios $CARGO_FLAGS --target "$TARGET_SIM_ARM64"
 
+# Build for simulator (x86_64 for Intel Macs / CI)
+echo "Building for simulator ($TARGET_SIM_X86)..."
+cargo build --lib --features ios $CARGO_FLAGS --target "$TARGET_SIM_X86"
+
 # Copy libraries to iOS project
 LIBS_DIR="$SCRIPT_DIR/platforms/ios/libs"
 mkdir -p "$LIBS_DIR/device"
@@ -61,16 +69,16 @@ mkdir -p "$LIBS_DIR/simulator"
 
 echo "Copying libraries..."
 cp "target/$TARGET_ARM64/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/device/"
-cp "target/$TARGET_SIM_ARM64/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/simulator/"
+cp "target/$TARGET_SIM_ARM64/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/simulator/$LIB_NAME.arm64"
+cp "target/$TARGET_SIM_X86/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/simulator/$LIB_NAME.x86_64"
 
-# Create universal library for simulator (arm64 + x86_64) if both exist
-if [ -f "$SCRIPT_DIR/target/$TARGET_SIM_X86/$TARGET_DIR/$LIB_NAME" ]; then
-    echo "Creating universal simulator library..."
-    lipo -create \
-        "$SCRIPT_DIR/target/$TARGET_SIM_ARM64/$TARGET_DIR/$LIB_NAME" \
-        "$SCRIPT_DIR/target/$TARGET_SIM_X86/$TARGET_DIR/$LIB_NAME" \
-        -output "$LIBS_DIR/simulator/$LIB_NAME"
-fi
+# Create universal library for simulator (arm64 + x86_64)
+echo "Creating universal simulator library..."
+lipo -create \
+    "$LIBS_DIR/simulator/$LIB_NAME.arm64" \
+    "$LIBS_DIR/simulator/$LIB_NAME.x86_64" \
+    -output "$LIBS_DIR/simulator/$LIB_NAME"
+rm -f "$LIBS_DIR/simulator/$LIB_NAME.arm64" "$LIBS_DIR/simulator/$LIB_NAME.x86_64"
 
 echo ""
 echo "=== Build complete ==="

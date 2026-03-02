@@ -3,8 +3,10 @@
 //! A Blinc UI application with desktop, Android, iOS, and HarmonyOS support.
 //! Demonstrates counter interactions and keyframe canvas animations.
 
+mod sensor_inspector;
+
 use blinc_app::prelude::*;
-use blinc_app::windowed::{WindowedApp, WindowedContext};
+use blinc_app::windowed::WindowedContext;
 use blinc_core::reactive::State;
 use blinc_core::{Brush, DrawContext, Gradient};
 use std::f32::consts::PI;
@@ -429,6 +431,8 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
                     )
                     // Counter section
                     .child(counter_section(ctx))
+                    // Sensor section
+                    .child(sensor_inspector::sensor_section(ctx, section_card))
                     // Animation section
                     .child(animation_section(ctx))
                     // Footer spacer
@@ -454,7 +458,7 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    WindowedApp::run(config, |ctx| app_ui(ctx))
+    blinc_app::windowed::WindowedApp::run(config, |ctx| app_ui(ctx))
 }
 
 // =============================================================================

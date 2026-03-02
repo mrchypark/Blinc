@@ -20,6 +20,9 @@ typedef struct WindowedContext WindowedContext;
 // Type for UI builder function pointer
 typedef void (*UIBuilderFn)(WindowedContext* ctx);
 
+// Type for iOS native bridge call function pointer
+typedef char* (*IOSNativeCallFn)(const char* ns, const char* name, const char* args_json);
+
 // =============================================================================
 // Application Initialization
 // =============================================================================
@@ -204,5 +207,8 @@ uint32_t blinc_load_bundled_font(IOSGpuRenderer* gpu, const char* path);
 
 /// Free a string allocated by Rust
 void blinc_free_string(char* ptr);
+
+/// Register Swift-native call function for Rust native bridge
+void blinc_set_native_call_fn(IOSNativeCallFn call_fn);
 
 #endif /* Blinc_Bridging_Header_h */
