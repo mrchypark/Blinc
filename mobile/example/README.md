@@ -32,6 +32,9 @@ open platforms/ios/BlincApp.xcodeproj
 ### Verify Mobile Builds
 
 ```bash
+# Ensure native bridge templates and example files are synced
+../../scripts/check-mobile-native-bridge-sync.sh
+
 # Android + iOS end-to-end build verification
 ./test-mobile-builds.sh
 ```

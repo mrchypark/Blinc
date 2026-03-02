@@ -23,7 +23,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::{collections::BTreeMap, fmt::Write as _};
 
 use android_activity::input::{InputEvent as AndroidInputEvent, MotionAction};
 use android_activity::{AndroidApp as NdkAndroidApp, InputStatus, MainEvent, PollEvent};
@@ -31,7 +30,6 @@ use ndk::native_window::NativeWindow;
 
 use blinc_animation::AnimationScheduler;
 use blinc_core::context_state::{BlincContextState, HookState, SharedHookState};
-use blinc_core::native_bridge::native_call;
 use blinc_core::reactive::{ReactiveGraph, SignalId};
 use blinc_layout::event_router::MouseButton;
 use blinc_layout::overlay_state::OverlayContext;
@@ -41,7 +39,10 @@ use blinc_platform::assets::set_global_asset_loader;
 use blinc_platform_android::input::{detect_pinch, PinchPhase, PinchState, TouchPointer};
 use blinc_platform_android::AndroidAssetLoader;
 use blinc_sensors::native_bridge::NativeBridgeBackend;
-use blinc_sensors::{SensorClient, SensorConfig};
+use blinc_sensors::{
+    NativeBridgePermissionBackend, SensorBatchSummary, SensorClient, SensorConfig,
+    SensorPermissionService, SensorRuntimeController,
+};
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
@@ -56,16 +57,11 @@ use crate::windowed::{
 /// with automatic event handling and rendering.
 pub struct AndroidApp;
 
-#[derive(Default)]
-struct SensorProbeState {
-    last_poll_ms: u64,
-    total_frames: u64,
-    poll_count: u64,
-}
+type NativeSensorRuntimeController =
+    SensorRuntimeController<NativeBridgeBackend, NativeBridgePermissionBackend>;
 
 impl AndroidApp {
     const SENSOR_SESSION_ID: &'static str = "blinc-mobile-default";
-    const SENSOR_LOG_INTERVAL_MS: u64 = 1_000;
     const TOUCH_SCROLL_MIN_DELTA: f32 = 0.1;
     const TOUCH_SCROLL_SENSITIVITY: f32 = 1.0;
 
@@ -136,18 +132,18 @@ impl AndroidApp {
         });
     }
 
-    /// Initialize mobile sensors using the native bridge.
-    ///
-    /// If the bridge handlers are not available, this returns `None` and the app
-    /// continues without sensor lifecycle control.
-    fn init_sensors() -> Option<SensorClient<NativeBridgeBackend>> {
+    fn init_sensors() -> Option<NativeSensorRuntimeController> {
         let client = SensorClient::new(NativeBridgeBackend);
+        let permissions = SensorPermissionService::new(NativeBridgePermissionBackend);
+        let mut runtime =
+            SensorRuntimeController::new(client, permissions, Self::SENSOR_SESSION_ID);
         let config = SensorConfig::default();
-        match client.configure(&config) {
+        match runtime.configure(&config) {
             Ok(()) => {
-                tracing::info!("Mobile sensor client initialized");
-                Self::log_supported_sensors(&client);
-                Some(client)
+                runtime.set_poll_interval_ms(1_000);
+                tracing::info!("Mobile sensor runtime initialized");
+                Self::log_supported_sensors(&runtime);
+                Some(runtime)
             }
             Err(err) => {
                 tracing::debug!("Mobile sensors unavailable: {}", err);
@@ -156,112 +152,53 @@ impl AndroidApp {
         }
     }
 
-    fn request_sensor_permissions() {
-        let request_location =
-            native_call::<bool, _>("permissions", "request_location_when_in_use", ())
-                .unwrap_or(false);
-        let request_motion =
-            native_call::<bool, _>("permissions", "request_motion", ()).unwrap_or(false);
-        tracing::debug!(
-            "Sensor permissions requested: location_when_in_use={}, motion={}",
-            request_location,
-            request_motion
-        );
-    }
-
-    fn log_supported_sensors(client: &SensorClient<NativeBridgeBackend>) {
-        match client.supported_kinds() {
+    fn log_supported_sensors(runtime: &NativeSensorRuntimeController) {
+        match runtime.supported_kinds() {
             Ok(kinds) => tracing::info!("Supported mobile sensors: {:?}", kinds),
             Err(err) => tracing::debug!("Failed to query supported mobile sensors: {}", err),
         }
     }
 
-    fn poll_sensor_frames(
-        client: &SensorClient<NativeBridgeBackend>,
-        probe: &mut SensorProbeState,
-    ) {
-        let now_ms = blinc_layout::prelude::elapsed_ms();
-        if probe.last_poll_ms > 0
-            && now_ms.saturating_sub(probe.last_poll_ms) < Self::SENSOR_LOG_INTERVAL_MS
-        {
-            return;
-        }
-        probe.last_poll_ms = now_ms;
-
-        let frames = match client.drain_frames(256) {
-            Ok(frames) => frames,
-            Err(err) => {
-                tracing::debug!("Failed to drain mobile sensor frames: {}", err);
-                return;
-            }
-        };
-
-        if frames.is_empty() {
-            return;
-        }
-
-        probe.poll_count += 1;
-        probe.total_frames += frames.len() as u64;
-
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for frame in &frames {
-            *counts.entry(format!("{:?}", frame.sensor)).or_insert(0) += 1;
-        }
-
-        let mut summary = String::new();
-        for (index, (kind, count)) in counts.iter().enumerate() {
-            if index > 0 {
-                summary.push_str(", ");
-            }
-            let _ = write!(&mut summary, "{}={}", kind, count);
-        }
-
-        let sample = frames.last();
+    fn log_sensor_batch(batch: &SensorBatchSummary) {
         tracing::info!(
             "Sensor batch #{}: frames={} total={} kinds=[{}] sample={:?}",
-            probe.poll_count,
-            frames.len(),
-            probe.total_frames,
-            summary,
-            sample.map(|frame| (&frame.sensor, frame.values.as_slice()))
+            batch.poll_count,
+            batch.frame_count,
+            batch.total_frames,
+            batch.counts_compact(),
+            batch
+                .sample
+                .as_ref()
+                .map(|frame| (&frame.sensor, frame.values.as_slice()))
         );
     }
 
-    fn start_sensors_if_needed(
-        client: Option<&SensorClient<NativeBridgeBackend>>,
-        running: &mut bool,
-    ) {
-        if *running {
+    fn start_sensors_if_needed(runtime: Option<&mut NativeSensorRuntimeController>) {
+        let Some(runtime) = runtime else {
+            return;
+        };
+        if runtime.running() {
             return;
         }
-        if let Some(client) = client {
-            Self::request_sensor_permissions();
-            match client.start_session(Self::SENSOR_SESSION_ID) {
-                Ok(()) => {
-                    *running = true;
-                    tracing::debug!("Mobile sensors started");
-                }
-                Err(err) => {
-                    tracing::debug!("Failed to start mobile sensors: {}", err);
-                }
+        match runtime.ensure_started() {
+            Ok(()) => tracing::debug!("Mobile sensors started"),
+            Err(err) => {
+                tracing::debug!("Failed to start mobile sensors: {}", err);
             }
         }
     }
 
-    fn stop_sensors_if_running(
-        client: Option<&SensorClient<NativeBridgeBackend>>,
-        running: &mut bool,
-    ) {
-        if !*running {
+    fn stop_sensors_if_running(runtime: Option<&mut NativeSensorRuntimeController>) {
+        let Some(runtime) = runtime else {
+            return;
+        };
+        if !runtime.running() {
             return;
         }
-        if let Some(client) = client {
-            match client.stop_session(Self::SENSOR_SESSION_ID) {
-                Ok(()) => tracing::debug!("Mobile sensors stopped"),
-                Err(err) => tracing::debug!("Failed to stop mobile sensors: {}", err),
-            }
+        match runtime.stop_if_running() {
+            Ok(()) => tracing::debug!("Mobile sensors stopped"),
+            Err(err) => tracing::debug!("Failed to stop mobile sensors: {}", err),
         }
-        *running = false;
     }
 
     /// Initialize Android logging
@@ -321,15 +258,13 @@ impl AndroidApp {
 
         // Initialize i18n (locale + redraw hook)
         Self::init_i18n(&app);
-        let sensor_client = if Self::sensor_autoprobe_enabled() {
+        let mut sensor_runtime = if Self::sensor_autoprobe_enabled() {
             tracing::info!("Android sensor autoprobe enabled");
             Self::init_sensors()
         } else {
             tracing::debug!("Android sensor autoprobe disabled (set BLINC_ANDROID_SENSOR_AUTOPROBE=1 to enable)");
             None
         };
-        let mut sensors_running = false;
-        let mut sensor_probe = SensorProbeState::default();
 
         // Shared state
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
@@ -587,10 +522,7 @@ impl AndroidApp {
                             if let Some(ref mut windowed_ctx) = ctx {
                                 windowed_ctx.focused = true;
                             }
-                            Self::start_sensors_if_needed(
-                                sensor_client.as_ref(),
-                                &mut sensors_running,
-                            );
+                            Self::start_sensors_if_needed(sensor_runtime.as_mut());
                         }
 
                         MainEvent::LostFocus => {
@@ -599,36 +531,24 @@ impl AndroidApp {
                             if let Some(ref mut windowed_ctx) = ctx {
                                 windowed_ctx.focused = false;
                             }
-                            Self::stop_sensors_if_running(
-                                sensor_client.as_ref(),
-                                &mut sensors_running,
-                            );
+                            Self::stop_sensors_if_running(sensor_runtime.as_mut());
                         }
 
                         MainEvent::Resume { .. } => {
                             tracing::info!("App resumed");
                             focused = true;
-                            Self::start_sensors_if_needed(
-                                sensor_client.as_ref(),
-                                &mut sensors_running,
-                            );
+                            Self::start_sensors_if_needed(sensor_runtime.as_mut());
                         }
 
                         MainEvent::Pause => {
                             tracing::info!("App paused");
                             focused = false;
-                            Self::stop_sensors_if_running(
-                                sensor_client.as_ref(),
-                                &mut sensors_running,
-                            );
+                            Self::stop_sensors_if_running(sensor_runtime.as_mut());
                         }
 
                         MainEvent::Destroy => {
                             tracing::info!("App destroyed");
-                            Self::stop_sensors_if_running(
-                                sensor_client.as_ref(),
-                                &mut sensors_running,
-                            );
+                            Self::stop_sensors_if_running(sensor_runtime.as_mut());
                             running = false;
                         }
 
@@ -649,9 +569,11 @@ impl AndroidApp {
                 }
             });
 
-            if sensors_running {
-                if let Some(ref client) = sensor_client {
-                    Self::poll_sensor_frames(client, &mut sensor_probe);
+            if let Some(runtime) = sensor_runtime.as_mut() {
+                match runtime.poll_batch(256, blinc_layout::prelude::elapsed_ms()) {
+                    Ok(Some(batch)) => Self::log_sensor_batch(&batch),
+                    Ok(None) => {}
+                    Err(err) => tracing::debug!("Failed to drain mobile sensor frames: {}", err),
                 }
             }
 

@@ -31,7 +31,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::{collections::BTreeMap, fmt::Write as _};
 
 use blinc_animation::AnimationScheduler;
 use blinc_core::context_state::{BlincContextState, HookState, SharedHookState};
@@ -43,7 +42,10 @@ use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager};
 use blinc_platform::assets::set_global_asset_loader;
 use blinc_platform_ios::{Gesture, GestureDetector, IOSAssetLoader, IOSWakeProxy, TouchPhase};
 use blinc_sensors::native_bridge::NativeBridgeBackend;
-use blinc_sensors::{SensorClient, SensorConfig};
+use blinc_sensors::{
+    NativeBridgePermissionBackend, SensorBatchSummary, SensorClient, SensorConfig,
+    SensorPermissionService, SensorRuntimeController,
+};
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
@@ -59,9 +61,11 @@ use crate::windowed::{
 /// UIKit application lifecycle.
 pub struct IOSApp;
 
+type NativeSensorRuntimeController =
+    SensorRuntimeController<NativeBridgeBackend, NativeBridgePermissionBackend>;
+
 impl IOSApp {
     const SENSOR_SESSION_ID: &'static str = "blinc-mobile-default";
-    const SENSOR_LOG_INTERVAL_MS: u64 = 1_000;
 
     /// Initialize the iOS asset loader
     fn init_asset_loader() {
@@ -111,14 +115,18 @@ impl IOSApp {
         });
     }
 
-    fn init_sensors() -> Option<SensorClient<NativeBridgeBackend>> {
+    fn init_sensors() -> Option<NativeSensorRuntimeController> {
         let client = SensorClient::new(NativeBridgeBackend);
+        let permissions = SensorPermissionService::new(NativeBridgePermissionBackend);
+        let mut runtime =
+            SensorRuntimeController::new(client, permissions, Self::SENSOR_SESSION_ID);
         let config = SensorConfig::default();
-        match client.configure(&config) {
+        match runtime.configure(&config) {
             Ok(()) => {
-                tracing::info!("Mobile sensor client initialized");
-                Self::log_supported_sensors(&client);
-                Some(client)
+                runtime.set_poll_interval_ms(1_000);
+                tracing::info!("Mobile sensor runtime initialized");
+                Self::log_supported_sensors(&runtime);
+                Some(runtime)
             }
             Err(err) => {
                 tracing::debug!("Mobile sensors unavailable: {}", err);
@@ -127,11 +135,25 @@ impl IOSApp {
         }
     }
 
-    fn log_supported_sensors(client: &SensorClient<NativeBridgeBackend>) {
-        match client.supported_kinds() {
+    fn log_supported_sensors(runtime: &NativeSensorRuntimeController) {
+        match runtime.supported_kinds() {
             Ok(kinds) => tracing::info!("Supported mobile sensors: {:?}", kinds),
             Err(err) => tracing::debug!("Failed to query supported mobile sensors: {}", err),
         }
+    }
+
+    fn log_sensor_batch(batch: &SensorBatchSummary) {
+        tracing::info!(
+            "Sensor batch #{}: frames={} total={} kinds=[{}] sample={:?}",
+            batch.poll_count,
+            batch.frame_count,
+            batch.total_frames,
+            batch.counts_compact(),
+            batch
+                .sample
+                .as_ref()
+                .map(|frame| (&frame.sensor, frame.values.as_slice()))
+        );
     }
 
     /// Create a new Blinc context for iOS rendering
@@ -313,11 +335,7 @@ impl IOSApp {
             is_scrolling: false,
             gesture_detector: GestureDetector::new(),
             last_frame_time_ms: 0,
-            sensor_client: Self::init_sensors(),
-            sensor_running: false,
-            sensor_probe_last_ms: 0,
-            sensor_total_frames: 0,
-            sensor_poll_count: 0,
+            sensor_runtime: Self::init_sensors(),
         })
     }
 
@@ -357,54 +375,16 @@ pub struct IOSRenderContext {
     gesture_detector: GestureDetector,
     /// Last frame time for CSS animation delta calculation
     last_frame_time_ms: u64,
-    /// Sensor client backed by native bridge handlers.
-    sensor_client: Option<SensorClient<NativeBridgeBackend>>,
-    /// Whether a mobile sensor session is currently active.
-    sensor_running: bool,
-    /// Last sensor polling timestamp (ms).
-    sensor_probe_last_ms: u64,
-    /// Running total of drained frames.
-    sensor_total_frames: u64,
-    /// Number of non-empty sensor frame polls.
-    sensor_poll_count: u64,
+    /// Cross-platform sensor runtime controller.
+    sensor_runtime: Option<NativeSensorRuntimeController>,
 }
 
 impl IOSRenderContext {
     fn stop_sensor_session_if_running(&mut self) {
-        let Some(client) = self.sensor_client.as_ref() else {
-            self.sensor_running = false;
-            return;
-        };
-
-        let status = client.status().ok();
-        let running_now =
-            self.sensor_running || status.as_ref().map(|s| s.running).unwrap_or(false);
-        if !running_now {
-            self.sensor_running = false;
-            return;
-        }
-
-        let stop_session_id = status
-            .and_then(|status| status.active_session_id)
-            .filter(|session_id| !session_id.trim().is_empty())
-            .unwrap_or_else(|| IOSApp::SENSOR_SESSION_ID.to_string());
-
-        match client.stop_session(&stop_session_id) {
-            Ok(()) => {
-                self.sensor_running = false;
-                tracing::debug!("Mobile sensors stopped (session={})", stop_session_id);
-            }
-            Err(err) => {
-                tracing::debug!(
-                    "Failed to stop mobile sensors (session={}): {}",
-                    stop_session_id,
-                    err
-                );
-                if let Ok(status) = client.status() {
-                    if !status.running {
-                        self.sensor_running = false;
-                    }
-                }
+        if let Some(runtime) = self.sensor_runtime.as_mut() {
+            match runtime.stop_if_running() {
+                Ok(()) => tracing::debug!("Mobile sensors stopped"),
+                Err(err) => tracing::debug!("Failed to stop mobile sensors: {}", err),
             }
         }
     }
@@ -866,16 +846,11 @@ impl IOSRenderContext {
     pub fn set_focused(&mut self, focused: bool) {
         self.windowed_ctx.focused = focused;
         if focused {
-            if !self.sensor_running {
-                if let Some(ref client) = self.sensor_client {
-                    match client.start_session(IOSApp::SENSOR_SESSION_ID) {
-                        Ok(()) => {
-                            self.sensor_running = true;
-                            tracing::debug!("Mobile sensors started");
-                        }
-                        Err(err) => {
-                            tracing::debug!("Failed to start mobile sensors: {}", err);
-                        }
+            if let Some(runtime) = self.sensor_runtime.as_mut() {
+                if !runtime.running() {
+                    match runtime.ensure_started() {
+                        Ok(()) => tracing::debug!("Mobile sensors started"),
+                        Err(err) => tracing::debug!("Failed to start mobile sensors: {}", err),
                     }
                 }
             }
@@ -885,59 +860,14 @@ impl IOSRenderContext {
     }
 
     fn poll_sensor_frames(&mut self) {
-        if !self.sensor_running {
+        let Some(runtime) = self.sensor_runtime.as_mut() else {
             return;
-        }
-
-        let now_ms = blinc_layout::prelude::elapsed_ms();
-        if self.sensor_probe_last_ms > 0
-            && now_ms.saturating_sub(self.sensor_probe_last_ms) < IOSApp::SENSOR_LOG_INTERVAL_MS
-        {
-            return;
-        }
-        self.sensor_probe_last_ms = now_ms;
-
-        let client = match self.sensor_client.as_ref() {
-            Some(client) => client,
-            None => return,
         };
-
-        let frames = match client.drain_frames(256) {
-            Ok(frames) => frames,
-            Err(err) => {
-                tracing::debug!("Failed to drain mobile sensor frames: {}", err);
-                return;
-            }
-        };
-        if frames.is_empty() {
-            return;
+        match runtime.poll_batch(256, blinc_layout::prelude::elapsed_ms()) {
+            Ok(Some(batch)) => IOSApp::log_sensor_batch(&batch),
+            Ok(None) => {}
+            Err(err) => tracing::debug!("Failed to drain mobile sensor frames: {}", err),
         }
-
-        self.sensor_poll_count += 1;
-        self.sensor_total_frames += frames.len() as u64;
-
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for frame in &frames {
-            *counts.entry(format!("{:?}", frame.sensor)).or_insert(0) += 1;
-        }
-
-        let mut summary = String::new();
-        for (index, (kind, count)) in counts.iter().enumerate() {
-            if index > 0 {
-                summary.push_str(", ");
-            }
-            let _ = write!(&mut summary, "{}={}", kind, count);
-        }
-
-        let sample = frames.last();
-        tracing::info!(
-            "Sensor batch #{}: frames={} total={} kinds=[{}] sample={:?}",
-            self.sensor_poll_count,
-            frames.len(),
-            self.sensor_total_frames,
-            summary,
-            sample.map(|frame| (&frame.sensor, frame.values.as_slice()))
-        );
     }
 }
 

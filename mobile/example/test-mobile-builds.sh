@@ -10,23 +10,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "== [1/4] Rust cross-target checks =="
+echo "== [0/5] Native bridge template sync check =="
+"$SCRIPT_DIR/../../scripts/check-mobile-native-bridge-sync.sh"
+
+echo
+echo "== [1/5] Rust cross-target checks =="
 cargo check --target aarch64-linux-android --features android
 cargo check --target aarch64-apple-ios --features ios
 
 echo
-echo "== [2/4] Android Rust library build =="
+echo "== [2/5] Android Rust library build =="
 cargo ndk -t arm64-v8a -o platforms/android/app/src/main/jniLibs build --release
 
 echo
-echo "== [3/4] Android APK assemble (Debug) =="
+echo "== [3/5] Android APK assemble (Debug) =="
 (
   cd platforms/android
   ./gradlew :app:assembleDebug
 )
 
 echo
-echo "== [4/4] iOS Rust static libraries build =="
+echo "== [4/5] iOS Rust static libraries build =="
 ./build-ios.sh
 
 if xcodebuild -showsdks | grep -q "iphoneos"; then
