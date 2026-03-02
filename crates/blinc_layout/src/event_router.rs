@@ -42,7 +42,7 @@ use crate::renderer::RenderTree;
 use crate::tree::LayoutNodeId;
 
 #[cfg(feature = "recorder")]
-use crate::recorder_bridge::{self, RecorderEventData, RecorderMouseButton};
+use crate::recorder_bridge::{self, RecorderEventData, RecorderModifiers, RecorderMouseButton};
 
 /// Mouse button identifier (matches platform)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -53,6 +53,15 @@ pub enum MouseButton {
     Back,
     Forward,
     Other(u16),
+}
+
+/// Keyboard modifier key state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputModifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub meta: bool,
 }
 
 /// Result of a hit test
@@ -137,6 +146,12 @@ pub struct EventRouter {
     drag_delta_x: f32,
     drag_delta_y: f32,
 
+    /// Last known keyboard modifier state.
+    modifiers: InputModifiers,
+
+    /// Keys currently pressed (used to detect key-repeat).
+    pressed_keys: HashSet<u32>,
+
     /// Bounds for each ancestor from the last hit test
     /// Maps node_id.to_raw() to (x, y, width, height)
     last_hit_ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
@@ -173,6 +188,8 @@ impl EventRouter {
             drag_start_y: 0.0,
             drag_delta_x: 0.0,
             drag_delta_y: 0.0,
+            modifiers: InputModifiers::default(),
+            pressed_keys: HashSet::new(),
             last_hit_ancestor_bounds: std::collections::HashMap::new(),
         }
     }
@@ -548,7 +565,7 @@ impl EventRouter {
         tree: &RenderTree,
         x: f32,
         y: f32,
-        _button: MouseButton,
+        button: MouseButton,
     ) -> Vec<(LayoutNodeId, u32)> {
         self.mouse_x = x;
         self.mouse_y = y;
@@ -590,7 +607,8 @@ impl EventRouter {
                 recorder_bridge::record_event(RecorderEventData::MouseDown {
                     x,
                     y,
-                    button: RecorderMouseButton::from(_button),
+                    button: RecorderMouseButton::from(button),
+                    modifiers: self.recorder_modifiers(),
                     target_element: Some(format!("{:?}", hit.node)),
                 });
             }
@@ -628,7 +646,7 @@ impl EventRouter {
         _tree: &RenderTree,
         x: f32,
         y: f32,
-        _button: MouseButton,
+        button: MouseButton,
     ) -> Vec<(LayoutNodeId, u32)> {
         self.mouse_x = x;
         self.mouse_y = y;
@@ -660,7 +678,8 @@ impl EventRouter {
                 recorder_bridge::record_event(RecorderEventData::MouseUp {
                     x,
                     y,
-                    button: RecorderMouseButton::from(_button),
+                    button: RecorderMouseButton::from(button),
+                    modifiers: self.recorder_modifiers(),
                     target_element: Some(format!("{:?}", target)),
                 });
 
@@ -669,7 +688,8 @@ impl EventRouter {
                     recorder_bridge::record_event(RecorderEventData::Click {
                         x,
                         y,
-                        button: RecorderMouseButton::from(_button),
+                        button: RecorderMouseButton::from(button),
+                        modifiers: self.recorder_modifiers(),
                         target_element: Some(format!("{:?}", target)),
                     });
                 }
@@ -763,12 +783,47 @@ impl EventRouter {
     ///
     /// Emits KEY_DOWN to the focused element.
     pub fn on_key_down(&mut self, key_code: u32) -> Option<(LayoutNodeId, u32)> {
+        self.on_key_down_with_modifiers(
+            key_code,
+            self.modifiers.shift,
+            self.modifiers.ctrl,
+            self.modifiers.alt,
+            self.modifiers.meta,
+        )
+    }
+
+    /// Handle key press with explicit modifier state.
+    ///
+    /// This updates router-level modifier tracking so recorder mouse events can
+    /// include current modifier keys.
+    pub fn on_key_down_with_modifiers(
+        &mut self,
+        key_code: u32,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) -> Option<(LayoutNodeId, u32)> {
+        #[cfg(not(feature = "recorder"))]
+        let _ = key_code;
+
+        self.modifiers = InputModifiers {
+            shift,
+            ctrl,
+            alt,
+            meta,
+        };
+
+        let is_repeat = key_code != 0 && !self.pressed_keys.insert(key_code);
+
         if let Some(focused) = self.focused {
             // Record key down event (only if recording is enabled)
             #[cfg(feature = "recorder")]
             if recorder_bridge::is_recording() {
                 recorder_bridge::record_event(RecorderEventData::KeyDown {
                     key_code,
+                    modifiers: self.recorder_modifiers(),
+                    is_repeat,
                     focused_element: Some(format!("{:?}", focused)),
                 });
             }
@@ -784,12 +839,44 @@ impl EventRouter {
     ///
     /// Emits KEY_UP to the focused element.
     pub fn on_key_up(&mut self, key_code: u32) -> Option<(LayoutNodeId, u32)> {
+        self.on_key_up_with_modifiers(
+            key_code,
+            self.modifiers.shift,
+            self.modifiers.ctrl,
+            self.modifiers.alt,
+            self.modifiers.meta,
+        )
+    }
+
+    /// Handle key release with explicit modifier state.
+    pub fn on_key_up_with_modifiers(
+        &mut self,
+        key_code: u32,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) -> Option<(LayoutNodeId, u32)> {
+        #[cfg(not(feature = "recorder"))]
+        let _ = key_code;
+
+        self.modifiers = InputModifiers {
+            shift,
+            ctrl,
+            alt,
+            meta,
+        };
+        if key_code != 0 {
+            self.pressed_keys.remove(&key_code);
+        }
+
         if let Some(focused) = self.focused {
             // Record key up event (only if recording is enabled)
             #[cfg(feature = "recorder")]
             if recorder_bridge::is_recording() {
                 recorder_bridge::record_event(RecorderEventData::KeyUp {
                     key_code,
+                    modifiers: self.recorder_modifiers(),
                     focused_element: Some(format!("{:?}", focused)),
                 });
             }
@@ -806,6 +893,9 @@ impl EventRouter {
     /// Emits TEXT_INPUT to the focused element.
     /// Returns the focused node if there is one.
     pub fn on_text_input(&mut self, ch: char) -> Option<(LayoutNodeId, u32)> {
+        #[cfg(not(feature = "recorder"))]
+        let _ = ch;
+
         if let Some(focused) = self.focused {
             // Record text input event (only if recording is enabled)
             #[cfg(feature = "recorder")]
@@ -909,6 +999,11 @@ impl EventRouter {
     /// When the window gains focus, emits WINDOW_FOCUS to the focused element.
     /// When the window loses focus, emits WINDOW_BLUR to the focused element.
     pub fn on_window_focus(&mut self, focused: bool) -> Option<(LayoutNodeId, u32)> {
+        if !focused {
+            self.pressed_keys.clear();
+            self.modifiers = InputModifiers::default();
+        }
+
         if let Some(focus_target) = self.focused {
             let event_type = if focused {
                 event_types::WINDOW_FOCUS
@@ -1031,14 +1126,23 @@ impl EventRouter {
     fn collect_all_nodes(&self, tree: &RenderTree) -> HashSet<LayoutNodeId> {
         let mut nodes = HashSet::new();
         if let Some(root) = tree.root() {
-            self.collect_nodes_recursive(tree, root, &mut nodes);
+            Self::collect_nodes_recursive(tree, root, &mut nodes);
         }
         nodes
     }
 
+    #[cfg(feature = "recorder")]
+    fn recorder_modifiers(&self) -> RecorderModifiers {
+        RecorderModifiers {
+            shift: self.modifiers.shift,
+            ctrl: self.modifiers.ctrl,
+            alt: self.modifiers.alt,
+            meta: self.modifiers.meta,
+        }
+    }
+
     /// Recursively collect node IDs
     fn collect_nodes_recursive(
-        &self,
         tree: &RenderTree,
         node: LayoutNodeId,
         nodes: &mut HashSet<LayoutNodeId>,
@@ -1046,7 +1150,7 @@ impl EventRouter {
         nodes.insert(node);
         let children = tree.layout().children(node);
         for child in children {
-            self.collect_nodes_recursive(tree, child, nodes);
+            Self::collect_nodes_recursive(tree, child, nodes);
         }
     }
 
@@ -1716,5 +1820,209 @@ mod tests {
             let captured = events.borrow();
             assert!(captured.contains(&event_types::WINDOW_FOCUS));
         }
+    }
+
+    #[test]
+    fn test_hit_test_respects_scroll_physics_offset() {
+        // Regression test: after scrolling a container, hit testing should target the
+        // visually-present child, not the pre-scroll position.
+        let item_h = 40.0;
+        let item_count = 20usize;
+
+        let mut list = div().flex_col().w_full();
+        for i in 0..item_count {
+            list = list.child(
+                div()
+                    .id(format!("item-{i}"))
+                    .w_full()
+                    .h(item_h)
+                    .flex_shrink_0(),
+            );
+        }
+
+        let ui = div().w(200.0).h(200.0).child(
+            div()
+                .id("scroll")
+                .w_full()
+                .h_full()
+                .overflow_y_scroll()
+                .child(list),
+        );
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 200.0);
+
+        // Scroll down by 10 items (visual content moves up).
+        let scroll_id = tree
+            .element_registry()
+            .get("scroll")
+            .expect("scroll container id registered");
+        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 10.0));
+
+        let router = EventRouter::new();
+        let hit = router
+            .hit_test(&tree, 10.0, item_h / 2.0)
+            .expect("expected a hit");
+
+        let hit_id = tree
+            .element_registry()
+            .get_id(hit.node)
+            .expect("hit node should have an id");
+        assert_eq!(hit_id, "item-10");
+    }
+
+    #[test]
+    fn test_hit_test_scroll_container_not_occluded_by_stack_absolute_children() {
+        // Regression test: Stack uses absolutely positioned children. Those absolute layers
+        // must still be positioned within the Stack's containing block (not the window/root),
+        // otherwise they can erroneously occlude sibling UI like sidebars.
+        let item_h = 40.0;
+        let item_count = 30usize;
+
+        let mut list = div().flex_col().w_full();
+        for i in 0..item_count {
+            list = list.child(
+                div()
+                    .id(format!("item-{i}"))
+                    .w_full()
+                    .h(item_h)
+                    .flex_shrink_0(),
+            );
+        }
+
+        let sidebar = div().w(280.0).h_full().child(
+            div()
+                .id("scroll")
+                .w_full()
+                .h_full()
+                .overflow_y_scroll()
+                .child(list),
+        );
+
+        // Main panel uses Stack (absolute children). This should not affect hit-testing
+        // inside the sidebar column.
+        let main = div().flex_1().h_full().child(
+            stack()
+                .w_full()
+                .h_full()
+                .child(div().id("main-layer").w_full().h_full()),
+        );
+
+        let ui = div()
+            .w(1200.0)
+            .h(420.0)
+            .flex_row()
+            .child(sidebar)
+            .child(main);
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(1200.0, 420.0);
+
+        // Scroll down by 12 items (visual content moves up).
+        let scroll_id = tree
+            .element_registry()
+            .get("scroll")
+            .expect("scroll container id registered");
+        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 12.0));
+
+        // Click within sidebar column; should hit item-12 (top of the list viewport).
+        let router = EventRouter::new();
+        let hit = router
+            .hit_test(&tree, 10.0, item_h / 2.0)
+            .expect("expected a hit");
+
+        let hit_id = tree
+            .element_registry()
+            .get_id(hit.node)
+            .expect("hit node should have an id");
+        assert_eq!(hit_id, "item-12");
+    }
+
+    #[test]
+    fn test_click_after_scroll_targets_visually_present_item() {
+        use std::sync::{Arc, Mutex};
+
+        let item_h = 40.0;
+        let item_count = 20usize;
+
+        let clicks: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let mut list = div().flex_col().w_full();
+        for i in 0..item_count {
+            let clicks = Arc::clone(&clicks);
+            list = list.child(
+                Stateful::new(ButtonState::Idle)
+                    .id(&format!("item-{i}"))
+                    .w_full()
+                    .h(item_h)
+                    .flex_shrink_0()
+                    .on_click(move |_| {
+                        clicks.lock().unwrap().push(i);
+                    }),
+            );
+        }
+
+        let ui = div().w(200.0).h(200.0).child(
+            div()
+                .id("scroll")
+                .w_full()
+                .h_full()
+                .overflow_y_scroll()
+                .child(list),
+        );
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 200.0);
+
+        // Scroll down by 10 items (visual content moves up).
+        let scroll_id = tree
+            .element_registry()
+            .get("scroll")
+            .expect("scroll container id registered");
+        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 10.0));
+
+        // Simulate a click in the top-left of the scroll viewport.
+        let (x, y) = (10.0, item_h / 2.0);
+        let mut router = EventRouter::new();
+
+        for (node, event_type) in router.on_mouse_down(&tree, x, y, MouseButton::Left) {
+            let (bx, by, bw, bh) = router.get_node_bounds(node).unwrap_or((0.0, 0.0, 0.0, 0.0));
+            tree.dispatch_event_full(
+                node,
+                event_type,
+                x,
+                y,
+                x - bx,
+                y - by,
+                bx,
+                by,
+                bw,
+                bh,
+                0.0,
+                0.0,
+                1.0,
+            );
+        }
+
+        for (node, event_type) in router.on_mouse_up(&tree, x, y, MouseButton::Left) {
+            let (bx, by, bw, bh) = router.get_node_bounds(node).unwrap_or((0.0, 0.0, 0.0, 0.0));
+            tree.dispatch_event_full(
+                node,
+                event_type,
+                x,
+                y,
+                x - bx,
+                y - by,
+                bx,
+                by,
+                bw,
+                bh,
+                0.0,
+                0.0,
+                1.0,
+            );
+        }
+
+        assert_eq!(clicks.lock().unwrap().as_slice(), &[10]);
     }
 }

@@ -157,6 +157,13 @@ mod tests;
 pub use app::{BlincApp, BlincConfig};
 pub use context::{DebugMode, RenderContext};
 pub use error::{BlincError, Result};
+pub use headless_assert::{AssertionResult, DiagnosticsElement, DiagnosticsSnapshot};
+pub use headless_report::HeadlessReport;
+pub use headless_runner::{
+    run_loaded_scenario_with_probe, run_scenario, run_scenario_with_probe, ProbeContext, RunOutcome,
+};
+pub use headless_runtime::{HeadlessContext, HeadlessRunConfig, HeadlessRuntime};
+pub use headless_scenario::{HeadlessScenario, ScenarioStep};
 pub use text_measurer::{init_text_measurer, init_text_measurer_with_registry, FontTextMeasurer};
 
 // Re-export layout API for convenience
@@ -174,6 +181,14 @@ pub mod prelude {
     pub use crate::app::{BlincApp, BlincConfig};
     pub use crate::context::{DebugMode, RenderContext};
     pub use crate::error::{BlincError, Result};
+    pub use crate::headless_assert::{AssertionResult, DiagnosticsElement, DiagnosticsSnapshot};
+    pub use crate::headless_report::HeadlessReport;
+    pub use crate::headless_runner::{
+        run_loaded_scenario_with_probe, run_scenario, run_scenario_with_probe, ProbeContext,
+        RunOutcome,
+    };
+    pub use crate::headless_runtime::{HeadlessContext, HeadlessRunConfig, HeadlessRuntime};
+    pub use crate::headless_scenario::{HeadlessScenario, ScenarioStep};
     pub use crate::text_measurer::{init_text_measurer, init_text_measurer_with_registry};
 
     // Layout builders
@@ -195,3 +210,9 @@ pub mod prelude {
     // Theme types
     pub use blinc_theme::{ColorScheme, ColorToken, RadiusToken, SpacingToken, ThemeState};
 }
+
+pub mod headless_assert;
+pub mod headless_report;
+pub mod headless_runner;
+pub mod headless_runtime;
+pub mod headless_scenario;

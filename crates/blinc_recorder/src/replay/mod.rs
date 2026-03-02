@@ -14,13 +14,13 @@
 //! let mut player = ReplayPlayer::new(export, ReplayConfig::default());
 //!
 //! // Play at 2x speed
-//! player.set_playback_speed(2.0);
+//! player.clock_mut().set_speed(2.0);
 //! player.play();
 //!
 //! // Or step through frame by frame
 //! while player.has_next() {
-//!     let frame_events = player.step();
-//!     for event in frame_events {
+//!     let frame = player.step();
+//!     for event in frame.events {
 //!         // Process event...
 //!     }
 //! }

@@ -5,8 +5,11 @@
 
 use crate::app::BlincConfig;
 use crate::prelude::*;
+use blinc_core::{Brush, DrawContext, Path as BlincPath, Point, Rect, Stroke};
+use blinc_gpu::GpuPaintContext;
 use image::{ImageBuffer, Rgba, RgbaImage};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// Test output directory
 const OUTPUT_DIR: &str = "test_output/blinc_app";
@@ -63,18 +66,17 @@ fn create_test_texture(
 fn padded_bytes_per_row(width: u32) -> u32 {
     let unpadded = width * 4;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    ((unpadded + align - 1) / align) * align
+    unpadded.div_ceil(align) * align
 }
 
-/// Save a rendered texture to PNG
-fn save_to_png(
+/// Read back a rendered texture into an RGBA image (BGRA->RGBA conversion).
+fn read_to_rgba_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     width: u32,
     height: u32,
-    path: &Path,
-) {
+) -> RgbaImage {
     let bytes_per_row = padded_bytes_per_row(width);
     let buffer_size = (bytes_per_row * height) as u64;
 
@@ -149,6 +151,20 @@ fn save_to_png(
     drop(data);
     buffer.unmap();
 
+    img
+}
+
+/// Save a rendered texture to PNG
+fn save_to_png(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    path: &Path,
+) {
+    let img = read_to_rgba_image(device, queue, texture, width, height);
+
     // Ensure output directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -172,6 +188,38 @@ fn render_to_png(
     let path = Path::new(OUTPUT_DIR).join(format!("{}.png", name));
     save_to_png(app.device(), app.queue(), &texture, width, height, &path);
     println!("Saved: {:?}", path);
+}
+
+/// Render a UI element and return the rendered pixels (RGBA).
+fn render_to_image(
+    app: &mut BlincApp,
+    ui: &impl ElementBuilder,
+    width: u32,
+    height: u32,
+) -> RgbaImage {
+    let (texture, view) = create_test_texture(app.device(), width, height);
+    app.render(ui, &view, width as f32, height as f32)
+        .expect("Render failed");
+    read_to_rgba_image(app.device(), app.queue(), &texture, width, height)
+}
+
+/// Render a UI element via the motion render path and return rendered pixels (RGBA).
+fn render_to_image_with_motion(
+    app: &mut BlincApp,
+    ui: &impl ElementBuilder,
+    width: u32,
+    height: u32,
+) -> RgbaImage {
+    let (texture, view) = create_test_texture(app.device(), width, height);
+    let mut tree = RenderTree::from_element(ui);
+    tree.compute_layout(width as f32, height as f32);
+
+    let scheduler = Arc::new(Mutex::new(blinc_animation::AnimationScheduler::new()));
+    let render_state = blinc_layout::RenderState::new(scheduler);
+
+    app.render_tree_with_motion(&tree, &render_state, &view, width, height)
+        .expect("Motion render failed");
+    read_to_rgba_image(app.device(), app.queue(), &texture, width, height)
 }
 
 #[test]
@@ -231,6 +279,417 @@ fn test_svg_icon() {
         .child(svg(svg_source).size(100.0, 100.0));
 
     render_to_png(&mut app, "svg_icon", &ui, 200, 200);
+}
+
+#[test]
+fn test_stack_z_layer_renders_paths_above_layer_primitives() {
+    require_gpu!(app);
+
+    let (width, height) = (220u32, 180u32);
+    let line_path = BlincPath::new().move_to(20.0, 160.0).line_to(200.0, 20.0);
+    let stroke = Stroke::new(4.0);
+
+    // Stack child #1 (z=1) draws a covering primitive, then a stroked path.
+    // Regression test for the interleaved z-layer renderer: paths must respect z-layer.
+    let ui = stack()
+        .w(width as f32)
+        .h(height as f32)
+        .child(
+            div()
+                .w_full()
+                .h_full()
+                .bg(Color::rgba(0.08, 0.09, 0.12, 1.0)),
+        )
+        .child(
+            div()
+                .w_full()
+                .h_full()
+                .bg(Color::rgba(0.02, 0.02, 0.02, 1.0))
+                .child(
+                    canvas(move |ctx: &mut dyn DrawContext, _bounds| {
+                        ctx.stroke_path(
+                            &line_path,
+                            &stroke,
+                            Brush::Solid(Color::rgb(0.2, 0.6, 1.0)),
+                        );
+                    })
+                    .w(width as f32)
+                    .h(height as f32),
+                ),
+        );
+
+    let img = render_to_image_with_motion(&mut app, &ui, width, height);
+
+    // Heuristic: the stroked path must contribute noticeably bright blue pixels.
+    // Backgrounds are near-black, so `max_b` is a strong signal.
+    let mut max_b = 0u8;
+    let mut bright_blueish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a == 0 {
+            continue;
+        }
+        max_b = max_b.max(b);
+        if b > 150 && g > 60 && r < 160 {
+            bright_blueish += 1;
+        }
+    }
+    assert!(
+        max_b > 150 && bright_blueish > 0,
+        "expected bright blue pixels from stroked path; max_b={max_b} bright_blueish={bright_blueish}"
+    );
+}
+
+#[test]
+fn test_tessellated_path_stroke_is_visible() {
+    require_gpu!(app);
+
+    // Force the polyline to fall back to tessellated path rendering by using a rounded clip.
+    // This catches regressions where the path pipeline silently stops drawing.
+    let ui = div()
+        .w(240.0)
+        .h(180.0)
+        .rounded(16.0)
+        .overflow_clip()
+        .bg(Color::rgba(0.08, 0.09, 0.11, 1.0))
+        .child(
+            canvas(|ctx: &mut dyn DrawContext, bounds| {
+                // A diagonal line that should be clearly visible.
+                let pts = [
+                    Point::new(20.0, bounds.height - 20.0),
+                    Point::new(bounds.width - 20.0, 20.0),
+                ];
+                ctx.stroke_polyline(
+                    &pts,
+                    &Stroke::new(3.0),
+                    Brush::Solid(Color::rgba(0.35, 0.65, 1.0, 1.0)),
+                );
+            })
+            .w_full()
+            .h_full(),
+        );
+
+    // Optional artifact for local debugging.
+    if std::env::var_os("BLINC_TEST_WRITE_ARTIFACTS").is_some() {
+        render_to_png(&mut app, "debug_canvas_polyline", &ui, 240, 180);
+    }
+
+    let img = render_to_image(&mut app, &ui, 240, 180);
+
+    // Count "blue-ish" pixels. Thresholds are conservative to be robust to AA.
+    let mut blueish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && b > 160 && g > 150 && r < 180 {
+            blueish += 1;
+        }
+    }
+
+    assert!(
+        blueish > 50,
+        "expected tessellated stroke to produce visible blue pixels; blueish={blueish}"
+    );
+}
+
+#[test]
+fn test_foreground_tessellated_path_stroke_is_visible() {
+    require_gpu!(app);
+
+    let ui = div()
+        .w(240.0)
+        .h(180.0)
+        .rounded(16.0)
+        .overflow_clip()
+        .bg(Color::rgba(0.08, 0.09, 0.11, 1.0))
+        .child(
+            canvas(|ctx: &mut dyn DrawContext, bounds| {
+                // Force foreground-path codepath.
+                ctx.set_foreground_layer(true);
+
+                let pts = [
+                    Point::new(20.0, bounds.height - 20.0),
+                    Point::new(bounds.width - 20.0, 20.0),
+                ];
+                ctx.stroke_polyline(
+                    &pts,
+                    &Stroke::new(3.0),
+                    Brush::Solid(Color::rgba(0.35, 0.65, 1.0, 1.0)),
+                );
+
+                ctx.set_foreground_layer(false);
+            })
+            .w_full()
+            .h_full(),
+        );
+
+    // Optional artifact for local debugging.
+    if std::env::var_os("BLINC_TEST_WRITE_ARTIFACTS").is_some() {
+        render_to_png(&mut app, "debug_foreground_canvas_polyline", &ui, 240, 180);
+    }
+
+    if std::env::var_os("BLINC_DEBUG_TEST").is_some() {
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(240.0, 180.0);
+        let mut ctx = GpuPaintContext::new(240.0, 180.0);
+        tree.render_to_layer(&mut ctx, RenderLayer::Background);
+        let batch = ctx.take_batch();
+        println!(
+            "debug batch: prims={} lines={} paths(v/i)={}/{} fg_paths(v/i)={}/{}",
+            batch.primitives.len(),
+            batch.line_segments.len(),
+            batch.paths.vertices.len(),
+            batch.paths.indices.len(),
+            batch.foreground_paths.vertices.len(),
+            batch.foreground_paths.indices.len()
+        );
+        println!(
+            "debug fg_paths flags: use_grad={} use_img={} use_glass={} image_uv={:?} glass_params={:?} glass_tint={:?}",
+            batch.foreground_paths.use_gradient_texture,
+            batch.foreground_paths.use_image_texture,
+            batch.foreground_paths.use_glass_effect,
+            batch.foreground_paths.image_uv_bounds,
+            batch.foreground_paths.glass_params,
+            batch.foreground_paths.glass_tint,
+        );
+        if let Some(d) = batch.foreground_paths.draws.first() {
+            println!(
+                "debug fg_paths draw0: start={} count={} clip_bounds={:?} clip_radius={:?} clip_type={}",
+                d.index_start, d.index_count, d.clip_bounds, d.clip_radius, d.clip_type
+            );
+        }
+        if let Some(v) = batch.foreground_paths.vertices.first() {
+            println!(
+                "debug fg_path vertex0: pos={:?} color={:?} end_color={:?} grad_type={}",
+                v.position, v.color, v.end_color, v.gradient_type
+            );
+        }
+    }
+
+    let img = render_to_image(&mut app, &ui, 240, 180);
+
+    let mut blueish = 0usize;
+    let mut max_r = 0u8;
+    let mut max_g = 0u8;
+    let mut max_b = 0u8;
+    let mut b_hi = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        max_r = max_r.max(r);
+        max_g = max_g.max(g);
+        max_b = max_b.max(b);
+        if a > 32 && b > 120 {
+            b_hi += 1;
+        }
+        // NOTE: render target is sRGB, so linear colors are gamma-encoded in the readback.
+        // Use conservative thresholds that tolerate AA and gamma.
+        if a > 32 && b > 160 && g > 150 && r < 200 {
+            blueish += 1;
+        }
+    }
+
+    if std::env::var_os("BLINC_DEBUG_TEST").is_some() {
+        println!(
+            "debug pixels: max_r={} max_g={} max_b={} b_hi={} blueish={}",
+            max_r, max_g, max_b, b_hi, blueish
+        );
+    }
+
+    assert!(
+        blueish > 50,
+        "expected foreground tessellated stroke to produce visible blue pixels; blueish={blueish}"
+    );
+}
+
+#[test]
+fn test_foreground_tessellated_path_stroke_is_visible_no_msaa() {
+    // Isolate the non-MSAA render path (render_with_clear + foreground paths).
+    // `create_test_app` uses sample_count=1 and skips cleanly when no adapter exists.
+    require_gpu!(app);
+
+    let ui = div()
+        .w(240.0)
+        .h(180.0)
+        .rounded(16.0)
+        .overflow_clip()
+        .bg(Color::rgba(0.08, 0.09, 0.11, 1.0))
+        .child(
+            canvas(|ctx: &mut dyn DrawContext, bounds| {
+                ctx.set_foreground_layer(true);
+
+                let pts = [
+                    Point::new(20.0, bounds.height - 20.0),
+                    Point::new(bounds.width - 20.0, 20.0),
+                ];
+                ctx.stroke_polyline(
+                    &pts,
+                    &Stroke::new(3.0),
+                    Brush::Solid(Color::rgba(0.35, 0.65, 1.0, 1.0)),
+                );
+
+                ctx.set_foreground_layer(false);
+            })
+            .w_full()
+            .h_full(),
+        );
+
+    if std::env::var_os("BLINC_TEST_WRITE_ARTIFACTS").is_some() {
+        render_to_png(
+            &mut app,
+            "debug_foreground_canvas_polyline_no_msaa",
+            &ui,
+            240,
+            180,
+        );
+    }
+
+    let img = render_to_image(&mut app, &ui, 240, 180);
+
+    let mut blueish = 0usize;
+    let mut b_hi = 0usize;
+    let mut max_b = 0u8;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        max_b = max_b.max(b);
+        if a > 32 && b > 120 {
+            b_hi += 1;
+        }
+        // Keep thresholds tolerant to backend/color-space differences under coverage.
+        if a > 32 && b > 145 && g > 110 && r < 220 {
+            blueish += 1;
+        }
+    }
+
+    assert!(
+        max_b > 150 && (blueish > 20 || b_hi > 80),
+        "expected foreground tessellated stroke (no MSAA) to produce visible blue pixels; max_b={max_b} blueish={blueish} b_hi={b_hi}"
+    );
+}
+
+#[test]
+fn test_compact_polyline_is_visible() {
+    require_gpu!(app);
+
+    // No rounded clip: should take the compact line-segment path.
+    let ui = div()
+        .w(240.0)
+        .h(180.0)
+        .bg(Color::rgba(0.08, 0.09, 0.11, 1.0))
+        .child(
+            canvas(|ctx: &mut dyn DrawContext, bounds| {
+                // Sanity check: SDF primitives should render in the same canvas.
+                ctx.fill_rect(
+                    Rect::new(8.0, 8.0, 16.0, 16.0),
+                    0.0.into(),
+                    Brush::Solid(Color::rgba(0.95, 0.2, 0.2, 1.0)),
+                );
+
+                let pts = [
+                    Point::new(20.0, bounds.height - 20.0),
+                    Point::new(bounds.width - 20.0, 20.0),
+                ];
+                ctx.stroke_polyline(
+                    &pts,
+                    &Stroke::new(3.0),
+                    Brush::Solid(Color::rgba(0.35, 0.65, 1.0, 1.0)),
+                );
+            })
+            .w_full()
+            .h_full(),
+        );
+
+    let img = render_to_image(&mut app, &ui, 240, 180);
+
+    // Confirm the red square exists (catch any readback/format issues early).
+    let mut reddish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && r > 200 && g < 160 && b < 160 {
+            reddish += 1;
+        }
+    }
+    assert!(
+        reddish > 50,
+        "expected red sanity pixels; reddish={reddish}"
+    );
+
+    let mut blueish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && b > 160 && g > 150 && r < 180 {
+            blueish += 1;
+        }
+    }
+    assert!(
+        blueish > 50,
+        "expected compact polyline to produce visible blue pixels; blueish={blueish}"
+    );
+}
+
+#[test]
+fn test_foreground_compact_polyline_is_visible() {
+    require_gpu!(app);
+
+    // No rounded clip: should take the compact line-segment path, but recorded to
+    // `foreground_line_segments` via `set_foreground_layer(true)`.
+    let ui = div()
+        .w(240.0)
+        .h(180.0)
+        .bg(Color::rgba(0.08, 0.09, 0.11, 1.0))
+        .child(
+            canvas(|ctx: &mut dyn DrawContext, bounds| {
+                // Sanity check: SDF primitives should render in the same canvas.
+                ctx.fill_rect(
+                    Rect::new(8.0, 8.0, 16.0, 16.0),
+                    0.0.into(),
+                    Brush::Solid(Color::rgba(0.95, 0.2, 0.2, 1.0)),
+                );
+
+                ctx.set_foreground_layer(true);
+                let pts = [
+                    Point::new(20.0, bounds.height - 20.0),
+                    Point::new(bounds.width - 20.0, 20.0),
+                ];
+                ctx.stroke_polyline(
+                    &pts,
+                    &Stroke::new(3.0),
+                    Brush::Solid(Color::rgba(0.35, 0.65, 1.0, 1.0)),
+                );
+                ctx.set_foreground_layer(false);
+            })
+            .w_full()
+            .h_full(),
+        );
+
+    if std::env::var_os("BLINC_TEST_WRITE_ARTIFACTS").is_some() {
+        render_to_png(&mut app, "debug_foreground_compact_polyline", &ui, 240, 180);
+    }
+
+    let img = render_to_image(&mut app, &ui, 240, 180);
+
+    // Confirm the red square exists (catch any readback/format issues early).
+    let mut reddish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && r > 200 && g < 160 && b < 160 {
+            reddish += 1;
+        }
+    }
+    assert!(
+        reddish > 50,
+        "expected red sanity pixels; reddish={reddish}"
+    );
+
+    let mut blueish = 0usize;
+    for p in img.pixels() {
+        let [r, g, b, a] = p.0;
+        if a > 32 && b > 160 && g > 150 && r < 200 {
+            blueish += 1;
+        }
+    }
+    assert!(
+        blueish > 50,
+        "expected foreground compact polyline to produce visible blue pixels; blueish={blueish}"
+    );
 }
 
 #[test]
@@ -573,7 +1032,7 @@ fn test_render_tree_reuse() {
     let (texture, view) = create_test_texture(app.device(), 200, 200);
 
     // Render the same tree 3 times
-    for i in 0..3 {
+    for _i in 0..3 {
         app.render_tree(&tree, &view, 200, 200)
             .expect("Render failed");
     }
@@ -581,4 +1040,113 @@ fn test_render_tree_reuse() {
     let path = Path::new(OUTPUT_DIR).join("render_tree_reuse.png");
     save_to_png(app.device(), app.queue(), &texture, 200, 200, &path);
     println!("Saved: {:?}", path);
+}
+
+#[test]
+fn headless_runtime_runs_fixed_frame_budget() {
+    use crate::headless_runtime::{HeadlessRunConfig, HeadlessRuntime};
+
+    let mut frames = 0u32;
+    let cfg = HeadlessRunConfig {
+        width: 800,
+        height: 600,
+        max_frames: 3,
+        tick_ms: 16,
+        probe_every_frames: 1,
+    };
+
+    HeadlessRuntime::run(cfg, |_ctx| {
+        frames += 1;
+    })
+    .expect("headless run should succeed");
+
+    assert_eq!(frames, 3);
+}
+
+#[test]
+fn parses_wait_and_assert_steps() {
+    use crate::headless_scenario::{HeadlessScenario, ScenarioStep};
+
+    let json = r#"{
+      "steps": [
+        {"type":"wait","ms":100},
+        {"type":"assert_exists","id":"login.button"}
+      ]
+    }"#;
+
+    let scenario: HeadlessScenario = serde_json::from_str(json).expect("scenario should parse");
+    assert!(matches!(scenario.steps[0], ScenarioStep::Wait { ms: 100 }));
+    assert!(matches!(
+        scenario.steps[1],
+        ScenarioStep::AssertExists { ref id } if id == "login.button"
+    ));
+}
+
+#[test]
+fn assert_text_contains_reports_failure_detail() {
+    use crate::headless_assert::{
+        evaluate_assert_text_contains, DiagnosticsElement, DiagnosticsSnapshot,
+    };
+
+    let mut snapshot = DiagnosticsSnapshot::default();
+    snapshot.elements.insert(
+        "title".to_string(),
+        DiagnosticsElement {
+            text: Some("Hello".to_string()),
+        },
+    );
+
+    let result = evaluate_assert_text_contains("title", "Welcome", &snapshot);
+    assert!(matches!(
+        result,
+        crate::headless_assert::AssertionResult::Failed { .. }
+    ));
+}
+
+#[test]
+fn runner_stops_on_first_failed_assertion() {
+    use crate::headless_assert::DiagnosticsSnapshot;
+    use crate::headless_runner::{run_scenario_with_probe, RunOutcome};
+    use crate::headless_runtime::HeadlessRunConfig;
+
+    let scenario_json = r#"{
+      "steps": [
+        {"type":"assert_exists","id":"missing.node"},
+        {"type":"tick","frames":10}
+      ]
+    }"#;
+
+    let outcome = run_scenario_with_probe(scenario_json, HeadlessRunConfig::default(), |_ctx| {
+        DiagnosticsSnapshot::default()
+    })
+    .expect("runner should return outcome");
+    assert!(matches!(outcome, RunOutcome::Failed { .. }));
+}
+
+#[test]
+fn run_scenario_requires_probe_for_assertions() {
+    use crate::headless_runner::run_scenario;
+
+    let scenario_json = r#"{
+      "steps": [
+        {"type":"assert_exists","id":"missing.node"}
+      ]
+    }"#;
+
+    let err = run_scenario(scenario_json).expect_err("assert scenario without probe must fail");
+    assert!(
+        err.to_string().contains("use run_scenario_with_probe"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn failed_run_writes_machine_readable_report() {
+    use crate::headless_report::HeadlessReport;
+
+    let report = HeadlessReport::failed("assert_exists", 0, "missing.node".to_string(), 0, 0);
+    let json = serde_json::to_string(&report).expect("report should serialize");
+
+    assert!(json.contains("\"status\":\"failed\""));
+    assert!(json.contains("\"assert_exists\""));
 }
