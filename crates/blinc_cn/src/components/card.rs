@@ -210,7 +210,7 @@ impl CardHeader {
     }
 
     /// Add a title
-    pub fn title(mut self, title: impl Into<String>) -> Self {
+    pub fn title(mut self, title: impl ToString) -> Self {
         let theme = ThemeState::get();
         self.inner = self.inner.child(
             text(title)
@@ -222,7 +222,7 @@ impl CardHeader {
     }
 
     /// Add a description
-    pub fn description(mut self, desc: impl Into<String>) -> Self {
+    pub fn description(mut self, desc: impl ToString) -> Self {
         let theme = ThemeState::get();
         self.inner = self.inner.child(
             text(desc)

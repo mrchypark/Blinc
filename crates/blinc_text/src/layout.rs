@@ -73,6 +73,11 @@ impl Default for LayoutOptions {
 pub struct PositionedGlyph {
     /// Glyph ID in the font
     pub glyph_id: u16,
+    /// Byte index into the original string (HarfBuzz cluster).
+    ///
+    /// This is required for correctly mapping glyphs back to source text ranges,
+    /// e.g. for styled text color spans.
+    pub cluster: u32,
     /// X position in pixels
     pub x: f32,
     /// Y position in pixels (baseline)
@@ -351,6 +356,7 @@ impl TextLayoutEngine {
 
             glyphs.push(PositionedGlyph {
                 glyph_id: glyph.glyph_id,
+                cluster: glyph.cluster,
                 x: x + x_offset,
                 y: baseline_y,
                 codepoint: glyph.codepoint,
@@ -388,7 +394,6 @@ impl TextLayoutEngine {
             .collect();
 
         let mut last_word_end = 0;
-        let mut last_word_width = 0.0f32;
 
         for glyph in shaped.glyphs.iter() {
             // Handle explicit newline - always force a line break
@@ -396,7 +401,6 @@ impl TextLayoutEngine {
                 lines.push(std::mem::take(&mut current_line));
                 line_width = 0.0;
                 last_word_end = 0;
-                last_word_width = 0.0;
                 continue; // Don't include the newline glyph itself
             }
 
@@ -431,14 +435,12 @@ impl TextLayoutEngine {
                                 .map(|g| shaped.scale(g.x_advance) + options.letter_spacing)
                                 .sum();
                             last_word_end = 0;
-                            last_word_width = 0.0;
                             broke_line = true;
                         } else {
                             // No word boundary found - break at current position (character break)
                             lines.push(std::mem::take(&mut current_line));
                             line_width = 0.0;
                             last_word_end = 0;
-                            last_word_width = 0.0;
                             broke_line = true;
                         }
                     }
@@ -447,7 +449,6 @@ impl TextLayoutEngine {
                         lines.push(std::mem::take(&mut current_line));
                         line_width = 0.0;
                         last_word_end = 0;
-                        last_word_width = 0.0;
                         broke_line = true;
                     }
                     LineBreakMode::None => {
@@ -469,7 +470,6 @@ impl TextLayoutEngine {
                     // Update word boundary if this glyph is a word break
                     if is_word_break {
                         last_word_end = current_line.len();
-                        last_word_width = line_width;
                     }
                     continue; // Move to next glyph
                 }
@@ -490,7 +490,6 @@ impl TextLayoutEngine {
             if is_word_break {
                 // Mark position AFTER this whitespace as potential break point
                 last_word_end = current_line.len();
-                last_word_width = line_width;
             }
         }
 
@@ -597,7 +596,6 @@ mod tests {
             let is_word_break = word_breaks.contains(&(glyph.cluster as usize));
 
             if line_width + advance > max_width && !current_line.is_empty() {
-                let mut broke_line = false;
                 if last_word_end > 0 {
                     let remaining: Vec<_> = current_line.drain(last_word_end..).collect();
                     lines.push(std::mem::take(&mut current_line));
@@ -614,27 +612,23 @@ mod tests {
                         .map(|g| shaped.scale(g.x_advance) + options.letter_spacing)
                         .sum();
                     last_word_end = 0;
-                    broke_line = true;
                 } else {
                     lines.push(std::mem::take(&mut current_line));
                     line_width = 0.0;
                     last_word_end = 0;
-                    broke_line = true;
                 }
 
-                if broke_line {
-                    if current_line.is_empty() && glyph.codepoint.is_whitespace() {
-                        continue;
-                    }
-
-                    current_line.push(*glyph);
-                    line_width += advance;
-
-                    if is_word_break {
-                        last_word_end = current_line.len();
-                    }
+                if current_line.is_empty() && glyph.codepoint.is_whitespace() {
                     continue;
                 }
+
+                current_line.push(*glyph);
+                line_width += advance;
+
+                if is_word_break {
+                    last_word_end = current_line.len();
+                }
+                continue;
             }
 
             if current_line.is_empty() && glyph.codepoint.is_whitespace() {

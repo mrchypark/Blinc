@@ -35,11 +35,11 @@
 
 use blinc_animation::{AnimatedValue, SpringConfig};
 use blinc_core::context_state::BlincContextState;
-use blinc_core::{use_state_keyed, SignalId, State};
+use blinc_core::{SignalId, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
 // LayoutAnimationConfig is no longer used - using new VisualAnimationConfig system
-use blinc_layout::motion::{motion, SharedAnimatedValue};
+use blinc_layout::motion::SharedAnimatedValue;
 use blinc_layout::prelude::*;
 use blinc_layout::render_state::get_global_scheduler;
 use blinc_layout::stateful::Stateful;

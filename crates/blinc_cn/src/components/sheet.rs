@@ -43,8 +43,6 @@ use blinc_layout::widgets::overlay::{BackdropConfig, EdgeSide, OverlayHandle, Ov
 use blinc_layout::InstanceKey;
 use blinc_theme::{ColorToken, RadiusToken, ThemeState};
 
-use super::button::{button, ButtonVariant};
-
 /// Sheet side variants - which edge the sheet slides from
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SheetSide {

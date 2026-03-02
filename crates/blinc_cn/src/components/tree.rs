@@ -27,7 +27,7 @@ use blinc_core::context_state::BlincContextState;
 use blinc_core::{Color, SignalId, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
-use blinc_layout::motion::{motion, SharedAnimatedValue};
+use blinc_layout::motion::SharedAnimatedValue;
 use blinc_layout::prelude::*;
 use blinc_layout::render_state::get_global_scheduler;
 use blinc_layout::stateful::Stateful;

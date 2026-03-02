@@ -34,12 +34,10 @@
 use std::cell::OnceCell;
 use std::sync::Arc;
 
-use blinc_animation::AnimationPreset;
 use blinc_core::context_state::BlincContextState;
 use blinc_core::{Color, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
-use blinc_layout::motion::motion_derived;
 use blinc_layout::overlay_state::get_overlay_manager;
 use blinc_layout::prelude::*;
 use blinc_layout::stateful::{stateful_with_key, ButtonState};
@@ -1132,8 +1130,8 @@ fn build_menubar_submenu_content(
             let has_submenu = item.has_submenu();
             let submenu_items = item.get_submenu().cloned();
 
-            let parent_handle_for_click = parent_handle_state.clone();
-            let submenu_handle_for_click = submenu_handle_state.clone();
+            let _parent_handle_for_click = parent_handle_state.clone();
+            let _submenu_handle_for_click = submenu_handle_state.clone();
             let nested_submenu_for_hover = nested_submenu_handle.clone();
             let nested_submenu_for_leave = nested_submenu_handle.clone();
 
@@ -1292,7 +1290,7 @@ fn build_menubar_dropdown_content(
     items: &[ContextMenuItem],
     width: f32,
     overlay_handle_state: &State<Option<u64>>,
-    active_menu_state: &State<Option<usize>>,
+    _active_menu_state: &State<Option<usize>>,
     key: &str,
     bg: Color,
     border: Color,
@@ -1579,16 +1577,16 @@ mod tests {
             });
 
         assert_eq!(mb.menus.len(), 2);
-        let file_str = String::from("File");
+        let _file_str = String::from("File");
         assert!(matches!(
             &mb.menus[0].trigger,
-            MenubarTrigger::Label(file_str)
+            MenubarTrigger::Label(_file_str)
         ));
         assert_eq!(mb.menus[0].items.len(), 3); // New, separator, Exit
-        let edit_str = String::from("Edit");
+        let _edit_str = String::from("Edit");
         assert!(matches!(
             &mb.menus[1].trigger,
-            MenubarTrigger::Label(edit_str)
+            MenubarTrigger::Label(_edit_str)
         ));
         assert_eq!(mb.menus[1].items.len(), 2);
     }

@@ -8,43 +8,55 @@ Text input field:
 
 ```rust
 use blinc_cn::prelude::*;
+use blinc_layout::widgets::text_input::text_input_data;
 
-input()
+let name = text_input_data();
+
+input(&name)
     .placeholder("Enter your name...")
-    .value(name)
-    .on_change(|value| set_name(value))
+    .on_change(|value| println!("name: {}", value));
 ```
 
 ### Input Types
 
 ```rust
+use blinc_layout::widgets::text_input::text_input_data;
+
+let name = text_input_data();
+let email = text_input_data();
+let password = text_input_data();
+let age = text_input_data();
+let search = text_input_data();
+
 // Text (default)
-input().placeholder("Name")
+input(&name).placeholder("Name")
 
 // Email
-input().input_type("email").placeholder("Email")
+input(&email).input_type("email").placeholder("Email")
 
 // Password
-input().input_type("password").placeholder("Password")
+input(&password).input_type("password").placeholder("Password")
 
 // Number
-input().input_type("number").placeholder("Age")
+input(&age).input_type("number").placeholder("Age")
 
 // Search
-input().input_type("search").placeholder("Search...")
+input(&search).input_type("search").placeholder("Search...")
 ```
 
 ### Input States
 
 ```rust
-// Disabled
-input().disabled(true)
+use blinc_layout::widgets::text_input::text_input_data;
 
-// Read-only
-input().readonly(true)
+let disabled_input = text_input_data();
+let error_input = text_input_data();
+
+// Disabled
+input(&disabled_input).disabled(true)
 
 // With error
-input().error(true)
+input(&error_input).error("Invalid value")
 ```
 
 ## Textarea
@@ -52,11 +64,57 @@ input().error(true)
 Multi-line text input:
 
 ```rust
-textarea()
+use blinc_layout::widgets::text_area::text_area_state;
+
+let description = text_area_state();
+
+textarea(&description)
     .placeholder("Enter description...")
     .rows(4)
-    .value(description)
-    .on_change(|value| set_description(value))
+    .on_change(|value| println!("description: {}", value));
+```
+
+## Field
+
+`field()` wraps a single control with label + helper/error text.
+
+```rust
+use blinc_layout::widgets::text_input::text_input_data;
+
+let email = text_input_data();
+
+field("Email")
+    .required()
+    .description("We'll only use this for account notices.")
+    .child(
+        input(&email)
+            .placeholder("name@example.com")
+    )
+```
+
+## Form
+
+`form()` is a vertical layout container for multiple fields.
+
+```rust
+use blinc_layout::widgets::text_input::text_input_data;
+
+let name = text_input_data();
+let email = text_input_data();
+
+form()
+    .spacing(16.0)
+    .max_w(420.0)
+    .child(
+        field("Name")
+            .required()
+            .child(input(&name).placeholder("John Doe"))
+    )
+    .child(
+        field("Email")
+            .required()
+            .child(input(&email).input_type("email").placeholder("john@example.com"))
+    )
 ```
 
 ## Checkbox
@@ -64,7 +122,7 @@ textarea()
 ```rust
 checkbox()
     .checked(is_checked)
-    .on_change(|checked| set_checked(checked))
+    .on_change(|checked| println!("checked: {}", checked))
     .child(label("Accept terms and conditions"))
 ```
 
@@ -85,7 +143,7 @@ Toggle switch:
 ```rust
 switch_()
     .checked(is_enabled)
-    .on_change(|enabled| set_enabled(enabled))
+    .on_change(|enabled| println!("enabled: {}", enabled))
 ```
 
 ### With Label
@@ -95,7 +153,7 @@ div()
     .flex_row()
     .items_center()
     .gap(8.0)
-    .child(switch_().checked(dark_mode).on_change(|v| set_dark_mode(v)))
+    .child(switch_().checked(dark_mode).on_change(|v| println!("dark mode: {}", v)))
     .child(label("Dark mode"))
 ```
 
@@ -104,7 +162,7 @@ div()
 ```rust
 radio_group()
     .value(selected)
-    .on_change(|value| set_selected(value))
+    .on_change(|value| println!("selected: {}", value))
     .child(
         div().flex_col().gap(8.0)
             .child(radio_item("small").child(label("Small")))
@@ -120,7 +178,7 @@ Dropdown selection:
 ```rust
 select()
     .value(selected)
-    .on_change(|value| set_selected(value))
+    .on_change(|value| println!("selected: {}", value))
     .child(select_trigger()
         .child(select_value().placeholder("Select option...")))
     .child(select_content()
@@ -153,7 +211,7 @@ Searchable select with autocomplete:
 ```rust
 combobox()
     .value(selected)
-    .on_change(|value| set_selected(value))
+    .on_change(|value| println!("selected: {}", value))
     .child(combobox_trigger()
         .child(combobox_input().placeholder("Search...")))
     .child(combobox_content()
@@ -173,7 +231,7 @@ slider()
     .min(0.0)
     .max(100.0)
     .step(1.0)
-    .on_change(|value| set_volume(value))
+    .on_change(|value| println!("volume: {}", value))
 ```
 
 ### Range Slider
@@ -184,8 +242,7 @@ slider()
     .min(0.0)
     .max(1000.0)
     .on_change_range(|min, max| {
-        set_min_price(min);
-        set_max_price(max);
+        println!("price range: {} - {}", min, max);
     })
 ```
 
@@ -203,54 +260,31 @@ checkbox()
 ## Form Layout Example
 
 ```rust
-div()
-    .flex_col()
-    .gap(24.0)
+use blinc_layout::widgets::text_input::text_input_data;
+
+let name = text_input_data();
+let email = text_input_data();
+
+form()
+    .spacing(24.0)
     .max_w(400.0)
-    // Name field
     .child(
-        div().flex_col().gap(4.0)
-            .child(label("Name"))
-            .child(input()
+        field("Name")
+            .required()
+            .child(input(&name)
                 .placeholder("John Doe")
-                .value(&name)
-                .on_change(|v| set_name(v)))
+                .on_change(|v| println!("name: {}", v)))
     )
-    // Email field
     .child(
-        div().flex_col().gap(4.0)
-            .child(label("Email"))
-            .child(input()
+        field("Email")
+            .required()
+            .child(input(&email)
                 .input_type("email")
                 .placeholder("john@example.com")
-                .value(&email)
-                .on_change(|v| set_email(v)))
+                .on_change(|v| println!("email: {}", v)))
     )
-    // Country select
-    .child(
-        div().flex_col().gap(4.0)
-            .child(label("Country"))
-            .child(select()
-                .value(&country)
-                .on_change(|v| set_country(v))
-                .child(select_trigger().child(select_value()))
-                .child(select_content()
-                    .child(select_item("us").child(text("United States")))
-                    .child(select_item("uk").child(text("United Kingdom")))
-                    .child(select_item("ca").child(text("Canada")))))
-    )
-    // Terms checkbox
-    .child(
-        checkbox()
-            .checked(accepted_terms)
-            .on_change(|v| set_accepted_terms(v))
-            .child(label("I accept the terms and conditions"))
-    )
-    // Submit button
     .child(
         button("Submit")
-            .full_width(true)
-            .disabled(!accepted_terms)
             .on_click(|| submit_form())
     )
 ```
@@ -258,26 +292,17 @@ div()
 ## Validation
 
 ```rust
-let email = use_state(String::new());
-let email_error = use_derived(|| {
-    if email.is_empty() {
-        None
-    } else if !email.contains('@') {
-        Some("Invalid email address")
-    } else {
-        None
-    }
-});
+use blinc_layout::widgets::text_input::text_input_data;
 
-div().flex_col().gap(4.0)
-    .child(label("Email"))
-    .child(input()
-        .value(&email)
-        .error(email_error.is_some())
-        .on_change(|v| set_email(v)))
+let email = text_input_data();
+let show_error = true; // replace with your own validation condition
+
+field("Email")
+    .when(show_error, |f| f.error("Invalid email address"))
     .child(
-        email_error.map(|err|
-            text(err).size(12.0).color(Color::RED)
-        )
+        input(&email)
+            .input_type("email")
+            .on_change(|v| println!("email: {}", v))
+            .error_state(show_error)
     )
 ```

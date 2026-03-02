@@ -86,13 +86,13 @@ pub struct Alert {
 
 impl Alert {
     /// Create a new alert with a message
-    pub fn new(message: impl Into<String>) -> Self {
+    pub fn new(message: impl ToString) -> Self {
         Self::with_variant(message, AlertVariant::default())
     }
 
-    fn with_variant(message: impl Into<String>, variant: AlertVariant) -> Self {
+    fn with_variant(message: impl ToString, variant: AlertVariant) -> Self {
         let theme = ThemeState::get();
-        let message = message.into();
+        let message: String = message.to_string();
 
         let bg = variant.background(theme);
         let border_color = variant.border(theme);
@@ -105,7 +105,7 @@ impl Alert {
             .border(1.0, border_color)
             .rounded(radius)
             .p_px(padding)
-            .child(text(&message).size(14.0).color(text_color));
+            .child(text(message).size(14.0).color(text_color));
 
         Self { inner }
     }
@@ -163,7 +163,7 @@ impl ElementBuilder for Alert {
 }
 
 /// Create a simple alert with a message
-pub fn alert(message: impl Into<String>) -> Alert {
+pub fn alert(message: impl ToString) -> Alert {
     Alert::new(message)
 }
 
@@ -212,7 +212,7 @@ impl AlertBox {
     }
 
     /// Set the alert title
-    pub fn title(mut self, title: impl Into<String>) -> Self {
+    pub fn title(mut self, title: impl ToString) -> Self {
         let theme = ThemeState::get();
         let color = self.variant.text_color(theme);
 
@@ -223,7 +223,7 @@ impl AlertBox {
     }
 
     /// Set the alert description
-    pub fn description(mut self, desc: impl Into<String>) -> Self {
+    pub fn description(mut self, desc: impl ToString) -> Self {
         let theme = ThemeState::get();
         let color = theme.color(ColorToken::TextSecondary);
 
