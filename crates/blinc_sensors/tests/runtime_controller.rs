@@ -82,6 +82,27 @@ impl SensorPermissionBackend for MockPermissionBackend {
     }
 }
 
+#[derive(Default)]
+struct DeniedPermissionBackend;
+
+impl SensorPermissionBackend for DeniedPermissionBackend {
+    fn has_location(&self) -> Result<bool, SensorError> {
+        Ok(false)
+    }
+
+    fn has_motion(&self) -> Result<bool, SensorError> {
+        Ok(false)
+    }
+
+    fn request_location_when_in_use(&self) -> Result<bool, SensorError> {
+        Ok(false)
+    }
+
+    fn request_motion(&self) -> Result<bool, SensorError> {
+        Ok(false)
+    }
+}
+
 #[test]
 fn runtime_controller_starts_and_polls() {
     let client = SensorClient::new(MockBackend::default());
@@ -106,4 +127,23 @@ fn runtime_controller_starts_and_polls() {
 
     runtime.stop_if_running().unwrap();
     assert!(!runtime.running());
+}
+
+#[test]
+fn runtime_controller_stays_stopped_when_permissions_not_ready() {
+    let client = SensorClient::new(MockBackend::default());
+    let permissions = SensorPermissionService::new(DeniedPermissionBackend);
+    let mut runtime = SensorRuntimeController::new(client, permissions, "runtime-test");
+    runtime.configure(&SensorConfig::default()).unwrap();
+
+    let err = runtime.ensure_started().unwrap_err();
+    assert!(matches!(
+        err,
+        SensorError::RequiredPermissionsNotReady {
+            location: false,
+            motion: false
+        }
+    ));
+    assert!(!runtime.running());
+    assert!(runtime.poll_batch(8, 1_000).unwrap().is_none());
 }

@@ -83,8 +83,13 @@ impl<B: SensorBackend, P: SensorPermissionBackend> SensorRuntimeController<B, P>
             return Ok(());
         }
 
-        // Best effort: ask for required permissions, but don't hard-fail on denied state.
-        let _ = self.permissions.request_required_permissions();
+        // Start only after required permissions are confirmed.
+        let permission_state = self.permissions.request_required_permissions()?;
+        if !permission_state.ready() {
+            return Err(SensorError::required_permissions_not_ready(
+                permission_state,
+            ));
+        }
 
         self.client.start_session(&self.session_id)?;
         self.running = true;

@@ -68,6 +68,16 @@ impl IOSApp {
     const SENSOR_SESSION_ID: &'static str = "blinc-mobile-default";
     const SENSOR_POLL_INTERVAL_MS: u64 = 1_000;
 
+    fn sensor_autoprobe_enabled() -> bool {
+        std::env::var("BLINC_IOS_SENSOR_AUTOPROBE")
+            .ok()
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                matches!(v.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false)
+    }
+
     /// Initialize the iOS asset loader
     fn init_asset_loader() {
         let loader = IOSAssetLoader::new();
@@ -295,6 +305,16 @@ impl IOSApp {
         let mut render_state = blinc_layout::RenderState::new(Arc::clone(&animations));
         render_state.set_shared_motion_states(Arc::clone(&shared_motion_states));
 
+        let sensor_runtime = if Self::sensor_autoprobe_enabled() {
+            tracing::info!("iOS sensor autoprobe enabled");
+            Self::init_sensors()
+        } else {
+            tracing::debug!(
+                "iOS sensor autoprobe disabled (set BLINC_IOS_SENSOR_AUTOPROBE=1 to enable)"
+            );
+            None
+        };
+
         Ok(IOSRenderContext {
             windowed_ctx,
             render_state,
@@ -308,7 +328,7 @@ impl IOSApp {
             is_scrolling: false,
             gesture_detector: GestureDetector::new(),
             last_frame_time_ms: 0,
-            sensor_runtime: Self::init_sensors(),
+            sensor_runtime,
         })
     }
 
