@@ -38,7 +38,7 @@ use blinc_layout::overlay_state::get_overlay_manager;
 use blinc_layout::prelude::*;
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_layout::widgets::overlay::{AnchorDirection, OverlayHandle, OverlayManagerExt};
-use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
+use blinc_theme::{ColorToken, RadiusToken, ThemeState};
 
 use blinc_layout::InstanceKey;
 
@@ -89,6 +89,10 @@ pub struct TooltipBuilder {
     offset: f32,
     /// Unique instance key
     key: InstanceKey,
+    /// User-added CSS classes
+    classes: Vec<String>,
+    /// User-set element ID
+    user_id: Option<String>,
     /// Built component cache
     built: OnceCell<Tooltip>,
 }
@@ -121,6 +125,8 @@ impl TooltipBuilder {
             close_delay_ms: 0,  // Default 0ms delay - hide immediately
             offset: 6.0,
             key,
+            classes: Vec::new(),
+            user_id: None,
             built: OnceCell::new(),
         }
     }
@@ -158,6 +164,18 @@ impl TooltipBuilder {
     /// Set the offset from the trigger (in pixels)
     pub fn offset(mut self, offset: f32) -> Self {
         self.offset = offset;
+        self
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.classes.push(name.into());
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.user_id = Some(id.to_string());
         self
     }
 
@@ -270,7 +288,16 @@ impl TooltipBuilder {
                 }
             });
 
-        Tooltip { inner: trigger }
+        // Apply user classes and id
+        let mut inner = trigger;
+        for c in &self.classes {
+            inner = inner.class(c);
+        }
+        if let Some(ref id) = self.user_id {
+            inner = inner.id(id);
+        }
+
+        Tooltip { inner }
     }
 }
 
@@ -347,8 +374,7 @@ fn show_tooltip_overlay(
     let bg = theme.color(ColorToken::TooltipBackground);
     let text_color = theme.color(ColorToken::TooltipText);
     let radius = theme.radius(RadiusToken::Sm);
-    let padding_x = theme.spacing_value(SpacingToken::Space3);
-    let padding_y = theme.spacing_value(SpacingToken::Space2);
+    // padding from CSS: .cn-tooltip { padding: 6px 12px; }
 
     let mgr = get_overlay_manager();
 
@@ -376,15 +402,13 @@ fn show_tooltip_overlay(
         .motion_key(&motion_key_with_child)
         .follows_scroll(true)
         .content(move || {
-            // Styled tooltip container
-            // px/py take units that are scaled by 4, so convert raw pixels
+            // padding from CSS: .cn-tooltip { padding: 6px 12px; }
             let tooltip_content = div()
+                .class("cn-tooltip")
                 .flex_row()
                 .items_center()
                 .bg(bg)
                 .rounded(radius)
-                .px(padding_x / 4.0)
-                .py(padding_y / 4.0)
                 .shadow_sm()
                 .child(text(&tooltip_text).size(12.0).color(text_color).no_wrap());
 
@@ -448,6 +472,14 @@ impl ElementBuilder for TooltipBuilder {
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.get_or_build().inner.layout_style()
     }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.get_or_build().inner.element_id()
+    }
 }
 
 impl ElementBuilder for Tooltip {
@@ -473,6 +505,14 @@ impl ElementBuilder for Tooltip {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
     }
 }
 

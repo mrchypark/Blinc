@@ -1157,7 +1157,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Adjust corner radii for spread (expand corners proportionally)
         let shadow_radii = prim.corner_radius + vec4<f32>(spread);
 
-        let shadow_alpha = shadow_rounded_rect(sp, shadow_origin, shadow_size, shadow_radii, blur);
+        // Use shaped rect SDF (respects squircle corner-shape) instead of plain rounded rect
+        let shadow_sdf_dist = sd_shaped_rect(sp, shadow_origin, shadow_size, shadow_radii, prim.corner_shape);
+        var shadow_alpha: f32;
+        if blur < 0.001 {
+            shadow_alpha = select(0.0, 1.0, shadow_sdf_dist < 0.0);
+        } else {
+            let sigma_d = 0.5 * sqrt(2.0) * blur;
+            shadow_alpha = 0.5 * (1.0 + erf(-shadow_sdf_dist / sigma_d));
+        }
         let shadow_color = prim.shadow_color * shadow_alpha;
 
         // Premultiply and blend
@@ -1385,14 +1393,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let rel = sp - center;  // Position relative to center (signed, in unrotated space)
         let antialias_threshold = 0.5;
 
-        // Select corner radius based on quadrant
+        // Select corner radius and corner shape based on quadrant
         var corner_radius: f32;
+        var corner_n: f32;
         if rel.y < 0.0 {
-            if rel.x > 0.0 { corner_radius = prim.corner_radius.y; }  // top-right
-            else { corner_radius = prim.corner_radius.x; }           // top-left
+            if rel.x > 0.0 { corner_radius = prim.corner_radius.y; corner_n = prim.corner_shape.y; }  // top-right
+            else { corner_radius = prim.corner_radius.x; corner_n = prim.corner_shape.x; }           // top-left
         } else {
-            if rel.x > 0.0 { corner_radius = prim.corner_radius.z; }  // bottom-right
-            else { corner_radius = prim.corner_radius.w; }           // bottom-left
+            if rel.x > 0.0 { corner_radius = prim.corner_radius.z; corner_n = prim.corner_shape.z; }  // bottom-right
+            else { corner_radius = prim.corner_radius.w; corner_n = prim.corner_shape.w; }           // bottom-left
         }
         // Clamp radius to half the minimum dimension (CSS spec)
         corner_radius = min(corner_radius, min(half_size.x, half_size.y));
@@ -1439,14 +1448,47 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 // Beyond inner straight edge - definitely in border
                 inner_sdf = -1.0;
             } else if abs(reduced_border.x - reduced_border.y) < 0.001 {
-                // Equal border widths - inner corner is circular (simple offset from outer)
-                let outer_sdf = length(max(vec2<f32>(0.0), corner_center_to_point)) +
-                               min(0.0, max(corner_center_to_point.x, corner_center_to_point.y)) - corner_radius;
-                inner_sdf = -(outer_sdf + reduced_border.x);
+                // Equal border widths - inner corner is same shape with reduced radius
+                if abs(corner_n - 1.0) < 0.01 {
+                    // Round (circular) - SDF offset works for circles
+                    let outer_sdf = length(max(vec2<f32>(0.0), corner_center_to_point)) +
+                                   min(0.0, max(corner_center_to_point.x, corner_center_to_point.y)) - corner_radius;
+                    inner_sdf = -(outer_sdf + reduced_border.x);
+                } else {
+                    // Superellipse (squircle, bevel, etc.) - compute inner superellipse independently
+                    // SDF offset doesn't produce a parallel superellipse curve; must re-evaluate with reduced radius
+                    let inner_r = max(corner_radius - reduced_border.x, 0.0);
+                    let p_exp = pow(2.0, min(abs(corner_n), 5.0));
+                    if inner_r < 0.001 {
+                        // Inner radius collapsed - entire corner region is border
+                        inner_sdf = -length(max(vec2<f32>(0.0), corner_center_to_point));
+                    } else {
+                        let inner_t = corner_center_to_point / inner_r;
+                        let inner_se = pow(max(inner_t.x, 0.0), p_exp) + pow(max(inner_t.y, 0.0), p_exp);
+                        inner_sdf = -((pow(inner_se, 1.0 / p_exp) - 1.0) * inner_r);
+                    }
+                }
             } else {
-                // Asymmetric borders - inner corner is ELLIPTICAL (key insight from GPUI)
-                let ellipse_radii = max(vec2<f32>(0.0), vec2<f32>(corner_radius) - reduced_border);
-                inner_sdf = quarter_ellipse_sdf(corner_center_to_point, ellipse_radii);
+                // Asymmetric borders - inner corner is elliptical
+                if abs(corner_n - 1.0) < 0.01 {
+                    // Round - use elliptical inner corner (GPUI approach)
+                    let ellipse_radii = max(vec2<f32>(0.0), vec2<f32>(corner_radius) - reduced_border);
+                    inner_sdf = quarter_ellipse_sdf(corner_center_to_point, ellipse_radii);
+                } else {
+                    // Superellipse - compute inner superellipse with per-axis reduced radii
+                    let inner_radii = max(vec2<f32>(0.0), vec2<f32>(corner_radius) - reduced_border);
+                    let p_exp = pow(2.0, min(abs(corner_n), 5.0));
+                    let min_inner_r = min(inner_radii.x, inner_radii.y);
+                    if min_inner_r < 0.001 {
+                        // Inner radius collapsed on at least one axis
+                        inner_sdf = -length(max(vec2<f32>(0.0), corner_center_to_point));
+                    } else {
+                        let inner_t = corner_center_to_point / inner_radii;
+                        let inner_se = pow(max(inner_t.x, 0.0), p_exp) + pow(max(inner_t.y, 0.0), p_exp);
+                        let inner_r_scale = sqrt(inner_radii.x * inner_radii.y);
+                        inner_sdf = -((pow(inner_se, 1.0 / p_exp) - 1.0) * inner_r_scale);
+                    }
+                }
             }
 
             // Calculate border blend from inner SDF

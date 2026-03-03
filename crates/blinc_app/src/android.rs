@@ -1007,6 +1007,10 @@ impl AndroidApp {
                     // Build UI
                     let element = ui_builder(windowed_ctx);
 
+                    // Clear stale Stateful base_render_props updaters before rebuild
+                    blinc_layout::clear_stateful_base_updaters();
+                    blinc_layout::click_outside::clear_click_outside_handlers();
+
                     // Create or update render tree
                     if render_tree.is_none() {
                         // First time: create tree
@@ -1015,8 +1019,7 @@ impl AndroidApp {
                         if let Some(ref stylesheet) = windowed_ctx.stylesheet {
                             tree.set_stylesheet_arc(stylesheet.clone());
                         }
-                        tree.apply_stylesheet_base_styles();
-                        tree.apply_stylesheet_layout_overrides();
+                        tree.apply_all_stylesheet_styles();
                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
                         tree.update_flip_bounds();
                         tree.start_all_css_animations();
@@ -1029,8 +1032,7 @@ impl AndroidApp {
                         if let Some(ref stylesheet) = windowed_ctx.stylesheet {
                             tree.set_stylesheet_arc(stylesheet.clone());
                         }
-                        tree.apply_stylesheet_base_styles();
-                        tree.apply_stylesheet_layout_overrides();
+                        tree.apply_all_stylesheet_styles();
                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
                         tree.update_flip_bounds();
                         tree.start_all_css_animations();

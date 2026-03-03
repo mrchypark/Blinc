@@ -124,8 +124,15 @@ impl Progress {
         let fill_ratio = config.value / 100.0;
         let fill_width = config.width * fill_ratio;
 
+        let size_class = match config.size {
+            ProgressSize::Small => "cn-progress--sm",
+            ProgressSize::Medium => "cn-progress--md",
+            ProgressSize::Large => "cn-progress--lg",
+        };
+
         // Build the indicator (filled portion) - absolutely positioned
         let indicator = div()
+            .class("cn-progress-bar")
             .absolute()
             .left(0.0)
             .top(0.0)
@@ -136,6 +143,8 @@ impl Progress {
 
         // Track container with overflow clipping
         let track = div()
+            .class("cn-progress")
+            .class(size_class)
             .w(config.width)
             .h(height)
             .rounded(radius)
@@ -145,6 +154,18 @@ impl Progress {
             .child(indicator);
 
         Self { inner: track }
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
     }
 }
 
@@ -167,6 +188,10 @@ impl ElementBuilder for Progress {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
@@ -246,6 +271,10 @@ impl ElementBuilder for ProgressBuilder {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.get_or_build().layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().element_classes()
     }
 }
 
@@ -375,6 +404,10 @@ impl ElementBuilder for AnimatedProgress {
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
     }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
+    }
 }
 
 /// Builder for animated progress bar
@@ -447,6 +480,10 @@ impl ElementBuilder for AnimatedProgressBuilder {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.get_or_build().layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().element_classes()
     }
 }
 

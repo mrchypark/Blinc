@@ -131,7 +131,11 @@ impl Pagination {
             .deps([page_state.signal_id()])
             .on_state(move |_ctx| {
                 let current_page = page_state_for_container.get();
-                let mut container = div().flex_row().items_center().gap(gap);
+                let mut container = div()
+                    .class("cn-pagination")
+                    .flex_row()
+                    .items_center()
+                    .gap(gap);
 
                 // Calculate visible page range
                 let (start_page, end_page) =
@@ -329,9 +333,15 @@ impl Pagination {
                 container
             });
 
-        Self {
-            inner: div().child(stateful_container),
+        let mut inner = div().child(stateful_container);
+        for c in &builder.classes {
+            inner = inner.class(c);
         }
+        if let Some(ref id) = builder.user_id {
+            inner = inner.id(id);
+        }
+
+        Self { inner }
     }
 }
 
@@ -393,27 +403,34 @@ where
                 }
             };
 
-            div()
-                .w(button_size)
-                .h(button_size)
-                .rounded(radius)
-                .items_center()
-                .justify_center()
-                .bg(bg)
-                .border(
-                    1.0,
-                    if is_disabled {
-                        border.with_alpha(0.5)
+            {
+                let mut btn = div()
+                    .class("cn-pagination-btn")
+                    .w(button_size)
+                    .h(button_size)
+                    .rounded(radius)
+                    .items_center()
+                    .justify_center()
+                    .bg(bg)
+                    .border(
+                        1.0,
+                        if is_disabled {
+                            border.with_alpha(0.5)
+                        } else {
+                            border
+                        },
+                    )
+                    .cursor(if is_disabled {
+                        CursorStyle::NotAllowed
                     } else {
-                        border
-                    },
-                )
-                .cursor(if is_disabled {
-                    CursorStyle::NotAllowed
-                } else {
-                    CursorStyle::Pointer
-                })
-                .child(svg(icon_svg).size(icon_size, icon_size).color(icon_color))
+                        CursorStyle::Pointer
+                    })
+                    .child(svg(icon_svg).size(icon_size, icon_size).color(icon_color));
+                if is_disabled {
+                    btn = btn.class("cn-pagination-btn--disabled");
+                }
+                btn
+            }
         })
         .on_click(move |_| {
             on_click();
@@ -459,26 +476,33 @@ where
                 }
             };
 
-            div()
-                .w(button_size)
-                .h(button_size)
-                .rounded(radius)
-                .items_center()
-                .justify_center()
-                .bg(bg)
-                .border(1.0, border_color)
-                .cursor(if is_current {
-                    CursorStyle::Default
-                } else {
-                    CursorStyle::Pointer
-                })
-                .child(
-                    text(&page_str)
-                        .size(font_size)
-                        .color(text_color)
-                        .medium()
-                        .no_cursor(),
-                )
+            {
+                let mut btn = div()
+                    .class("cn-pagination-btn")
+                    .w(button_size)
+                    .h(button_size)
+                    .rounded(radius)
+                    .items_center()
+                    .justify_center()
+                    .bg(bg)
+                    .border(1.0, border_color)
+                    .cursor(if is_current {
+                        CursorStyle::Default
+                    } else {
+                        CursorStyle::Pointer
+                    })
+                    .child(
+                        text(&page_str)
+                            .size(font_size)
+                            .color(text_color)
+                            .medium()
+                            .no_cursor(),
+                    );
+                if is_current {
+                    btn = btn.class("cn-pagination-btn--active");
+                }
+                btn
+            }
         })
         .on_click(move |_| {
             on_click();
@@ -523,6 +547,14 @@ impl ElementBuilder for Pagination {
     fn element_type_id(&self) -> ElementTypeId {
         ElementBuilder::element_type_id(&self.inner)
     }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
+    }
 }
 
 /// Builder for pagination component
@@ -534,6 +566,10 @@ pub struct PaginationBuilder {
     show_first_last: bool,
     size: PaginationSize,
     on_page_change: Option<Arc<dyn Fn(usize) + Send + Sync>>,
+    /// User-added CSS classes
+    classes: Vec<String>,
+    /// User-set element ID
+    user_id: Option<String>,
     built: std::cell::OnceCell<Pagination>,
 }
 
@@ -549,6 +585,8 @@ impl PaginationBuilder {
             show_first_last: false,
             size: PaginationSize::default(),
             on_page_change: None,
+            classes: Vec::new(),
+            user_id: None,
             built: std::cell::OnceCell::new(),
         }
     }
@@ -588,6 +626,18 @@ impl PaginationBuilder {
         self
     }
 
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.classes.push(name.into());
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.user_id = Some(id.to_string());
+        self
+    }
+
     /// Set page change callback
     pub fn on_page_change<F>(mut self, handler: F) -> Self
     where
@@ -621,6 +671,14 @@ impl ElementBuilder for PaginationBuilder {
 
     fn element_type_id(&self) -> ElementTypeId {
         self.get_or_build().element_type_id()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.get_or_build().element_id()
     }
 }
 

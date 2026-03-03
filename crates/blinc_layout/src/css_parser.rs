@@ -654,6 +654,21 @@ impl ComplexSelector {
     pub fn is_simple(&self) -> bool {
         self.segments.len() == 1
     }
+
+    /// If this is a simple `.class` selector (single segment, single Class part, no state),
+    /// returns the class name. Used for O(1) class-based style lookups.
+    pub fn simple_class_name(&self) -> Option<&str> {
+        if self.segments.len() != 1 {
+            return None;
+        }
+        let parts = &self.segments[0].0.parts;
+        if parts.len() == 1 {
+            if let SelectorPart::Class(name) = &parts[0] {
+                return Some(name.as_str());
+            }
+        }
+        None
+    }
 }
 
 /// A CSS keyframe animation definition
@@ -1307,6 +1322,9 @@ pub const SVG_TAG_NAMES: &[&str] = &[
 pub struct Stylesheet {
     /// Simple rules: styles keyed by selector (id or id:state) for O(1) lookup
     styles: HashMap<String, ElementStyle>,
+    /// Class-based rules: styles keyed by class name (or class:state) for O(1) lookup
+    /// Populated alongside `complex_rules` for simple `.class` and `.class:state` selectors.
+    class_styles: HashMap<String, ElementStyle>,
     /// Complex selector rules (class selectors, combinators, structural pseudos)
     complex_rules: Vec<(ComplexSelector, ElementStyle)>,
     /// CSS custom properties (variables) defined in :root
@@ -1369,6 +1387,7 @@ impl Stylesheet {
                     stylesheet.styles.insert(id, style);
                 }
                 stylesheet.complex_rules = parsed.complex_rules;
+                stylesheet.index_class_styles();
                 for keyframes in parsed.keyframes {
                     stylesheet
                         .keyframes
@@ -1445,6 +1464,7 @@ impl Stylesheet {
                     stylesheet.styles.insert(id, style);
                 }
                 stylesheet.complex_rules = parsed.complex_rules;
+                stylesheet.index_class_styles();
                 for keyframes in parsed.keyframes {
                     stylesheet
                         .keyframes
@@ -1551,6 +1571,22 @@ impl Stylesheet {
     pub fn get_with_state(&self, id: &str, state: ElementState) -> Option<&ElementStyle> {
         let key = format!("{}:{}", id, state);
         self.styles.get(&key)
+    }
+
+    /// Get a base style by CSS class name (without the `.` prefix)
+    ///
+    /// Returns `None` if no simple `.class { ... }` rule exists in the stylesheet.
+    /// Only populated for simple single-class selectors (not combinators).
+    pub fn get_class(&self, class: &str) -> Option<&ElementStyle> {
+        self.class_styles.get(class)
+    }
+
+    /// Get a class style with state (e.g., `.class:hover`)
+    ///
+    /// Looks up `class:state` in the class_styles HashMap.
+    pub fn get_class_with_state(&self, class: &str, state: ElementState) -> Option<&ElementStyle> {
+        let key = format!("{}:{}", class, state);
+        self.class_styles.get(&key)
     }
 
     /// Get the ::placeholder pseudo-element style for an element ID
@@ -1674,6 +1710,40 @@ impl Stylesheet {
         results
     }
 
+    /// Index simple class selectors from complex_rules into class_styles for O(1) lookup.
+    ///
+    /// A "simple class selector" is a ComplexSelector with exactly one segment
+    /// whose CompoundSelector has exactly one Class part, or one Class + one State part.
+    fn index_class_styles(&mut self) {
+        for (selector, style) in &self.complex_rules {
+            if !selector.is_simple() {
+                continue;
+            }
+            let compound = &selector.segments[0].0;
+            let parts = &compound.parts;
+
+            match parts.len() {
+                1 => {
+                    // Single .class selector
+                    if let SelectorPart::Class(class_name) = &parts[0] {
+                        self.class_styles.insert(class_name.clone(), style.clone());
+                    }
+                }
+                2 => {
+                    // .class:state selector
+                    let (class_part, state_part) = (&parts[0], &parts[1]);
+                    if let (SelectorPart::Class(class_name), SelectorPart::State(state)) =
+                        (class_part, state_part)
+                    {
+                        let key = format!("{}:{}", class_name, state);
+                        self.class_styles.insert(key, style.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Merge another stylesheet into this one (cascade — later rules override earlier)
     ///
     /// This follows CSS cascade rules: styles from `other` override matching
@@ -1688,6 +1758,9 @@ impl Stylesheet {
         }
         for (key, kf) in other.keyframes {
             self.keyframes.insert(key, kf);
+        }
+        for (key, style) in other.class_styles {
+            self.class_styles.insert(key, style);
         }
     }
 
@@ -2686,7 +2759,6 @@ where
     }
 }
 
-/// Result of parsing a stylesheet - rules, variables, and keyframes
 // ===========================================================================
 // @flow DAG parser
 // ===========================================================================
@@ -2914,7 +2986,7 @@ fn parse_flow_input<'a>(
         if type_decl.starts_with("builtin(") {
             // builtin(var-name) — explicit builtin source
             let inner = type_decl.strip_prefix("builtin(")?.strip_suffix(')')?;
-            if let Some(builtin) = blinc_core::flow::BuiltinVar::from_str(inner.trim()) {
+            if let Some(builtin) = blinc_core::flow::BuiltinVar::parse(inner.trim()) {
                 let ty = builtin.output_type();
                 graph.inputs.push(FlowInput {
                     name: name.to_string(),
@@ -2961,7 +3033,7 @@ fn parse_flow_input<'a>(
     } else {
         // Simple declaration: input name;
         let name = decl;
-        let source = if let Some(builtin) = blinc_core::flow::BuiltinVar::from_str(name) {
+        let source = if let Some(builtin) = blinc_core::flow::BuiltinVar::parse(name) {
             let ty = builtin.output_type();
             graph.inputs.push(FlowInput {
                 name: name.to_string(),
@@ -3225,7 +3297,7 @@ fn parse_flow_step<'a>(
     let body = &rest[..close];
     let after = &rest[close + 1..];
 
-    let step_type = match StepType::from_str(type_str) {
+    let step_type = match StepType::parse(type_str) {
         Some(st) => st,
         None => {
             errors.push(ParseError {
@@ -3456,7 +3528,7 @@ fn parse_chain_link(input: &str) -> Result<ChainLink, String> {
     };
 
     let step_type =
-        StepType::from_str(type_str).ok_or_else(|| format!("unknown step type: '{}'", type_str))?;
+        StepType::parse(type_str).ok_or_else(|| format!("unknown step type: '{}'", type_str))?;
 
     let mut params = HashMap::new();
 
@@ -3643,11 +3715,7 @@ fn parse_color_stop_list(input: &str) -> Result<Vec<(FlowExpr, f32)>, String> {
 
         let rest = rest[pos_end..].trim_start();
         // Consume optional comma
-        remaining = if rest.starts_with(',') {
-            rest[1..].trim_start()
-        } else {
-            rest
-        };
+        remaining = rest.strip_prefix(',').map_or(rest, |s| s.trim_start());
     }
 
     if stops.is_empty() {
@@ -3682,6 +3750,7 @@ fn parse_flow_expr(input: &str) -> Result<FlowExpr, String> {
 }
 
 /// Parse additive expressions: `a + b`, `a - b`
+#[allow(clippy::manual_strip)]
 fn parse_flow_additive(input: &str) -> Result<(FlowExpr, &str), String> {
     let (mut left, mut rest) = parse_flow_multiplicative(input)?;
 
@@ -3710,6 +3779,7 @@ fn parse_flow_additive(input: &str) -> Result<(FlowExpr, &str), String> {
 }
 
 /// Parse multiplicative expressions: `a * b`, `a / b`
+#[allow(clippy::manual_strip)]
 fn parse_flow_multiplicative(input: &str) -> Result<(FlowExpr, &str), String> {
     let (mut left, mut rest) = parse_flow_unary(input)?;
 
@@ -3732,6 +3802,7 @@ fn parse_flow_multiplicative(input: &str) -> Result<(FlowExpr, &str), String> {
 }
 
 /// Parse unary expressions: `-a`
+#[allow(clippy::manual_strip)]
 fn parse_flow_unary(input: &str) -> Result<(FlowExpr, &str), String> {
     let trimmed = input.trim_start();
     if trimmed.starts_with('-') {
@@ -3759,7 +3830,7 @@ fn parse_flow_primary(input: &str) -> Result<(FlowExpr, &str), String> {
 
 /// Check for and consume a swizzle suffix like `.x`, `.xy`, `.rgb`
 /// Tolerates whitespace around the dot (e.g. `uv . x` from stringify!())
-fn try_parse_flow_swizzle<'a>(expr: FlowExpr, rest: &'a str) -> (FlowExpr, &'a str) {
+fn try_parse_flow_swizzle(expr: FlowExpr, rest: &str) -> (FlowExpr, &str) {
     let trimmed = rest.trim_start();
     if !trimmed.starts_with('.') {
         return (expr, trimmed);
@@ -3787,6 +3858,7 @@ fn try_parse_flow_swizzle<'a>(expr: FlowExpr, rest: &'a str) -> (FlowExpr, &'a s
     )
 }
 
+#[allow(clippy::manual_strip)]
 fn parse_flow_primary_inner(input: &str) -> Result<(FlowExpr, &str), String> {
     let trimmed = input.trim_start();
 
@@ -3887,7 +3959,7 @@ fn parse_flow_primary_inner(input: &str) -> Result<(FlowExpr, &str), String> {
                 }
                 _ => {
                     // Look up as built-in function
-                    if let Some(func) = FlowFunc::from_str(name) {
+                    if let Some(func) = FlowFunc::parse(name) {
                         return Ok((FlowExpr::Call { func, args }, rest));
                     } else {
                         return Err(format!("unknown function '{}'", name));
@@ -5114,9 +5186,105 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.padding = Some(rect);
             }
         }
+        "padding-top" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut p = style.padding.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                p.top = px;
+                style.padding = Some(p);
+            }
+        }
+        "padding-right" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut p = style.padding.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                p.right = px;
+                style.padding = Some(p);
+            }
+        }
+        "padding-bottom" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut p = style.padding.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                p.bottom = px;
+                style.padding = Some(p);
+            }
+        }
+        "padding-left" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut p = style.padding.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                p.left = px;
+                style.padding = Some(p);
+            }
+        }
         "margin" => {
             if let Some(rect) = parse_css_spacing(value) {
                 style.margin = Some(rect);
+            }
+        }
+        "margin-top" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut m = style.margin.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                m.top = px;
+                style.margin = Some(m);
+            }
+        }
+        "margin-right" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut m = style.margin.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                m.right = px;
+                style.margin = Some(m);
+            }
+        }
+        "margin-bottom" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut m = style.margin.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                m.bottom = px;
+                style.margin = Some(m);
+            }
+        }
+        "margin-left" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut m = style.margin.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                m.left = px;
+                style.margin = Some(m);
             }
         }
         "gap" => {
@@ -6242,9 +6410,121 @@ fn apply_property_with_errors(
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
         }
+        "padding-top" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut p = style.padding.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                p.top = px;
+                style.padding = Some(p);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "padding-right" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut p = style.padding.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                p.right = px;
+                style.padding = Some(p);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "padding-bottom" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut p = style.padding.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                p.bottom = px;
+                style.padding = Some(p);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "padding-left" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut p = style.padding.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                p.left = px;
+                style.padding = Some(p);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
         "margin" => {
             if let Some(rect) = parse_css_spacing(value) {
                 style.margin = Some(rect);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "margin-top" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut m = style.margin.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                m.top = px;
+                style.margin = Some(m);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "margin-right" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut m = style.margin.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                m.right = px;
+                style.margin = Some(m);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "margin-bottom" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut m = style.margin.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                m.bottom = px;
+                style.margin = Some(m);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "margin-left" => {
+            if let Some(px) = parse_css_px(value) {
+                let mut m = style.margin.unwrap_or(SpacingRect {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+                m.left = px;
+                style.margin = Some(m);
             } else {
                 errors.push(ParseError::invalid_value(name, value, line, column));
             }
@@ -6713,8 +6993,20 @@ fn parse_radius(value: &str) -> Option<CornerRadius> {
         return Some(radius);
     }
 
-    // Try parsing as numeric value
-    parse_length_value(value).map(CornerRadius::uniform)
+    // Handle percentage values for border-radius.
+    // CSS border-radius percentages are relative to the element's dimensions,
+    // which we can't resolve at parse time. Use 9999px as a large sentinel —
+    // the renderer clamps border-radius to half the element size, so any
+    // percentage >= 50% produces a fully-rounded (circular/pill) shape.
+    if let Some(len) = parse_css_length(value) {
+        return match len {
+            Length::Pct(v) if v > 0.0 => Some(CornerRadius::uniform(9999.0)),
+            Length::Pct(_) => Some(CornerRadius::uniform(0.0)),
+            _ => Some(CornerRadius::uniform(len.to_px())),
+        };
+    }
+
+    None
 }
 
 fn parse_corner_shape_value(value: &str) -> Option<CornerShape> {
@@ -7032,9 +7324,7 @@ fn split_transform_functions(input: &str) -> Vec<&str> {
                 depth += 1;
             }
             ')' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
+                depth = depth.saturating_sub(1);
                 if depth == 0 && in_func {
                     let func = input[start..=i].trim();
                     if !func.is_empty() {

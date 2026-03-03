@@ -470,6 +470,10 @@ impl IOSRenderContext {
         // Build UI
         let element = ui_builder(&mut self.windowed_ctx);
 
+        // Clear stale Stateful base_render_props updaters before rebuild
+        blinc_layout::clear_stateful_base_updaters();
+        blinc_layout::click_outside::clear_click_outside_handlers();
+
         // Create or update render tree
         if self.render_tree.is_none() {
             // First time: create tree
@@ -484,8 +488,7 @@ impl IOSRenderContext {
             if let Some(ref stylesheet) = self.windowed_ctx.stylesheet {
                 tree.set_stylesheet_arc(stylesheet.clone());
             }
-            tree.apply_stylesheet_base_styles();
-            tree.apply_stylesheet_layout_overrides();
+            tree.apply_all_stylesheet_styles();
             tree.compute_layout(self.windowed_ctx.width, self.windowed_ctx.height);
             tree.update_flip_bounds();
             tree.start_all_css_animations();
@@ -498,8 +501,7 @@ impl IOSRenderContext {
             if let Some(ref stylesheet) = self.windowed_ctx.stylesheet {
                 tree.set_stylesheet_arc(stylesheet.clone());
             }
-            tree.apply_stylesheet_base_styles();
-            tree.apply_stylesheet_layout_overrides();
+            tree.apply_all_stylesheet_styles();
             tree.compute_layout(self.windowed_ctx.width, self.windowed_ctx.height);
             tree.update_flip_bounds();
             tree.start_all_css_animations();
@@ -529,6 +531,7 @@ impl IOSRenderContext {
                 tree.apply_flip_animation_props();
                 if tree.apply_animated_layout_props() {
                     tree.compute_layout(self.windowed_ctx.width, self.windowed_ctx.height);
+                    tree.update_flip_bounds();
                 }
             }
             self.last_frame_time_ms = current_time;
@@ -886,14 +889,15 @@ where
     E: ElementBuilder + 'static,
 {
     let boxed_builder: RustUIBuilder = Box::new(move |ctx, _existing_tree| {
+        blinc_layout::clear_stateful_base_updaters();
+        blinc_layout::click_outside::clear_click_outside_handlers();
         let element = builder(ctx);
         let mut tree = RenderTree::from_element(&element);
         tree.set_scale_factor(ctx.scale_factor as f32);
         if let Some(ref stylesheet) = ctx.stylesheet {
             tree.set_stylesheet_arc(stylesheet.clone());
         }
-        tree.apply_stylesheet_base_styles();
-        tree.apply_stylesheet_layout_overrides();
+        tree.apply_all_stylesheet_styles();
         tree.compute_layout(ctx.width, ctx.height);
         tree.update_flip_bounds();
         tree.start_all_css_animations();
@@ -1262,6 +1266,7 @@ pub extern "C" fn blinc_tick_animations(ctx: *mut IOSRenderContext) -> bool {
                 tree.apply_flip_animation_props();
                 if tree.apply_animated_layout_props() {
                     tree.compute_layout(ctx.windowed_ctx.width, ctx.windowed_ctx.height);
+                    tree.update_flip_bounds();
                 }
             }
             ctx.last_frame_time_ms = current_time;

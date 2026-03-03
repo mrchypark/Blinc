@@ -141,7 +141,17 @@ impl Input {
         // Build the text input element
         let text_input = Self::build_text_input(&config, theme, &typography);
 
-        // If no label, description, or error, just wrap the input in a div
+        // Determine the size-specific class
+        let size_class = match config.size {
+            InputSize::Small => "cn-input--sm",
+            InputSize::Medium => "cn-input--md",
+            InputSize::Large => "cn-input--lg",
+        };
+
+        // Add CSS classes directly to the TextInput (it supports .class())
+        let text_input = text_input.class("cn-input").class(size_class);
+
+        // If no label, description, or error, return the input directly in a minimal container
         if config.label.is_none() && config.description.is_none() && config.error.is_none() {
             let mut container = div().child(text_input);
             if config.full_width {
@@ -153,9 +163,12 @@ impl Input {
         }
 
         // Build a container with label, input, and description/error
-        // Use h_fit() to prevent height stretching in flex containers
         let spacing = theme.spacing_value(SpacingToken::Space2);
-        let mut container = div().flex_col().gap_px(spacing).h_fit();
+        let mut container = div()
+            .class("cn-input-group")
+            .flex_col()
+            .gap_px(spacing)
+            .h_fit();
 
         // Apply width to container
         if config.full_width {
@@ -176,7 +189,7 @@ impl Input {
             container = container.child(lbl);
         }
 
-        // Input
+        // Input added directly (no wrapper div — TextInput has the cn-input class)
         container = container.child(text_input);
 
         // Error or description
@@ -269,6 +282,18 @@ impl Input {
 
         input
     }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
 }
 
 impl Deref for Input {
@@ -300,6 +325,10 @@ impl ElementBuilder for Input {
 
     fn element_type_id(&self) -> ElementTypeId {
         self.inner.element_type_id()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
@@ -631,6 +660,10 @@ impl ElementBuilder for InputBuilder {
 
     fn element_type_id(&self) -> ElementTypeId {
         self.get_or_build().element_type_id()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().element_classes()
     }
 }
 

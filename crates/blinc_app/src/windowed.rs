@@ -565,6 +565,9 @@ pub struct WindowedContext {
     /// CSS stylesheet for automatic style application (hover, animations, base styles)
     /// Multiple stylesheets cascade — later rules override earlier ones.
     pub stylesheet: Option<Arc<blinc_layout::css_parser::Stylesheet>>,
+    /// Raw CSS source strings, preserved for reparsing on theme changes.
+    /// Each entry corresponds to one `add_css()` call, in order.
+    css_sources: Vec<String>,
 }
 
 impl WindowedContext {
@@ -609,6 +612,7 @@ impl WindowedContext {
             element_registry,
             ready_callbacks,
             stylesheet: None,
+            css_sources: Vec::new(),
         }
     }
 
@@ -650,6 +654,7 @@ impl WindowedContext {
             element_registry,
             ready_callbacks,
             stylesheet: None,
+            css_sources: Vec::new(),
         }
     }
 
@@ -691,6 +696,7 @@ impl WindowedContext {
             element_registry,
             ready_callbacks,
             stylesheet: None,
+            css_sources: Vec::new(),
         }
     }
 
@@ -732,6 +738,7 @@ impl WindowedContext {
             element_registry,
             ready_callbacks,
             stylesheet: None,
+            css_sources: Vec::new(),
         }
     }
 
@@ -1738,6 +1745,9 @@ impl WindowedContext {
     /// Stylesheets are visual-only: they update render props on existing nodes
     /// and trigger redraws. They never cause tree rebuilds.
     pub fn add_css(&mut self, css: &str) {
+        // Store raw CSS for reparsing on theme changes
+        self.css_sources.push(css.to_string());
+
         // Seed parser with theme variables + any previously defined CSS variables
         let mut external_vars = blinc_theme::ThemeState::try_get()
             .map(|t| t.to_css_variable_map())
@@ -1759,8 +1769,8 @@ impl WindowedContext {
     ///
     /// Multiple calls cascade — later rules override earlier ones.
     pub fn load_css(&mut self, path: &str) {
-        match blinc_layout::css_parser::Stylesheet::from_file(path) {
-            Ok(sheet) => self.add_stylesheet(sheet),
+        match std::fs::read_to_string(path) {
+            Ok(css) => self.add_css(&css),
             Err(e) => {
                 tracing::warn!("Failed to load CSS file '{}': {}", path, e);
             }
@@ -1778,6 +1788,47 @@ impl WindowedContext {
             }
             None => {
                 self.stylesheet = Some(Arc::new(sheet));
+            }
+        }
+        // Publish to global so stateful widgets (buttons, etc.) can read CSS
+        // overrides during tree construction, before set_stylesheet_arc() runs
+        if let Some(ref stylesheet) = self.stylesheet {
+            blinc_layout::css_parser::set_active_stylesheet(std::sync::Arc::clone(stylesheet));
+        }
+    }
+
+    /// Reparse all stored CSS sources with fresh theme variables.
+    ///
+    /// Called automatically when the theme color scheme changes to ensure
+    /// CSS `var()` and `theme()` references resolve to the new colors.
+    pub fn reparse_css(&mut self) {
+        if self.css_sources.is_empty() {
+            return;
+        }
+
+        tracing::debug!(
+            "Reparsing {} CSS sources with updated theme variables",
+            self.css_sources.len()
+        );
+
+        // Clear existing stylesheet
+        self.stylesheet = None;
+
+        // Reparse each CSS source with fresh theme variables
+        for css in self.css_sources.clone() {
+            let mut external_vars = blinc_theme::ThemeState::try_get()
+                .map(|t| t.to_css_variable_map())
+                .unwrap_or_default();
+            if let Some(existing) = &self.stylesheet {
+                for (k, v) in existing.variables() {
+                    external_vars.insert(k.clone(), v.clone());
+                }
+            }
+            match blinc_layout::css_parser::Stylesheet::parse_with_variables(&css, &external_vars) {
+                Ok(sheet) => self.add_stylesheet(sheet),
+                Err(e) => {
+                    tracing::warn!("Failed to reparse CSS on theme change: {}", e);
+                }
             }
         }
     }
@@ -1999,7 +2050,8 @@ impl WindowedApp {
         // 2. Layout recompute - recalculate flexbox layout
         // 3. Visual redraw - render the frame
         set_redraw_callback(|| {
-            tracing::debug!("Theme changed - requesting full rebuild");
+            tracing::debug!("Theme changed - requesting full rebuild + CSS reparse");
+            blinc_layout::widgets::request_css_reparse();
             blinc_layout::widgets::request_full_rebuild();
         });
     }
@@ -3115,6 +3167,13 @@ impl WindowedApp {
                                 needs_relayout = true;
                             }
 
+                            // Check if CSS stylesheets need reparsing (e.g., theme color scheme changed)
+                            // This must happen before tree rebuild so the new stylesheet is available
+                            if blinc_layout::widgets::take_needs_css_reparse() {
+                                tracing::debug!("Reparsing CSS stylesheets due to theme change");
+                                windowed_ctx.reparse_css();
+                            }
+
                             // Process pending motion exit starts BEFORE overlay update
                             // This is critical: when an overlay closes, it queues a motion exit via
                             // query_motion(key).exit(). The overlay's update() method then checks
@@ -3230,6 +3289,9 @@ impl WindowedApp {
                             if needs_rebuild || render_tree.is_none() {
                                 // Reset call counters for stable key generation
                                 reset_call_counters();
+                                // Clear stale Stateful base_render_props updaters
+                                blinc_layout::clear_stateful_base_updaters();
+                                blinc_layout::click_outside::clear_click_outside_handlers();
 
                                 // Reset stable motions so they replay on full rebuild
                                 // This ensures motion animations play when UI is reconstructed
@@ -3283,11 +3345,9 @@ impl WindowedApp {
                                         if let Some(ref stylesheet) = windowed_ctx.stylesheet {
                                             tree.set_stylesheet_arc(stylesheet.clone());
                                         }
-                                        // Apply base CSS styles to all registered elements
-                                        // (stylesheet was set after tree construction, so collect_render_props missed them)
-                                        tree.apply_stylesheet_base_styles();
-                                        // Apply stylesheet layout overrides before layout computation
-                                        tree.apply_stylesheet_layout_overrides();
+                                        // Apply CSS visual + layout styles in a single optimized pass
+                                        // (builds class index once, iterates rules once)
+                                        tree.apply_all_stylesheet_styles();
 
                                         // Compute layout with new viewport dimensions
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
@@ -3335,6 +3395,10 @@ impl WindowedApp {
                                                 // Children changed - subtrees were rebuilt in place
                                                 tracing::debug!("Incremental update: ChildrenChanged - subtrees rebuilt");
 
+                                                // Apply CSS styles to new nodes from rebuilt subtrees
+                                                // (collect_render_props only applies ID-based CSS;
+                                                // class selectors need apply_stylesheet_base_styles)
+                                                existing_tree.apply_stylesheet_base_styles();
                                                 // Recompute layout since structure changed
                                                 existing_tree.apply_stylesheet_layout_overrides();
                                                 existing_tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
@@ -3371,11 +3435,8 @@ impl WindowedApp {
                                     if let Some(ref stylesheet) = windowed_ctx.stylesheet {
                                         tree.set_stylesheet_arc(stylesheet.clone());
                                     }
-                                    // Apply base CSS styles to all registered elements
-                                    // (stylesheet was set after tree construction, so collect_render_props missed them)
-                                    tree.apply_stylesheet_base_styles();
-                                    // Apply stylesheet layout overrides before layout computation
-                                    tree.apply_stylesheet_layout_overrides();
+                                    // Apply CSS visual + layout styles in a single optimized pass
+                                    tree.apply_all_stylesheet_styles();
 
                                     // Compute layout in logical pixels
                                     tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
@@ -4060,6 +4121,7 @@ mod tests {
             element_registry,
             ready_callbacks,
             stylesheet: None,
+            css_sources: Vec::new(),
         }
     }
 
