@@ -126,6 +126,7 @@ mod app;
 mod context;
 mod error;
 mod runloop;
+mod svg_atlas;
 mod text_measurer;
 
 // Windowed module is compiled for desktop (windowed feature), Android, iOS, Fuchsia, and HarmonyOS
