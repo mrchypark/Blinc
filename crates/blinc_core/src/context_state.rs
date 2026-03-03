@@ -448,10 +448,16 @@ impl BlincContextState {
             Signal::from_id(signal_id)
         } else {
             let initial = init();
-            let signal = self.reactive.lock().unwrap().create_signal(initial);
-            let raw_id = signal.id().to_raw();
-            self.hooks.lock().unwrap().insert(state_key, raw_id);
-            signal
+            // Re-check after init() in case another caller inserted this key while init ran.
+            let mut hooks = self.hooks.lock().unwrap();
+            if let Some(raw_id) = hooks.get(&state_key) {
+                let signal_id = SignalId::from_raw(raw_id);
+                Signal::from_id(signal_id)
+            } else {
+                let signal = self.reactive.lock().unwrap().create_signal(initial);
+                hooks.insert(state_key, signal.id().to_raw());
+                signal
+            }
         };
 
         // Create State with or without stateful callback
@@ -489,10 +495,16 @@ impl BlincContextState {
             Signal::from_id(signal_id)
         } else {
             let initial = init();
-            let signal = self.reactive.lock().unwrap().create_signal(initial);
-            let raw_id = signal.id().to_raw();
-            self.hooks.lock().unwrap().insert(state_key, raw_id);
-            signal
+            // Re-check after init() in case another caller inserted this key while init ran.
+            let mut hooks = self.hooks.lock().unwrap();
+            if let Some(raw_id) = hooks.get(&state_key) {
+                let signal_id = SignalId::from_raw(raw_id);
+                Signal::from_id(signal_id)
+            } else {
+                let signal = self.reactive.lock().unwrap().create_signal(initial);
+                hooks.insert(state_key, signal.id().to_raw());
+                signal
+            }
         }
     }
 
@@ -1002,7 +1014,7 @@ pub fn query_motion(key: &str) -> MotionAnimationState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn make_test_state() -> BlincContextState {
         BlincContextState {
@@ -1069,5 +1081,27 @@ mod tests {
         });
 
         assert_eq!(state.reactive.lock().unwrap().get(sig), Some(21));
+    }
+
+    #[test]
+    fn test_use_state_keyed_reentrant_same_key_keeps_first_inserted_signal() {
+        let state = make_test_state();
+        let init_calls = Arc::new(AtomicUsize::new(0));
+
+        let outer_calls = Arc::clone(&init_calls);
+        let outer: State<i32> = state.use_state_keyed("same", || {
+            outer_calls.fetch_add(1, Ordering::SeqCst);
+            let inner_calls = Arc::clone(&init_calls);
+            let inner: State<i32> = state.use_state_keyed("same", || {
+                inner_calls.fetch_add(1, Ordering::SeqCst);
+                123
+            });
+            inner.get() + 1
+        });
+
+        // The outer initializer is ignored because the same key was already
+        // inserted by the inner call while init() executed lock-free.
+        assert_eq!(outer.get(), 123);
+        assert_eq!(init_calls.load(Ordering::SeqCst), 2);
     }
 }

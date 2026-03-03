@@ -37,6 +37,20 @@ fn scroll_end_deadline(
     last_scroll_event_at.map(|last| last + SCROLL_END_DEBOUNCE)
 }
 
+fn pinch_scale_from_delta(delta: f64) -> Option<f32> {
+    let delta = delta as f32;
+    if !delta.is_finite() {
+        return None;
+    }
+
+    let scale = (1.0_f32 + delta).clamp(0.01, 100.0);
+    if !scale.is_finite() {
+        return None;
+    }
+
+    Some(scale)
+}
+
 /// Proxy for waking up the event loop from another thread
 ///
 /// Use this to request a redraw from a background animation thread.
@@ -292,17 +306,15 @@ where
 
             // Trackpad pinch-to-zoom gesture (macOS/iOS)
             WinitWindowEvent::PinchGesture { delta, phase, .. } => {
-                // winit provides a magnification delta. Convert to ratio scale delta:
-                // 0.0 -> 1.0 (no change), 0.1 -> 1.1 (zoom in), -0.1 -> 0.9 (zoom out).
-                // Clamp to avoid negative/zero scales on weird driver values.
-                let scale = (1.0_f32 + delta as f32).clamp(0.01, 100.0);
-
                 // Only emit updates while the gesture is active.
                 if matches!(
                     phase,
                     winit::event::TouchPhase::Started | winit::event::TouchPhase::Moved
                 ) {
-                    self.handle_event(Event::Input(input::pinch_event(scale)));
+                    // winit delta may be NaN on some backends/drivers.
+                    if let Some(scale) = pinch_scale_from_delta(delta) {
+                        self.handle_event(Event::Input(input::pinch_event(scale)));
+                    }
                 }
             }
 
@@ -340,14 +352,13 @@ where
             if let Some(ref window) = self.window {
                 window.request_redraw();
             }
+            event_loop.set_control_flow(WinitControlFlow::Wait);
             return;
         }
 
-        if let Some(deadline) =
-            scroll_end_deadline(self.scroll_end_pending, self.last_scroll_event_at)
-        {
-            event_loop.set_control_flow(WinitControlFlow::WaitUntil(deadline));
-        }
+        let control_flow = scroll_end_deadline(self.scroll_end_pending, self.last_scroll_event_at)
+            .map_or(WinitControlFlow::Wait, WinitControlFlow::WaitUntil);
+        event_loop.set_control_flow(control_flow);
     }
 
     fn memory_warning(&mut self, _event_loop: &ActiveEventLoop) {
@@ -364,7 +375,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{scroll_end_deadline, should_emit_synthetic_scroll_end, SCROLL_END_DEBOUNCE};
+    use super::{
+        pinch_scale_from_delta, scroll_end_deadline, should_emit_synthetic_scroll_end,
+        SCROLL_END_DEBOUNCE,
+    };
     use std::time::{Duration, Instant};
 
     #[test]
@@ -397,5 +411,14 @@ mod tests {
             scroll_end_deadline(true, Some(now)),
             Some(now + SCROLL_END_DEBOUNCE)
         );
+    }
+
+    #[test]
+    fn pinch_scale_from_delta_rejects_invalid_values() {
+        assert_eq!(pinch_scale_from_delta(f64::NAN), None);
+        assert_eq!(pinch_scale_from_delta(f64::INFINITY), None);
+        assert_eq!(pinch_scale_from_delta(f64::NEG_INFINITY), None);
+        assert_eq!(pinch_scale_from_delta(0.0), Some(1.0));
+        assert_eq!(pinch_scale_from_delta(0.2), Some(1.2));
     }
 }
