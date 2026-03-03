@@ -35,11 +35,11 @@
 
 use blinc_animation::{AnimatedValue, SpringConfig};
 use blinc_core::context_state::BlincContextState;
-use blinc_core::{use_state_keyed, SignalId, State};
+use blinc_core::{SignalId, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
 // LayoutAnimationConfig is no longer used - using new VisualAnimationConfig system
-use blinc_layout::motion::{motion, SharedAnimatedValue};
+use blinc_layout::motion::SharedAnimatedValue;
 use blinc_layout::prelude::*;
 use blinc_layout::render_state::get_global_scheduler;
 use blinc_layout::stateful::Stateful;
@@ -254,7 +254,8 @@ impl AccordionBuilder {
         // Build the entire accordion as a single Stateful that reacts to ALL item open states
         let accordion_stateful = Stateful::with_shared_state(container_state_handle)
             .deps(&all_signal_ids)
-            .on_state(move |_state: &(), container: &mut Div| {
+            .on_state(move |state: &(), container: &mut Div| {
+                debug_assert_eq!(*state, ());
                 // Outer container animates height so border follows children expansion
                 let mut content = div()
                     .flex_col()

@@ -580,7 +580,7 @@ fn build_submenu_content(
                     let state = ctx.state();
                     let theme = ThemeState::get();
                     let item_bg = if (state == ButtonState::Hovered || state == ButtonState::Pressed) && !item_disabled {
-                        theme.color(ColorToken::SecondaryHover).with_alpha(0.65)
+                        surface_elevated
                     } else {
                         bg
                     };
@@ -801,7 +801,7 @@ fn build_menu_content(
                     let theme = ThemeState::get();
                     // Apply hover background based on button state
                     let item_bg = if (state == ButtonState::Hovered || state == ButtonState::Pressed) && !item_disabled {
-                        theme.color(ColorToken::SecondaryHover).with_alpha(0.65)
+                        surface_elevated
                     } else {
                         bg
                     };

@@ -18,6 +18,7 @@ pub struct LinuxTheme {
     colors: ColorTokens,
     typography: TypographyTokens,
     spacing: SpacingTokens,
+    opacities: OpacityTokens,
     radii: RadiusTokens,
     shadows: ShadowTokens,
     animations: AnimationTokens,
@@ -112,6 +113,7 @@ impl LinuxTheme {
                 ..Default::default()
             },
             spacing: SpacingTokens::with_base(6.0), // Adwaita uses 6px base
+            opacities: OpacityTokens::default(),
             radii: RadiusTokens {
                 radius_none: 0.0,
                 radius_sm: 3.0,
@@ -215,6 +217,7 @@ impl LinuxTheme {
                 ..Default::default()
             },
             spacing: SpacingTokens::with_base(6.0),
+            opacities: OpacityTokens::default(),
             radii: RadiusTokens {
                 radius_none: 0.0,
                 radius_sm: 3.0,
@@ -286,6 +289,10 @@ impl Theme for LinuxTheme {
 
     fn spacing(&self) -> &SpacingTokens {
         &self.spacing
+    }
+
+    fn opacities(&self) -> &OpacityTokens {
+        &self.opacities
     }
 
     fn radii(&self) -> &RadiusTokens {

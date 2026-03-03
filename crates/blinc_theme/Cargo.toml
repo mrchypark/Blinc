@@ -32,3 +32,6 @@ default = []
 platform-macos = ["objc2", "objc2-foundation"]
 # Enable system color scheme watcher (polls for system theme changes)
 watcher = []
+
+[dev-dependencies]
+serde_json = { workspace = true }

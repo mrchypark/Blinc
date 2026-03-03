@@ -15,9 +15,20 @@ Theme system for Blinc UI with design tokens and platform-native themes.
 
 - **Design Tokens**: Colors, typography, spacing, radii, shadows, animations
 - **Platform Themes**: Native look for macOS, Windows, Linux, iOS, Android
+- **Preset Bundles**: Built-in `ThemePreset` catalog (`blinc`, `neutral`, `slate`, `zinc`)
 - **Color Schemes**: Automatic light/dark mode detection
 - **Dynamic Updates**: Runtime theme changes without layout rebuild
 - **Token Categories**: Visual tokens (repaint only) vs layout tokens
+
+## Preset Quick Start
+
+```rust
+use blinc_theme::{ColorScheme, ThemePreset, ThemeState};
+
+fn init_theme() {
+    ThemeState::init(ThemePreset::Neutral.bundle(), ColorScheme::Light);
+}
+```
 
 ## Quick Start
 

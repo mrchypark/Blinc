@@ -611,7 +611,6 @@ fn show_menubar_dropdown(
     let item_count = items.len();
 
     let handle_state_for_content = handle_state.clone();
-    let active_menu_for_content = active_menu_state.clone();
     let handle_state_for_close = handle_state.clone();
     let active_menu_for_close = active_menu_state.clone();
 
@@ -642,7 +641,6 @@ fn show_menubar_dropdown(
                 &items,
                 min_width,
                 &handle_state_for_content,
-                &active_menu_for_content,
                 &motion_key_str,
                 bg,
                 border,
@@ -683,7 +681,6 @@ fn show_menubar_hover_dropdown(
     let item_count = items.len();
 
     let handle_state_for_content = handle_state.clone();
-    let active_menu_for_content = active_menu_state.clone();
     let handle_state_for_close = handle_state.clone();
     let active_menu_for_close = active_menu_state.clone();
     let handle_state_for_hover = handle_state.clone();
@@ -715,7 +712,6 @@ fn show_menubar_hover_dropdown(
                 &items,
                 min_width,
                 &handle_state_for_content,
-                &active_menu_for_content,
                 &handle_state_for_hover,
                 &menu_key,
                 bg,
@@ -739,7 +735,6 @@ fn build_menubar_hover_dropdown_content(
     items: &[ContextMenuItem],
     width: f32,
     overlay_handle_state: &State<Option<u64>>,
-    _active_menu_state: &State<Option<usize>>,
     handle_state_for_hover: &State<Option<u64>>,
     key: &str,
     bg: Color,
@@ -1292,7 +1287,6 @@ fn build_menubar_dropdown_content(
     items: &[ContextMenuItem],
     width: f32,
     overlay_handle_state: &State<Option<u64>>,
-    active_menu_state: &State<Option<usize>>,
     key: &str,
     bg: Color,
     border: Color,

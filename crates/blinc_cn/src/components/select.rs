@@ -322,7 +322,6 @@ impl Select {
                     // Clone values for the dropdown content closure
                     let opts = options.clone();
                     let val_state = value_state_for_options.clone();
-                    let open_st = open_state_for_click.clone();
                     let handle_st = overlay_handle_for_click.clone();
                     let on_chg = on_change.clone();
                     let current_selected = val_state.get();
@@ -354,7 +353,6 @@ impl Select {
                                 &opts,
                                 &current_selected,
                                 &val_state,
-                                &open_st,
                                 &handle_st,
                                 &on_chg,
                                 &motion_key_str,
@@ -603,7 +601,6 @@ fn build_dropdown_content(
     options: &[SelectOption],
     current_selected: &str,
     value_state: &State<String>,
-    open_state: &State<bool>,
     overlay_handle_state: &State<Option<u64>>,
     on_change: &Option<Arc<dyn Fn(&str) + Send + Sync>>,
     key: &str,

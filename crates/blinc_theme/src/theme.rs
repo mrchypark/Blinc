@@ -38,6 +38,9 @@ pub trait Theme: Send + Sync + std::fmt::Debug {
     /// Get spacing tokens
     fn spacing(&self) -> &SpacingTokens;
 
+    /// Get opacity tokens
+    fn opacities(&self) -> &OpacityTokens;
+
     /// Get radius tokens
     fn radii(&self) -> &RadiusTokens;
 

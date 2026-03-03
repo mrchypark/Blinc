@@ -11,6 +11,7 @@ pub struct MacOSTheme {
     colors: ColorTokens,
     typography: TypographyTokens,
     spacing: SpacingTokens,
+    opacities: OpacityTokens,
     radii: RadiusTokens,
     shadows: ShadowTokens,
     animations: AnimationTokens,
@@ -78,6 +79,7 @@ impl MacOSTheme {
                 ..Default::default()
             },
             spacing: SpacingTokens::default(),
+            opacities: OpacityTokens::default(),
             radii: RadiusTokens {
                 radius_default: 6.0,
                 radius_md: 8.0,
@@ -151,6 +153,7 @@ impl MacOSTheme {
                 ..Default::default()
             },
             spacing: SpacingTokens::default(),
+            opacities: OpacityTokens::default(),
             radii: RadiusTokens {
                 radius_default: 6.0,
                 radius_md: 8.0,
@@ -188,6 +191,10 @@ impl Theme for MacOSTheme {
 
     fn spacing(&self) -> &SpacingTokens {
         &self.spacing
+    }
+
+    fn opacities(&self) -> &OpacityTokens {
+        &self.opacities
     }
 
     fn radii(&self) -> &RadiusTokens {

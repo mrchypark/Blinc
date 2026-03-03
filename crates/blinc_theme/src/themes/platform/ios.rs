@@ -51,6 +51,10 @@ impl Theme for IOSTheme {
         self.inner.spacing()
     }
 
+    fn opacities(&self) -> &OpacityTokens {
+        self.inner.opacities()
+    }
+
     fn radii(&self) -> &RadiusTokens {
         self.inner.radii()
     }

@@ -65,6 +65,8 @@ pub mod cn {
     pub use crate::components::dialog::{alert_dialog, dialog};
     pub use crate::components::drawer::{drawer, drawer_left, drawer_right};
     pub use crate::components::dropdown_menu::{dropdown_menu, dropdown_menu_custom};
+    pub use crate::components::field::field;
+    pub use crate::components::form::form;
     pub use crate::components::hover_card::hover_card;
     pub use crate::components::icon::{icon, IconSize};
     pub use crate::components::input::input;
@@ -77,6 +79,9 @@ pub mod cn {
     pub use crate::components::progress::{progress, progress_animated};
     pub use crate::components::radio::radio_group;
     pub use crate::components::resizable::{resizable_group, resizable_panel};
+    pub use crate::components::responsive::{
+        current_device_class, device_class_for_width, DeviceClass, TailwindBreakpoints,
+    };
     pub use crate::components::select::select;
     pub use crate::components::separator::separator;
     pub use crate::components::sheet::{sheet, sheet_bottom, sheet_left, sheet_right, sheet_top};
@@ -150,6 +155,8 @@ pub mod prelude {
     pub use crate::components::dropdown_menu::{
         dropdown_menu, dropdown_menu_custom, DropdownAlign, DropdownMenuBuilder, DropdownPosition,
     };
+    pub use crate::components::field::{field, Field, FieldBuilder};
+    pub use crate::components::form::{form, Form, FormBuilder};
     pub use crate::components::hover_card::{
         hover_card, HoverCard, HoverCardAlign, HoverCardBuilder, HoverCardSide,
     };
@@ -180,6 +187,9 @@ pub mod prelude {
     pub use crate::components::resizable::{
         resizable_group, resizable_panel, ResizableGroup, ResizableGroupBuilder,
         ResizablePanelBuilder, ResizeDirection,
+    };
+    pub use crate::components::responsive::{
+        current_device_class, device_class_for_width, DeviceClass, TailwindBreakpoints,
     };
     pub use crate::components::select::{select, Select, SelectBuilder, SelectOption, SelectSize};
     pub use crate::components::separator::{separator, Separator, SeparatorOrientation};

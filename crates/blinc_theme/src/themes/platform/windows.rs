@@ -17,6 +17,7 @@ pub struct WindowsTheme {
     colors: ColorTokens,
     typography: TypographyTokens,
     spacing: SpacingTokens,
+    opacities: OpacityTokens,
     radii: RadiusTokens,
     shadows: ShadowTokens,
     animations: AnimationTokens,
@@ -108,6 +109,7 @@ impl WindowsTheme {
                 ..Default::default()
             },
             spacing: SpacingTokens::default(), // Windows uses 40epx grid, 4px base works well
+            opacities: OpacityTokens::default(),
             radii: RadiusTokens {
                 radius_none: 0.0,
                 radius_sm: 2.0,
@@ -208,6 +210,7 @@ impl WindowsTheme {
                 ..Default::default()
             },
             spacing: SpacingTokens::default(),
+            opacities: OpacityTokens::default(),
             radii: RadiusTokens {
                 radius_none: 0.0,
                 radius_sm: 2.0,
@@ -278,6 +281,10 @@ impl Theme for WindowsTheme {
 
     fn spacing(&self) -> &SpacingTokens {
         &self.spacing
+    }
+
+    fn opacities(&self) -> &OpacityTokens {
+        &self.opacities
     }
 
     fn radii(&self) -> &RadiusTokens {

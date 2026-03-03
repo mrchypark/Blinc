@@ -40,7 +40,6 @@ use blinc_core::context_state::BlincContextState;
 use blinc_core::State;
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::RenderProps;
-use blinc_layout::motion::motion;
 use blinc_layout::overlay_state::get_overlay_manager;
 use blinc_layout::prelude::*;
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};

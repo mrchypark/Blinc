@@ -744,7 +744,7 @@ mod tests {
         init_theme();
         let _ = navigation_menu()
             .item("Home", || {})
-            .trigger("Products", || div());
+            .trigger("Products", div);
     }
 
     #[test]

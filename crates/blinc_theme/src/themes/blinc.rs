@@ -89,6 +89,7 @@ pub struct BlincTheme {
     colors: ColorTokens,
     typography: TypographyTokens,
     spacing: SpacingTokens,
+    opacities: OpacityTokens,
     radii: RadiusTokens,
     shadows: ShadowTokens,
     animations: AnimationTokens,
@@ -142,6 +143,7 @@ impl BlincTheme {
             },
             typography: TypographyTokens::default(),
             spacing: SpacingTokens::default(),
+            opacities: OpacityTokens::default(),
             radii: RadiusTokens::default(),
             shadows: ShadowTokens::light(),
             animations: AnimationTokens::default(),
@@ -195,6 +197,7 @@ impl BlincTheme {
             },
             typography: TypographyTokens::default(),
             spacing: SpacingTokens::default(),
+            opacities: OpacityTokens::default(),
             radii: RadiusTokens::default(),
             shadows: ShadowTokens::dark(),
             animations: AnimationTokens::default(),
@@ -226,6 +229,10 @@ impl Theme for BlincTheme {
 
     fn spacing(&self) -> &SpacingTokens {
         &self.spacing
+    }
+
+    fn opacities(&self) -> &OpacityTokens {
+        &self.opacities
     }
 
     fn radii(&self) -> &RadiusTokens {

@@ -405,9 +405,9 @@ fn build_dialog_content(
     text_primary: Color,
     text_secondary: Color,
     radius: f32,
-    _spacing: f32,
+    spacing: f32,
     confirm_text: &str,
-    _cancel_text: &str,
+    cancel_text: &str,
     on_confirm: &Option<Arc<dyn Fn() + Send + Sync>>,
     on_cancel: &Option<Arc<dyn Fn() + Send + Sync>>,
     confirm_destructive: bool,
@@ -425,7 +425,7 @@ fn build_dialog_content(
 
     // Header section
     if title.is_some() || description.is_some() {
-        let mut header = div().w_full().flex_col().gap_2(); // 8px gap from theme
+        let mut header = div().w_full().flex_col().gap(spacing / 2.0); // 8px gap from theme
 
         if let Some(ref title_text) = title {
             header = header.child(h3(title_text).color(text_primary));
@@ -444,12 +444,8 @@ fn build_dialog_content(
 
     // Custom content
     if let Some(ref content_fn) = content {
-        inner_content = inner_content.child(
-            div()
-                .w_full()
-                .mt(theme.spacing().space_2)
-                .child(content_fn()),
-        ); // 16px margin from theme
+        inner_content = inner_content.child(div().w_full().mt(spacing / 2.0).child(content_fn()));
+        // 16px margin from theme
     }
 
     // Footer - either custom or default buttons
@@ -457,20 +453,22 @@ fn build_dialog_content(
         footer_fn()
     } else {
         // Default footer with buttons
-        let mut footer_div = div().w_full().flex_row().gap_2().justify_end(); // 8px gap from theme
+        let mut footer_div = div().w_full().flex_row().gap(spacing / 2.0).justify_end(); // 8px gap from theme
 
         if show_cancel {
             let on_cancel = on_cancel.clone();
-            footer_div =
-                footer_div.child(button("Cancel").variant(ButtonVariant::Outline).on_click(
-                    move |_| {
+            let cancel_text = cancel_text.to_string();
+            footer_div = footer_div.child(
+                button(cancel_text)
+                    .variant(ButtonVariant::Outline)
+                    .on_click(move |_| {
                         if let Some(ref cb) = on_cancel {
                             cb();
                         }
                         // Get fresh overlay manager to close
                         get_overlay_manager().close_top();
-                    },
-                ));
+                    }),
+            );
         }
 
         let on_confirm = on_confirm.clone();
@@ -495,12 +493,7 @@ fn build_dialog_content(
     };
 
     // Add footer to inner content
-    inner_content = inner_content.child(
-        div()
-            .w_full()
-            .mt(theme.spacing().space_2)
-            .child(footer_content),
-    ); // 16px margin from theme
+    inner_content = inner_content.child(div().w_full().mt(spacing / 2.0).child(footer_content)); // 16px margin from theme
 
     // Wrap inner content in a motion container with fade-in
     // This helps mask visual distortion from the outer scale animation

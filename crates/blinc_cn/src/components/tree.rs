@@ -27,7 +27,7 @@ use blinc_core::context_state::BlincContextState;
 use blinc_core::{Color, SignalId, State};
 use blinc_layout::div::ElementTypeId;
 use blinc_layout::element::{CursorStyle, RenderProps};
-use blinc_layout::motion::{motion, SharedAnimatedValue};
+use blinc_layout::motion::SharedAnimatedValue;
 use blinc_layout::prelude::*;
 use blinc_layout::render_state::get_global_scheduler;
 use blinc_layout::stateful::Stateful;
@@ -302,7 +302,6 @@ impl TreeViewBuilder {
         let text_primary = theme.color(ColorToken::TextPrimary);
         let text_secondary = theme.color(ColorToken::TextSecondary);
         let text_tertiary = theme.color(ColorToken::TextTertiary);
-        let surface_hover = theme.color(ColorToken::SurfaceElevated);
         let primary = theme.color(ColorToken::Primary);
         let radius = theme.radius(RadiusToken::Sm);
 
@@ -314,7 +313,8 @@ impl TreeViewBuilder {
         let inner =
             Stateful::with_shared_state(container_state)
                 .deps(&all_signal_ids)
-                .on_state(move |_state: &(), container: &mut Div| {
+                .on_state(move |state: &(), container: &mut Div| {
+                    debug_assert_eq!(*state, ());
                     let mut tree_container = div().flex_col().flex_shrink_0();
 
                     // Build tree recursively
@@ -330,7 +330,6 @@ impl TreeViewBuilder {
                         text_primary: Color,
                         text_secondary: Color,
                         text_tertiary: Color,
-                        _surface_hover: Color,
                         primary: Color,
                         radius: f32,
                         diff_added: Color,
@@ -522,7 +521,6 @@ impl TreeViewBuilder {
                                     text_primary,
                                     text_secondary,
                                     text_tertiary,
-                                    _surface_hover,
                                     primary,
                                     radius,
                                     diff_added,
@@ -549,7 +547,6 @@ impl TreeViewBuilder {
                             text_primary,
                             text_secondary,
                             text_tertiary,
-                            surface_hover,
                             primary,
                             radius,
                             diff_added,
