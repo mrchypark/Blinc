@@ -17,7 +17,8 @@ cargo run --features desktop
 ./build-android.sh
 ```
 
-The script auto-grants `LOCATION` and `ACTIVITY_RECOGNITION` permissions after install.
+The script requests runtime permissions needed for sensors and platform services:
+`LOCATION`, `ACTIVITY_RECOGNITION`, `MICROPHONE`, and `BLUETOOTH` (Android 12+).
 
 ### iOS
 

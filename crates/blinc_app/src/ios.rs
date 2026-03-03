@@ -40,12 +40,12 @@ use blinc_layout::overlay_state::OverlayContext;
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager};
 use blinc_platform::assets::set_global_asset_loader;
-use blinc_platform_ios::{Gesture, GestureDetector, IOSAssetLoader, IOSWakeProxy, TouchPhase};
-use blinc_sensors::native_bridge::NativeBridgeBackend;
-use blinc_sensors::{
+use blinc_platform::sensors::native_bridge::NativeBridgeBackend;
+use blinc_platform::sensors::{
     NativeBridgePermissionBackend, SensorBatchSummary, SensorClient, SensorConfig,
     SensorPermissionService, SensorRuntimeController,
 };
+use blinc_platform_ios::{Gesture, GestureDetector, IOSAssetLoader, IOSWakeProxy, TouchPhase};
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
