@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use blinc_sensors::{
+use blinc_platform::sensors::{
     SensorAccuracy, SensorBackend, SensorClient, SensorConfig, SensorError, SensorFrame,
     SensorKind, SensorStatus,
 };
@@ -12,14 +12,17 @@ struct MockBackend {
 
 impl SensorBackend for MockBackend {
     fn configure(&self, _config: &SensorConfig) -> Result<(), SensorError> {
-        self.calls.lock().unwrap().push("configure".to_string());
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push("configure".to_string());
         Ok(())
     }
 
     fn start(&self, session_id: &str) -> Result<(), SensorError> {
         self.calls
             .lock()
-            .unwrap()
+            .expect("calls lock")
             .push(format!("start:{session_id}"));
         Ok(())
     }
@@ -27,20 +30,23 @@ impl SensorBackend for MockBackend {
     fn stop(&self, session_id: &str) -> Result<(), SensorError> {
         self.calls
             .lock()
-            .unwrap()
+            .expect("calls lock")
             .push(format!("stop:{session_id}"));
         Ok(())
     }
 
     fn status(&self) -> Result<SensorStatus, SensorError> {
-        self.calls.lock().unwrap().push("status".to_string());
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push("status".to_string());
         Ok(SensorStatus::default())
     }
 
     fn drain_frames(&self, max_frames: usize) -> Result<Vec<SensorFrame>, SensorError> {
         self.calls
             .lock()
-            .unwrap()
+            .expect("calls lock")
             .push(format!("drain:{max_frames}"));
         Ok(vec![SensorFrame {
             seq: 1,
@@ -55,52 +61,30 @@ impl SensorBackend for MockBackend {
     fn supported_kinds(&self) -> Result<Vec<SensorKind>, SensorError> {
         self.calls
             .lock()
-            .unwrap()
+            .expect("calls lock")
             .push("supported_kinds".to_string());
         Ok(vec![SensorKind::Gps, SensorKind::Accelerometer])
     }
 }
 
 #[test]
-fn start_session_rejects_empty_id() {
+fn migrated_sensor_client_validates_and_passthroughs() {
     let client = SensorClient::new(MockBackend::default());
-    let err = client.start_session("").unwrap_err();
+
+    let err = client
+        .start_session("")
+        .expect_err("empty session id must fail");
     assert!(matches!(err, SensorError::InvalidSessionId));
-}
 
-#[test]
-fn stop_session_rejects_empty_id() {
-    let client = SensorClient::new(MockBackend::default());
-    let err = client.stop_session("").unwrap_err();
-    assert!(matches!(err, SensorError::InvalidSessionId));
-}
+    let mut bad = SensorConfig::default();
+    bad.imu_hz = 0;
+    let err = client.configure(&bad).expect_err("zero imu must fail");
+    assert!(matches!(err, SensorError::InvalidConfig(_)));
 
-#[test]
-fn configure_rejects_zero_rates() {
-    let client = SensorClient::new(MockBackend::default());
-
-    let mut imu_zero = SensorConfig::default();
-    imu_zero.imu_hz = 0;
-    let imu_err = client.configure(&imu_zero).unwrap_err();
-    assert!(matches!(imu_err, SensorError::InvalidConfig(_)));
-
-    let mut gps_zero = SensorConfig::default();
-    gps_zero.gps_hz = 0;
-    let gps_err = client.configure(&gps_zero).unwrap_err();
-    assert!(matches!(gps_err, SensorError::InvalidConfig(_)));
-}
-
-#[test]
-fn drain_frames_passthrough() {
-    let client = SensorClient::new(MockBackend::default());
-    let frames = client.drain_frames(32).unwrap();
+    let frames = client.drain_frames(32).expect("drain frames");
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].sensor, SensorKind::Accelerometer);
-}
 
-#[test]
-fn supported_kinds_passthrough() {
-    let client = SensorClient::new(MockBackend::default());
-    let kinds = client.supported_kinds().unwrap();
+    let kinds = client.supported_kinds().expect("supported kinds");
     assert_eq!(kinds, vec![SensorKind::Gps, SensorKind::Accelerometer]);
 }

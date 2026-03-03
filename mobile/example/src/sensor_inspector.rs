@@ -2,8 +2,8 @@ use blinc_app::prelude::*;
 use blinc_app::windowed::WindowedContext;
 use blinc_core::native_bridge::native_call;
 use blinc_core::reactive::State;
-use blinc_sensors::native_bridge::NativeBridgeBackend;
-use blinc_sensors::{SensorClient, SensorConfig, SensorFrame, SensorKind};
+use blinc_platform::sensors::native_bridge::NativeBridgeBackend;
+use blinc_platform::sensors::{SensorClient, SensorConfig, SensorFrame, SensorKind};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,7 +40,7 @@ impl Default for SensorPanelData {
             barometer_line: "barometer: no data".to_string(),
             step_line: "steps/cadence/floors: no data".to_string(),
             activity_line: "activity: no data".to_string(),
-            note_line: "source: blinc_sensors::NativeBridgeBackend".to_string(),
+            note_line: "source: blinc_platform::sensors::NativeBridgeBackend".to_string(),
         }
     }
 }

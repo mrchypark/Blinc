@@ -23,6 +23,12 @@ package com.blinc
 import android.app.Activity
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -39,6 +45,7 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Looper
+import android.os.ParcelUuid
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -61,6 +68,7 @@ object BlincNativeBridge {
     private var appContext: Context? = null
     private var foregroundActivityRef: WeakReference<Activity>? = null
     private val sensorCollector = AndroidSensorCollector()
+    private val bleCollector = AndroidBleCollector(sensorCollector)
 
     /**
      * Initialize with application context
@@ -68,7 +76,9 @@ object BlincNativeBridge {
     fun init(context: Context) {
         appContext = context.applicationContext
         sensorCollector.attach(context.applicationContext)
+        bleCollector.attach(context.applicationContext)
         sensorCollector.setForegroundActivity(foregroundActivityRef?.get())
+        bleCollector.setForegroundActivity(foregroundActivityRef?.get())
     }
 
     /**
@@ -77,6 +87,7 @@ object BlincNativeBridge {
     fun setForegroundActivity(activity: Activity?) {
         foregroundActivityRef = if (activity == null) null else WeakReference(activity)
         sensorCollector.setForegroundActivity(activity)
+        bleCollector.setForegroundActivity(activity)
     }
 
     /**
@@ -308,8 +319,29 @@ object BlincNativeBridge {
         register("permissions", "has_location") {
             sensorCollector.hasLocationPermission()
         }
+        register("permissions", "has_location_always") {
+            sensorCollector.hasLocationAlwaysPermission()
+        }
         register("permissions", "has_motion") {
             sensorCollector.hasMotionPermission()
+        }
+        register("permissions", "has_camera") {
+            sensorCollector.hasCameraPermission()
+        }
+        register("permissions", "has_microphone") {
+            sensorCollector.hasMicrophonePermission()
+        }
+        register("permissions", "has_photos") {
+            sensorCollector.hasPhotosPermission()
+        }
+        register("permissions", "has_notifications") {
+            sensorCollector.hasNotificationsPermission()
+        }
+        register("permissions", "has_bluetooth_scan") {
+            sensorCollector.hasBluetoothScanPermission()
+        }
+        register("permissions", "has_bluetooth_connect") {
+            sensorCollector.hasBluetoothConnectPermission()
         }
         register("permissions", "request_location_when_in_use") {
             sensorCollector.requestLocationPermissionWhenInUse()
@@ -319,6 +351,50 @@ object BlincNativeBridge {
         }
         register("permissions", "request_motion") {
             sensorCollector.requestMotionPermission()
+        }
+        register("permissions", "request_camera") {
+            sensorCollector.requestCameraPermission()
+        }
+        register("permissions", "request_microphone") {
+            sensorCollector.requestMicrophonePermission()
+        }
+        register("permissions", "request_photos") {
+            sensorCollector.requestPhotosPermission()
+        }
+        register("permissions", "request_notifications") {
+            sensorCollector.requestNotificationsPermission()
+        }
+        register("permissions", "request_bluetooth_scan") {
+            sensorCollector.requestBluetoothScanPermission()
+        }
+        register("permissions", "request_bluetooth_connect") {
+            sensorCollector.requestBluetoothConnectPermission()
+        }
+
+        // =====================================================================
+        // BLE namespace
+        // =====================================================================
+
+        register("ble", "configure") { args ->
+            bleCollector.configure(args.optString(0, "{}"))
+        }
+
+        register("ble", "start") { args ->
+            val sessionId = args.optString(0, "")
+            bleCollector.start(sessionId)
+        }
+
+        register("ble", "stop") { args ->
+            val sessionId = args.optString(0, "")
+            bleCollector.stop(sessionId)
+        }
+
+        registerString("ble", "status") {
+            bleCollector.statusJson()
+        }
+
+        register("ble", "drain_results") { args ->
+            bleCollector.drainResults(args.optInt(0, 64))
         }
 
         // =====================================================================
@@ -345,6 +421,10 @@ object BlincNativeBridge {
 
         register("sensor", "drain_frames") { args ->
             sensorCollector.drainFrames(args.optInt(0, 64))
+        }
+
+        register("sensor", "peek_frames") { args ->
+            sensorCollector.peekFrames(args.optInt(0, 32))
         }
 
         registerString("sensor", "supported_kinds") {
@@ -585,6 +665,22 @@ private class AndroidSensorCollector {
         return arr.toString()
     }
 
+    fun peekFrames(maxFrames: Int): String {
+        val count = maxFrames.coerceIn(1, 256)
+        val arr = JSONArray()
+        synchronized(lock) {
+            val start = (frameBuffer.size - count).coerceAtLeast(0)
+            var index = 0
+            for (frame in frameBuffer) {
+                if (index >= start) {
+                    arr.put(frame)
+                }
+                index += 1
+            }
+        }
+        return arr.toString()
+    }
+
     fun clearBuffer() {
         synchronized(lock) {
             frameBuffer.clear()
@@ -640,6 +736,18 @@ private class AndroidSensorCollector {
         return fine || coarse
     }
 
+    fun hasLocationAlwaysPermission(): Boolean {
+        if (!hasLocationPermission()) {
+            return false
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return true
+        }
+        val ctx = context ?: return false
+        return ctx.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
     fun hasMotionPermission(): Boolean {
         val ctx = context ?: return false
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -647,6 +755,66 @@ private class AndroidSensorCollector {
         }
         return ctx.checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) ==
             PackageManager.PERMISSION_GRANTED
+    }
+
+    fun hasCameraPermission(): Boolean {
+        val ctx = context ?: return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true
+        }
+        return ctx.checkSelfPermission(Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    fun hasMicrophonePermission(): Boolean {
+        val ctx = context ?: return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true
+        }
+        return ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    fun hasPhotosPermission(): Boolean {
+        val ctx = context ?: return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true
+        }
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ctx.checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            @Suppress("DEPRECATION")
+            ctx.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    fun hasNotificationsPermission(): Boolean {
+        val ctx = context ?: return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return true
+        }
+        return ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    fun hasBluetoothScanPermission(): Boolean {
+        val ctx = context ?: return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ctx.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+        return hasLocationPermission()
+    }
+
+    fun hasBluetoothConnectPermission(): Boolean {
+        val ctx = context ?: return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ctx.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+        return true
     }
 
     fun requestLocationPermissionWhenInUse(): Boolean {
@@ -707,14 +875,90 @@ private class AndroidSensorCollector {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             return true
         }
-        val activity = foregroundActivityRef?.get() ?: return false
-        activity.runOnUiThread {
-            activity.requestPermissions(
-                arrayOf(Manifest.permission.ACTIVITY_RECOGNITION),
-                REQUEST_CODE_MOTION,
-            )
-        }
+        requestPermissions(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION), REQUEST_CODE_MOTION)
         return false
+    }
+
+    fun requestCameraPermission(): Boolean {
+        if (hasCameraPermission()) {
+            return true
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true
+        }
+        requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CODE_CAMERA)
+        return false
+    }
+
+    fun requestMicrophonePermission(): Boolean {
+        if (hasMicrophonePermission()) {
+            return true
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true
+        }
+        requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_CODE_MICROPHONE)
+        return false
+    }
+
+    fun requestPhotosPermission(): Boolean {
+        if (hasPhotosPermission()) {
+            return true
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true
+        }
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
+        } else {
+            @Suppress("DEPRECATION")
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        requestPermissions(permissions, REQUEST_CODE_PHOTOS)
+        return false
+    }
+
+    fun requestNotificationsPermission(): Boolean {
+        if (hasNotificationsPermission()) {
+            return true
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return true
+        }
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_CODE_NOTIFICATIONS)
+        return false
+    }
+
+    fun requestBluetoothScanPermission(): Boolean {
+        if (hasBluetoothScanPermission()) {
+            return true
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_SCAN), REQUEST_CODE_BLUETOOTH_SCAN)
+            return false
+        }
+        return requestLocationPermissionWhenInUse()
+    }
+
+    fun requestBluetoothConnectPermission(): Boolean {
+        if (hasBluetoothConnectPermission()) {
+            return true
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return true
+        }
+        requestPermissions(
+            arrayOf(Manifest.permission.BLUETOOTH_CONNECT),
+            REQUEST_CODE_BLUETOOTH_CONNECT,
+        )
+        return false
+    }
+
+    private fun requestPermissions(permissions: Array<String>, requestCode: Int) {
+        val activity = foregroundActivityRef?.get() ?: return
+        activity.runOnUiThread {
+            activity.requestPermissions(permissions, requestCode)
+        }
     }
 
     companion object {
@@ -723,6 +967,12 @@ private class AndroidSensorCollector {
         private const val REQUEST_CODE_LOCATION_WHEN_IN_USE = 3101
         private const val REQUEST_CODE_LOCATION_ALWAYS = 3102
         private const val REQUEST_CODE_MOTION = 3103
+        private const val REQUEST_CODE_CAMERA = 3104
+        private const val REQUEST_CODE_MICROPHONE = 3105
+        private const val REQUEST_CODE_PHOTOS = 3106
+        private const val REQUEST_CODE_NOTIFICATIONS = 3107
+        private const val REQUEST_CODE_BLUETOOTH_SCAN = 3108
+        private const val REQUEST_CODE_BLUETOOTH_CONNECT = 3109
     }
 
     private fun addIfSensorAvailable(
@@ -1020,6 +1270,297 @@ private class AndroidSensorCollector {
             Sensor.TYPE_HEART_RATE -> "heart_rate"
             else -> null
         }
+    }
+}
+
+private data class AndroidBleScanConfig(
+    val serviceUuids: List<String> = emptyList(),
+    val allowDuplicates: Boolean = false,
+    val scanMode: String? = null,
+    val frameFlushMs: Int = 500,
+)
+
+private class AndroidBleCollector(
+    private val permissions: AndroidSensorCollector,
+) {
+    private val lock = Any()
+    private val resultBuffer: ArrayDeque<JSONObject> = ArrayDeque()
+
+    private var context: Context? = null
+    private var foregroundActivityRef: WeakReference<Activity>? = null
+    private var bluetoothManager: BluetoothManager? = null
+    private var running: Boolean = false
+    private var activeSessionId: String? = null
+    private var seq: Long = 0L
+    private var config: AndroidBleScanConfig = AndroidBleScanConfig()
+
+    private val maxBufferedResults = 4096
+
+    private val scanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult?) {
+            if (result != null) {
+                appendResult(result)
+            }
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>?) {
+            results?.forEach { appendResult(it) }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            Log.w(TAG, "BLE scan failed with error code=$errorCode")
+        }
+    }
+
+    fun attach(appContext: Context) {
+        context = appContext
+        bluetoothManager = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+    }
+
+    fun setForegroundActivity(activity: Activity?) {
+        foregroundActivityRef = if (activity == null) null else WeakReference(activity)
+    }
+
+    fun configure(configJson: String): Boolean {
+        return runCatching {
+            val root = JSONObject(configJson)
+            val serviceUuids = mutableListOf<String>()
+            root.optJSONArray("service_uuids")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val raw = arr.optString(i, "").trim()
+                    if (raw.isNotEmpty()) {
+                        serviceUuids.add(raw)
+                    }
+                }
+            }
+            val next = AndroidBleScanConfig(
+                serviceUuids = serviceUuids,
+                allowDuplicates = root.optBoolean("allow_duplicates", false),
+                scanMode = root.optString("scan_mode", "").trim().ifEmpty { null },
+                frameFlushMs = root.optInt("frame_flush_ms", 500).coerceAtLeast(0),
+            )
+            synchronized(lock) {
+                config = next
+            }
+            true
+        }.getOrDefault(false)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun start(sessionId: String): Boolean {
+        val normalizedId = sessionId.trim()
+        if (normalizedId.isEmpty()) {
+            return false
+        }
+
+        if (!permissions.hasBluetoothScanPermission()) {
+            return false
+        }
+
+        val adapter = bluetoothManager?.adapter ?: return false
+        if (!adapter.isEnabled) {
+            return false
+        }
+
+        val scanner = adapter.bluetoothLeScanner ?: return false
+        var restarting = false
+        val localConfig = synchronized(lock) {
+            if (running) {
+                restarting = true
+                stopInternalLocked()
+            }
+            running = true
+            activeSessionId = normalizedId
+            seq = 0L
+            resultBuffer.clear()
+            config
+        }
+        if (restarting) {
+            runCatching { scanner.stopScan(scanCallback) }
+        }
+
+        return try {
+            val filters = localConfig.serviceUuids.mapNotNull { uuidText ->
+                runCatching {
+                    ScanFilter.Builder()
+                        .setServiceUuid(ParcelUuid.fromString(uuidText))
+                        .build()
+                }.getOrNull()
+            }
+            val settings = ScanSettings.Builder()
+                .setScanMode(scanModeFromConfig(localConfig.scanMode))
+                .setReportDelay(localConfig.frameFlushMs.toLong())
+                .build()
+            scanner.startScan(filters, settings, scanCallback)
+            Log.i(TAG, "start: session=$normalizedId filters=${filters.size}")
+            true
+        } catch (security: SecurityException) {
+            synchronized(lock) { stopInternalLocked() }
+            Log.w(TAG, "BLE start failed due to missing permission", security)
+            false
+        } catch (e: Exception) {
+            synchronized(lock) { stopInternalLocked() }
+            Log.w(TAG, "BLE start failed", e)
+            false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun stop(sessionId: String): Boolean {
+        val adapter = bluetoothManager?.adapter
+        val scanner = adapter?.bluetoothLeScanner
+        synchronized(lock) {
+            if (!running) {
+                return true
+            }
+            if (sessionId.isNotBlank() && sessionId != activeSessionId) {
+                return false
+            }
+            stopInternalLocked()
+        }
+        return try {
+            scanner?.stopScan(scanCallback)
+            true
+        } catch (security: SecurityException) {
+            Log.w(TAG, "BLE stop failed due to missing permission", security)
+            false
+        }
+    }
+
+    fun statusJson(): String {
+        val payload = JSONObject()
+        synchronized(lock) {
+            payload.put("running", running)
+            payload.put("buffered_results", resultBuffer.size)
+            if (activeSessionId == null) {
+                payload.put("active_session_id", JSONObject.NULL)
+            } else {
+                payload.put("active_session_id", activeSessionId)
+            }
+        }
+        return payload.toString()
+    }
+
+    fun drainResults(maxResults: Int): String {
+        val count = maxResults.coerceIn(1, 2048)
+        val arr = JSONArray()
+        synchronized(lock) {
+            repeat(count) {
+                if (resultBuffer.isEmpty()) {
+                    return@repeat
+                }
+                arr.put(resultBuffer.removeFirst())
+            }
+        }
+        return arr.toString()
+    }
+
+    private fun stopInternalLocked() {
+        running = false
+        activeSessionId = null
+    }
+
+    private fun scanModeFromConfig(raw: String?): Int {
+        return when (raw?.trim()?.lowercase(Locale.US)) {
+            "low_latency", "low-latency", "fast" -> ScanSettings.SCAN_MODE_LOW_LATENCY
+            "balanced" -> ScanSettings.SCAN_MODE_BALANCED
+            "opportunistic" -> ScanSettings.SCAN_MODE_OPPORTUNISTIC
+            else -> ScanSettings.SCAN_MODE_LOW_POWER
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun appendResult(result: ScanResult) {
+        val nowMonoNs = SystemClock.elapsedRealtimeNanos()
+        val monotonicNs = result.timestampNanos.takeIf { it > 0 } ?: nowMonoNs
+        val deltaMs = ((nowMonoNs - monotonicNs).coerceAtLeast(0L)) / 1_000_000L
+        val unixTimeMs = System.currentTimeMillis() - deltaMs
+        val scanRecord = result.scanRecord
+
+        val serviceUuids = JSONArray()
+        scanRecord?.serviceUuids?.forEach { serviceUuids.put(it.uuid.toString()) }
+
+        val txPower = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            result.txPower.takeUnless { it == Int.MAX_VALUE || it == 127 }
+        } else {
+            null
+        }
+        val connectable = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            result.isConnectable
+        } else {
+            null
+        }
+        val name = runCatching { scanRecord?.deviceName ?: result.device?.name }.getOrNull()
+        val address = runCatching { result.device.address }.getOrDefault("")
+
+        val payload = JSONObject()
+        synchronized(lock) {
+            if (!running) {
+                return
+            }
+            seq += 1
+            payload.put("seq", seq)
+            payload.put("address", address)
+            if (name.isNullOrBlank()) {
+                payload.put("name", JSONObject.NULL)
+            } else {
+                payload.put("name", name)
+            }
+            payload.put("rssi", result.rssi)
+            if (txPower == null) {
+                payload.put("tx_power", JSONObject.NULL)
+            } else {
+                payload.put("tx_power", txPower)
+            }
+            if (connectable == null) {
+                payload.put("is_connectable", JSONObject.NULL)
+            } else {
+                payload.put("is_connectable", connectable)
+            }
+            payload.put("service_uuids", serviceUuids)
+            putOptionalString(payload, "manufacturer_data", encodeManufacturerData(scanRecord))
+            putOptionalString(payload, "service_data", encodeServiceData(scanRecord))
+            payload.put("time_monotonic_ns", monotonicNs)
+            payload.put("time_unix_ms", unixTimeMs)
+
+            if (resultBuffer.size >= maxBufferedResults) {
+                resultBuffer.removeFirst()
+            }
+            resultBuffer.addLast(payload)
+        }
+    }
+
+    private fun encodeManufacturerData(scanRecord: android.bluetooth.le.ScanRecord?): String? {
+        val sparse = scanRecord?.manufacturerSpecificData ?: return null
+        if (sparse.size() == 0) {
+            return null
+        }
+        val key = sparse.keyAt(0)
+        val value = sparse.valueAt(0) ?: return null
+        val encoded = android.util.Base64.encodeToString(value, android.util.Base64.NO_WRAP)
+        return "$key:$encoded"
+    }
+
+    private fun encodeServiceData(scanRecord: android.bluetooth.le.ScanRecord?): String? {
+        val data = scanRecord?.serviceData ?: return null
+        if (data.isEmpty()) {
+            return null
+        }
+        val first = data.entries.firstOrNull() ?: return null
+        val encoded = android.util.Base64.encodeToString(first.value, android.util.Base64.NO_WRAP)
+        return "${first.key.uuid}:$encoded"
+    }
+
+    private fun putOptionalString(payload: JSONObject, key: String, value: String?) {
+        if (value == null) {
+            payload.put(key, JSONObject.NULL)
+        } else {
+            payload.put(key, value)
+        }
+    }
+
+    companion object {
+        private const val TAG = "BlincBle"
     }
 }
 

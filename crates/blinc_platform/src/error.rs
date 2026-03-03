@@ -1,5 +1,6 @@
 //! Platform error types
 
+use blinc_core::native_bridge::NativeBridgeError;
 use thiserror::Error;
 
 /// Platform-related errors
@@ -32,6 +33,14 @@ pub enum PlatformError {
     /// Failed to load asset
     #[error("Asset load failed: {0}")]
     AssetLoad(String),
+
+    /// Native bridge call failed
+    #[error("Native bridge error: {0}")]
+    Bridge(#[from] NativeBridgeError),
+
+    /// Serialization error
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
 }
 
 /// Result type for platform operations

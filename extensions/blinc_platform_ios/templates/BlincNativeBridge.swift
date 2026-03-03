@@ -22,6 +22,8 @@
 import Foundation
 import UIKit
 import AudioToolbox
+import AVFoundation
+import CoreBluetooth
 import CoreLocation
 import CoreMotion
 
@@ -32,6 +34,7 @@ public final class BlincNativeBridge {
     // Handler type: (args: [Any]) throws -> Any?
     private var handlers: [String: [String: ([Any]) throws -> Any?]] = [:]
     private let sensorCollector = IOSSensorCollector()
+    private let bleCollector = IOSBleCollector()
 
     private init() {}
 
@@ -269,8 +272,29 @@ public final class BlincNativeBridge {
         register(namespace: "permissions", name: "has_location") { _ in
             self.sensorCollector.hasLocationPermission()
         }
+        register(namespace: "permissions", name: "has_location_always") { _ in
+            self.sensorCollector.hasLocationAlwaysPermission()
+        }
         register(namespace: "permissions", name: "has_motion") { _ in
             self.sensorCollector.hasMotionPermission()
+        }
+        register(namespace: "permissions", name: "has_camera") { _ in
+            false
+        }
+        register(namespace: "permissions", name: "has_microphone") { _ in
+            self.hasMicrophonePermission()
+        }
+        register(namespace: "permissions", name: "has_photos") { _ in
+            false
+        }
+        register(namespace: "permissions", name: "has_notifications") { _ in
+            false
+        }
+        register(namespace: "permissions", name: "has_bluetooth_scan") { _ in
+            self.bleCollector.hasBluetoothPermission()
+        }
+        register(namespace: "permissions", name: "has_bluetooth_connect") { _ in
+            self.bleCollector.hasBluetoothPermission()
         }
         register(namespace: "permissions", name: "request_location_when_in_use") { _ in
             self.sensorCollector.requestLocationPermissionWhenInUse()
@@ -280,6 +304,52 @@ public final class BlincNativeBridge {
         }
         register(namespace: "permissions", name: "request_motion") { _ in
             self.sensorCollector.requestMotionPermission()
+        }
+        register(namespace: "permissions", name: "request_camera") { _ in
+            false
+        }
+        register(namespace: "permissions", name: "request_microphone") { _ in
+            self.requestMicrophonePermission()
+        }
+        register(namespace: "permissions", name: "request_photos") { _ in
+            false
+        }
+        register(namespace: "permissions", name: "request_notifications") { _ in
+            false
+        }
+        register(namespace: "permissions", name: "request_bluetooth_scan") { _ in
+            self.bleCollector.requestBluetoothPermission()
+        }
+        register(namespace: "permissions", name: "request_bluetooth_connect") { _ in
+            self.bleCollector.requestBluetoothPermission()
+        }
+
+        // =====================================================================
+        // BLE namespace
+        // =====================================================================
+
+        register(namespace: "ble", name: "configure") { args in
+            let configJson = args.first as? String ?? "{}"
+            return self.bleCollector.configure(configJson: configJson)
+        }
+
+        register(namespace: "ble", name: "start") { args in
+            let sessionId = args.first as? String ?? ""
+            return self.bleCollector.start(sessionId: sessionId)
+        }
+
+        register(namespace: "ble", name: "stop") { args in
+            let sessionId = args.first as? String ?? ""
+            return self.bleCollector.stop(sessionId: sessionId)
+        }
+
+        registerString(namespace: "ble", name: "status") {
+            self.bleCollector.statusJson()
+        }
+
+        register(namespace: "ble", name: "drain_results") { args in
+            let maxResults = (args.first as? NSNumber)?.intValue ?? 64
+            return self.bleCollector.drainResults(maxResults: maxResults)
         }
 
         // =====================================================================
@@ -322,6 +392,29 @@ public final class BlincNativeBridge {
         registerVoid(namespace: "sensor", name: "clear_buffer") {
             self.sensorCollector.clearBuffer()
         }
+    }
+
+    private func hasMicrophonePermission() -> Bool {
+        let permission = AVAudioSession.sharedInstance().recordPermission
+        return permission == .granted
+    }
+
+    private func requestMicrophonePermission() -> Bool {
+        if hasMicrophonePermission() {
+            return true
+        }
+        if Thread.isMainThread {
+            AVAudioSession.sharedInstance().requestRecordPermission { _ in }
+            return hasMicrophonePermission()
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        var granted = false
+        AVAudioSession.sharedInstance().requestRecordPermission { allowed in
+            granted = allowed
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 2.0)
+        return granted
     }
 
     // MARK: - Helper Functions
@@ -577,6 +670,10 @@ private final class IOSSensorCollector: NSObject, CLLocationManagerDelegate {
     func hasLocationPermission() -> Bool {
         let status = locationAuthorizationStatus()
         return status == .authorizedAlways || status == .authorizedWhenInUse
+    }
+
+    func hasLocationAlwaysPermission() -> Bool {
+        return locationAuthorizationStatus() == .authorizedAlways
     }
 
     func hasMotionPermission() -> Bool {
@@ -1097,6 +1194,234 @@ private final class IOSSensorCollector: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         guard currentConfig().enabled.contains("heading") else { return }
         appendHeadingFrame(newHeading)
+    }
+}
+
+private struct IOSBleScanConfig {
+    var serviceUUIDs: [CBUUID] = []
+    var allowDuplicates: Bool = false
+    var scanMode: String?
+    var frameFlushMs: Int = 500
+}
+
+private final class IOSBleCollector: NSObject, CBCentralManagerDelegate {
+    private let lock = NSLock()
+    private var resultBuffer: [[String: Any]] = []
+    private var running = false
+    private var activeSessionId: String?
+    private var seq: UInt64 = 0
+    private var config = IOSBleScanConfig()
+    private let maxBufferedResults = 4096
+
+    private let callbackQueue = DispatchQueue(label: "com.blinc.ble.ios.callbacks")
+    private lazy var centralManager: CBCentralManager = {
+        CBCentralManager(delegate: self, queue: callbackQueue)
+    }()
+
+    func configure(configJson: String) -> Bool {
+        guard let data = configJson.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return false
+        }
+
+        var serviceUUIDs: [CBUUID] = []
+        if let rawUuids = root["service_uuids"] as? [Any] {
+            for item in rawUuids {
+                guard let text = item as? String else { continue }
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    serviceUUIDs.append(CBUUID(string: trimmed))
+                }
+            }
+        }
+
+        let allowDuplicates = (root["allow_duplicates"] as? Bool) ?? false
+        let scanMode = (root["scan_mode"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let frameFlushMs: Int
+        switch root["frame_flush_ms"] {
+        case let number as NSNumber:
+            frameFlushMs = max(number.intValue, 0)
+        case let string as String:
+            frameFlushMs = max(Int(string) ?? 500, 0)
+        default:
+            frameFlushMs = 500
+        }
+
+        lock.lock()
+        config = IOSBleScanConfig(
+            serviceUUIDs: serviceUUIDs,
+            allowDuplicates: allowDuplicates,
+            scanMode: scanMode?.isEmpty == true ? nil : scanMode,
+            frameFlushMs: frameFlushMs
+        )
+        lock.unlock()
+        return true
+    }
+
+    func hasBluetoothPermission() -> Bool {
+        if #available(iOS 13.0, *) {
+            return CBManager.authorization == .allowedAlways
+        }
+        return true
+    }
+
+    func requestBluetoothPermission() -> Bool {
+        if hasBluetoothPermission() {
+            return true
+        }
+        _ = centralManager.state
+        Thread.sleep(forTimeInterval: 0.05)
+        return hasBluetoothPermission()
+    }
+
+    func start(sessionId: String) -> Bool {
+        let normalizedId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedId.isEmpty else { return false }
+        guard hasBluetoothPermission() else { return false }
+        guard centralManager.state == .poweredOn else { return false }
+
+        lock.lock()
+        if running {
+            centralManager.stopScan()
+        }
+        running = true
+        activeSessionId = normalizedId
+        seq = 0
+        resultBuffer.removeAll(keepingCapacity: true)
+        let currentConfig = config
+        lock.unlock()
+
+        let serviceFilter = currentConfig.serviceUUIDs.isEmpty ? nil : currentConfig.serviceUUIDs
+        centralManager.scanForPeripherals(
+            withServices: serviceFilter,
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: currentConfig.allowDuplicates]
+        )
+        return true
+    }
+
+    func stop(sessionId: String) -> Bool {
+        let normalizedId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        lock.lock()
+        if !running {
+            lock.unlock()
+            return true
+        }
+        if !normalizedId.isEmpty, normalizedId != activeSessionId {
+            lock.unlock()
+            return false
+        }
+        running = false
+        activeSessionId = nil
+        lock.unlock()
+
+        centralManager.stopScan()
+        return true
+    }
+
+    func statusJson() -> String {
+        lock.lock()
+        let payload: [String: Any] = [
+            "running": running,
+            "buffered_results": resultBuffer.count,
+            "active_session_id": activeSessionId ?? NSNull()
+        ]
+        lock.unlock()
+        return toJsonString(payload, fallback: #"{"running":false,"buffered_results":0,"active_session_id":null}"#)
+    }
+
+    func drainResults(maxResults: Int) -> String {
+        let count = max(1, min(maxResults, 2048))
+        lock.lock()
+        let drainedCount = min(count, resultBuffer.count)
+        let drained = Array(resultBuffer.prefix(drainedCount))
+        if drainedCount > 0 {
+            resultBuffer.removeFirst(drainedCount)
+        }
+        lock.unlock()
+        return toJsonString(drained, fallback: "[]")
+    }
+
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {}
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didDiscover peripheral: CBPeripheral,
+        advertisementData: [String: Any],
+        rssi RSSI: NSNumber
+    ) {
+        let monotonicNs = currentMonotonicNs()
+        let unixTimeMs = monotonicToUnixMs(monotonicNs)
+        let name = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name
+        let serviceUUIDs = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? [])
+            .map { $0.uuidString }
+            .sorted()
+
+        var txPower: Int?
+        if let tx = advertisementData[CBAdvertisementDataTxPowerLevelKey] as? NSNumber {
+            txPower = tx.intValue
+        }
+
+        var isConnectable: Bool?
+        if let connectable = advertisementData[CBAdvertisementDataIsConnectable] as? NSNumber {
+            isConnectable = connectable.boolValue
+        }
+
+        var manufacturerData: String?
+        if let data = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data {
+            manufacturerData = data.base64EncodedString()
+        }
+
+        var serviceData: String?
+        if let map = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data],
+           let first = map.first {
+            serviceData = "\(first.key.uuidString):\(first.value.base64EncodedString())"
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard running else { return }
+
+        seq &+= 1
+        var payload: [String: Any] = [
+            "seq": NSNumber(value: seq),
+            "address": peripheral.identifier.uuidString,
+            "rssi": RSSI.intValue,
+            "service_uuids": serviceUUIDs,
+            "time_monotonic_ns": NSNumber(value: monotonicNs),
+            "time_unix_ms": NSNumber(value: unixTimeMs)
+        ]
+        payload["name"] = name ?? NSNull()
+        payload["tx_power"] = txPower.map { NSNumber(value: $0) } ?? NSNull()
+        payload["is_connectable"] = isConnectable.map { NSNumber(value: $0) } ?? NSNull()
+        payload["manufacturer_data"] = manufacturerData ?? NSNull()
+        payload["service_data"] = serviceData ?? NSNull()
+
+        if resultBuffer.count >= maxBufferedResults {
+            resultBuffer.removeFirst()
+        }
+        resultBuffer.append(payload)
+    }
+
+    private func currentMonotonicNs() -> UInt64 {
+        UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000.0)
+    }
+
+    private func monotonicToUnixMs(_ monotonicNs: UInt64) -> Int64 {
+        let nowMonoNs = currentMonotonicNs()
+        let nowUnixMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+        let deltaMs = monotonicNs <= nowMonoNs ? Int64((nowMonoNs - monotonicNs) / 1_000_000) : 0
+        return nowUnixMs - deltaMs
+    }
+
+    private func toJsonString(_ object: Any, fallback: String) -> String {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object),
+              let json = String(data: data, encoding: .utf8) else {
+            return fallback
+        }
+        return json
     }
 }
 

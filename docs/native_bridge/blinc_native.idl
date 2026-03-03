@@ -150,11 +150,20 @@ namespace permissions {
     /// Check if location permission is granted
     fn has_location() -> Bool;
 
+    /// Check if always location permission is granted
+    fn has_location_always() -> Bool;
+
     /// Check if motion/activity permission is granted
     fn has_motion() -> Bool;
 
     /// Check if notification permission is granted
     fn has_notifications() -> Bool;
+
+    /// Check if BLE scan permission is granted
+    fn has_bluetooth_scan() -> Bool;
+
+    /// Check if BLE connect permission is granted
+    fn has_bluetooth_connect() -> Bool;
 
     /// Request camera permission (returns true if granted)
     fn request_camera() -> Bool;
@@ -170,6 +179,39 @@ namespace permissions {
 
     /// Request motion/activity permission (returns true if granted)
     fn request_motion() -> Bool;
+
+    /// Request photo library permission (returns true if granted)
+    fn request_photos() -> Bool;
+
+    /// Request notifications permission (returns true if granted)
+    fn request_notifications() -> Bool;
+
+    /// Request BLE scan permission (returns true if granted)
+    fn request_bluetooth_scan() -> Bool;
+
+    /// Request BLE connect permission (returns true if granted)
+    fn request_bluetooth_connect() -> Bool;
+}
+
+// =============================================================================
+// BLE
+// =============================================================================
+
+namespace ble {
+    /// Configure BLE scan parameters using JSON payload
+    fn configure(config_json: String) -> Bool;
+
+    /// Start BLE scanning for a session ID
+    fn start(session_id: String) -> Bool;
+
+    /// Stop BLE scanning for a session ID
+    fn stop(session_id: String) -> Bool;
+
+    /// Get current BLE runtime status as JSON object string
+    fn status() -> String;
+
+    /// Drain up to max_results BLE scan results as JSON array string
+    fn drain_results(max_results: Int32) -> String;
 }
 
 // =============================================================================
@@ -191,6 +233,9 @@ namespace sensor {
 
     /// Drain up to max_frames sensor frames as JSON array string
     fn drain_frames(max_frames: Int32) -> String;
+
+    /// Peek recent sensor frames without draining
+    fn peek_frames(max_frames: Int32) -> String;
 
     /// List currently supported sensor kinds as JSON array string
     fn supported_kinds() -> String;

@@ -43,10 +43,15 @@
 //! ```
 
 pub mod assets;
+pub mod ble;
+pub mod clipboard;
 mod error;
 mod event;
 mod input;
+pub mod microphone;
+pub mod permissions;
 mod platform;
+pub mod sensors;
 mod window;
 
 // Re-export all public types
@@ -61,11 +66,26 @@ pub use window::{Cursor, Window, WindowConfig};
 
 // Re-export commonly used asset types
 pub use assets::{AssetLoader, AssetPath, FilesystemAssetLoader};
+pub use ble::{
+    BleBackend, BleBatchSummary, BleClient, BleProbeState, BleRuntimeController, BleScanConfig,
+    BleScanResult, BleScanStatus,
+};
+pub use permissions::{PermissionKind, PermissionStatus};
+pub use sensors::{
+    NativeBridgePermissionBackend, SensorAccuracy, SensorBackend, SensorBatchSummary, SensorClient,
+    SensorConfig, SensorError, SensorFrame, SensorKind, SensorPermissionBackend,
+    SensorPermissionService, SensorPermissionState, SensorProbeState, SensorRuntimeController,
+    SensorStatus,
+};
 
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::assets::{
         asset_exists, load_asset, load_asset_string, AssetLoader, AssetPath, FilesystemAssetLoader,
+    };
+    pub use crate::ble::{
+        BleBackend, BleBatchSummary, BleClient, BleProbeState, BleRuntimeController, BleScanConfig,
+        BleScanResult, BleScanStatus,
     };
     pub use crate::error::{PlatformError, Result};
     pub use crate::event::{ControlFlow, Event, EventLoop, LifecycleEvent, WindowEvent};
@@ -73,6 +93,13 @@ pub mod prelude {
         InputEvent, Key, KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase,
         TouchEvent,
     };
+    pub use crate::permissions::{PermissionKind, PermissionStatus};
     pub use crate::platform::Platform;
+    pub use crate::sensors::{
+        NativeBridgePermissionBackend, SensorAccuracy, SensorBackend, SensorBatchSummary,
+        SensorClient, SensorConfig, SensorError, SensorFrame, SensorKind, SensorPermissionBackend,
+        SensorPermissionService, SensorPermissionState, SensorProbeState, SensorRuntimeController,
+        SensorStatus,
+    };
     pub use crate::window::{Cursor, Window, WindowConfig};
 }
