@@ -97,6 +97,14 @@ impl ElementBuilder for Accordion {
     ) -> Option<blinc_layout::visual_animation::VisualAnimationConfig> {
         self.inner.visual_animation_config()
     }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
+    }
 }
 
 /// Content builder function type (cloneable via Arc)
@@ -126,6 +134,10 @@ pub struct AccordionBuilder {
     initial_open: Option<String>,
     /// Item definitions (not yet built)
     items: Vec<AccordionItem>,
+    /// User-added CSS classes
+    classes: Vec<String>,
+    /// User-set element ID
+    user_id: Option<String>,
     /// Cached built accordion
     built: OnceCell<Accordion>,
 }
@@ -141,6 +153,8 @@ impl AccordionBuilder {
             spring_config: SpringConfig::snappy(),
             initial_open: None,
             items: Vec::new(),
+            classes: Vec::new(),
+            user_id: None,
             built: OnceCell::new(),
         }
     }
@@ -184,6 +198,18 @@ impl AccordionBuilder {
             label: label.into(),
             content: Arc::new(content),
         });
+        self
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.classes.push(name.into());
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.user_id = Some(id.to_string());
         self
     }
 
@@ -257,6 +283,7 @@ impl AccordionBuilder {
             .on_state(move |_state: &(), container: &mut Div| {
                 // Outer container animates height so border follows children expansion
                 let mut content = div()
+                    .class("cn-accordion")
                     .flex_col()
                     .w_full()
                     .flex_shrink()
@@ -296,9 +323,9 @@ impl AccordionBuilder {
                     };
 
                     let mut trigger = div()
+                        .class("cn-accordion-trigger")
                         .flex_row()
                         .w_full()
-                        .padding_x(Length::Px(12.0))
                         .justify_between()
                         .items_center()
                         .cursor(CursorStyle::Pointer)
@@ -334,10 +361,8 @@ impl AccordionBuilder {
                                 .set_target(target_opacity);
                         });
 
-                    // Trigger always has consistent padding
                     // Note: No position animation on trigger - it doesn't move relative to item_div.
                     // The item_div itself animates position within the container.
-                    trigger = trigger.padding_y(Length::Px(16.0));
 
                     // Structure: item_wrapper contains trigger (always visible) + collapsible content
                     // Only the collapsible content area animates, keeping trigger always visible
@@ -359,6 +384,7 @@ impl AccordionBuilder {
                     // The content is always present but clipped by overflow_clip and animate_bounds.
                     // Padding is only applied when open to avoid gaps when collapsed.
                     let collapsible_content = div()
+                        .class("cn-accordion-content")
                         .flex_col()
                         .w_full()
                         .bg(theme.color(ColorToken::Surface))
@@ -410,9 +436,15 @@ impl AccordionBuilder {
                 container.merge(content);
             });
 
-        Accordion {
-            inner: accordion_stateful,
+        let mut inner = accordion_stateful;
+        for c in &self.classes {
+            inner = inner.class(c);
         }
+        if let Some(ref id) = self.user_id {
+            inner = inner.id(id);
+        }
+
+        Accordion { inner }
     }
 }
 
@@ -447,6 +479,14 @@ impl ElementBuilder for AccordionBuilder {
         &self,
     ) -> Option<blinc_layout::visual_animation::VisualAnimationConfig> {
         self.get_or_build().visual_animation_config()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.get_or_build().element_id()
     }
 }
 

@@ -163,7 +163,16 @@ pub fn heading(level: u8, content: impl ToString) -> Text {
     let idx = (level.saturating_sub(1).min(5)) as usize;
     let (size, weight) = HEADING_CONFIG[idx];
 
-    let t = text(content).size(size).no_wrap();
+    let semantic = match level {
+        1 => "h1",
+        2 => "h2",
+        3 => "h3",
+        4 => "h4",
+        5 => "h5",
+        _ => "h6",
+    };
+
+    let t = text(content).size(size).semantic_type(semantic);
 
     match weight {
         HeadingWeight::Medium => t.medium(),

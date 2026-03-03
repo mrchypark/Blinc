@@ -251,6 +251,10 @@ pub struct MenubarBuilder {
     trigger_style: MenuTriggerStyle,
     /// Unique instance key
     key: InstanceKey,
+    /// User-added CSS classes
+    classes: Vec<String>,
+    /// User-set element ID
+    user_id: Option<String>,
     /// Built component cache
     built: OnceCell<Menubar>,
 }
@@ -272,6 +276,8 @@ impl MenubarBuilder {
             trigger_mode: MenuTriggerMode::default(),
             trigger_style: MenuTriggerStyle::default(),
             key: InstanceKey::new("menubar"),
+            classes: Vec::new(),
+            user_id: None,
             built: OnceCell::new(),
         }
     }
@@ -345,6 +351,18 @@ impl MenubarBuilder {
         self
     }
 
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.classes.push(name.into());
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.user_id = Some(id.to_string());
+        self
+    }
+
     /// Get or build the component
     fn get_or_build(&self) -> &Menubar {
         self.built.get_or_init(|| self.build_component())
@@ -370,6 +388,7 @@ impl MenubarBuilder {
         let trigger_style = self.trigger_style.clone();
 
         let mut menubar = div()
+            .class("cn-menubar")
             .flex_row()
             .items_center()
             .h_fit()
@@ -455,6 +474,7 @@ impl MenubarBuilder {
                     };
 
                     trigger_content
+                        .class("cn-menubar-trigger")
                         .h_fit()
                         .px(style_px / 4.0)
                         .py(style_py / 4.0)
@@ -573,6 +593,14 @@ impl MenubarBuilder {
             }
 
             menubar = menubar.child(trigger);
+        }
+
+        // Apply user classes and id
+        for c in &self.classes {
+            menubar = menubar.class(c);
+        }
+        if let Some(ref id) = self.user_id {
+            menubar = menubar.id(id);
         }
 
         Menubar { inner: menubar }
@@ -1538,6 +1566,14 @@ impl ElementBuilder for MenubarBuilder {
 
     fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
         ElementBuilder::event_handlers(&self.get_or_build().inner)
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.get_or_build().inner.element_id()
     }
 }
 

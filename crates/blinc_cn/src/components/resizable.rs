@@ -226,6 +226,10 @@ struct ResizableGroupConfig {
     key: String,
     /// Callback when sizes change
     on_resize: Option<Arc<dyn Fn(&[f32]) + Send + Sync>>,
+    /// User-added CSS classes
+    classes: Vec<String>,
+    /// User-set element ID
+    user_id: Option<String>,
 }
 
 impl Default for ResizableGroupConfig {
@@ -236,6 +240,8 @@ impl Default for ResizableGroupConfig {
             panels: Vec::new(),
             key: String::new(),
             on_resize: None,
+            classes: Vec::new(),
+            user_id: None,
         }
     }
 }
@@ -430,6 +436,14 @@ impl ResizableGroup {
             }
         }
 
+        // Apply user classes and id
+        for c in &config.classes {
+            container = container.class(c);
+        }
+        if let Some(ref id) = config.user_id {
+            container = container.id(id);
+        }
+
         Self { inner: container }
     }
 
@@ -509,7 +523,10 @@ impl ResizableGroup {
                 }
 
                 // Wrap in hit area container
-                let mut hit_area = div().items_center().justify_center();
+                let mut hit_area = div()
+                    .class("cn-resizable-handle")
+                    .items_center()
+                    .justify_center();
 
                 match direction {
                     ResizeDirection::Horizontal => {
@@ -618,6 +635,14 @@ impl ElementBuilder for ResizableGroup {
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
         self.inner.children_builders()
     }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
+    }
 }
 
 /// Builder for resizable group
@@ -684,6 +709,18 @@ impl ResizableGroupBuilder {
         self
     }
 
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.config.classes.push(name.into());
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.config.user_id = Some(id.to_string());
+        self
+    }
+
     fn get_or_build(&self) -> &ResizableGroup {
         self.built.get_or_init(|| {
             // We need to take ownership of config, but can't mutate self
@@ -694,6 +731,8 @@ impl ResizableGroupBuilder {
                 panels: Vec::new(), // Empty - panels already consumed
                 key: self.config.key.clone(),
                 on_resize: self.config.on_resize.clone(),
+                classes: self.config.classes.clone(),
+                user_id: self.config.user_id.clone(),
             };
             ResizableGroup::from_config(config)
         })
@@ -724,6 +763,14 @@ impl ElementBuilder for ResizableGroupBuilder {
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
         self.get_or_build().inner.children_builders()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.get_or_build().inner.element_id()
     }
 }
 

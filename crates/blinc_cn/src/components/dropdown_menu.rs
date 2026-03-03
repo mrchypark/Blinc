@@ -118,6 +118,10 @@ pub struct DropdownMenuBuilder {
     offset: f32,
     /// Unique instance key (UUID-based for loop/closure safety)
     key: InstanceKey,
+    /// User-added CSS classes
+    classes: Vec<String>,
+    /// User-set element ID
+    user_id: Option<String>,
     /// Built component cache
     built: OnceCell<DropdownMenu>,
 }
@@ -147,6 +151,8 @@ impl DropdownMenuBuilder {
             align: DropdownAlign::Start,
             offset: 4.0,
             key: InstanceKey::new("dropdown"),
+            classes: Vec::new(),
+            user_id: None,
             built: OnceCell::new(),
         }
     }
@@ -168,6 +174,8 @@ impl DropdownMenuBuilder {
             align: DropdownAlign::Start,
             offset: 4.0,
             key: InstanceKey::new("dropdown"),
+            classes: Vec::new(),
+            user_id: None,
             built: OnceCell::new(),
         }
     }
@@ -262,6 +270,18 @@ impl DropdownMenuBuilder {
     /// Set offset from trigger (in pixels)
     pub fn offset(mut self, offset: f32) -> Self {
         self.offset = offset;
+        self
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.classes.push(name.into());
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.user_id = Some(id.to_string());
         self
     }
 
@@ -402,7 +422,14 @@ impl DropdownMenuBuilder {
                 }
             });
 
-        DropdownMenu { inner: trigger }
+        let mut inner = trigger;
+        for c in &self.classes {
+            inner = inner.class(c);
+        }
+        if let Some(ref id) = self.user_id {
+            inner = inner.id(id);
+        }
+        DropdownMenu { inner }
     }
 }
 
@@ -607,6 +634,7 @@ fn build_submenu_content(
         BlincContextState::get().use_state_keyed(&format!("{}_nested", key), || None);
 
     let mut menu = div()
+        .class("cn-dropdown-menu")
         .id(menu_id)
         .flex_col()
         .w(width)
@@ -695,6 +723,7 @@ fn build_submenu_content(
                     };
 
                     let mut row_content = div()
+                        .class("cn-dropdown-item")
                         .w_full()
                         .h_fit()
                         .py(padding / 4.0)
@@ -709,6 +738,10 @@ fn build_submenu_content(
                         .items_center()
                         .justify_between()
                         .child(left_side);
+
+                    if item_disabled {
+                        row_content = row_content.class("cn-dropdown-item--disabled");
+                    }
 
                     if let Some(right) = right_side {
                         row_content = row_content.child(right);
@@ -820,6 +853,7 @@ fn build_dropdown_content(
         BlincContextState::get().use_state_keyed(&format!("{}_submenu", key), || None);
 
     let mut menu = div()
+        .class("cn-dropdown-menu")
         .id(menu_id)
         .flex_col()
         .w(width)
@@ -912,6 +946,7 @@ fn build_dropdown_content(
                     };
 
                     let mut row_content = div()
+                        .class("cn-dropdown-item")
                         .w_full()
                         .h_fit()
                         .py(padding / 4.0)
@@ -926,6 +961,10 @@ fn build_dropdown_content(
                         .items_center()
                         .justify_between()
                         .child(left_side);
+
+                    if item_disabled {
+                        row_content = row_content.class("cn-dropdown-item--disabled");
+                    }
 
                     if let Some(right) = right_side {
                         row_content = row_content.child(right);
@@ -1043,6 +1082,14 @@ impl ElementBuilder for DropdownMenuBuilder {
 
     fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
         self.get_or_build().inner.event_handlers()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.get_or_build().inner.element_id()
     }
 }
 

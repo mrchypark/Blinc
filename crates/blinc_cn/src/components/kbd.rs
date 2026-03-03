@@ -99,6 +99,7 @@ impl KbdBuilder {
 
         // Build the Kbd element
         let inner = div()
+            .class("cn-kbd")
             .items_center()
             .justify_center()
             .w_fit()
@@ -127,6 +128,20 @@ impl KbdBuilder {
 /// Built Kbd component
 pub struct Kbd {
     inner: Div,
+}
+
+impl Kbd {
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
 }
 
 impl std::fmt::Debug for Kbd {
@@ -159,6 +174,10 @@ impl ElementBuilder for KbdBuilder {
     fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
         ElementBuilder::event_handlers(&self.get_or_build().inner)
     }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().inner.element_classes()
+    }
 }
 
 impl ElementBuilder for Kbd {
@@ -184,6 +203,10 @@ impl ElementBuilder for Kbd {
 
     fn event_handlers(&self) -> Option<&blinc_layout::event_handler::EventHandlers> {
         ElementBuilder::event_handlers(&self.inner)
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 

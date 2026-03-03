@@ -112,6 +112,20 @@ pub struct LineChart {
     inner: Div,
 }
 
+impl LineChart {
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
+}
+
 impl ElementBuilder for LineChart {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         self.inner.build(tree)
@@ -131,6 +145,10 @@ impl ElementBuilder for LineChart {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
@@ -375,6 +393,20 @@ pub struct BarChart {
     inner: Div,
 }
 
+impl BarChart {
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
+}
+
 impl ElementBuilder for BarChart {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         self.inner.build(tree)
@@ -394,6 +426,10 @@ impl ElementBuilder for BarChart {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
@@ -602,6 +638,20 @@ pub struct SparkLine {
     inner: Div,
 }
 
+impl SparkLine {
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
+}
+
 impl ElementBuilder for SparkLine {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         self.inner.build(tree)
@@ -621,6 +671,10 @@ impl ElementBuilder for SparkLine {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
@@ -788,6 +842,20 @@ pub struct ThresholdLineChart {
     inner: Div,
 }
 
+impl ThresholdLineChart {
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
+}
+
 impl ElementBuilder for ThresholdLineChart {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         self.inner.build(tree)
@@ -807,6 +875,10 @@ impl ElementBuilder for ThresholdLineChart {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
@@ -1136,6 +1208,20 @@ pub struct Histogram {
     inner: Div,
 }
 
+impl Histogram {
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
+}
+
 impl ElementBuilder for Histogram {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         self.inner.build(tree)
@@ -1155,6 +1241,10 @@ impl ElementBuilder for Histogram {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
@@ -1379,6 +1469,20 @@ pub struct ComparisonBarChart {
     inner: Div,
 }
 
+impl ComparisonBarChart {
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
+}
+
 impl ElementBuilder for ComparisonBarChart {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         self.inner.build(tree)
@@ -1398,6 +1502,10 @@ impl ElementBuilder for ComparisonBarChart {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 

@@ -125,7 +125,11 @@ impl BuiltAspectRatio {
         };
 
         // Build outer container with fixed dimensions
-        let mut container = div().w(final_width).h(final_height).overflow_clip();
+        let mut container = div()
+            .class("cn-aspect-ratio")
+            .w(final_width)
+            .h(final_height)
+            .overflow_clip();
 
         // Apply background if set
         if let Some(bg) = config.background {
@@ -162,6 +166,20 @@ pub struct AspectRatio {
     inner: Div,
 }
 
+impl AspectRatio {
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
+    }
+}
+
 impl ElementBuilder for AspectRatio {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         self.inner.build(tree)
@@ -173,6 +191,10 @@ impl ElementBuilder for AspectRatio {
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
         self.inner.children_builders()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
@@ -263,6 +285,10 @@ impl ElementBuilder for AspectRatioBuilder {
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
         self.get_or_build().children_builders()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().element_classes()
     }
 }
 

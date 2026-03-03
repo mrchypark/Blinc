@@ -83,6 +83,7 @@ impl Icon {
         let svg_str = blinc_icons::to_svg_with_stroke(config.path_data, size, stroke_width);
 
         let inner = div()
+            .class("cn-icon")
             .w(size)
             .h(size)
             .flex()
@@ -91,6 +92,18 @@ impl Icon {
             .child(svg(&svg_str).size(size, size).color(color));
 
         Icon { inner }
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
     }
 }
 
@@ -113,6 +126,10 @@ impl ElementBuilder for Icon {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.inner.layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
@@ -228,6 +245,10 @@ impl ElementBuilder for IconBuilder {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.get_or_build().layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().element_classes()
     }
 }
 

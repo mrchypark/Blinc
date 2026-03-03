@@ -168,6 +168,10 @@ struct AvatarConfig {
     fallback_bg: Option<Color>,
     /// Custom text color for fallback
     fallback_color: Option<Color>,
+    /// User-added CSS classes
+    classes: Vec<String>,
+    /// User-set element ID
+    user_id: Option<String>,
 }
 
 /// Built avatar component
@@ -223,6 +227,7 @@ impl BuiltAvatar {
 
         // Build the inner avatar container (with clipping for image/initials)
         let mut inner = div()
+            .class("cn-avatar")
             .w(size_px)
             .h(size_px)
             .rounded(radius)
@@ -230,6 +235,10 @@ impl BuiltAvatar {
             .flex_row()
             .items_center()
             .justify_center();
+
+        if config.shape == AvatarShape::Square {
+            inner = inner.class("cn-avatar--square");
+        }
 
         // Apply background if needed (for fallback)
         if let Some(bg) = background {
@@ -244,6 +253,14 @@ impl BuiltAvatar {
             AvatarContent::Initials(text_el) => {
                 inner = inner.child(text_el);
             }
+        }
+
+        // Apply user classes and id
+        for c in &config.classes {
+            inner = inner.class(c);
+        }
+        if let Some(ref id) = config.user_id {
+            inner = inner.id(id);
         }
 
         // If we have a status indicator, use foreground layer to render on top of images
@@ -303,6 +320,14 @@ impl ElementBuilder for Avatar {
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
         self.inner.children_builders()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
     }
 }
 
@@ -374,6 +399,18 @@ impl AvatarBuilder {
     /// Set custom text color for fallback
     pub fn fallback_color(self, color: impl Into<Color>) -> Self {
         self.config.borrow_mut().fallback_color = Some(color.into());
+        self
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(self, name: impl Into<String>) -> Self {
+        self.config.borrow_mut().classes.push(name.into());
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(self, id: &str) -> Self {
+        self.config.borrow_mut().user_id = Some(id.to_string());
         self
     }
 
@@ -464,6 +501,14 @@ impl ElementBuilder for AvatarBuilder {
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
         self.get_or_build().children_builders()
     }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.get_or_build().element_id()
+    }
 }
 
 /// Create a new avatar
@@ -520,6 +565,10 @@ struct AvatarGroupConfig {
     max: Option<usize>,
     /// Overlap amount in pixels
     overlap: f32,
+    /// User-added CSS classes
+    classes: Vec<String>,
+    /// User-set element ID
+    user_id: Option<String>,
 }
 
 impl Default for AvatarGroupConfig {
@@ -529,6 +578,8 @@ impl Default for AvatarGroupConfig {
             size: AvatarSize::default(),
             max: None,
             overlap: 8.0,
+            classes: Vec::new(),
+            user_id: None,
         }
     }
 }
@@ -601,6 +652,14 @@ impl BuiltAvatarGroup {
             container = container.child(remaining_indicator);
         }
 
+        // Apply user classes and id
+        for c in &config.classes {
+            container = container.class(c);
+        }
+        if let Some(ref id) = config.user_id {
+            container = container.id(id);
+        }
+
         Self { inner: container }
     }
 }
@@ -621,6 +680,14 @@ impl ElementBuilder for AvatarGroup {
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
         self.inner.children_builders()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
     }
 }
 
@@ -671,6 +738,18 @@ impl AvatarGroupBuilder {
         self
     }
 
+    /// Add a CSS class for selector matching
+    pub fn class(self, name: impl Into<String>) -> Self {
+        self.config.borrow_mut().classes.push(name.into());
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(self, id: &str) -> Self {
+        self.config.borrow_mut().user_id = Some(id.to_string());
+        self
+    }
+
     /// Build the final AvatarGroup component
     pub fn build_final(self) -> AvatarGroup {
         let config = self.config.into_inner();
@@ -696,6 +775,14 @@ impl ElementBuilder for AvatarGroupBuilder {
 
     fn children_builders(&self) -> &[Box<dyn ElementBuilder>] {
         self.get_or_build().children_builders()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.get_or_build().element_id()
     }
 }
 

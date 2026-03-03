@@ -84,6 +84,9 @@ pub struct HitTestResult {
     /// Bounds for each ancestor node (for correct bounds when bubbling)
     /// Maps node_id.to_raw() to (x, y, width, height)
     pub ancestor_bounds: std::collections::HashMap<u64, (f32, f32, f32, f32)>,
+    /// Whether this hit is within a foreground-layer subtree.
+    /// Used to prioritize foreground elements over normal elements.
+    pub is_foreground: bool,
 }
 
 /// Callback for element events
@@ -581,13 +584,6 @@ impl EventRouter {
 
         // Hit test for the topmost element
         if let Some(hit) = self.hit_test(tree, x, y) {
-            tracing::debug!(
-                "on_mouse_down: hit node {:?} at ({:.1}, {:.1}), ancestors={:?}",
-                hit.node,
-                x,
-                y,
-                hit.ancestors
-            );
             self.pressed_target = Some(hit.node);
             // Store ancestors for bubbling on release
             self.pressed_ancestors = hit.ancestors.clone();
@@ -600,6 +596,15 @@ impl EventRouter {
             self.last_hit_bounds_height = hit.bounds_height;
             // Store ancestor bounds for proper bounds lookup during event bubbling
             self.last_hit_ancestor_bounds = hit.ancestor_bounds.clone();
+
+            // Fire click-outside handlers (dismiss dropdowns etc. when clicking elsewhere)
+            // Resolve ancestor node IDs to element IDs for matching
+            let ancestor_ids: Vec<String> = hit
+                .ancestors
+                .iter()
+                .filter_map(|&node| tree.element_registry().get_id(node))
+                .collect();
+            crate::click_outside::fire_click_outside(&ancestor_ids);
 
             // Record mouse down event (only if recording is enabled)
             #[cfg(feature = "recorder")]
@@ -627,7 +632,9 @@ impl EventRouter {
                 events.push((ancestor, event_types::POINTER_DOWN));
             }
         } else {
-            // Clicked outside any element - clear focus
+            // Clicked outside any element - fire all click-outside handlers
+            crate::click_outside::fire_click_outside(&[] as &[String]);
+            // Clear focus
             self.set_focus(None);
             self.pressed_target = None;
             self.pressed_ancestors.clear();
@@ -1213,20 +1220,34 @@ impl EventRouter {
         let bounds = tree.layout().get_bounds(node, parent_offset)?;
 
         // Check if point is within bounds
-        if !self.point_in_bounds(x, y, &bounds) {
-            return None;
+        let in_bounds = self.point_in_bounds(x, y, &bounds);
+
+        // If point is outside bounds, check whether this node clips content.
+        // If it does NOT clip (overflow: visible), children may extend beyond
+        // the parent bounds and still be interactive — so we must test them.
+        // If it DOES clip, children outside bounds are invisible → skip.
+        if !in_bounds {
+            let clips = tree
+                .get_render_node(node)
+                .map(|n| n.props.clips_content)
+                .unwrap_or(true); // default to clipping if no render node
+            if clips {
+                return None;
+            }
+            // overflow: visible — fall through to test children
         }
 
         // Debug log for nodes in hit path
         tracing::debug!(
-            "hit_test_node: HIT node={:?}, bounds=({:.1}, {:.1}, {:.1}x{:.1}), point=({:.1}, {:.1})",
+            "hit_test_node: HIT node={:?}, bounds=({:.1}, {:.1}, {:.1}x{:.1}), point=({:.1}, {:.1}), in_bounds={}",
             node,
             bounds.x,
             bounds.y,
             bounds.width,
             bounds.height,
             x,
-            y
+            y,
+            in_bounds
         );
 
         ancestors.push(node);
@@ -1251,7 +1272,10 @@ impl EventRouter {
             )
         };
 
-        // Check children in reverse order (last child is on top)
+        // Check children in reverse order (last child is on top).
+        // Foreground-aware: if a child subtree yields a foreground hit,
+        // it takes priority over non-foreground hits from siblings that
+        // appear later in tree order but visually behind the foreground.
         let children = tree.layout().children(node);
         tracing::trace!(
             "hit_test_node: node={:?}, bounds=({:.1}, {:.1}, {:.1}x{:.1}), children={:?}",
@@ -1262,10 +1286,16 @@ impl EventRouter {
             bounds.height,
             children
         );
+
+        let mut best_hit: Option<HitTestResult> = None;
+
         for child in children.into_iter().rev() {
             let child_render = tree.get_render_node(child);
             let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
             let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+            let child_is_fg = child_render
+                .map(|n| n.props.layer == crate::element::RenderLayer::Foreground)
+                .unwrap_or(false);
 
             let mut child_offset = base_child_offset;
             let child_cumulative;
@@ -1290,7 +1320,7 @@ impl EventRouter {
                 child_cumulative = new_cumulative_scroll;
             }
 
-            if let Some(result) = self.hit_test_node(
+            if let Some(mut result) = self.hit_test_node(
                 tree,
                 child,
                 x,
@@ -1300,8 +1330,39 @@ impl EventRouter {
                 ancestor_bounds.clone(),
                 child_cumulative,
             ) {
-                return Some(result);
+                // Mark result as foreground if this child or the result itself is foreground
+                if child_is_fg {
+                    result.is_foreground = true;
+                }
+
+                match &best_hit {
+                    None => {
+                        best_hit = Some(result);
+                    }
+                    Some(existing) => {
+                        // Foreground results always take priority
+                        if result.is_foreground && !existing.is_foreground {
+                            best_hit = Some(result);
+                        }
+                        // Otherwise keep the first hit (topmost in reverse order)
+                    }
+                }
+
+                // If we already have a foreground result, no need to check more
+                if best_hit.as_ref().is_some_and(|h| h.is_foreground) {
+                    break;
+                }
             }
+        }
+
+        if let Some(result) = best_hit {
+            return Some(result);
+        }
+
+        // If the point was outside this node's own bounds, don't return
+        // this node as a target (only its overflow children could match).
+        if !in_bounds {
+            return None;
         }
 
         // No child hit - check if this node has pointer_events_none
@@ -1320,10 +1381,6 @@ impl EventRouter {
         }
 
         // This node is the target
-        tracing::trace!(
-            "hit_test_node: FINAL target node={:?} (no children hit at point)",
-            node
-        );
         Some(HitTestResult {
             node,
             local_x: x - bounds.x,
@@ -1334,6 +1391,7 @@ impl EventRouter {
             bounds_width: bounds.width,
             bounds_height: bounds.height,
             ancestor_bounds,
+            is_foreground: false,
         })
     }
 
@@ -1359,7 +1417,15 @@ impl EventRouter {
         let in_bounds = self.point_in_bounds(x, y, &bounds);
 
         if !in_bounds {
-            return;
+            // If this node clips content, children outside bounds are invisible
+            let clips = tree
+                .get_render_node(node)
+                .map(|n| n.props.clips_content)
+                .unwrap_or(true);
+            if clips {
+                return;
+            }
+            // overflow: visible — fall through to test children
         }
 
         ancestors.push(node);
@@ -1376,8 +1442,8 @@ impl EventRouter {
             .map(|n| n.props.pointer_events_none)
             .unwrap_or(false);
 
-        if !pointer_events_none {
-            // Add this node to results
+        // Only add this node to results if point is within its own bounds
+        if in_bounds && !pointer_events_none {
             results.push(HitTestResult {
                 node,
                 local_x: x - bounds.x,
@@ -1388,6 +1454,7 @@ impl EventRouter {
                 bounds_width: bounds.width,
                 bounds_height: bounds.height,
                 ancestor_bounds: ancestor_bounds.clone(),
+                is_foreground: false,
             });
         }
 
@@ -1545,10 +1612,34 @@ impl EventRouter {
         }
 
         // Point is in overlay bounds - filter out hits that are NOT in the overlay layer
+        // BUT also keep foreground elements: they render on top of everything
+        // (including overlays) and should receive hover events regardless.
         if let Some(overlay_id) = overlay_layer_id {
             let result: Vec<_> = all_hits
                 .into_iter()
-                .filter(|hit| hit.ancestors.contains(&overlay_id))
+                .filter(|hit| {
+                    // Keep nodes in the overlay subtree
+                    if hit.ancestors.contains(&overlay_id) {
+                        return true;
+                    }
+                    // Keep foreground elements (e.g., absolutely positioned dropdowns
+                    // rendered in foreground pass)
+                    if let Some(render_node) = tree.get_render_node(hit.node) {
+                        if render_node.props.layer == crate::element::RenderLayer::Foreground {
+                            return true;
+                        }
+                    }
+                    // Also keep nodes whose ancestors include a foreground element
+                    // (children of foreground containers like dropdown items)
+                    for &ancestor in &hit.ancestors {
+                        if let Some(render_node) = tree.get_render_node(ancestor) {
+                            if render_node.props.layer == crate::element::RenderLayer::Foreground {
+                                return true;
+                            }
+                        }
+                    }
+                    false
+                })
                 .collect();
 
             // Log when we're in overlay bounds but filtering

@@ -398,6 +398,10 @@ impl std::fmt::Debug for Tabs {
 pub struct TabsBuilder {
     key: InstanceKey,
     config: TabsConfig,
+    /// User-added CSS classes
+    classes: Vec<String>,
+    /// User-set element ID
+    user_id: Option<String>,
     built: OnceCell<Tabs>,
 }
 
@@ -423,6 +427,8 @@ impl TabsBuilder {
                 on_change: None,
                 transition: TabsTransition::default(),
             },
+            classes: Vec::new(),
+            user_id: None,
             built: OnceCell::new(),
         }
     }
@@ -439,6 +445,8 @@ impl TabsBuilder {
                 on_change: None,
                 transition: TabsTransition::default(),
             },
+            classes: Vec::new(),
+            user_id: None,
             built: OnceCell::new(),
         }
     }
@@ -536,6 +544,18 @@ impl TabsBuilder {
         self
     }
 
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.classes.push(name.into());
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.user_id = Some(id.to_string());
+        self
+    }
+
     /// Get or build the component
     fn get_or_build(&self) -> &Tabs {
         self.built.get_or_init(|| self.build_component())
@@ -595,6 +615,7 @@ impl TabsBuilder {
                 let active_value = state_for_buttons.get();
 
                 let mut buttons = div()
+                    .class("cn-tabs-list")
                     .h(size.height())
                     .w_full()
                     .bg(tab_list_bg)
@@ -731,14 +752,22 @@ impl TabsBuilder {
             });
 
         // Combine both containers
-        Tabs {
-            inner: div()
-                .w_full()
-                .flex_grow()
-                .flex_col()
-                .child(tab_button_area)
-                .child(tab_content_area),
+        let mut container = div()
+            .w_full()
+            .flex_grow()
+            .flex_col()
+            .child(tab_button_area)
+            .child(tab_content_area);
+
+        // Apply user classes and id
+        for c in &self.classes {
+            container = container.class(c);
         }
+        if let Some(ref id) = self.user_id {
+            container = container.id(id);
+        }
+
+        Tabs { inner: container }
     }
 }
 
@@ -842,7 +871,16 @@ fn build_tab_trigger(
             );
         }
 
+        // Determine size CSS class for trigger
+        let trigger_size_class = match size {
+            TabsSize::Small => "cn-tabs-trigger--sm",
+            TabsSize::Medium => "cn-tabs-trigger--md",
+            TabsSize::Large => "cn-tabs-trigger--lg",
+        };
+
         let mut trigger_div = div()
+            .class("cn-tabs-trigger")
+            .class(trigger_size_class)
             .h(inner_height)
             .padding_x(Length::Px(size.padding_x()))
             .padding_y(Length::Px(
@@ -861,9 +899,14 @@ fn build_tab_trigger(
             })
             .child(content);
 
-        // Add shadow for active tab
+        // Add active class for active tab
         if is_active && !disabled {
-            trigger_div = trigger_div.shadow_sm();
+            trigger_div = trigger_div.class("cn-tabs-trigger--active").shadow_sm();
+        }
+
+        // Add disabled class
+        if disabled {
+            trigger_div = trigger_div.class("cn-tabs-trigger--disabled");
         }
 
         trigger_div
@@ -908,6 +951,14 @@ impl ElementBuilder for TabsBuilder {
 
     fn layout_style(&self) -> Option<&taffy::Style> {
         self.get_or_build().inner.layout_style()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().inner.element_classes()
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.get_or_build().inner.element_id()
     }
 }
 

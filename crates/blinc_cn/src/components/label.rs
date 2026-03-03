@@ -67,11 +67,19 @@ impl Label {
 
         let font_size = config.size.font_size(&typography);
 
+        let disabled_class = if config.disabled {
+            "cn-label--disabled"
+        } else {
+            ""
+        };
+
         let inner = if config.required {
             // Build a row with text + asterisk
             let required_color = theme.color(ColorToken::Error);
 
             div()
+                .class("cn-label")
+                .class(disabled_class)
                 .flex_row()
                 .h_fit()
                 .gap(2.0)
@@ -83,7 +91,7 @@ impl Label {
                 )
                 .child(text("*").size(font_size).color(required_color).medium())
         } else {
-            div().h_fit().child(
+            div().class("cn-label").class(disabled_class).h_fit().child(
                 text(&config.text)
                     .size(font_size)
                     .color(text_color)
@@ -92,6 +100,18 @@ impl Label {
         };
 
         Self { inner }
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
     }
 }
 
@@ -178,6 +198,10 @@ impl ElementBuilder for Label {
     fn element_type_id(&self) -> blinc_layout::div::ElementTypeId {
         self.inner.element_type_id()
     }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
+    }
 }
 
 impl ElementBuilder for LabelBuilder {
@@ -195,6 +219,10 @@ impl ElementBuilder for LabelBuilder {
 
     fn element_type_id(&self) -> blinc_layout::div::ElementTypeId {
         self.get_or_build().element_type_id()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.get_or_build().element_classes()
     }
 }
 

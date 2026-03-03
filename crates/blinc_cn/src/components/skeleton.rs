@@ -46,7 +46,7 @@ impl Skeleton {
         let bg = theme.color(ColorToken::SurfaceElevated);
         let radius = theme.radius(RadiusToken::Default);
 
-        let inner = div().bg(bg).rounded(radius);
+        let inner = div().class("cn-skeleton").bg(bg).rounded(radius);
 
         Self { inner }
     }
@@ -57,6 +57,7 @@ impl Skeleton {
         let bg = theme.color(ColorToken::SurfaceElevated);
 
         let inner = div()
+            .class("cn-skeleton")
             .bg(bg)
             .w(size)
             .h(size)
@@ -101,6 +102,18 @@ impl Skeleton {
     /// ```
     pub fn shimmer(self, timeline: SharedAnimatedTimeline) -> AnimatedSkeleton {
         AnimatedSkeleton::new(self, timeline)
+    }
+
+    /// Add a CSS class for selector matching
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.inner = self.inner.class(name);
+        self
+    }
+
+    /// Set the element ID for CSS selector matching
+    pub fn id(mut self, id: &str) -> Self {
+        self.inner = self.inner.id(id);
+        self
     }
 }
 
@@ -277,6 +290,10 @@ impl ElementBuilder for Skeleton {
 
     fn element_type_id(&self) -> ElementTypeId {
         ElementBuilder::element_type_id(&self.inner)
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 }
 
