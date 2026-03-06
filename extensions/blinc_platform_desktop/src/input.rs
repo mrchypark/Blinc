@@ -1,10 +1,10 @@
 //! Desktop input conversion (winit -> blinc_platform)
 
 use blinc_platform::{
-    InputEvent, Key, KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase,
-    TouchEvent,
+    FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate, InputEvent, Key,
+    KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
 };
-use winit::event::{ElementState, MouseButton as WinitMouseButton, Touch, TouchPhase};
+use winit::event::{ElementState, Ime as WinitIme, MouseButton as WinitMouseButton, Touch, TouchPhase};
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 
 /// Convert winit mouse button to blinc MouseButton
@@ -145,11 +145,45 @@ pub fn convert_keyboard_event(
     state: ElementState,
     modifiers: ModifiersState,
 ) -> InputEvent {
+    if state == ElementState::Pressed && matches!(key, WinitKey::Named(NamedKey::Tab)) {
+        let intent = if modifiers.shift_key() {
+            FocusTraversalIntent::Previous
+        } else {
+            FocusTraversalIntent::Next
+        };
+        return InputEvent::FocusTraversal(intent);
+    }
+
     InputEvent::Keyboard(KeyboardEvent {
         key: convert_key(key),
         state: convert_key_state(state),
         modifiers: convert_modifiers(modifiers),
     })
+}
+
+/// Convert winit IME event to blinc InputEvent.
+pub fn convert_ime_event(event: &WinitIme) -> Option<InputEvent> {
+    match event {
+        WinitIme::Enabled => Some(InputEvent::CompositionStarted),
+        WinitIme::Preedit(text, cursor) => {
+            if text.is_empty() {
+                Some(InputEvent::CompositionCancelled)
+            } else {
+                Some(InputEvent::CompositionUpdated(ImeCompositionUpdate::new(
+                    text.clone(),
+                    cursor.map(|(start, end)| ImeCompositionSelection::new(start, end)),
+                )))
+            }
+        }
+        WinitIme::Commit(text) => {
+            if text.is_empty() {
+                None
+            } else {
+                Some(InputEvent::CompositionCommitted(text.clone()))
+            }
+        }
+        WinitIme::Disabled => Some(InputEvent::CompositionCancelled),
+    }
 }
 
 /// Convert winit touch event to blinc InputEvent

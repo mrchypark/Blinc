@@ -5,9 +5,11 @@ use std::time::{Duration, Instant};
 use crate::input;
 use crate::window::DesktopWindow;
 use blinc_platform::{
-    ControlFlow, Event, EventLoop, LifecycleEvent, PlatformError, Window, WindowConfig, WindowEvent,
+    current_ime_state, ControlFlow, Event, EventLoop, ImeCursorArea, ImeState, LifecycleEvent,
+    PlatformError, Window, WindowConfig, WindowEvent,
 };
 use winit::application::ApplicationHandler;
+use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{StartCause, WindowEvent as WinitWindowEvent};
 use winit::event_loop::{
     ActiveEventLoop, ControlFlow as WinitControlFlow, EventLoop as WinitEventLoop, EventLoopProxy,
@@ -35,6 +37,38 @@ fn scroll_end_deadline(
         return None;
     }
     last_scroll_event_at.map(|last| last + SCROLL_END_DEBOUNCE)
+}
+
+trait DesktopImeWindow {
+    fn set_ime_allowed(&self, allowed: bool);
+    fn set_ime_cursor_area(&self, area: ImeCursorArea);
+}
+
+impl DesktopImeWindow for DesktopWindow {
+    fn set_ime_allowed(&self, allowed: bool) {
+        self.winit_window().set_ime_allowed(allowed);
+    }
+
+    fn set_ime_cursor_area(&self, area: ImeCursorArea) {
+        self.winit_window().set_ime_cursor_area(
+            LogicalPosition::new(area.x, area.y),
+            LogicalSize::new(area.width, area.height),
+        );
+    }
+}
+
+fn sync_ime_window_state<W: DesktopImeWindow>(window: &W, applied: &mut ImeState, requested: ImeState) {
+    if applied.enabled != requested.enabled {
+        window.set_ime_allowed(requested.enabled);
+    }
+
+    if requested.enabled && applied.cursor_area != requested.cursor_area {
+        if let Some(area) = requested.cursor_area {
+            window.set_ime_cursor_area(area);
+        }
+    }
+
+    *applied = requested;
 }
 
 /// Proxy for waking up the event loop from another thread
@@ -126,6 +160,7 @@ where
     mouse_position: (f32, f32),
     last_scroll_event_at: Option<Instant>,
     scroll_end_pending: bool,
+    applied_ime_state: ImeState,
     should_exit: bool,
 }
 
@@ -142,6 +177,7 @@ where
             mouse_position: (0.0, 0.0),
             last_scroll_event_at: None,
             scroll_end_pending: false,
+            applied_ime_state: ImeState::default(),
             should_exit: false,
         }
     }
@@ -152,6 +188,9 @@ where
             if flow == ControlFlow::Exit {
                 self.should_exit = true;
             }
+        }
+        if let Some(ref window) = self.window {
+            sync_ime_window_state(window, &mut self.applied_ime_state, current_ime_state());
         }
     }
 
@@ -170,6 +209,7 @@ where
         if self.window.is_none() {
             match DesktopWindow::new(event_loop, &self.window_config) {
                 Ok(window) => {
+                    sync_ime_window_state(&window, &mut self.applied_ime_state, current_ime_state());
                     self.window = Some(window);
                     self.handle_event(Event::Lifecycle(LifecycleEvent::Resumed));
                 }
@@ -248,6 +288,15 @@ where
                     input::convert_keyboard_event(&event.logical_key, event.state, self.modifiers);
                 self.handle_event(Event::Input(input_event));
                 // Request immediate redraw so text input changes render instantly
+                if let Some(ref window) = self.window {
+                    window.request_redraw();
+                }
+            }
+
+            WinitWindowEvent::Ime(ime) => {
+                if let Some(input_event) = input::convert_ime_event(&ime) {
+                    self.handle_event(Event::Input(input_event));
+                }
                 if let Some(ref window) = self.window {
                     window.request_redraw();
                 }
@@ -364,8 +413,32 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{scroll_end_deadline, should_emit_synthetic_scroll_end, SCROLL_END_DEBOUNCE};
+    use super::{
+        scroll_end_deadline, should_emit_synthetic_scroll_end, sync_ime_window_state,
+        DesktopImeWindow, SCROLL_END_DEBOUNCE,
+    };
+    use blinc_platform::{ImeCursorArea, ImeState};
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
+
+    #[derive(Default)]
+    struct TestImeWindow {
+        allowed: Mutex<Vec<bool>>,
+        cursor_areas: Mutex<Vec<ImeCursorArea>>,
+    }
+
+    impl DesktopImeWindow for TestImeWindow {
+        fn set_ime_allowed(&self, allowed: bool) {
+            self.allowed.lock().expect("allowed lock").push(allowed);
+        }
+
+        fn set_ime_cursor_area(&self, area: ImeCursorArea) {
+            self.cursor_areas
+                .lock()
+                .expect("cursor area lock")
+                .push(area);
+        }
+    }
 
     #[test]
     fn synthetic_scroll_end_requires_pending_and_elapsed_threshold() {
@@ -397,5 +470,24 @@ mod tests {
             scroll_end_deadline(true, Some(now)),
             Some(now + SCROLL_END_DEBOUNCE)
         );
+    }
+
+    #[test]
+    fn sync_ime_window_state_updates_allowed_and_cursor_area() {
+        let window = TestImeWindow::default();
+        let mut applied = ImeState::default();
+        let requested = ImeState {
+            enabled: true,
+            cursor_area: Some(ImeCursorArea::new(12.0, 24.0, 80.0, 30.0)),
+        };
+
+        sync_ime_window_state(&window, &mut applied, requested);
+
+        assert_eq!(*window.allowed.lock().expect("allowed lock"), vec![true]);
+        assert_eq!(
+            *window.cursor_areas.lock().expect("cursor area lock"),
+            vec![ImeCursorArea::new(12.0, 24.0, 80.0, 30.0)]
+        );
+        assert_eq!(applied, requested);
     }
 }
