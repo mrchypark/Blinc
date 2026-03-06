@@ -101,8 +101,7 @@ fn text_measure_function(
     // Determine available width for wrapping
     let available_width_hint = match available_space.width {
         AvailableSpace::Definite(w) => Some(w),
-        AvailableSpace::MaxContent => None,
-        AvailableSpace::MinContent => Some(0.0), // Force wrapping at every word
+        AvailableSpace::MaxContent | AvailableSpace::MinContent => None,
     };
 
     let style_width_hint = match style.size.width {
@@ -116,7 +115,7 @@ fn text_measure_function(
 
     // Use the tightest definite width we know about so text measurement
     // respects both parent constraints and explicit width/max-width styles.
-    let max_width = [
+    let definite_max_width = [
         width,
         available_width_hint,
         style_width_hint,
@@ -126,6 +125,11 @@ fn text_measure_function(
     .flatten()
     .fold(None::<f32>, |current, candidate| {
         Some(current.map_or(candidate, |existing| existing.min(candidate)))
+    });
+
+    let max_width = definite_max_width.or_else(|| match available_space.width {
+        AvailableSpace::MinContent => Some(0.0), // Force wrapping at every word only when width is otherwise unknown
+        _ => None,
     });
 
     if max_width.is_none() {
@@ -443,6 +447,56 @@ mod tests {
         expected_options.max_width = Some(80.0);
         let expected = measure_text_with_options(
             "This paragraph should wrap to the explicit max width instead of the parent width.",
+            14.0,
+            &expected_options,
+        );
+
+        assert_eq!(measured.width, expected.width);
+        assert_eq!(measured.height, expected.height);
+    }
+
+    #[test]
+    fn test_text_measure_function_preserves_definite_style_width_during_min_content_pass() {
+        let mut ctx = TextMeasureContext {
+            content:
+                "This paragraph should keep its explicit width during min-content measurement."
+                    .into(),
+            font_size: 14.0,
+            line_height: 1.2,
+            wrap: true,
+            font_name: None,
+            generic_font: crate::div::GenericFont::System,
+            font_weight: 400,
+            italic: false,
+        };
+
+        let style = Style {
+            size: Size {
+                width: Dimension::Length(120.0),
+                height: Dimension::Auto,
+            },
+            ..Default::default()
+        };
+
+        let measured = text_measure_function(
+            Size {
+                width: None,
+                height: None,
+            },
+            Size {
+                width: AvailableSpace::MinContent,
+                height: AvailableSpace::MaxContent,
+            },
+            NodeId::from(DefaultKey::from(KeyData::default())),
+            Some(&mut ctx),
+            &style,
+        );
+
+        let mut expected_options = TextLayoutOptions::new();
+        expected_options.line_height = 1.2;
+        expected_options.max_width = Some(120.0);
+        let expected = measure_text_with_options(
+            "This paragraph should keep its explicit width during min-content measurement.",
             14.0,
             &expected_options,
         );
