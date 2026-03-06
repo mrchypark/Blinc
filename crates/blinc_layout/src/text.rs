@@ -549,6 +549,13 @@ impl Text {
         self
     }
 
+    /// Set width to auto
+    pub fn w_auto(mut self) -> Self {
+        self.width_override = Some(Dimension::Auto);
+        self.update_size_estimate();
+        self
+    }
+
     /// Set max-width in pixels
     pub fn max_w(mut self, px: f32) -> Self {
         self.max_width_override = Some(Dimension::Length(px));
@@ -811,5 +818,13 @@ mod tests {
 
         assert!(matches!(style.size.width, Dimension::Auto));
         assert!(matches!(style.max_size.width, Dimension::Length(w) if (w - 180.0).abs() < 0.001));
+    }
+
+    #[test]
+    fn test_text_w_auto_persists_after_size_update() {
+        let t = text("Paragraph body").w_auto().size(16.0);
+        let style = t.layout_style().unwrap();
+
+        assert!(matches!(style.size.width, Dimension::Auto));
     }
 }
