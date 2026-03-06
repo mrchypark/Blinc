@@ -631,14 +631,17 @@ impl ElementBuilder for Text {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         use crate::tree::TextMeasureContext;
 
-        // For wrapping text, use a measure context so Taffy can calculate
-        // the correct multi-line height based on available width
-        if self.wrap {
+        let needs_measure_context =
+            self.wrap || matches!(self.width_override, Some(Dimension::Auto));
+
+        // Wrapping text needs the measure callback for multi-line height, and
+        // explicit auto-width text needs it to recover intrinsic single-line width.
+        if needs_measure_context {
             let context = TextMeasureContext {
                 content: self.content.clone(),
                 font_size: self.font_size,
                 line_height: self.line_height,
-                wrap: true,
+                wrap: self.wrap,
                 font_name: self.font_family.name.clone(),
                 generic_font: self.font_family.generic,
                 font_weight: self.weight.weight(),
@@ -741,6 +744,8 @@ impl Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::div::div;
+    use crate::renderer::RenderTree;
 
     #[test]
     fn test_text_builder() {
@@ -826,5 +831,61 @@ mod tests {
         let style = t.layout_style().unwrap();
 
         assert!(matches!(style.size.width, Dimension::Auto));
+    }
+
+    #[test]
+    fn test_text_w_auto_preserves_intrinsic_width_in_items_start_container() {
+        let content = "Intrinsic width";
+        let ui = div()
+            .w(300.0)
+            .flex_col()
+            .items_start()
+            .child(text(content).no_wrap().w_auto());
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(300.0, 100.0);
+
+        let root = tree.root().unwrap();
+        let child = tree.layout_tree.children(root)[0];
+        let bounds = tree.layout_tree.get_bounds(child, (0.0, 0.0)).unwrap();
+        let expected = crate::text_measure::measure_text(content, 14.0);
+
+        assert!(
+            (bounds.width - expected.width).abs() <= 1.0,
+            "bounds.width={}, expected.width={}",
+            bounds.width,
+            expected.width
+        );
+    }
+
+    #[test]
+    fn test_text_max_w_limits_wrap_measurement_width() {
+        let content =
+            "This paragraph should wrap to the explicit max width instead of the parent width.";
+
+        let constrained = div().w(200.0).child(text(content).max_w(80.0));
+        let mut constrained_tree = RenderTree::from_element(&constrained);
+        constrained_tree.compute_layout(200.0, 400.0);
+
+        let constrained_root = constrained_tree.root().unwrap();
+        let constrained_text = constrained_tree.layout_tree.children(constrained_root)[0];
+        let constrained_bounds = constrained_tree
+            .layout_tree
+            .get_bounds(constrained_text, (0.0, 0.0))
+            .unwrap();
+
+        let baseline = div().w(80.0).child(text(content));
+        let mut baseline_tree = RenderTree::from_element(&baseline);
+        baseline_tree.compute_layout(80.0, 400.0);
+
+        let baseline_root = baseline_tree.root().unwrap();
+        let baseline_text = baseline_tree.layout_tree.children(baseline_root)[0];
+        let baseline_bounds = baseline_tree
+            .layout_tree
+            .get_bounds(baseline_text, (0.0, 0.0))
+            .unwrap();
+
+        assert!(constrained_bounds.width <= 80.0);
+        assert_eq!(constrained_bounds.height, baseline_bounds.height);
     }
 }

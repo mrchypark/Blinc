@@ -99,7 +99,7 @@ fn text_measure_function(
     }
 
     // Determine available width for wrapping
-    let max_width = match available_space.width {
+    let available_width_hint = match available_space.width {
         AvailableSpace::Definite(w) => Some(w),
         AvailableSpace::MaxContent => None,
         AvailableSpace::MinContent => Some(0.0), // Force wrapping at every word
@@ -114,12 +114,19 @@ fn text_measure_function(
         _ => None,
     };
 
-    // If we already know the width, use it as max_width.
-    // Fall back to fixed style hints before dropping to intrinsic single-line measurement.
-    let max_width = width
-        .or(max_width)
-        .or(style_width_hint)
-        .or(style_max_width_hint);
+    // Use the tightest definite width we know about so text measurement
+    // respects both parent constraints and explicit width/max-width styles.
+    let max_width = [
+        width,
+        available_width_hint,
+        style_width_hint,
+        style_max_width_hint,
+    ]
+    .into_iter()
+    .flatten()
+    .fold(None::<f32>, |current, candidate| {
+        Some(current.map_or(candidate, |existing| existing.min(candidate)))
+    });
 
     if max_width.is_none() {
         let content_preview: String = ctx.content.chars().take(48).collect();
@@ -386,5 +393,61 @@ impl LayoutTree {
 impl Default for LayoutTree {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slotmap::{DefaultKey, KeyData};
+
+    #[test]
+    fn test_text_measure_function_prefers_tightest_max_width_constraint() {
+        let mut ctx = TextMeasureContext {
+            content:
+                "This paragraph should wrap to the explicit max width instead of the parent width."
+                    .into(),
+            font_size: 14.0,
+            line_height: 1.2,
+            wrap: true,
+            font_name: None,
+            generic_font: crate::div::GenericFont::System,
+            font_weight: 400,
+            italic: false,
+        };
+
+        let style = Style {
+            max_size: Size {
+                width: Dimension::Length(80.0),
+                height: Dimension::Auto,
+            },
+            ..Default::default()
+        };
+
+        let measured = text_measure_function(
+            Size {
+                width: None,
+                height: None,
+            },
+            Size {
+                width: AvailableSpace::Definite(200.0),
+                height: AvailableSpace::MaxContent,
+            },
+            NodeId::from(DefaultKey::from(KeyData::default())),
+            Some(&mut ctx),
+            &style,
+        );
+
+        let mut expected_options = TextLayoutOptions::new();
+        expected_options.line_height = 1.2;
+        expected_options.max_width = Some(80.0);
+        let expected = measure_text_with_options(
+            "This paragraph should wrap to the explicit max width instead of the parent width.",
+            14.0,
+            &expected_options,
+        );
+
+        assert_eq!(measured.width, expected.width);
+        assert_eq!(measured.height, expected.height);
     }
 }
