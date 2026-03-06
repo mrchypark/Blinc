@@ -1,5 +1,6 @@
 //! Event loop and platform events
 
+use crate::accessibility::AccessibilityActionRequest;
 use crate::error::PlatformError;
 use crate::input::InputEvent;
 use crate::window::Window;
@@ -41,6 +42,8 @@ pub enum Event {
     Input(InputEvent),
     /// Application lifecycle event
     Lifecycle(LifecycleEvent),
+    /// Accessibility action invoked by a platform bridge.
+    AccessibilityAction(AccessibilityActionRequest),
     /// Frame tick - time to render
     ///
     /// This event is sent when the application should render a frame.

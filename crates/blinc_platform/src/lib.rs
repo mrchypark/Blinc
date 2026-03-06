@@ -43,10 +43,12 @@
 //! ```
 
 pub mod assets;
+pub mod accessibility;
 pub mod ble;
 pub mod clipboard;
 mod error;
 mod event;
+mod ime;
 mod input;
 pub mod microphone;
 pub mod permissions;
@@ -57,15 +59,20 @@ mod window;
 // Re-export all public types
 pub use error::{PlatformError, Result};
 pub use event::{ControlFlow, Event, EventLoop, LifecycleEvent, WindowEvent};
+pub use ime::{current_ime_state, set_ime_state, ImeCursorArea, ImeState};
 pub use input::{
-    InputEvent, Key, KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase,
-    TouchEvent,
+    FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate, InputEvent, Key,
+    KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
 };
 pub use platform::Platform;
 pub use window::{Cursor, Window, WindowConfig};
 
 // Re-export commonly used asset types
 pub use assets::{AssetLoader, AssetPath, FilesystemAssetLoader};
+pub use accessibility::{
+    AccessibilityAction, AccessibilityActionRequest, AccessibilityBounds, AccessibilityNode,
+    AccessibilityNodeId, AccessibilityRole, AccessibilityTreeSnapshot,
+};
 pub use ble::{
     BleBackend, BleBatchSummary, BleClient, BleProbeState, BleRuntimeController, BleScanConfig,
     BleScanResult, BleScanStatus,
@@ -83,15 +90,20 @@ pub mod prelude {
     pub use crate::assets::{
         asset_exists, load_asset, load_asset_string, AssetLoader, AssetPath, FilesystemAssetLoader,
     };
+    pub use crate::accessibility::{
+        AccessibilityAction, AccessibilityActionRequest, AccessibilityBounds, AccessibilityNode,
+        AccessibilityNodeId, AccessibilityRole, AccessibilityTreeSnapshot,
+    };
     pub use crate::ble::{
         BleBackend, BleBatchSummary, BleClient, BleProbeState, BleRuntimeController, BleScanConfig,
         BleScanResult, BleScanStatus,
     };
     pub use crate::error::{PlatformError, Result};
     pub use crate::event::{ControlFlow, Event, EventLoop, LifecycleEvent, WindowEvent};
+    pub use crate::ime::{current_ime_state, set_ime_state, ImeCursorArea, ImeState};
     pub use crate::input::{
-        InputEvent, Key, KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase,
-        TouchEvent,
+        FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate, InputEvent, Key,
+        KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
     };
     pub use crate::permissions::{PermissionKind, PermissionStatus};
     pub use crate::platform::Platform;

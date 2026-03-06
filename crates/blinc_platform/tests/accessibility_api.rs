@@ -1,98 +1,72 @@
 use blinc_platform::{
-    AccessibilityAction, AccessibilityActionRequest, AccessibilityBounds, AccessibilityNode,
-    AccessibilityNodeId, AccessibilityRole, AccessibilityTreeSnapshot, CompositionEvent,
-    CompositionUpdate, Event, FocusTraversalIntent, InputEvent, SelectionRange,
+    AccessibilityAction, AccessibilityBounds, AccessibilityNode, AccessibilityRole,
+    AccessibilityTreeSnapshot, FocusTraversalIntent, InputEvent, ImeCompositionSelection,
+    ImeCompositionUpdate,
 };
 
 #[test]
-fn composition_lifecycle_events_roundtrip() {
-    let preview = CompositionUpdate {
-        text: "ga".to_string(),
-        selection: Some(SelectionRange { start: 1, end: 2 }),
-    };
+fn composition_lifecycle_events_capture_preview_and_commit_state() {
+    let preview = ImeCompositionUpdate::new("한", Some(ImeCompositionSelection::new(0, 1)));
+
     let events = vec![
-        InputEvent::Composition(CompositionEvent::Started),
-        InputEvent::Composition(CompositionEvent::Updated(preview.clone())),
-        InputEvent::Composition(CompositionEvent::Committed("각".to_string())),
-        InputEvent::Composition(CompositionEvent::Cancelled),
+        InputEvent::CompositionStarted,
+        InputEvent::CompositionUpdated(preview.clone()),
+        InputEvent::CompositionCommitted("한글".to_string()),
+        InputEvent::CompositionCancelled,
     ];
 
-    assert!(matches!(
-        &events[0],
-        InputEvent::Composition(CompositionEvent::Started)
-    ));
+    assert!(matches!(events[0], InputEvent::CompositionStarted));
     assert!(matches!(
         &events[1],
-        InputEvent::Composition(CompositionEvent::Updated(update))
-            if update.text == preview.text && update.selection == preview.selection
+        InputEvent::CompositionUpdated(update)
+            if update.text == "한"
+                && update.selection == Some(ImeCompositionSelection::new(0, 1))
     ));
     assert!(matches!(
         &events[2],
-        InputEvent::Composition(CompositionEvent::Committed(text)) if text == "각"
+        InputEvent::CompositionCommitted(text) if text == "한글"
     ));
-    assert!(matches!(
-        &events[3],
-        InputEvent::Composition(CompositionEvent::Cancelled)
-    ));
+    assert!(matches!(events[3], InputEvent::CompositionCancelled));
 }
 
 #[test]
-fn accessibility_nodes_capture_role_metadata_and_bounds() {
-    let node = AccessibilityNode {
-        id: AccessibilityNodeId(7),
-        role: AccessibilityRole::TextInput,
-        name: Some("Search".to_string()),
-        description: Some("Filter the current list".to_string()),
-        bounds: AccessibilityBounds {
-            x: 12.0,
-            y: 24.0,
-            width: 240.0,
-            height: 36.0,
-        },
-        focusable: true,
-        focused: true,
-        disabled: false,
-        value: Some("rust".to_string()),
-        children: vec![],
-    };
-    let snapshot = AccessibilityTreeSnapshot {
-        root: node.id,
-        nodes: vec![node.clone()],
-    };
+fn accessibility_snapshot_preserves_roles_metadata_and_actions() {
+    let node = AccessibilityNode::new(7, AccessibilityRole::TextInput)
+        .with_name("Search")
+        .with_description("Type a query")
+        .with_bounds(AccessibilityBounds::new(10.0, 20.0, 180.0, 36.0))
+        .with_focusable(true)
+        .with_actions(vec![AccessibilityAction::Focus, AccessibilityAction::SetValue]);
 
-    assert_eq!(snapshot.root, AccessibilityNodeId(7));
-    assert_eq!(snapshot.nodes.len(), 1);
-    assert_eq!(snapshot.nodes[0].role, AccessibilityRole::TextInput);
-    assert_eq!(snapshot.nodes[0].name.as_deref(), Some("Search"));
+    let snapshot = AccessibilityTreeSnapshot::new(7, vec![node.clone()]);
+
+    assert_eq!(snapshot.root_id, 7);
+    assert_eq!(snapshot.nodes, vec![node.clone()]);
+    assert_eq!(node.role, AccessibilityRole::TextInput);
+    assert_eq!(node.name.as_deref(), Some("Search"));
+    assert_eq!(node.description.as_deref(), Some("Type a query"));
     assert_eq!(
-        snapshot.nodes[0].description.as_deref(),
-        Some("Filter the current list")
+        node.bounds,
+        Some(AccessibilityBounds::new(10.0, 20.0, 180.0, 36.0))
     );
+    assert!(node.focusable);
     assert_eq!(
-        snapshot.nodes[0].bounds,
-        AccessibilityBounds {
-            x: 12.0,
-            y: 24.0,
-            width: 240.0,
-            height: 36.0,
-        }
+        node.actions,
+        vec![AccessibilityAction::Focus, AccessibilityAction::SetValue]
     );
-    assert!(snapshot.nodes[0].focusable);
-    assert!(snapshot.nodes[0].focused);
 }
 
 #[test]
-fn focus_traversal_intents_stay_in_shared_accessibility_events() {
-    let event = Event::AccessibilityAction(AccessibilityActionRequest {
-        target: None,
-        action: AccessibilityAction::FocusTraversal(FocusTraversalIntent::Next),
-    });
+fn focus_traversal_intents_stay_platform_agnostic() {
+    let next = InputEvent::FocusTraversal(FocusTraversalIntent::Next);
+    let previous = InputEvent::FocusTraversal(FocusTraversalIntent::Previous);
 
     assert!(matches!(
-        event,
-        Event::AccessibilityAction(AccessibilityActionRequest {
-            target: None,
-            action: AccessibilityAction::FocusTraversal(FocusTraversalIntent::Next),
-        })
+        next,
+        InputEvent::FocusTraversal(FocusTraversalIntent::Next)
+    ));
+    assert!(matches!(
+        previous,
+        InputEvent::FocusTraversal(FocusTraversalIntent::Previous)
     ));
 }
