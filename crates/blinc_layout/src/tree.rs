@@ -62,7 +62,7 @@ fn text_measure_function(
     available_space: Size<AvailableSpace>,
     _node_id: NodeId,
     node_context: Option<&mut TextMeasureContext>,
-    _style: &Style,
+    style: &Style,
 ) -> Size<f32> {
     // If dimensions are already known, use them
     let width = known_dimensions.width;
@@ -105,8 +105,31 @@ fn text_measure_function(
         AvailableSpace::MinContent => Some(0.0), // Force wrapping at every word
     };
 
-    // If we already know the width, use it as max_width
-    let max_width = width.or(max_width);
+    let style_width_hint = match style.size.width {
+        Dimension::Length(w) => Some(w),
+        _ => None,
+    };
+    let style_max_width_hint = match style.max_size.width {
+        Dimension::Length(w) => Some(w),
+        _ => None,
+    };
+
+    // If we already know the width, use it as max_width.
+    // Fall back to fixed style hints before dropping to intrinsic single-line measurement.
+    let max_width = width
+        .or(max_width)
+        .or(style_width_hint)
+        .or(style_max_width_hint);
+
+    if max_width.is_none() {
+        let content_preview: String = ctx.content.chars().take(48).collect();
+        tracing::debug!(
+            content_preview = %content_preview,
+            font_size = ctx.font_size,
+            ?available_space,
+            "wrapping text measured without definite width; falling back to intrinsic width"
+        );
+    }
 
     // Measure text with wrapping
     let mut options = TextLayoutOptions::new();

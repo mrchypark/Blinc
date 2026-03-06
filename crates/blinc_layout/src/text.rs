@@ -50,6 +50,10 @@ pub struct Text {
     font_family: FontFamily,
     /// Taffy style for layout
     style: Style,
+    /// Explicit width override applied through the builder API
+    width_override: Option<Dimension>,
+    /// Explicit max-width override applied through the builder API
+    max_width_override: Option<Dimension>,
     /// Render layer
     render_layer: RenderLayer,
     /// Drop shadow
@@ -106,6 +110,8 @@ impl Text {
             italic: false,
             font_family: FontFamily::default(),
             style: Style::default(),
+            width_override: None,
+            max_width_override: None,
             render_layer: RenderLayer::default(),
             shadow: None,
             transform: None,
@@ -467,17 +473,19 @@ impl Text {
             // Set width to Auto so Taffy queries the measure function,
             // max_width to 100% so text doesn't overflow parent,
             // and height to Auto so it's determined by measurement.
-            self.style.size.width = Dimension::Auto;
+            self.style.size.width = self.width_override.unwrap_or(Dimension::Auto);
             self.style.size.height = Dimension::Auto;
-            self.style.max_size.width = Dimension::Percent(1.0);
+            self.style.max_size.width = self.max_width_override.unwrap_or(Dimension::Percent(1.0));
             // Allow text to shrink if needed
             self.style.flex_shrink = 1.0;
         } else {
             // For non-wrapping text, use fixed dimensions based on measurement
-            self.style.size.width = Dimension::Length(metrics.width);
+            self.style.size.width = self
+                .width_override
+                .unwrap_or(Dimension::Length(metrics.width));
             let standardized_height = self.font_size * self.line_height;
             self.style.size.height = Dimension::Length(standardized_height);
-            self.style.max_size.width = Dimension::Percent(1.0);
+            self.style.max_size.width = self.max_width_override.unwrap_or(Dimension::Percent(1.0));
             // No wrapping: don't shrink, keep natural size
             self.style.flex_shrink = 0.0;
         }
@@ -524,6 +532,27 @@ impl Text {
     /// Set flex-shrink
     pub fn flex_shrink(mut self) -> Self {
         self.style.flex_shrink = 1.0;
+        self
+    }
+
+    /// Set width in pixels
+    pub fn w(mut self, px: f32) -> Self {
+        self.width_override = Some(Dimension::Length(px));
+        self.update_size_estimate();
+        self
+    }
+
+    /// Set width to 100%
+    pub fn w_full(mut self) -> Self {
+        self.width_override = Some(Dimension::Percent(1.0));
+        self.update_size_estimate();
+        self
+    }
+
+    /// Set max-width in pixels
+    pub fn max_w(mut self, px: f32) -> Self {
+        self.max_width_override = Some(Dimension::Length(px));
+        self.update_size_estimate();
         self
     }
 
@@ -765,5 +794,22 @@ mod tests {
 
         let t = text("No entities here @ all #123");
         assert_eq!(t.content(), "No entities here @ all #123");
+    }
+
+    #[test]
+    fn test_text_w_full_persists_after_size_update() {
+        let t = text("Paragraph body").w_full().size(16.0);
+        let style = t.layout_style().unwrap();
+
+        assert!(matches!(style.size.width, Dimension::Percent(p) if (p - 1.0).abs() < 0.001));
+    }
+
+    #[test]
+    fn test_text_max_w_persists_after_size_update() {
+        let t = text("Paragraph body").max_w(180.0).size(16.0);
+        let style = t.layout_style().unwrap();
+
+        assert!(matches!(style.size.width, Dimension::Auto));
+        assert!(matches!(style.max_size.width, Dimension::Length(w) if (w - 180.0).abs() < 0.001));
     }
 }
