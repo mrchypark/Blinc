@@ -57,7 +57,7 @@ Expected: tests fail to compile or fail assertions because the width helpers do 
 **Step 2: Add `Text` width helpers**
 
 - Introduce stored width/max-width overrides on `Text`.
-- Add `w`, `w_full`, `w_auto`, and `max_w`.
+- Add `w`, `w_full`, and `max_w`.
 - Make `update_size_estimate()` respect those overrides for both wrapping and non-wrapping text.
 
 **Step 3: Add measure fallback diagnostics**
