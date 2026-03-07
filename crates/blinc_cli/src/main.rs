@@ -484,7 +484,7 @@ fn cmd_new(name: &str, template: &str, org: &str, rust: bool) -> Result<()> {
         info!("  cd {}", name);
         info!("  cargo run --features desktop");
     } else {
-        project::create_project(&path, name, template, org)?;
+        project::create_project(&path, project_name, template, org)?;
         info!("Project created at {}/", name);
         info!("To get started:");
         info!("  cd {}", name);
@@ -718,5 +718,48 @@ mod tests {
             !path.exists(),
             "failed project creation should not leave an empty directory behind"
         );
+    }
+
+    #[test]
+    fn cmd_new_non_rust_uses_leaf_name_for_scaffold_metadata() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_nested_new_{nonce}"));
+        let path = root.join("apps/Demo App");
+        let path_string = path.to_string_lossy().to_string();
+
+        cmd_new(&path_string, "default", "io.blinc.dev", false)
+            .expect("non-rust project creation should succeed from a nested path");
+
+        let project = crate::config::BlincProject::load_from_dir(&path)
+            .expect("scaffolded non-rust project should include .blincproj");
+        assert_eq!(
+            project.project.name, "Demo App",
+            "scaffold metadata should use the leaf project name instead of the full path"
+        );
+        assert_eq!(
+            project
+                .platforms
+                .android
+                .as_ref()
+                .map(|android| android.package.as_str()),
+            Some("io.blinc.dev.demo_app"),
+            "android package ids should use the normalized leaf project name"
+        );
+
+        let readme =
+            fs::read_to_string(path.join("README.md")).expect("generated README should exist");
+        assert!(
+            readme.contains("dist/demo_app.zip"),
+            "release guidance should use the normalized leaf project name in artifact paths"
+        );
+        assert!(
+            !readme.contains("apps/Demo App"),
+            "generated files should not embed the full requested path as project metadata"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
