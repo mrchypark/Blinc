@@ -1,11 +1,13 @@
 pub mod error;
 pub mod manifest;
 pub mod service;
+pub mod verify;
 pub mod version;
 
 pub use error::{ManifestError, UpdateError, VersionError};
 pub use manifest::{ReleaseArtifact, ReleaseChannel, ReleaseManifest};
 pub use service::{InstallIntent, UpdateBackend, UpdateCheckRequest, UpdateState};
+pub use verify::{verify_artifact_bytes, verify_artifact_file};
 pub use version::is_newer_release;
 
 #[cfg(test)]
@@ -73,6 +75,70 @@ mod tests {
             .validate()
             .expect_err("manifest validation should reject missing target_id");
         assert!(matches!(err, ManifestError::MissingTargetId { .. }));
+    }
+
+    #[test]
+    fn rejects_manifest_with_missing_signature_metadata() {
+        let manifest = ReleaseManifest {
+            schema_version: 1,
+            product: "Demo".to_string(),
+            channel: ReleaseChannel::Stable,
+            version: "1.2.3".to_string(),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+            artifacts: vec![ReleaseArtifact {
+                platform: "android".to_string(),
+                arch: "arm64-v8a".to_string(),
+                target_id: "io.test.demo".to_string(),
+                url: "https://example.com/demo.apk".to_string(),
+                size: 20,
+                sha256: "beadfeed".to_string(),
+                signature: String::new(),
+            }],
+        };
+
+        let err = manifest
+            .validate()
+            .expect_err("manifest validation should reject missing signature metadata");
+        assert!(matches!(
+            err,
+            ManifestError::MissingArtifactMetadata {
+                field: "signature",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_manifest_with_missing_sha256_metadata() {
+        let manifest = ReleaseManifest {
+            schema_version: 1,
+            product: "Demo".to_string(),
+            channel: ReleaseChannel::Stable,
+            version: "1.2.3".to_string(),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+            artifacts: vec![ReleaseArtifact {
+                platform: "android".to_string(),
+                arch: "arm64-v8a".to_string(),
+                target_id: "io.test.demo".to_string(),
+                url: "https://example.com/demo.apk".to_string(),
+                size: 20,
+                sha256: String::new(),
+                signature: "c2ln".to_string(),
+            }],
+        };
+
+        let err = manifest
+            .validate()
+            .expect_err("manifest validation should reject missing sha256 metadata");
+        assert!(matches!(
+            err,
+            ManifestError::MissingArtifactMetadata {
+                field: "sha256",
+                ..
+            }
+        ));
     }
 
     #[test]

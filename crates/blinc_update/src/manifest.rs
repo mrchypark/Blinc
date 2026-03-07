@@ -39,6 +39,18 @@ impl ReleaseManifest {
             if artifact.target_id.trim().is_empty() {
                 return Err(ManifestError::MissingTargetId { index });
             }
+            if artifact.sha256.trim().is_empty() {
+                return Err(ManifestError::MissingArtifactMetadata {
+                    index,
+                    field: "sha256",
+                });
+            }
+            if artifact.signature.trim().is_empty() {
+                return Err(ManifestError::MissingArtifactMetadata {
+                    index,
+                    field: "signature",
+                });
+            }
         }
 
         Ok(())
