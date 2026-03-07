@@ -94,11 +94,23 @@ fn sync_platform_ime_state() {
     });
 }
 
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "windows"
+))]
 fn sync_accessibility_snapshot(tree: &blinc_layout::RenderTree) {
     if let Some(snapshot) = blinc_layout::export_accessibility_snapshot(tree) {
         blinc_platform_desktop::update_accessibility_snapshot(snapshot);
     }
 }
+
+#[cfg(not(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "windows"
+)))]
+fn sync_accessibility_snapshot(_tree: &blinc_layout::RenderTree) {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum E2eScript {
@@ -3795,9 +3807,6 @@ impl WindowedApp {
                             if let Some(ref tree) = render_tree {
                                 sync_accessibility_snapshot(tree);
                                 sync_platform_ime_state();
-                            }
-
-                            if let Some(ref tree) = render_tree {
                                 // Render with motion animations
                                 // Use physical pixel dimensions for the render surface
                                 let result = blinc_app.render_tree_with_motion(
