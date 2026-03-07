@@ -2,10 +2,10 @@
 //!
 //! Build, run, and hot-reload Blinc applications.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -315,22 +315,33 @@ fn cmd_build(source: &str, target: &str, release: bool, output: Option<&str>) ->
 }
 
 fn load_build_project_name(path: &std::path::Path, release: bool) -> Result<String> {
-    let project_root = if path.is_file() {
+    if release {
+        return Ok(release::load_release_project(path)?.project.name);
+    }
+
+    Ok(BlincConfig::load_from_dir(project_config_root(path)?)?
+        .project
+        .name)
+}
+
+fn project_config_root(path: &Path) -> Result<&Path> {
+    let start = if path.is_file() {
         path.parent().unwrap_or(path)
     } else {
         path
     };
 
-    if release {
-        return Ok(release::load_release_project(project_root)?.project.name);
-    }
-
-    Ok(BlincConfig::load_from_dir(project_root)?.project.name)
+    start
+        .ancestors()
+        .find(|candidate| {
+            candidate.join(".blincproj").exists() || candidate.join("blinc.toml").exists()
+        })
+        .context("No .blincproj or blinc.toml found for the provided project path")
 }
 
 fn cmd_dev(source: &str, target: &str, port: u16, device: Option<&str>) -> Result<()> {
     let path = PathBuf::from(source);
-    let config = BlincConfig::load_from_dir(&path)?;
+    let config = BlincConfig::load_from_dir(project_config_root(&path)?)?;
 
     info!(
         "Starting dev server for {} on port {} targeting {}",
@@ -488,7 +499,7 @@ fn cmd_init(template: &str, org: &str) -> Result<()> {
 
 fn cmd_check(source: &str) -> Result<()> {
     let path = PathBuf::from(source);
-    let config = BlincConfig::load_from_dir(&path)?;
+    let config = BlincConfig::load_from_dir(project_config_root(&path)?)?;
 
     info!("Checking project: {}", config.project.name);
 
@@ -582,5 +593,104 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_build_path_discovers_project_root_from_nested_directory() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_release_build_nested_{nonce}"));
+        let nested = root.join("src/features");
+
+        fs::create_dir_all(&nested).expect("nested directory should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "0.1.0"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        assert_eq!(
+            load_build_project_name(&nested, true)
+                .expect("release builds should discover the project root from nested dirs"),
+            "Demo",
+            "release build path should load metadata from the nearest ancestor .blincproj"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn debug_build_path_discovers_project_root_from_nested_directory() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_debug_build_nested_{nonce}"));
+        let nested = root.join("src/features");
+
+        fs::create_dir_all(&nested).expect("nested directory should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "0.1.0"
+
+                [platforms.android]
+                package = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        assert_eq!(
+            load_build_project_name(&nested, false)
+                .expect("debug builds should discover the project root from nested dirs"),
+            "Demo",
+            "debug build path should load metadata from the nearest ancestor project config"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cmd_new_does_not_leave_directory_on_invalid_org() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("blinc_cli_invalid_org_{nonce}"));
+        let path_string = path.to_string_lossy().to_string();
+
+        let err = cmd_new(&path_string, "default", "123.example", false)
+            .expect_err("invalid org should fail before scaffolding begins");
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "invalid org error should be surfaced to the caller"
+        );
+        assert!(
+            !path.exists(),
+            "failed project creation should not leave an empty directory behind"
+        );
     }
 }

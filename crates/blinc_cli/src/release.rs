@@ -43,11 +43,11 @@ struct ReleaseManifestArtifact {
 }
 
 pub(crate) fn load_release_project(path: &Path) -> Result<BlincProject> {
-    BlincProject::load_from_dir(path)
+    BlincProject::load_from_dir(release_project_root(path)?)
 }
 
 pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
-    let project = load_release_project(release_project_root(&args.source)?)?;
+    let project = load_release_project(&args.source)?;
     let target_id = resolve_target_id(&project, &args.platform)?;
     let artifact = ReleaseManifestArtifact {
         platform: args.platform.clone(),
@@ -82,6 +82,11 @@ pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
             _ => {}
         }
 
+        manifest.artifacts.retain(|existing| {
+            existing.platform != artifact.platform
+                || existing.arch != artifact.arch
+                || existing.target_id != artifact.target_id
+        });
         manifest.artifacts.push(artifact);
         manifest
     } else {
@@ -420,6 +425,85 @@ mod tests {
         assert_eq!(
             json["artifacts"][1]["platform"], "android",
             "second artifact should preserve its platform"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_command_replaces_existing_artifact_for_same_target() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir()
+            .join(format!("blinc_cli_release_manifest_replace_{nonce}"));
+        let output = root.join("dist/release-manifest.json");
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos-v1.zip".to_string(),
+            size: 12_345,
+            sha256: "deadbeef".to_string(),
+            signature: "c2ln".to_string(),
+            output: output.clone(),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect("first manifest write should succeed");
+
+        write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos-v2.zip".to_string(),
+            size: 54_321,
+            sha256: "beadfeed".to_string(),
+            signature: "YWJj".to_string(),
+            output: output.clone(),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect("second manifest write should replace the prior artifact");
+
+        let manifest = fs::read_to_string(&output).expect("manifest file should exist");
+        let json: Value = serde_json::from_str(&manifest).expect("manifest should be valid JSON");
+
+        assert_eq!(
+            json["artifacts"].as_array().map(Vec::len),
+            Some(1),
+            "rewriting the same artifact target should replace the prior entry"
+        );
+        assert_eq!(
+            json["artifacts"][0]["url"],
+            "https://example.com/releases/demo-1.2.3-macos-v2.zip",
+            "replacement artifact should keep the latest URL"
+        );
+        assert_eq!(
+            json["artifacts"][0]["size"], 54_321,
+            "replacement artifact should keep the latest size"
         );
 
         let _ = fs::remove_dir_all(&root);
