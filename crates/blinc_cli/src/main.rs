@@ -12,6 +12,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 mod config;
 mod doctor;
 mod project;
+mod release;
 
 use config::BlincConfig;
 
@@ -200,11 +201,11 @@ fn main() -> Result<()> {
 
 fn cmd_build(source: &str, target: &str, release: bool, output: Option<&str>) -> Result<()> {
     let path = PathBuf::from(source);
-    let config = BlincConfig::load_from_dir(&path)?;
+    let project_name = load_build_project_name(&path, release)?;
 
     info!(
         "Building {} for {} ({})",
-        config.project.name,
+        project_name,
         target,
         if release { "release" } else { "debug" }
     );
@@ -233,6 +234,20 @@ fn cmd_build(source: &str, target: &str, release: bool, output: Option<&str>) ->
     }
 
     Ok(())
+}
+
+fn load_build_project_name(path: &std::path::Path, release: bool) -> Result<String> {
+    let project_root = if path.is_file() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+
+    if release {
+        return Ok(release::load_release_project(project_root)?.project.name);
+    }
+
+    Ok(BlincConfig::load_from_dir(project_root)?.project.name)
 }
 
 fn cmd_dev(source: &str, target: &str, port: u16, device: Option<&str>) -> Result<()> {
@@ -419,4 +434,46 @@ fn cmd_doctor() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn release_build_path_requires_blincproj() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_release_build_loader_{nonce}"));
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join("blinc.toml"),
+            r#"
+                [project]
+                name = "LegacyDemo"
+                version = "0.1.0"
+            "#,
+        )
+        .expect("legacy blinc.toml should be written");
+
+        let err = load_build_project_name(&root, true)
+            .expect_err("release builds should require .blincproj metadata");
+        assert!(
+            err.to_string().contains("No .blincproj found"),
+            "release build path should use the release loader"
+        );
+
+        assert_eq!(
+            load_build_project_name(&root, false)
+                .expect("debug builds should keep legacy config support"),
+            "LegacyDemo",
+            "non-release builds should keep using the legacy config loader"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }
