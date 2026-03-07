@@ -154,7 +154,7 @@ fn validate_release_manifest_args(args: &ReleaseManifestArgs) -> Result<()> {
         }
 
         if args.size == 0 {
-            bail!("size must be greater than zero");
+            bail!("--size is required and must be greater than zero in manual mode");
         }
 
         validate_sha256(&args.sha256)?;
@@ -230,6 +230,8 @@ fn write_public_key(path: &Path, signing_key: &SigningKey) -> Result<()> {
             bail!(
                 "public_key_output already contains a different public key; reuse the same signing key for every artifact in this release"
             );
+        } else {
+            return Ok(());
         }
     }
 
@@ -1756,6 +1758,60 @@ mod tests {
         assert!(
             !output.exists(),
             "invalid manifest metadata should not be written to disk"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_generation_requires_size_in_manual_mode() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_release_manifest_size_{nonce}"));
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
+            size: 0,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
+            output: root.join("dist/release-manifest.json"),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("manual mode should require an explicit non-zero size");
+
+        assert!(
+            err.to_string()
+                .contains("--size is required and must be greater than zero in manual mode"),
+            "manual mode should direct the caller to the missing --size argument"
         );
 
         let _ = fs::remove_dir_all(&root);

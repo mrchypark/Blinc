@@ -96,9 +96,19 @@ impl UpdateBackend for DesktopUpdateBackend {
             .url
             .rsplit('/')
             .next()
-            .filter(|name| !name.is_empty())
-            .unwrap_or("update.bin");
-        let downloaded_file = self.download_dir.join(file_name);
+            .and_then(|name| name.split(['?', '#']).next())
+            .unwrap_or("");
+        if file_name == "." || file_name == ".." || file_name.contains(['/', '\\']) {
+            return Err(UpdateError::Backend(
+                "desktop backend derived an unsafe download file name from artifact url"
+                    .to_string(),
+            ));
+        }
+        let downloaded_file = self.download_dir.join(if file_name.is_empty() {
+            "update.bin"
+        } else {
+            file_name
+        });
 
         self.build_install_intent(artifact, downloaded_file)
     }

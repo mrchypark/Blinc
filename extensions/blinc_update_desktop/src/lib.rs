@@ -184,4 +184,34 @@ mod tests {
             .install_update(&intent)
             .expect("macOS backend should accept matching bundle-replace handoffs");
     }
+
+    #[test]
+    fn macos_backend_rejects_dot_segment_download_names() {
+        let backend = DesktopUpdateBackend::new(
+            DesktopPlatform::MacOs {
+                bundle_id: "io.test.demo".to_string(),
+            },
+            "/tmp/downloads",
+        );
+        let artifact = ReleaseArtifact {
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            target_id: "io.test.demo".to_string(),
+            url: "https://example.com/releases/..".to_string(),
+            size: 42,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            signature:
+                "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ=="
+                    .to_string(),
+        };
+
+        let err = backend
+            .download_artifact(&artifact)
+            .expect_err("desktop backends should reject dot-segment file names derived from URLs");
+        assert!(
+            matches!(err, UpdateError::Backend(message) if message.contains("unsafe")),
+            "unsafe file names should be rejected before joining them into the download directory"
+        );
+    }
 }
