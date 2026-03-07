@@ -78,6 +78,34 @@ where
     F: FnMut(&ProbeContext) -> S,
     S: Into<DiagnosticsSnapshot>,
 {
+    let mut owned_probe = |ctx| probe(&ctx);
+    run_loaded_scenario_with_owned_probe(scenario, runtime_cfg, &mut owned_probe)
+}
+
+/// Execute scenario JSON with a custom snapshot probe that consumes ProbeContext by value.
+pub fn run_scenario_with_owned_probe<F, S>(
+    input: &str,
+    runtime_cfg: HeadlessRunConfig,
+    mut probe: F,
+) -> Result<RunOutcome>
+where
+    F: FnMut(ProbeContext) -> S,
+    S: Into<DiagnosticsSnapshot>,
+{
+    let scenario = HeadlessScenario::from_json(input)?;
+    run_loaded_scenario_with_owned_probe(&scenario, runtime_cfg, &mut probe)
+}
+
+/// Execute a pre-loaded scenario with a custom snapshot probe that consumes ProbeContext by value.
+pub fn run_loaded_scenario_with_owned_probe<F, S>(
+    scenario: &HeadlessScenario,
+    runtime_cfg: HeadlessRunConfig,
+    probe: &mut F,
+) -> Result<RunOutcome>
+where
+    F: FnMut(ProbeContext) -> S,
+    S: Into<DiagnosticsSnapshot>,
+{
     let mut elapsed_frames: u64 = 0;
     let mut elapsed_ms: u64 = 0;
     let mut latest_snapshot: Option<DiagnosticsSnapshot> = None;
@@ -231,10 +259,10 @@ fn ensure_snapshot<'a, F, S>(
     probe_ctx: ProbeContext,
 ) -> &'a DiagnosticsSnapshot
 where
-    F: FnMut(&ProbeContext) -> S,
+    F: FnMut(ProbeContext) -> S,
     S: Into<DiagnosticsSnapshot>,
 {
-    latest_snapshot.get_or_insert_with(|| probe(&probe_ctx).into())
+    latest_snapshot.get_or_insert_with(|| probe(probe_ctx).into())
 }
 
 fn run_sampled_frames<F, S, A>(
@@ -249,13 +277,13 @@ fn run_sampled_frames<F, S, A>(
     mut advance_ms: A,
 ) -> Result<()>
 where
-    F: FnMut(&ProbeContext) -> S,
+    F: FnMut(ProbeContext) -> S,
     S: Into<DiagnosticsSnapshot>,
     A: FnMut() -> u64,
 {
     if frames == 0 {
         *latest_snapshot = Some(
-            probe(&ProbeContext {
+            probe(ProbeContext {
                 elapsed_frames: *elapsed_frames,
                 elapsed_ms: *elapsed_ms,
                 step_index,
@@ -275,7 +303,7 @@ where
 
         if sampled_frames % probe_every == 0 || sampled_frames == frames {
             *latest_snapshot = Some(
-                probe(&ProbeContext {
+                probe(ProbeContext {
                     elapsed_frames: *elapsed_frames,
                     elapsed_ms: *elapsed_ms,
                     step_index,

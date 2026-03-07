@@ -22,7 +22,8 @@ Example `scenario.json`:
 
 ## 2) Provide snapshot probe
 
-Your app provides a probe closure `FnMut(&ProbeContext) -> DiagnosticsSnapshot` from app-observable state.
+Your app provides a probe closure `FnMut(&ProbeContext) -> DiagnosticsSnapshot` or
+`FnMut(ProbeContext) -> DiagnosticsSnapshot` from app-observable state.
 `ProbeContext` contains `elapsed_ms`, `elapsed_frames`, and `step_index`.
 
 ## 3) Execute runner
@@ -30,6 +31,7 @@ Your app provides a probe closure `FnMut(&ProbeContext) -> DiagnosticsSnapshot` 
 Call:
 
 - `run_loaded_scenario_with_probe(...)`
+- `run_loaded_scenario_with_owned_probe(...)` when your probe captures state and is easier to express by value
 
 It returns `RunOutcome::Passed` or `RunOutcome::Failed`.
 

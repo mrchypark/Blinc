@@ -24,6 +24,18 @@ const ANDROID_NATIVE_BRIDGE_TEMPLATE: &str =
 const IOS_NATIVE_BRIDGE_TEMPLATE: &str =
     include_str!("../../../extensions/blinc_platform_ios/templates/BlincNativeBridge.swift");
 
+fn find_blinc_workspace_from(start: &Path) -> Option<String> {
+    start.ancestors().find_map(|ancestor| {
+        let workspace_manifest = ancestor.join("Cargo.toml");
+        let app_manifest = ancestor.join("crates/blinc_app/Cargo.toml");
+        if workspace_manifest.is_file() && app_manifest.is_file() {
+            Some(ancestor.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    })
+}
+
 /// Create a new Blinc project with full workspace structure
 pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Result<()> {
     // Create directory structure
@@ -1307,13 +1319,11 @@ pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
 
     // Get blinc workspace path (relative to the generated project)
     let blinc_path = std::env::var("BLINC_PATH").unwrap_or_else(|_| {
-        // Try to find the blinc workspace relative to the CLI binary
-        let exe_path = std::env::current_exe().unwrap_or_default();
-        exe_path
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .map(|p| p.to_string_lossy().to_string())
+        std::env::current_exe()
+            .ok()
+            .as_deref()
+            .and_then(find_blinc_workspace_from)
+            .or_else(|| find_blinc_workspace_from(Path::new(env!("CARGO_MANIFEST_DIR"))))
             .unwrap_or_else(|| "../../..".to_string())
     });
 
@@ -1397,7 +1407,6 @@ theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
 use blinc_app::prelude::*;
 use blinc_app::windowed::{{WindowedApp, WindowedContext}};
 use blinc_core::reactive::State;
-use std::collections::HashMap;
 use std::path::Path;
 
 /// Counter button with stateful hover/press states
@@ -1474,23 +1483,32 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {{
 }}
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn next_headless_value<I>(
+    args: &mut std::iter::Peekable<I>,
+    flag: &str,
+) -> Result<String>
+where
+    I: Iterator<Item = String>,
+{{
+    if args.peek().map_or(true, |next| next.starts_with("--")) {{
+        let msg = match flag {{
+            "--scenario" => "--scenario requires a file path",
+            "--report" => "--report requires a file path",
+            _ => "flag requires a file path",
+        }};
+        return Err(BlincError::Other(msg.to_string()));
+    }}
+
+    Ok(args.next().expect("peeked value should exist"))
+}}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn parse_headless_args() -> Result<(bool, Option<String>, Option<String>)> {{
     let mut headless = false;
     let mut scenario: Option<String> = None;
     let mut report: Option<String> = None;
 
     let mut args = std::env::args().skip(1).peekable();
-    let mut next_value = |flag: &str| -> Result<String> {{
-        if args.peek().map_or(true, |next| next.starts_with("--")) {{
-            let msg = match flag {{
-                "--scenario" => "--scenario requires a file path",
-                "--report" => "--report requires a file path",
-                _ => "flag requires a file path",
-            }};
-            return Err(BlincError::Other(msg.to_string()));
-        }}
-        Ok(args.next().expect("peeked value should exist"))
-    }};
 
     while let Some(arg) = args.next() {{
         match arg.as_str() {{
@@ -1498,10 +1516,10 @@ fn parse_headless_args() -> Result<(bool, Option<String>, Option<String>)> {{
                 headless = true;
             }}
             "--scenario" => {{
-                scenario = Some(next_value("--scenario")?);
+                scenario = Some(next_headless_value(&mut args, "--scenario")?);
             }}
             "--report" => {{
-                report = Some(next_value("--report")?);
+                report = Some(next_headless_value(&mut args, "--report")?);
             }}
             _ if arg.starts_with("--") => {{
                 // Allow non-headless flags for compatibility with host/runtime launchers.
@@ -1532,24 +1550,24 @@ fn run_headless_diagnostics(
         None => default_headless_scenario(),
     }};
 
-    let mut probe = |_probe_ctx| {{
-        let mut elements = HashMap::new();
-        elements.insert(
+    let mut probe = |_probe_ctx: ProbeContext| {{
+        let mut snapshot = DiagnosticsSnapshot::default();
+        snapshot.elements.insert(
             "app.title".to_string(),
             DiagnosticsElement {{
                 text: Some(format!("Welcome to {{}}", app_name)),
             }},
         );
-        elements.insert(
+        snapshot.elements.insert(
             "counter.value".to_string(),
             DiagnosticsElement {{
                 text: Some("0".to_string()),
             }},
         );
-        DiagnosticsSnapshot {{ elements }}
+        snapshot
     }};
 
-    let outcome = run_loaded_scenario_with_probe(
+    let outcome = run_loaded_scenario_with_owned_probe(
         &scenario,
         HeadlessRunConfig {{
             width: 400,
@@ -2760,6 +2778,7 @@ open BlincApp.xcodeproj
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -2785,8 +2804,16 @@ mod tests {
             "generated template should include headless diagnostics entrypoint"
         );
         assert!(
-            main_rs.contains("run_loaded_scenario_with_probe"),
-            "generated template should wire diagnostics runner"
+            main_rs.contains("run_loaded_scenario_with_owned_probe"),
+            "generated template should wire the owned diagnostics runner"
+        );
+        assert!(
+            main_rs.contains("fn next_headless_value"),
+            "generated template should avoid borrowing args through a capturing closure"
+        );
+        assert!(
+            main_rs.contains("|_probe_ctx: ProbeContext|"),
+            "generated template should type the diagnostics probe context explicitly"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -2862,6 +2889,39 @@ mod tests {
         assert!(
             xcodeproj.contains("BlincNativeBridge.swift in Sources"),
             "generated Xcode project should compile BlincNativeBridge.swift"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generated_rust_template_compiles_for_desktop_headless() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_headless_compile_{nonce}"));
+        let target_dir = std::env::temp_dir().join("blinc_cli_generated_template_target");
+
+        create_rust_project(&root, "DemoApp", "com.example")
+            .expect("rust project template should be generated");
+
+        let status = Command::new("cargo")
+            .arg("check")
+            .arg("--offline")
+            .arg("--manifest-path")
+            .arg(root.join("Cargo.toml"))
+            .arg("--bin")
+            .arg("demoapp_desktop")
+            .arg("--features")
+            .arg("desktop")
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .status()
+            .expect("generated project should be checked");
+
+        assert!(
+            status.success(),
+            "generated rust project should compile for desktop headless mode"
         );
 
         let _ = fs::remove_dir_all(&root);

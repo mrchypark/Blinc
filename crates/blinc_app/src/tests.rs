@@ -1229,6 +1229,69 @@ fn runner_stops_on_first_failed_assertion() {
 }
 
 #[test]
+fn runner_accepts_named_probe_closure_with_captured_state() {
+    use crate::headless_assert::{DiagnosticsElement, DiagnosticsSnapshot};
+    use crate::headless_runner::{run_scenario_with_owned_probe, RunOutcome};
+    use crate::headless_runtime::HeadlessRunConfig;
+
+    let scenario_json = r#"{
+      "steps": [
+        {"type":"assert_exists","id":"app.title"}
+      ]
+    }"#;
+    let title = "Welcome to Demo".to_string();
+
+    let mut probe = |_ctx| {
+        let mut snapshot = DiagnosticsSnapshot::default();
+        snapshot.elements.insert(
+            "app.title".to_string(),
+            DiagnosticsElement {
+                text: Some(title.clone()),
+            },
+        );
+        snapshot
+    };
+
+    let outcome =
+        run_scenario_with_owned_probe(scenario_json, HeadlessRunConfig::default(), &mut probe)
+            .expect("runner should accept named closure probe");
+
+    assert!(matches!(outcome, RunOutcome::Passed { .. }));
+}
+
+#[test]
+fn loaded_runner_accepts_reference_probe_with_captured_state() {
+    use crate::headless_assert::{DiagnosticsElement, DiagnosticsSnapshot};
+    use crate::headless_runner::{run_loaded_scenario_with_probe, ProbeContext, RunOutcome};
+    use crate::headless_runtime::HeadlessRunConfig;
+    use crate::headless_scenario::{HeadlessScenario, ScenarioStep};
+
+    let scenario = HeadlessScenario {
+        steps: vec![ScenarioStep::AssertExists {
+            id: "app.title".to_string(),
+        }],
+    };
+    let title = "Welcome to Demo".to_string();
+
+    let mut probe = |_ctx: &ProbeContext| {
+        let mut snapshot = DiagnosticsSnapshot::default();
+        snapshot.elements.insert(
+            "app.title".to_string(),
+            DiagnosticsElement {
+                text: Some(title.clone()),
+            },
+        );
+        snapshot
+    };
+
+    let outcome =
+        run_loaded_scenario_with_probe(&scenario, HeadlessRunConfig::default(), &mut probe)
+            .expect("loaded runner should accept reference probe");
+
+    assert!(matches!(outcome, RunOutcome::Passed { .. }));
+}
+
+#[test]
 fn run_scenario_requires_probe_for_assertions() {
     use crate::headless_runner::run_scenario;
 

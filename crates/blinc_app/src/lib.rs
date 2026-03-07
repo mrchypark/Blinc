@@ -165,7 +165,8 @@ pub use error::{BlincError, Result};
 pub use headless_assert::{AssertionResult, DiagnosticsElement, DiagnosticsSnapshot};
 pub use headless_report::HeadlessReport;
 pub use headless_runner::{
-    run_loaded_scenario_with_probe, run_scenario, run_scenario_with_probe, ProbeContext, RunOutcome,
+    run_loaded_scenario_with_owned_probe, run_loaded_scenario_with_probe, run_scenario,
+    run_scenario_with_owned_probe, run_scenario_with_probe, ProbeContext, RunOutcome,
 };
 pub use headless_runtime::{HeadlessContext, HeadlessRunConfig, HeadlessRuntime};
 pub use headless_scenario::{HeadlessScenario, ScenarioStep};
@@ -189,8 +190,8 @@ pub mod prelude {
     pub use crate::headless_assert::{AssertionResult, DiagnosticsElement, DiagnosticsSnapshot};
     pub use crate::headless_report::HeadlessReport;
     pub use crate::headless_runner::{
-        run_loaded_scenario_with_probe, run_scenario, run_scenario_with_probe, ProbeContext,
-        RunOutcome,
+        run_loaded_scenario_with_owned_probe, run_loaded_scenario_with_probe, run_scenario,
+        run_scenario_with_owned_probe, run_scenario_with_probe, ProbeContext, RunOutcome,
     };
     pub use crate::headless_runtime::{HeadlessContext, HeadlessRunConfig, HeadlessRuntime};
     pub use crate::headless_scenario::{HeadlessScenario, ScenarioStep};

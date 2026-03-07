@@ -163,12 +163,12 @@ Minimal flow:
 
 ```rust
 use blinc_app::headless_assert::{DiagnosticsElement, DiagnosticsSnapshot};
-use blinc_app::headless_runner::run_loaded_scenario_with_probe;
+use blinc_app::headless_runner::run_loaded_scenario_with_owned_probe;
 use blinc_app::headless_runtime::HeadlessRunConfig;
 use blinc_app::headless_scenario::HeadlessScenario;
 
 let scenario = HeadlessScenario::from_path("scenario.json".as_ref())?;
-let mut probe = |_ctx: &blinc_app::ProbeContext| {
+let mut probe = |_ctx: blinc_app::ProbeContext| {
     let mut snapshot = DiagnosticsSnapshot::default();
     snapshot.elements.insert(
         "app.title".to_string(),
@@ -177,7 +177,7 @@ let mut probe = |_ctx: &blinc_app::ProbeContext| {
     snapshot
 };
 
-let outcome = run_loaded_scenario_with_probe(
+let outcome = run_loaded_scenario_with_owned_probe(
     &scenario,
     HeadlessRunConfig::default(),
     &mut probe,

@@ -213,14 +213,14 @@ impl RecordingSession {
         diff
     }
 
-    /// Record a trace entry and return its assigned sequence number.
-    pub fn record_trace_entry(&mut self, kind: TraceEntryKind) -> u64 {
+    /// Attempt to record a trace entry and return its assigned sequence number.
+    pub fn try_record_trace_entry(&mut self, kind: TraceEntryKind) -> Option<u64> {
+        if self.state != SessionState::Recording {
+            return None;
+        }
+
         let sequence = self.next_trace_sequence;
         self.next_trace_sequence = self.next_trace_sequence.saturating_add(1);
-
-        if self.state != SessionState::Recording {
-            return sequence;
-        }
 
         if self.trace_entries.len() >= self.config.max_events {
             self.trace_entries.pop_front();
@@ -232,7 +232,17 @@ impl RecordingSession {
             kind,
         });
 
-        sequence
+        Some(sequence)
+    }
+
+    /// Record a trace entry and return the current sequence number.
+    ///
+    /// When the session is not recording, no entry is stored and the next sequence
+    /// number is returned unchanged for backward compatibility.
+    pub fn record_trace_entry(&mut self, kind: TraceEntryKind) -> u64 {
+        let fallback_sequence = self.next_trace_sequence;
+        self.try_record_trace_entry(kind)
+            .unwrap_or(fallback_sequence)
     }
 
     /// Get recorded events.
@@ -347,6 +357,10 @@ impl SharedRecordingSession {
         self.inner.write().record_snapshot(snapshot)
     }
 
+    pub fn try_record_trace_entry(&self, kind: TraceEntryKind) -> Option<u64> {
+        self.inner.write().try_record_trace_entry(kind)
+    }
+
     pub fn record_trace_entry(&self, kind: TraceEntryKind) -> u64 {
         self.inner.write().record_trace_entry(kind)
     }
@@ -432,23 +446,29 @@ mod tests {
     fn recording_export_round_trips_with_command_and_assertion_entries() {
         let mut session = RecordingSession::new(RecordingConfig::minimal());
         session.start();
-        session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-            name: "click".to_string(),
-            target: Some("login.submit".to_string()),
-            payload: None,
-        }));
-        session.record_trace_entry(TraceEntryKind::Assertion(TraceAssertionRecord {
-            code: "assert_text_contains".to_string(),
-            passed: true,
-            target: Some("status".to_string()),
-            actual: Some("Signed in".to_string()),
-            expected: Some("Signed in".to_string()),
-        }));
-        session.record_trace_entry(TraceEntryKind::Artifact(TraceArtifactRecord {
-            kind: "tree_dump".to_string(),
-            path: Some("artifacts/status-tree.json".to_string()),
-            message: None,
-        }));
+        session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "click".to_string(),
+                target: Some("login.submit".to_string()),
+                payload: None,
+            }))
+            .expect("trace entry should record while active");
+        session
+            .try_record_trace_entry(TraceEntryKind::Assertion(TraceAssertionRecord {
+                code: "assert_text_contains".to_string(),
+                passed: true,
+                target: Some("status".to_string()),
+                actual: Some("Signed in".to_string()),
+                expected: Some("Signed in".to_string()),
+            }))
+            .expect("trace entry should record while active");
+        session
+            .try_record_trace_entry(TraceEntryKind::Artifact(TraceArtifactRecord {
+                kind: "tree_dump".to_string(),
+                path: Some("artifacts/status-tree.json".to_string()),
+                message: None,
+            }))
+            .expect("trace entry should record while active");
 
         let export = session.export();
         let payload = serde_json::to_string(&export).expect("recording export should serialize");
@@ -475,16 +495,20 @@ mod tests {
         let mut session = RecordingSession::new(RecordingConfig::minimal());
         session.start();
 
-        let first = session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-            name: "click".to_string(),
-            target: Some("login.submit".to_string()),
-            payload: None,
-        }));
-        let second = session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-            name: "press".to_string(),
-            target: Some("login.submit".to_string()),
-            payload: Some("Enter".to_string()),
-        }));
+        let first = session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "click".to_string(),
+                target: Some("login.submit".to_string()),
+                payload: None,
+            }))
+            .expect("trace entry should record while active");
+        let second = session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "press".to_string(),
+                target: Some("login.submit".to_string()),
+                payload: Some("Enter".to_string()),
+            }))
+            .expect("trace entry should record while active");
 
         let export = session.export();
         let sequences: Vec<u64> = export
@@ -497,5 +521,138 @@ mod tests {
         assert_eq!(second, 1);
         assert_eq!(sequences, vec![0, 1]);
         assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn trace_entries_do_not_advance_sequence_when_session_is_not_recording() {
+        let mut session = RecordingSession::new(RecordingConfig::minimal());
+
+        assert_eq!(
+            session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "click".to_string(),
+                target: Some("idle.button".to_string()),
+                payload: None,
+            })),
+            0
+        );
+        assert!(session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "click".to_string(),
+                target: Some("idle.button".to_string()),
+                payload: None,
+            }))
+            .is_none());
+
+        session.start();
+        let sequence = session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "click".to_string(),
+                target: Some("active.button".to_string()),
+                payload: None,
+            }))
+            .expect("first active trace entry should record");
+
+        assert_eq!(sequence, 0);
+        assert_eq!(session.trace_entries().len(), 1);
+
+        session.pause();
+        assert_eq!(
+            session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "click".to_string(),
+                target: Some("paused.button".to_string()),
+                payload: None,
+            })),
+            1
+        );
+        assert!(session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "click".to_string(),
+                target: Some("paused.button".to_string()),
+                payload: None,
+            }))
+            .is_none());
+
+        session.start();
+        let resumed_sequence = session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "click".to_string(),
+                target: Some("resumed.button".to_string()),
+                payload: None,
+            }))
+            .expect("resumed trace entry should continue sequence");
+
+        assert_eq!(resumed_sequence, 1);
+
+        session.stop();
+        assert_eq!(
+            session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "click".to_string(),
+                target: Some("stopped.button".to_string()),
+                payload: None,
+            })),
+            2
+        );
+        assert!(session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "click".to_string(),
+                target: Some("stopped.button".to_string()),
+                payload: None,
+            }))
+            .is_none());
+
+        assert_eq!(session.trace_entries().len(), 2);
+    }
+
+    #[test]
+    fn shared_session_trace_entries_only_record_while_active() {
+        let session = SharedRecordingSession::new(RecordingConfig::minimal());
+
+        assert_eq!(
+            session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "idle".to_string(),
+                target: Some("app.title".to_string()),
+                payload: None,
+            })),
+            0
+        );
+        assert!(session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "idle".to_string(),
+                target: Some("app.title".to_string()),
+                payload: None,
+            }))
+            .is_none());
+
+        session.start();
+        let sequence = session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "active".to_string(),
+                target: Some("app.title".to_string()),
+                payload: None,
+            }))
+            .expect("active shared session should record trace entries");
+
+        session.pause();
+
+        assert_eq!(
+            session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "paused".to_string(),
+                target: Some("app.title".to_string()),
+                payload: None,
+            })),
+            1
+        );
+        assert!(session
+            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+                name: "paused".to_string(),
+                target: Some("app.title".to_string()),
+                payload: None,
+            }))
+            .is_none());
+
+        let export = session.export();
+        assert_eq!(sequence, 0);
+        assert_eq!(export.trace_entries.len(), 1);
+        assert_eq!(export.trace_entries[0].sequence, 0);
     }
 }
