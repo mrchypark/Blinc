@@ -11,10 +11,26 @@ pub struct UpdateCheckRequest {
     pub current_version: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum InstallHandoff {
+    AndroidPackageInstaller {
+        package_name: String,
+        allow_unknown_sources_prompt: bool,
+    },
+    MacOsBundleReplace {
+        bundle_id: String,
+    },
+    Unsupported {
+        platform: String,
+        reason: String,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct InstallIntent {
     pub artifact: ReleaseArtifact,
     pub downloaded_file: PathBuf,
+    pub handoff: InstallHandoff,
 }
 
 #[derive(Debug, Clone)]
