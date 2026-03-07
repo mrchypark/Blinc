@@ -2,277 +2,273 @@
 
 ## Problem
 
-Blinc already has the beginnings of a recorder and debugger, but they are still oriented around post-hoc playback of a recording file. They do not yet provide a complete developer toolchain that an agent can drive directly while building or debugging a Blinc application.
+Blinc already has three important pieces of a developer-tooling stack:
 
-The desired product is stronger than a visual viewer:
+- `blinc_recorder` captures runtime events, tree snapshots, replay state, and debug-server exports
+- `blinc_debugger` loads those exports and provides a basic tree/preview/inspector/timeline UI
+- `blinc_app` already includes app-level headless diagnostics primitives such as `HeadlessRuntime`, `HeadlessScenario`, `headless_runner`, and `HeadlessReport`
 
-- an agent must be able to launch a Blinc app in desktop and headless modes
-- inject actions through a stable Rust-native automation API
-- address elements through both stable IDs and semantic locators
-- persist commands, runtime events, locator resolution, state trees, render evidence, and assertions in one trace
-- inspect failures in a debugger that is built around forensic trace analysis rather than simple recording playback
+The gap is not a missing foundation. The gap is that these pieces are still separate and too limited for agent-driven debugging. An agent cannot yet use one coherent Rust-native API to drive a Blinc app, inject actions, resolve elements by both stable IDs and semantic locators, capture causally linked trace evidence, and inspect the failure later in a debugger that understands commands, assertions, and locator resolution.
 
-The current `blinc_recorder` and `blinc_debugger` crates are useful foundations, but they do not yet define a unified automation runtime, a canonical trace model, or a debugger UX designed for agent-generated failures.
+The most important design rule for this work is:
+
+- do not rebuild capabilities that the repository already has
+
+This platform must be an evolution of the current recorder, debugger, selector, and headless-diagnostics work, not a parallel product layered beside them.
 
 ## Scope
 
 - Desktop application automation support
-- Headless execution support with the same trace format as desktop
+- Headless execution support with the same trace schema as desktop
 - Rust-native automation API for agent-driven execution
-- Scenario DSL and state-machine playbook support
-- Unified trace model covering commands, runtime events, state snapshots, render evidence, and assertions
-- Debugger UI upgrades for command/event/trace forensics
+- Straight-line scenario DSL support by extending the existing headless scenario model
+- State-machine playbook support by building on the existing FSM runtime
+- Unified trace capture of commands, locator resolution, runtime events, state snapshots, render evidence, and assertions
+- Debugger upgrades for forensic analysis of failed runs
 
 ## Explicit Non-Goals
 
 - Mobile automation as an MVP requirement
 - Full Playwright API compatibility
-- A dependency on `probar` as the core runtime implementation
-- Remote browser/CDP automation as the primary execution target
-- Production end-user telemetry features
+- Replacing existing recorder/debugger/headless modules with a parallel stack
+- Making `probar` a runtime dependency
+- JavaScript-first automation surfaces in v1
+
+## Current Assets To Reuse
+
+### `blinc_recorder`
+
+Already provides:
+
+- event capture
+- tree snapshot capture
+- replay player
+- debug-server export transport
+- `RecordingExport` as the current serialization boundary
+
+### `blinc_debugger`
+
+Already provides:
+
+- file and server import
+- existing tree, inspector, preview, and timeline panels
+- replay-driven cursor and snapshot navigation
+
+### `blinc_app`
+
+Already provides:
+
+- `HeadlessRuntime`
+- `HeadlessScenario`
+- `ScenarioStep`
+- `run_loaded_scenario_with_probe`
+- `HeadlessReport`
+
+### `blinc_layout`
+
+Already provides:
+
+- stable ID query APIs in `selector`
+- `ElementRegistry`
+- `ElementHandle`
+- partial programmatic control surfaces
+- recorder bridge hooks for events and tree snapshots
+
+### `blinc_core`
+
+Already provides:
+
+- FSM runtime primitives in `fsm.rs`
 
 ## External Reference: `probar`
 
 The closest external reference is [`paiml/probar`](https://github.com/paiml/probar).
 
-Relevant qualities to borrow:
+Useful ideas to borrow:
 
-- separate library and CLI surfaces
-- familiar automation ergonomics
-- deterministic replay and trace-oriented execution
-- playbook validation and state-machine support
-- headless-first execution story
+- library plus CLI split
+- headless-first testing ergonomics
+- deterministic replay mindset
+- scenario and state-machine style inputs
+- validation and diagram export as first-class tooling
 
 Reasons not to embed it directly:
 
-- `probar` is designed around WASM/TUI/CDP-style targets, not Blinc's internal render tree and context state model
-- Blinc already has privileged access to element state, focus, hover, layout, and render metadata that would be awkward to flatten into a foreign runtime
-- the debugger needs Blinc-native state tree and locator evidence, not only generic automation output
+- `probar` is designed around WASM/TUI/CDP targets, not Blinc's internal render tree and context state model
+- Blinc can observe far richer internal state than a generic automation backend
+- this platform needs Blinc-native tree snapshots, locator evidence, and debugger drill-down
 
 Decision:
 
-- use `probar` as a product and architecture reference
-- build a Blinc-native runtime, trace model, and debugger
-- keep future compatibility possible through import/export or a backend adapter, but do not make that a v1 dependency
+- use `probar` as a product reference
+- keep implementation Blinc-native
+- prioritize compatibility by concept, not by dependency
 
 ## Options Considered
 
-### Option A: Extend the existing recorder/debugger incrementally
+### Option A: Add a separate automation stack with new foundational crates
 
-- Keep all work inside `blinc_recorder` and `blinc_debugger`
-- Add automation hooks in-place
-
-**Pros**
-
-- Lowest initial package churn
-- Reuses existing recording model quickly
-
-**Cons**
-
-- Pushes unrelated concerns into crates that already have mixed responsibilities
-- Makes it harder to separate automation commands from trace data
-- Risks another rewrite once scenario/playbook/headless features expand
-
-### Option B: Build a Blinc-native automation platform with `probar`-shaped UX (Chosen)
-
-- Create new automation and playbook layers
-- Keep recorder/debugger, but reshape them around the new trace model
-- Expose a Rust-native automation API plus CLI/playbook surfaces
+- create new automation, trace, and playbook crates beside current recorder/debugger code
 
 **Pros**
 
-- Best fit for Blinc internals
-- Supports both desktop and headless with one command/trace model
-- Lets the debugger evolve into a proper forensic tool
-- Keeps room for future `probar`-style compatibility without architectural lock-in
+- clean conceptual layering on paper
+- easy to describe in architecture diagrams
 
 **Cons**
 
-- Requires more initial design work
-- Introduces new crates and migration work
+- duplicates existing headless diagnostics, trace export, selector, and debugger work
+- introduces migration and consistency problems immediately
+- violates the primary rule to avoid rebuilding what already exists
 
-### Option C: Make `probar` the primary engine and add a Blinc backend
+### Option B: Evolve the existing recorder, debugger, app, selector, and FSM layers (Chosen)
 
-- Treat Blinc as a target adapter
-- Reuse as much of `probar` as possible
+- keep current crates
+- extend them in-place around one shared command-and-trace model
+- extract crates later only if the APIs prove stable and reusable
 
 **Pros**
 
-- Strong external reference
-- Some concepts already exist
+- best reuse of tested code already in the repository
+- lowest rework risk
+- preserves existing workflows while growing them toward agent-grade debugging
+- keeps the debugger and recorder aligned with the runtime internals they already understand
 
 **Cons**
 
-- Gives up Blinc-native control over trace and state semantics
-- Makes core debugger features depend on a third-party runtime model
-- Increases integration risk for headless and render-tree-specific behavior
+- requires more discipline to avoid overloading existing crates
+- needs explicit boundaries to prevent feature sprawl
+
+### Option C: Make `probar` the primary engine and attach Blinc as a backend
+
+**Pros**
+
+- strong external reference
+- some concepts already exist
+
+**Cons**
+
+- gives up Blinc-native control over the trace and state models
+- creates dependency and integration risk for the most critical developer tooling
+- forces Blinc to flatten internal state into a foreign abstraction too early
 
 ## Decision
 
 Choose **Option B**.
 
-Blinc should grow a dedicated agent-debugging platform inside the repository, using `probar` as a product reference rather than as the runtime dependency. The core of the platform should be a shared command/trace model that is reused by desktop automation, headless execution, playbooks, and the debugger.
-
-## Product Boundary
-
-The MVP should support:
-
-- desktop apps
-- headless runs
-- Rust-native API
-- scenario DSL
-- state-machine playbooks
-- dual locator system: stable ID and semantic locator
-
-The MVP should not require:
-
-- mobile automation
-- JavaScript-first bindings
-- browser/CDP transport as the main runtime
+The MVP should extend the existing architecture first. No new foundational crate should be introduced in MVP unless reuse is proven impossible after targeted implementation work.
 
 ## Architectural Boundaries
 
-### 1. `blinc_automation`: command and session layer
+### 1. `blinc_recorder` becomes the canonical trace home
 
-Add a new crate:
+Do not create a parallel trace package in v1.
 
-- `crates/blinc_automation`
+Instead:
 
-Responsibilities:
+- evolve `RecordingExport`
+- add explicit trace entry types inside `blinc_recorder`
+- preserve compatibility for existing event/snapshot consumers during migration
 
-- agent-facing Rust-native automation API
-- canonical command types
-- locator model
-- session lifecycle
-- assertion requests and results
-- bridge points for desktop and headless runners
+New trace responsibilities inside `blinc_recorder`:
 
-Representative types:
+- command stream
+- locator resolution stream
+- assertion stream
+- artifact descriptors
+- causal links between command, runtime event, and failure evidence
 
-- `AutomationSession`
-- `AutomationCommand`
-- `Locator`
-- `ResolvedTarget`
-- `AutomationError`
-- `AssertionRequest`
-- `AssertionOutcome`
+The current event and snapshot capture pipeline stays in `blinc_recorder`; it is extended rather than replaced.
 
-This crate should not own rendering, native windowing, or debugger UI.
+### 2. `blinc_app` owns automation sessions and headless execution
 
-### 2. `blinc_playbook`: scenario and state-machine compiler layer
+Do not create a new automation foundation crate in MVP.
 
-Add a new crate:
+Instead:
 
-- `crates/blinc_playbook`
+- extend the existing `headless_*` modules
+- add an `AutomationSession` inside `blinc_app`
+- reuse the current headless runner and runtime instead of recreating them
 
-Responsibilities:
+`blinc_app` responsibilities:
 
-- parse scenario DSL
-- parse state-machine playbooks
-- validate transitions and assertions
-- compile both sources into one canonical execution graph
-- export diagrams for state-machine playbooks
+- launching or attaching to an app runtime
+- running commands in headless and desktop modes
+- coordinating command execution and assertion evaluation
+- returning trace-linked outcomes
 
-Representative types:
+### 3. `blinc_layout::selector` becomes the locator and interaction engine
 
-- `ScenarioDocument`
-- `StateMachinePlaybook`
-- `ExecutionPlan`
-- `PlanStep`
-- `PlanValidationError`
+Do not create a parallel locator subsystem.
 
-### 3. `blinc_trace`: canonical trace schema
+Instead:
 
-Add a new crate:
+- keep stable ID lookup on top of the existing selector registry
+- add semantic locator resolution to the selector layer
+- finish the currently incomplete event-dispatch path in `ElementHandle`
 
-- `crates/blinc_trace`
+Selector responsibilities:
 
-Responsibilities:
+- stable ID lookup
+- semantic lookup
+- interactability checks
+- locator ambiguity reporting
+- dispatch support for click/focus/input-like operations
 
-- shared trace envelope schema
-- serialization and versioning
-- trace event categories
-- artifact manifesting
-- evidence linking
+### 4. `blinc_core::fsm` remains the state-machine substrate
 
-Representative streams:
+Do not create a separate state-machine foundation for playbooks.
 
-- `command`
-- `runtime_event`
-- `locator_resolution`
-- `state_snapshot`
-- `render_snapshot`
-- `assertion`
-- `artifact`
+Instead:
 
-`blinc_recorder` should evolve to produce `blinc_trace`-compatible output rather than stay a standalone format forever.
+- compile playbook transitions into wrappers or adapters around the current FSM runtime
+- keep playbook parsing and validation close to `blinc_app` and `blinc_cli`
 
-### 4. `blinc_recorder`: capture and replay substrate
+This avoids maintaining two state-machine systems in one repository.
 
-Keep:
-
-- event capture
-- tree snapshot capture
-- replay clock
-- debug server transport
-
-Extend:
-
-- trace envelope support
-- locator resolution recording
-- richer state snapshot metadata
-- assertion and artifact hooks
-
-The recorder becomes the low-level capture engine, not the entire product surface.
-
-### 5. `blinc_app`: runtime execution surfaces
-
-Add app-level execution paths:
-
-- `desktop automation runtime`
-- `headless automation runtime`
+### 5. `blinc_cli` provides user-facing automation and playbook entry points
 
 Responsibilities:
 
-- launch app under automation
-- execute canonical commands
-- expose runtime hooks for state snapshots and render evidence
-- guarantee trace parity between desktop and headless where possible
+- run scenarios
+- validate playbooks
+- export diagrams
+- emit traces and reports
 
-### 6. `blinc_debugger`: forensic debugger UI
+The CLI should reuse the existing headless diagnostics path where possible instead of inventing a separate launch model.
 
-Reposition the debugger as a trace investigation tool.
+### 6. `blinc_debugger` evolves into a forensic trace debugger
 
-Primary panels:
+Do not replace the existing debugger UI.
 
-- timeline
+Instead:
+
+- extend current panels
+- add only the missing panels and data sources
+- keep the existing replay-oriented controls where they still help
+
+New capabilities:
+
 - command log
-- state tree
-- node inspector
-- evidence panel
-
-This debugger must be able to answer:
-
-- which command ran
-- which locator resolved, and why
-- what the app state tree looked like at that moment
-- what assertion failed
-- what render evidence was captured
+- assertion failure surfacing
+- locator resolution evidence
+- richer state tree inspection
+- artifact drill-down
 
 ## Runtime Model
 
-The runtime model should be command-driven, closer to CDP than to callback-heavy UI scripting.
+The runtime model should be command-driven and trace-backed.
 
 Flow:
 
-1. API or playbook emits an `AutomationCommand`
-2. runtime resolves locator and interactability
-3. runtime executes against desktop or headless app
-4. runtime records the command, locator evidence, events, and resulting snapshots into the trace
-5. assertions produce first-class `AssertionOutcome` entries
-6. debugger reads the trace and reconstructs the investigation timeline
+1. Rust API, scenario, or playbook emits a canonical command
+2. selector resolves a target by stable ID or semantic query
+3. runtime checks interactability and executes the action in desktop or headless mode
+4. recorder appends command, locator evidence, runtime events, and resulting snapshots into the trace
+5. assertions append pass/fail outcomes into the same trace
+6. debugger reconstructs the timeline from this shared evidence
 
-This is intentionally different from "playback a recording file." The system is built around causality and evidence.
+This is intentionally stronger than simple playback of a recording file. The system is built around causality, not only capture.
 
 ## Locator Strategy
 
@@ -292,15 +288,15 @@ Supported semantic families in MVP:
 
 Execution rule:
 
-- all user-facing locator forms normalize to one `ResolvedTarget` model
-- locator ambiguity is an explicit runtime error and a trace event
-- the trace stores both the original locator query and the chosen candidate
+- all locator forms normalize to one resolved-target model inside the selector layer
+- ambiguity is an explicit runtime error and an explicit trace event
+- the trace stores the original query, candidate set, and final match if one exists
 
-This is required for agent-grade debuggability. "Element not found" is insufficient; the system must explain whether it found zero matches, too many matches, or a non-interactable target.
+The existing selector registry is the starting point. Semantic support is layered on top of it rather than rebuilt elsewhere.
 
 ## Trace Model
 
-The trace must become the shared source of truth across all tools.
+The trace should evolve from `RecordingExport`, not live beside it.
 
 Each entry must include:
 
@@ -308,28 +304,27 @@ Each entry must include:
 - monotonic timestamp
 - frame index when relevant
 - runtime mode: desktop or headless
-- causal link to the command that triggered it when relevant
+- causal link to the originating command when relevant
 
-Trace streams:
+Trace streams to add:
 
 ### Command
 
 - requested operation
 - locator or direct target
 - input payload
-- timeout/budget metadata
+- timeout and budget metadata
 
 ### Runtime Event
 
-- mouse, key, focus, hover, scroll, custom event
-- raw and normalized forms when useful
+- mouse, key, focus, hover, scroll, and custom events
 
 ### Locator Resolution
 
-- locator query
-- candidate set
-- final match
-- resolution rationale
+- original query
+- candidates
+- chosen target
+- failure reason when unresolved
 
 ### State Snapshot
 
@@ -341,17 +336,17 @@ Trace streams:
 - semantic metadata
 - event-handler metadata where available
 
-### Render Snapshot
+### Render Evidence
 
 - framebuffer image or lightweight render summary
-- optional diff link
+- optional diff links
 
 ### Assertion
 
-- request
-- pass/fail
+- assertion request
+- pass or fail
 - actual and expected payload
-- attached evidence
+- linked evidence
 
 ### Artifact
 
@@ -359,55 +354,51 @@ Trace streams:
 - diff image
 - tree dump
 - exported diagram
-- debug logs
+- logs
 
 ## Headless Support
 
-Headless support is an MVP requirement.
+Headless support is already present in prototype form and must be extended, not recreated.
 
 Rules:
 
-- headless and desktop must share the same command API
-- headless and desktop must emit the same trace schema
-- assertion behavior should match across both modes as closely as possible
-- differences that cannot be normalized must be tagged explicitly in the trace
+- evolve `HeadlessScenario` instead of replacing it
+- evolve `HeadlessReport` instead of replacing it
+- move from `DiagnosticsSnapshot` toward richer tree-backed diagnostics by bridging to recorder snapshots
+- keep desktop and headless on one shared command vocabulary and one trace schema
 
-Headless support is not optional convenience. It is required for fast agent iteration and CI automation.
+Headless support is required for:
+
+- fast local iteration
+- CI
+- agent-driven debugging without a visible window
 
 ## Debugger UX
 
-The debugger must shift from a simple playback viewer to a forensic workflow.
+The debugger must shift from a simple recording viewer to a forensic workflow, but by extending existing panels where possible.
 
 ### Timeline
 
-- show commands, runtime events, assertions, and snapshot capture points together
-- allow filtering by stream type and failure status
+- keep current playback controls
+- add commands, assertions, and trace markers to the same axis
 
-### Command Log
+### Tree Panel
 
-- show canonical commands in order
-- include locator and execution outcome
-
-### State Tree
-
-- show the current tree for a chosen point in time
-- show diffs between adjacent snapshots
-- support ID and semantic metadata visibility
+- keep the current tree foundation
+- add semantic metadata and diff awareness
 
 ### Inspector
 
-- node bounds
-- role/label/text
-- locator match evidence
-- visual props
-- focus/hover/interactable state
+- extend existing inspector data rather than replace it
+- show locator match evidence, role, label, interactability, and assertion context
+
+### Command Panel
+
+- new panel for canonical commands and outcomes
 
 ### Evidence Panel
 
-- assertion details
-- screenshots or diffs
-- exported artifacts
-- trace-linked logs
+- new panel for screenshots, diffs, tree dumps, and logs
 
 ## Developer Experience Surfaces
 
@@ -421,30 +412,35 @@ Example direction:
 let app = BlincApp::launch(config)?;
 let mut session = app.session();
 
-session.locator(Locator::id("login.submit")).click()?;
-session.locator(Locator::role("textbox").with_label("Email"))
+session.locator("login.submit").click()?;
+session.locator_by_role("textbox")
+    .with_label("Email")
     .fill("person@example.com")?;
-session.expect(Expect::text_contains(
-    Locator::id("status"),
-    "Signed in",
-))?;
+session.expect_text_contains("status", "Signed in")?;
 ```
 
 ### Scenario DSL
 
-Straight-line execution:
+This should be an evolution of the existing `HeadlessScenario` format.
+
+Current diagnostics steps already cover:
+
+- wait
+- tick
+- assert exists
+- assert text contains
+
+MVP extends this with:
 
 - click
 - fill
 - press
 - scroll
-- wait
-- snapshot
-- assert
+- snapshot or export trace
 
 ### State-machine Playbook
 
-Support:
+Playbooks should support:
 
 - named states
 - transitions
@@ -453,7 +449,7 @@ Support:
 - validation
 - diagram export
 
-Both inputs must compile into the same execution plan type.
+The runtime substrate should reuse the existing FSM implementation.
 
 ## Error Model
 
@@ -482,57 +478,55 @@ Use four layers:
 
 ### 1. Unit tests
 
-- locator parsing
-- semantic metadata extraction
-- trace envelope serialization
+- selector and semantic locator resolution
+- trace serialization within `RecordingExport`
+- scenario parsing
 - playbook validation
-- command normalization
+- assertion classification
 
 ### 2. Integration tests
 
 - execute commands against representative desktop examples
-- execute the same plans in headless mode
+- execute the same commands in headless mode
 - verify equivalent assertion outcomes
 
-### 3. Golden and replay tests
+### 3. Replay and golden tests
 
 - deterministic replay with fixed seeds
 - stable trace shape for known examples
 
 ### 4. Debugger smoke tests
 
-- load a known trace
-- verify timeline, command log, tree, and evidence panels render expected content
+- load a known enriched recording export
+- verify timeline, tree, inspector, command, and evidence views render expected content
 
 ## Rollout Plan
 
 ### Phase 1
 
-- trace envelope
-- Rust-native automation session
-- headless runtime
-- scenario DSL
+- extend `RecordingExport` into a richer trace
+- bridge headless diagnostics onto recorder snapshots
+- add action steps to the existing scenario runner
 
 ### Phase 2
 
-- semantic locators
-- state-machine playbooks
-- command-aware debugger UI
+- add selector-based semantic locators and interaction dispatch
+- add desktop automation sessions
+- add state-machine playbook validation and execution
 
 ### Phase 3
 
-- diagram export
-- GUI coverage metrics
-- mutation and fuzzing hooks inspired by `probar`
+- upgrade the debugger to full forensic analysis
+- add diagram export, coverage metrics, and mutation-oriented validation where justified
 
 ## Success Criteria
 
 The MVP is successful when all of the following are true:
 
-- an agent can launch a Blinc app and drive it through a Rust-native API
+- an agent can drive a Blinc app through a Rust-native API without relying on a separate automation foundation
 - the same scenario can run in desktop and headless modes
-- both ID and semantic locators are supported
-- both scenario DSL and state-machine playbooks are supported
-- every action produces a structured trace with commands, locator evidence, events, snapshots, and assertions
+- stable ID and semantic locators both work
+- straight-line scenarios and state-machine playbooks are both supported
+- `RecordingExport` carries commands, locator evidence, runtime events, snapshots, and assertions in one trace-like export
 - a failed run can be opened in the debugger and investigated without rerunning the app
 
