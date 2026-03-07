@@ -119,4 +119,31 @@ mod tests {
             "android backend should return the matching android artifact"
         );
     }
+
+    #[test]
+    fn android_backend_strips_query_from_downloaded_apk_name() {
+        let backend = AndroidUpdateBackend::new("io.test.demo", true, "/tmp/downloads");
+        let artifact = ReleaseArtifact {
+            platform: "android".to_string(),
+            arch: "arm64-v8a".to_string(),
+            target_id: "io.test.demo".to_string(),
+            url: "https://example.com/releases/demo.apk?X-Amz-Signature=abc123".to_string(),
+            size: 42,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            signature:
+                "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ=="
+                    .to_string(),
+        };
+
+        let intent = backend
+            .download_artifact(&artifact)
+            .expect("android backend should sanitize presigned URLs into apk file paths");
+
+        assert_eq!(
+            intent.downloaded_file,
+            PathBuf::from("/tmp/downloads/demo.apk"),
+            "download path should strip query parameters before deriving the local apk file name"
+        );
+    }
 }

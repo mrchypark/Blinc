@@ -103,6 +103,7 @@ impl UpdateBackend for AndroidUpdateBackend {
             .url
             .rsplit('/')
             .next()
+            .and_then(|name| name.split(['?', '#']).next())
             .filter(|name| !name.is_empty())
             .unwrap_or("update.apk");
         let downloaded_file = self.download_dir.join(file_name);

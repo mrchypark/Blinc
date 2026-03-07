@@ -101,6 +101,10 @@ pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
 
+    manifest
+        .validate()
+        .context("generated release manifest failed validation")?;
+
     let json =
         serde_json::to_string_pretty(&manifest).context("Failed to serialize release manifest")?;
     fs::write(&args.output, json)
@@ -131,31 +135,33 @@ fn validate_release_manifest_args(args: &ReleaseManifestArgs) -> Result<()> {
         {
             bail!("artifact_path requires a private key via --private-key or BLINC_RELEASE_PRIVATE_KEY");
         }
+    } else {
+        if args.size == 0 && args.sha256.is_empty() && args.signature.is_empty() {
+            bail!(
+                "manual manifest mode requires size, sha256, and signature, or use --artifact-path"
+            );
+        }
 
-        return Ok(());
+        if args
+            .private_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .is_some()
+            || args.public_key_output.is_some()
+        {
+            bail!("--private-key and --public-key-output require --artifact-path");
+        }
+
+        if args.size == 0 {
+            bail!("size must be greater than zero");
+        }
+
+        validate_sha256(&args.sha256)?;
+        validate_signature(&args.signature)?;
     }
 
-    if args.size == 0 && args.sha256.is_empty() && args.signature.is_empty() {
-        bail!("manual manifest mode requires size, sha256, and signature, or use --artifact-path");
-    }
-
-    if args
-        .private_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .is_some()
-        || args.public_key_output.is_some()
-    {
-        bail!("--private-key and --public-key-output require --artifact-path");
-    }
-
-    if args.size == 0 {
-        bail!("size must be greater than zero");
-    }
-
-    validate_sha256(&args.sha256)?;
-    validate_signature(&args.signature)
+    Ok(())
 }
 
 fn normalize_published_at(published_at: &str) -> Result<String> {
@@ -1690,6 +1696,66 @@ mod tests {
         assert!(
             err.to_string().contains("public_key_output"),
             "key rotation errors should point at the emitted public key contract"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_generation_rejects_blank_target_id_before_writing() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_release_manifest_blank_target_{nonce}"));
+        let output = root.join("dist/release-manifest.json");
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = ""
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
+            size: 12_345,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
+            output: output.clone(),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("manifest generation should reject blank target identities before writing");
+
+        assert!(
+            err.to_string()
+                .contains("generated release manifest failed validation"),
+            "validation errors should surface manifest validation before writing"
+        );
+        assert!(
+            !output.exists(),
+            "invalid manifest metadata should not be written to disk"
         );
 
         let _ = fs::remove_dir_all(&root);
