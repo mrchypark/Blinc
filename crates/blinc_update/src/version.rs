@@ -23,6 +23,9 @@ pub fn is_newer_release(current: &str, candidate: &str) -> Result<bool, VersionE
 
 fn parse_version(input: &str) -> Result<ParsedVersion, VersionError> {
     let normalized = input.trim().trim_start_matches('v');
+    let normalized = normalized
+        .split_once('+')
+        .map_or(normalized, |(without_build, _)| without_build);
     let (core, pre_release) = normalized
         .split_once('-')
         .map_or((normalized, None), |(core, pre)| (core, Some(pre)));

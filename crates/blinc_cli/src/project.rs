@@ -1795,7 +1795,7 @@ fn validate_rust_project_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_org_name(org: &str) -> Result<()> {
+pub(crate) fn validate_org_name(org: &str) -> Result<()> {
     if org.is_empty() {
         bail!("Organization name cannot be empty");
     }

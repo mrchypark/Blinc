@@ -1,7 +1,10 @@
 use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use crate::config::BlincProject;
 
@@ -47,6 +50,8 @@ pub(crate) fn load_release_project(path: &Path) -> Result<BlincProject> {
 }
 
 pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
+    validate_release_manifest_args(args)?;
+
     let project = load_release_project(&args.source)?;
     let target_id = resolve_target_id(&project, &args.platform)?;
     let artifact = ReleaseManifestArtifact {
@@ -109,6 +114,25 @@ pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
         serde_json::to_string_pretty(&manifest).context("Failed to serialize release manifest")?;
     fs::write(&args.output, json)
         .with_context(|| format!("Failed to write {}", args.output.display()))?;
+
+    Ok(())
+}
+
+fn validate_release_manifest_args(args: &ReleaseManifestArgs) -> Result<()> {
+    OffsetDateTime::parse(&args.published_at, &Rfc3339)
+        .context("published_at must be a valid RFC 3339 timestamp")?;
+
+    if args.sha256.len() != 64 || !args.sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("sha256 must be a 64-character hexadecimal digest");
+    }
+
+    if args.signature.is_empty() {
+        bail!("signature must be a non-empty base64 string");
+    }
+
+    STANDARD
+        .decode(&args.signature)
+        .context("signature must be a valid base64 string")?;
 
     Ok(())
 }
@@ -290,7 +314,7 @@ mod tests {
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
             size: 12_345,
-            sha256: "deadbeef".to_string(),
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
             signature: "c2ln".to_string(),
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
@@ -343,7 +367,8 @@ mod tests {
             "manifest artifact should preserve size"
         );
         assert_eq!(
-            json["artifacts"][0]["sha256"], "deadbeef",
+            json["artifacts"][0]["sha256"],
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             "manifest artifact should preserve sha256"
         );
         assert_eq!(
@@ -392,7 +417,7 @@ mod tests {
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
             size: 12_345,
-            sha256: "deadbeef".to_string(),
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
             signature: "c2ln".to_string(),
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
@@ -406,7 +431,7 @@ mod tests {
             arch: "arm64-v8a".to_string(),
             url: "https://example.com/releases/demo-1.2.3.apk".to_string(),
             size: 67_890,
-            sha256: "beadfeed".to_string(),
+            sha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".to_string(),
             signature: "YWJj".to_string(),
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
@@ -436,8 +461,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time must be after epoch")
             .as_nanos();
-        let root = std::env::temp_dir()
-            .join(format!("blinc_cli_release_manifest_replace_{nonce}"));
+        let root = std::env::temp_dir().join(format!("blinc_cli_release_manifest_replace_{nonce}"));
         let output = root.join("dist/release-manifest.json");
 
         fs::create_dir_all(&root).expect("temp project root should be created");
@@ -466,7 +490,7 @@ mod tests {
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos-v1.zip".to_string(),
             size: 12_345,
-            sha256: "deadbeef".to_string(),
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
             signature: "c2ln".to_string(),
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
@@ -480,7 +504,7 @@ mod tests {
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos-v2.zip".to_string(),
             size: 54_321,
-            sha256: "beadfeed".to_string(),
+            sha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".to_string(),
             signature: "YWJj".to_string(),
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
@@ -497,13 +521,270 @@ mod tests {
             "rewriting the same artifact target should replace the prior entry"
         );
         assert_eq!(
-            json["artifacts"][0]["url"],
-            "https://example.com/releases/demo-1.2.3-macos-v2.zip",
+            json["artifacts"][0]["url"], "https://example.com/releases/demo-1.2.3-macos-v2.zip",
             "replacement artifact should keep the latest URL"
         );
         assert_eq!(
             json["artifacts"][0]["size"], 54_321,
             "replacement artifact should keep the latest size"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_command_rejects_invalid_published_at() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "blinc_cli_release_manifest_invalid_timestamp_{nonce}"
+        ));
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            size: 12_345,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            signature: "c2ln".to_string(),
+            output: root.join("dist/release-manifest.json"),
+            published_at: "not-a-timestamp".to_string(),
+            notes_url: None,
+        })
+        .expect_err("invalid RFC 3339 timestamps should be rejected");
+
+        assert!(
+            err.to_string().contains("published_at"),
+            "timestamp validation error should mention published_at"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_command_rejects_invalid_sha256() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_release_manifest_invalid_sha_{nonce}"));
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            size: 12_345,
+            sha256: "not-hex".to_string(),
+            signature: "c2ln".to_string(),
+            output: root.join("dist/release-manifest.json"),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("invalid sha256 values should be rejected");
+
+        assert!(
+            err.to_string().contains("sha256"),
+            "sha256 validation error should mention sha256"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_command_rejects_invalid_signature() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "blinc_cli_release_manifest_invalid_signature_{nonce}"
+        ));
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            size: 12_345,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            signature: "not-base64!!!".to_string(),
+            output: root.join("dist/release-manifest.json"),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("invalid signatures should be rejected");
+
+        assert!(
+            err.to_string().contains("signature"),
+            "signature validation error should mention signature"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_command_rejects_empty_sha256() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_release_manifest_empty_sha_{nonce}"));
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            size: 12_345,
+            sha256: String::new(),
+            signature: "c2ln".to_string(),
+            output: root.join("dist/release-manifest.json"),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("empty sha256 values should be rejected");
+
+        assert!(
+            err.to_string().contains("sha256"),
+            "sha256 validation error should mention sha256"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_command_rejects_empty_signature() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "blinc_cli_release_manifest_empty_signature_{nonce}"
+        ));
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            size: 12_345,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            signature: String::new(),
+            output: root.join("dist/release-manifest.json"),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("empty signature values should be rejected");
+
+        assert!(
+            err.to_string().contains("signature"),
+            "signature validation error should mention signature"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -546,7 +827,7 @@ mod tests {
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
             size: 12_345,
-            sha256: "deadbeef".to_string(),
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
             signature: "c2ln".to_string(),
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),

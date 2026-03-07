@@ -96,4 +96,18 @@ mod tests {
             "prerelease should not be considered newer than stable release"
         );
     }
+
+    #[test]
+    fn version_check_ignores_build_metadata() {
+        assert!(
+            is_newer_release("1.2.3", "1.2.4+build.1")
+                .expect("build metadata should not invalidate candidate versions"),
+            "newer versions with build metadata should still compare correctly"
+        );
+        assert!(
+            !is_newer_release("1.2.3+build.1", "1.2.3")
+                .expect("build metadata should be ignored during precedence checks"),
+            "build metadata alone should not make a version newer"
+        );
+    }
 }

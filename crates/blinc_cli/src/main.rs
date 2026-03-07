@@ -435,6 +435,8 @@ fn cmd_new(name: &str, template: &str, org: &str, rust: bool) -> Result<()> {
     // Extract the actual project name from the path (last component)
     let project_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(name);
 
+    project::validate_org_name(org)?;
+
     if rust {
         info!("Creating new Rust project: {}", project_name);
     } else {
