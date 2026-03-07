@@ -793,10 +793,11 @@ fn create_linux_files(path: &Path, name: &str, package_name: &str, org: &str) ->
     let linux_path = path.join("platforms/linux");
     let binary_name = name.to_lowercase().replace([' ', '-'], "_");
     let appstream_id = format!("{org}.{package_name}");
+    let desktop_file_id = format!("{appstream_id}.desktop");
 
     // Desktop entry file
     fs::write(
-        linux_path.join(format!("{}.desktop", binary_name)),
+        linux_path.join(&desktop_file_id),
         format!(
             r#"[Desktop Entry]
 Type=Application
@@ -827,7 +828,7 @@ StartupWMClass={name}
             {name} is a cross-platform application built with Blinc.
         </p>
     </description>
-    <launchable type="desktop-id">{binary_name}.desktop</launchable>
+    <launchable type="desktop-id">{desktop_file_id}</launchable>
     <provides>
         <binary>{binary_name}</binary>
     </provides>
@@ -1799,12 +1800,17 @@ fn validate_org_name(org: &str) -> Result<()> {
         bail!("Organization name cannot be empty");
     }
 
-    let is_valid = org
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_'));
-    if !is_valid || org.starts_with('.') || org.ends_with('.') || org.contains("..") {
+    let is_valid = org.split('.').all(|segment| {
+        let mut chars = segment.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+
+        first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    });
+    if !is_valid {
         bail!(
-            "Invalid organization name '{}'. Use only ASCII letters, digits, '.' or '_'",
+            "Invalid organization name '{}'. Use dot-separated segments that start with ASCII letters and then contain only ASCII letters, digits, or '_'",
             org
         );
     }
@@ -2924,6 +2930,28 @@ mod tests {
     }
 
     #[test]
+    fn rust_project_rejects_android_invalid_org_segments() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_headless_invalid_org_segment_{nonce}"));
+
+        let err = create_rust_project(&root, "DemoApp", "123.example")
+            .expect_err("android-invalid org segments should be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "error should explain org name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when org is rejected"
+        );
+    }
+
+    #[test]
     fn non_rust_project_uses_org_for_platform_identifiers() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2975,6 +3003,17 @@ mod tests {
             linux_metainfo.contains("<id>io.blinc.dev.demo_app</id>"),
             "generated AppStream ID should use the provided org"
         );
+        assert!(
+            linux_metainfo.contains(
+                "<launchable type=\"desktop-id\">io.blinc.dev.demo_app.desktop</launchable>"
+            ),
+            "generated AppStream launchable should point at the org-based desktop file"
+        );
+        assert!(
+            root.join("platforms/linux/io.blinc.dev.demo_app.desktop")
+                .exists(),
+            "generated Linux desktop entry filename should use the org-based identifier"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2994,6 +3033,28 @@ mod tests {
             r#"com.example"; std::process::Command::new("calc").spawn().unwrap(); //"#,
         )
         .expect_err("unsafe org name should be rejected for non-rust projects");
+
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "error should explain org name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when org is rejected"
+        );
+    }
+
+    #[test]
+    fn non_rust_project_rejects_android_invalid_org_segments() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_non_rust_invalid_org_segment_{nonce}"));
+
+        let err = create_project(&root, "DemoApp", "default", "123.example")
+            .expect_err("android-invalid org segments should be rejected");
 
         assert!(
             err.to_string().contains("Invalid organization name"),
