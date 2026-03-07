@@ -1083,6 +1083,64 @@ fn parses_wait_and_assert_steps() {
 }
 
 #[test]
+fn scenario_parses_click_fill_and_press_steps() {
+    use crate::headless_scenario::{HeadlessScenario, ScenarioStep};
+
+    let json = r#"{
+      "steps": [
+        {"type":"click","id":"login.button"},
+        {"type":"fill","id":"login.email","value":"person@example.com"},
+        {"type":"press","key":"Enter"}
+      ]
+    }"#;
+
+    let scenario: HeadlessScenario = serde_json::from_str(json).expect("scenario should parse");
+    assert!(matches!(
+        scenario.steps[0],
+        ScenarioStep::Click { ref id } if id == "login.button"
+    ));
+    assert!(matches!(
+        scenario.steps[1],
+        ScenarioStep::Fill { ref id, ref value } if id == "login.email" && value == "person@example.com"
+    ));
+    assert!(matches!(
+        scenario.steps[2],
+        ScenarioStep::Press { ref key } if key == "Enter"
+    ));
+}
+
+#[test]
+fn headless_runner_returns_structured_failure_for_unhandled_action_step() {
+    use crate::headless_runner::{run_scenario, RunOutcome};
+
+    let scenario_json = r#"{
+      "steps": [
+        {"type":"click","id":"login.button"}
+      ]
+    }"#;
+
+    let outcome = run_scenario(scenario_json).expect("runner should return outcome");
+    match outcome {
+        RunOutcome::Failed { report } => {
+            assert_eq!(report.failed_step_index, Some(0));
+            assert_eq!(
+                report.assertion,
+                Some("unsupported_action_step".to_string())
+            );
+            assert!(
+                report
+                    .message
+                    .as_deref()
+                    .is_some_and(|message| message.contains("click")),
+                "unexpected message: {:?}",
+                report.message
+            );
+        }
+        other => panic!("expected structured failure, got {other:?}"),
+    }
+}
+
+#[test]
 fn assert_text_contains_reports_failure_detail() {
     use crate::headless_assert::{
         evaluate_assert_text_contains, DiagnosticsElement, DiagnosticsSnapshot,

@@ -27,8 +27,38 @@ impl HeadlessScenario {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ScenarioStep {
-    Wait { ms: u64 },
-    Tick { frames: u32 },
-    AssertExists { id: String },
-    AssertTextContains { id: String, value: String },
+    Wait {
+        ms: u64,
+    },
+    Tick {
+        frames: u32,
+    },
+    Click {
+        id: String,
+    },
+    Fill {
+        id: String,
+        value: String,
+    },
+    Press {
+        key: String,
+    },
+    Scroll {
+        id: Option<String>,
+        dx: f32,
+        dy: f32,
+    },
+    Snapshot {
+        path: Option<String>,
+    },
+    ExportTrace {
+        path: Option<String>,
+    },
+    AssertExists {
+        id: String,
+    },
+    AssertTextContains {
+        id: String,
+        value: String,
+    },
 }

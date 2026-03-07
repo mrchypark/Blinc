@@ -53,6 +53,21 @@ impl HeadlessReport {
         }
     }
 
+    pub fn failed_action_step(
+        action: &str,
+        failed_step_index: usize,
+        elapsed_frames: u64,
+        elapsed_ms: u64,
+    ) -> Self {
+        Self::failed(
+            "unsupported_action_step",
+            failed_step_index,
+            format!("{action}: action step is parsed but not executable yet"),
+            elapsed_frames,
+            elapsed_ms,
+        )
+    }
+
     pub fn write_to_path_under(&self, root: &Path, path: &Path) -> Result<()> {
         if !root.is_absolute() {
             bail!("report root must be absolute");

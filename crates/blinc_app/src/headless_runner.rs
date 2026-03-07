@@ -117,6 +117,60 @@ where
                     || runtime_cfg.tick_ms,
                 )?;
             }
+            ScenarioStep::Click { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "click",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::Fill { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "fill",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::Press { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "press",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::Scroll { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "scroll",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::Snapshot { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "snapshot",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::ExportTrace { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "export_trace",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
             ScenarioStep::AssertExists { id } => {
                 let snapshot = ensure_snapshot(
                     &mut latest_snapshot,
