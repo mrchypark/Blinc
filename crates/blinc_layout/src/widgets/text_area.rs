@@ -471,6 +471,36 @@ fn split_text_lines(value: &str) -> Vec<String> {
         .collect()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TextAreaPreview {
+    value: String,
+    lines: Vec<String>,
+    cursor: TextPosition,
+    selection: Option<(TextPosition, TextPosition)>,
+}
+
+fn position_from_char_index(text: &str, char_index: usize) -> TextPosition {
+    let mut remaining = char_index;
+    let mut line = 0;
+    let mut column = 0;
+
+    for ch in text.chars() {
+        if remaining == 0 {
+            break;
+        }
+
+        if ch == '\n' {
+            line += 1;
+            column = 0;
+        } else {
+            column += 1;
+        }
+        remaining -= 1;
+    }
+
+    TextPosition::new(line, column)
+}
+
 impl TextAreaState {
     /// Create new text area state
     pub fn new() -> Self {
@@ -505,20 +535,93 @@ impl TextAreaState {
         self.lines.join("\n")
     }
 
-    pub fn value_with_composition(&self) -> String {
+    fn active_selection_range(&self) -> Option<(TextPosition, TextPosition)> {
+        self.selection_start.and_then(|start| {
+            let (from, to) = self.order_positions(start, self.cursor);
+            (from != to).then_some((from, to))
+        })
+    }
+
+    fn char_index_for_position(&self, position: TextPosition) -> usize {
+        if self.lines.is_empty() {
+            return 0;
+        }
+
+        let target_line = position.line.min(self.lines.len().saturating_sub(1));
+        let mut index = 0;
+        for (line_idx, line) in self.lines.iter().enumerate() {
+            if line_idx == target_line {
+                return index + position.column.min(line.chars().count());
+            }
+            index += line.chars().count() + 1;
+        }
+        index
+    }
+
+    fn preview(&self) -> TextAreaPreview {
+        let fallback_selection = self.active_selection_range();
+
         let Some(composition) = self.composition.as_ref() else {
-            return self.value();
+            return TextAreaPreview {
+                value: self.value(),
+                lines: self.lines.clone(),
+                cursor: self.cursor,
+                selection: fallback_selection,
+            };
         };
 
-        let mut preview = self.clone();
-        preview.composition = None;
-        preview.insert(&composition.text);
-        preview.value()
+        let current_value = self.value();
+        let (from, to) = fallback_selection
+            .map(|(start, end)| {
+                (
+                    self.char_index_for_position(start),
+                    self.char_index_for_position(end),
+                )
+            })
+            .unwrap_or_else(|| {
+                let cursor = self.char_index_for_position(self.cursor);
+                (cursor, cursor)
+            });
+
+        let before: String = current_value.chars().take(from).collect();
+        let after: String = current_value.chars().skip(to).collect();
+        let value = before + &composition.text + &after;
+        let lines = split_text_lines(&value);
+
+        let composition_len = composition.text.chars().count();
+        let selection = composition.selection.map(|selection| {
+            let start = from + selection.start.min(composition_len);
+            let end = from + selection.end.min(composition_len);
+            if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            }
+        });
+        let cursor = selection
+            .map(|(_, end)| position_from_char_index(&value, end))
+            .unwrap_or_else(|| position_from_char_index(&value, from + composition_len));
+        let selection = selection.and_then(|(start, end)| {
+            (start != end).then_some((
+                position_from_char_index(&value, start),
+                position_from_char_index(&value, end),
+            ))
+        });
+
+        TextAreaPreview {
+            value,
+            lines,
+            cursor,
+            selection,
+        }
+    }
+
+    pub fn value_with_composition(&self) -> String {
+        self.preview().value
     }
 
     pub fn display_lines(&self) -> Vec<String> {
-        let value = self.value_with_composition();
-        split_text_lines(&value)
+        self.preview().lines
     }
 
     /// Set the text value
@@ -1107,9 +1210,9 @@ impl TextAreaState {
     /// Get the visual line index for a given cursor position
     ///
     /// Returns the index into visual_lines where the cursor is located.
-    pub fn visual_line_for_cursor(&self) -> usize {
-        let cursor_line = self.cursor.line;
-        let cursor_col = self.cursor.column;
+    pub fn visual_line_for_cursor_position(&self, cursor: TextPosition) -> usize {
+        let cursor_line = cursor.line;
+        let cursor_col = cursor.column;
 
         for (idx, vl) in self.visual_lines.iter().enumerate() {
             if vl.logical_line == cursor_line {
@@ -1135,12 +1238,16 @@ impl TextAreaState {
         self.visual_lines.len().saturating_sub(1)
     }
 
+    pub fn visual_line_for_cursor(&self) -> usize {
+        self.visual_line_for_cursor_position(self.cursor)
+    }
+
     /// Get cursor X position within its visual line
     ///
     /// Returns the pixel offset from the left edge of the visual line to the cursor.
-    pub fn cursor_x_in_visual_line(&self) -> f32 {
-        let cursor_line = self.cursor.line;
-        let cursor_col = self.cursor.column;
+    pub fn cursor_x_in_visual_line_at(&self, cursor: TextPosition) -> f32 {
+        let cursor_line = cursor.line;
+        let cursor_col = cursor.column;
 
         // Find the visual line containing the cursor
         for vl in &self.visual_lines {
@@ -1161,14 +1268,22 @@ impl TextAreaState {
         0.0
     }
 
+    pub fn cursor_x_in_visual_line(&self) -> f32 {
+        self.cursor_x_in_visual_line_at(self.cursor)
+    }
+
     /// Get cursor position (x, visual_y) using computed visual lines
     ///
     /// Returns (cursor_x, cursor_visual_y) for positioning the cursor element.
-    pub fn cursor_position_from_visual_lines(&self) -> (f32, f32) {
-        let visual_line_idx = self.visual_line_for_cursor();
-        let cursor_x = self.cursor_x_in_visual_line();
+    pub fn cursor_position_from_visual_lines_at(&self, cursor: TextPosition) -> (f32, f32) {
+        let visual_line_idx = self.visual_line_for_cursor_position(cursor);
+        let cursor_x = self.cursor_x_in_visual_line_at(cursor);
         let cursor_visual_y = visual_line_idx as f32 * self.line_height;
         (cursor_x, cursor_visual_y)
+    }
+
+    pub fn cursor_position_from_visual_lines(&self) -> (f32, f32) {
+        self.cursor_position_from_visual_lines_at(self.cursor)
     }
 
     /// Get total visual line count
@@ -1858,8 +1973,9 @@ impl TextArea {
     ) -> Div {
         // Note: Visual styling (bg, border, rounded) is now applied directly to the
         // container in the callback via set_* methods, not here.
-        let display_text = data.value_with_composition();
-        let display_lines = data.display_lines();
+        let preview = data.preview();
+        let display_text = preview.value.clone();
+        let display_lines = preview.lines.clone();
         let has_display_text = !display_text.is_empty();
 
         let text_color = if !has_display_text {
@@ -1885,13 +2001,13 @@ impl TextArea {
         // Use visual lines for cursor positioning (computed in callback before build_content)
         // This provides accurate cursor tracking for wrapped text
         let (cursor_x, cursor_visual_y) = if !data.visual_lines.is_empty() {
-            data.cursor_position_from_visual_lines()
+            data.cursor_position_from_visual_lines_at(preview.cursor)
         } else {
             // Fallback: simple calculation when visual lines not yet computed
-            let cursor_line = data.cursor.line;
-            let cursor_col = data.cursor.column;
+            let cursor_line = preview.cursor.line;
+            let cursor_col = preview.cursor.column;
             let cursor_x = if cursor_col > 0 && cursor_line < data.lines.len() {
-                let line_text = &data.lines[cursor_line];
+                let line_text = preview.lines.get(cursor_line).map_or("", String::as_str);
                 let text_before: String = line_text.chars().take(cursor_col).collect();
                 crate::text_measure::measure_text(&text_before, config.font_size).width
             } else {
@@ -2665,11 +2781,9 @@ impl ElementBuilder for TextArea {
                     .ok()
                     .map(|state| {
                         AccessibilityMetadata::new(AccessibilityRole::TextArea)
-                            .with_name(if state.placeholder.is_empty() {
-                                state.css_element_id.clone()
-                            } else {
-                                Some(state.placeholder.clone())
-                            })
+                            .with_name(
+                                (!state.placeholder.is_empty()).then(|| state.placeholder.clone()),
+                            )
                             .with_value(Some(state.value_with_composition()))
                             .with_focusable(true)
                             .with_focused(state.visual.is_focused())
@@ -2787,6 +2901,7 @@ impl ElementBuilder for TextArea {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blinc_platform::ImeCompositionSelection;
     use blinc_theme::ThemeState;
     use std::sync::Once;
 
@@ -2873,6 +2988,76 @@ mod tests {
         state.composition = Some(ImeCompositionUpdate::new("한", None));
 
         assert_eq!(state.value_with_composition(), "h한o");
+    }
+
+    #[test]
+    fn test_text_area_build_content_anchors_ime_to_composition_preview() {
+        ensure_theme();
+        let mut state = TextAreaState::with_value("hello");
+        state.cursor = TextPosition::new(0, 4);
+        state.selection_start = Some(TextPosition::new(0, 1));
+        state.composition = Some(ImeCompositionUpdate::new("한", None));
+        state.visual = TextFieldState::Focused;
+        state.compute_visual_lines();
+
+        let config = TextAreaConfig::default();
+        let shared = Arc::new(Mutex::new(state.clone()));
+        let _ = TextArea::build_content(TextFieldState::Focused, &state, &config, shared);
+
+        let ime_bounds = state
+            .ime_cursor_bounds_storage
+            .lock()
+            .expect("ime bounds lock")
+            .expect("ime bounds");
+        let expected_x =
+            config.padding_x + crate::text_measure::measure_text("h한", config.font_size).width;
+
+        assert!(
+            (ime_bounds.x - expected_x).abs() < 0.5,
+            "ime bounds should track composition preview cursor: got {:?}, expected x {expected_x}",
+            ime_bounds
+        );
+    }
+
+    #[test]
+    fn test_text_area_build_content_anchors_ime_to_composition_selection() {
+        ensure_theme();
+        let mut state = TextAreaState::with_value("hello");
+        state.cursor = TextPosition::new(0, 1);
+        state.composition = Some(ImeCompositionUpdate::new(
+            "한국",
+            Some(ImeCompositionSelection::new(1, 1)),
+        ));
+        state.visual = TextFieldState::Focused;
+        state.compute_visual_lines();
+
+        let config = TextAreaConfig::default();
+        let shared = Arc::new(Mutex::new(state.clone()));
+        let _ = TextArea::build_content(TextFieldState::Focused, &state, &config, shared);
+
+        let ime_bounds = state
+            .ime_cursor_bounds_storage
+            .lock()
+            .expect("ime bounds lock")
+            .expect("ime bounds");
+        let expected_x =
+            config.padding_x + crate::text_measure::measure_text("h한", config.font_size).width;
+
+        assert!(
+            (ime_bounds.x - expected_x).abs() < 0.5,
+            "ime bounds should track composition selection: got {:?}, expected x {expected_x}",
+            ime_bounds
+        );
+    }
+
+    #[test]
+    fn test_text_area_char_index_for_position_clamps_out_of_bounds_line() {
+        let state = TextAreaState::with_value("hello\nworld");
+
+        assert_eq!(
+            state.char_index_for_position(TextPosition::new(99, 99)),
+            state.value().chars().count()
+        );
     }
 
     #[test]

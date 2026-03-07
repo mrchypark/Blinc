@@ -94,6 +94,28 @@ fn sync_platform_ime_state() {
     });
 }
 
+fn committed_text_chars(text: &str, allow_multiline_whitespace: bool) -> Vec<char> {
+    let mut committed = Vec::with_capacity(text.chars().count());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' if allow_multiline_whitespace => {
+                if matches!(chars.peek(), Some('\n')) {
+                    chars.next();
+                }
+                committed.push('\n');
+            }
+            '\n' if allow_multiline_whitespace => committed.push('\n'),
+            '\t' if allow_multiline_whitespace => committed.push('\t'),
+            ch if !ch.is_control() => committed.push(ch),
+            _ => {}
+        }
+    }
+
+    committed
+}
+
 #[cfg(any(
     target_os = "macos",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -2950,7 +2972,11 @@ impl WindowedApp {
                                 }
                                 InputEvent::CompositionCommitted(text) => {
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
-                                    for c in text.chars().filter(|c| !c.is_control()) {
+                                    let allow_multiline_whitespace =
+                                        blinc_layout::widgets::text_input::focused_text_area_node_id()
+                                            .is_some();
+                                    for c in committed_text_chars(&text, allow_multiline_whitespace)
+                                    {
                                         keyboard_events.push(PendingEvent {
                                             event_type: blinc_core::events::event_types::TEXT_INPUT,
                                             key_char: Some(c),
@@ -3789,7 +3815,6 @@ impl WindowedApp {
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
                                     }
                                 }
-                                sync_accessibility_snapshot(tree);
                             }
 
                             // Apply CSS animation/transition values AFTER state styles
@@ -3805,6 +3830,7 @@ impl WindowedApp {
                             }
 
                             if let Some(ref tree) = render_tree {
+                                tree.refresh_runtime_bounds();
                                 sync_accessibility_snapshot(tree);
                                 sync_platform_ime_state();
                                 // Render with motion animations
@@ -4220,5 +4246,21 @@ mod tests {
         });
 
         assert_eq!(ctx.get(sig), Some(14));
+    }
+
+    #[test]
+    fn test_committed_text_chars_filters_control_chars_for_single_line_widgets() {
+        assert_eq!(
+            committed_text_chars("ab\r\nc\t\n\u{7f}d", false),
+            vec!['a', 'b', 'c', 'd']
+        );
+    }
+
+    #[test]
+    fn test_committed_text_chars_preserves_normalized_newlines_for_text_areas() {
+        assert_eq!(
+            committed_text_chars("ab\r\nc\td\re\u{7f}", true),
+            vec!['a', 'b', '\n', 'c', '\t', 'd', '\n', 'e']
+        );
     }
 }

@@ -2237,7 +2237,7 @@ impl RenderTree {
     /// When bounds change (width or height differ), the on_change callback is invoked.
     fn update_layout_bounds_storages(&self) {
         for (&node_id, entry) in &self.layout_bounds_storages {
-            if let Some(bounds) = self.layout_tree.get_absolute_bounds(node_id) {
+            if let Some(bounds) = self.get_absolute_bounds(node_id) {
                 let should_notify = if let Ok(mut guard) = entry.storage.lock() {
                     // Notify when position or size changes so external readers stay in sync.
                     let changed = match guard.as_ref() {
@@ -2263,6 +2263,13 @@ impl RenderTree {
                 }
             }
         }
+    }
+
+    /// Refresh cached external bounds for frames where visual position changed
+    /// without a full relayout (for example scroll offsets or translation-only animations).
+    pub fn refresh_runtime_bounds(&self) {
+        self.update_layout_bounds_storages();
+        self.cache_element_bounds();
     }
 
     /// Update layout animations for nodes with changed bounds
@@ -3832,6 +3839,15 @@ impl RenderTree {
     /// Set the scroll offset for a node
     pub fn set_scroll_offset(&mut self, node_id: LayoutNodeId, offset_x: f32, offset_y: f32) {
         self.scroll_offsets.insert(node_id, (offset_x, offset_y));
+        if let Some(physics) = self.scroll_physics.get(&node_id) {
+            if let Ok(mut physics) = physics.try_lock() {
+                physics.offset_x = offset_x;
+                physics.offset_y = offset_y;
+                physics.velocity_x = 0.0;
+                physics.velocity_y = 0.0;
+                physics.state = crate::stateful::ScrollState::Idle;
+            }
+        }
     }
 
     /// Get the scroll offset for a node
@@ -11680,17 +11696,86 @@ impl RenderTree {
         self.layout_tree.get_bounds(node, (0.0, 0.0))
     }
 
-    /// Get absolute bounds for a node (traversing up the tree, accounting for scroll)
+    fn translation_for_node(&self, node: LayoutNodeId) -> (f32, f32) {
+        let render_translation = self
+            .render_nodes
+            .get(&node)
+            .and_then(|render_node| render_node.props.transform.as_ref())
+            .map(|transform| match transform {
+                Transform::Affine2D(affine) => (affine.elements[4], affine.elements[5]),
+                _ => (0.0, 0.0),
+            })
+            .unwrap_or((0.0, 0.0));
+        let motion_translation = self
+            .get_motion_transform(node)
+            .map(|transform| match transform {
+                Transform::Affine2D(affine) => (affine.elements[4], affine.elements[5]),
+                _ => (0.0, 0.0),
+            })
+            .unwrap_or((0.0, 0.0));
+
+        (
+            render_translation.0 + motion_translation.0,
+            render_translation.1 + motion_translation.1,
+        )
+    }
+
+    /// Get absolute bounds for a node (accounting for scroll, fixed/sticky positioning, and translation transforms)
     pub fn get_absolute_bounds(&self, node: LayoutNodeId) -> Option<ElementBounds> {
-        let mut bounds = self.layout_tree.get_absolute_bounds(node)?;
-        // Walk up ancestors and apply scroll offsets from scroll containers
-        for ancestor in self.layout_tree.ancestors(node) {
-            if let Some(&(sx, sy)) = self.scroll_offsets.get(&ancestor) {
-                bounds.x += sx;
-                bounds.y += sy;
+        let mut lineage = self.layout_tree.ancestors(node);
+        lineage.reverse();
+        lineage.push(node);
+
+        let mut offset = (0.0, 0.0);
+        let mut cumulative_scroll = (0.0, 0.0);
+
+        for (idx, &current) in lineage.iter().enumerate() {
+            let local_bounds = self.layout_tree.get_bounds(current, (0.0, 0.0))?;
+            let (tx, ty) = self.translation_for_node(current);
+            let bounds = ElementBounds::new(
+                offset.0 + local_bounds.x + tx,
+                offset.1 + local_bounds.y + ty,
+                local_bounds.width,
+                local_bounds.height,
+            );
+
+            if idx + 1 == lineage.len() {
+                return Some(bounds);
+            }
+
+            let scroll_offset = self.get_scroll_offset(current);
+            offset = (bounds.x + scroll_offset.0, bounds.y + scroll_offset.1);
+            cumulative_scroll = if self.is_scroll_container(current) {
+                scroll_offset
+            } else {
+                (
+                    cumulative_scroll.0 + scroll_offset.0,
+                    cumulative_scroll.1 + scroll_offset.1,
+                )
+            };
+
+            let child = lineage[idx + 1];
+            let child_render = self.render_nodes.get(&child);
+            let child_is_fixed = child_render.map(|n| n.props.is_fixed).unwrap_or(false);
+            let child_is_sticky = child_render.map(|n| n.props.is_sticky).unwrap_or(false);
+
+            if child_is_fixed {
+                offset.0 -= cumulative_scroll.0;
+                offset.1 -= cumulative_scroll.1;
+                cumulative_scroll = (0.0, 0.0);
+            } else if child_is_sticky {
+                if let Some(threshold) = child_render.and_then(|n| n.props.sticky_top) {
+                    if let Some(child_local) = self.layout_tree.get_bounds(child, (0.0, 0.0)) {
+                        let visual_y = child_local.y + cumulative_scroll.1;
+                        if visual_y < threshold {
+                            offset.1 += threshold - visual_y;
+                        }
+                    }
+                }
             }
         }
-        Some(bounds)
+
+        None
     }
 
     /// Get render node data

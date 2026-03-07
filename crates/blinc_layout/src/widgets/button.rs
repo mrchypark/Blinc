@@ -37,7 +37,7 @@ use crate::element::RenderProps;
 use crate::stateful::{ButtonState, SharedState, Stateful};
 use crate::text::text;
 use crate::tree::{LayoutNodeId, LayoutTree};
-use blinc_platform::AccessibilityRole;
+use blinc_platform::{AccessibilityAction, AccessibilityRole};
 
 /// Button visual states (re-exported from stateful)
 pub use crate::stateful::ButtonState as ButtonVisualState;
@@ -614,20 +614,35 @@ impl ElementBuilder for Button {
 
         // Build the inner Stateful - it will apply the callback we just set
         let node_id = self.inner.build(tree);
-        let metadata = self
-            .config
-            .lock()
-            .ok()
-            .map(|cfg| {
-                AccessibilityMetadata::new(AccessibilityRole::Button)
-                    .with_name(cfg.label.clone())
-                    .with_focusable(true)
-                    .with_disabled(cfg.disabled)
-            })
-            .unwrap_or_else(|| {
-                AccessibilityMetadata::new(AccessibilityRole::Button).with_focusable(true)
-            });
-        tree.set_accessibility_metadata(node_id, metadata);
+        let config = Arc::clone(&self.config);
+        tree.set_accessibility_provider(
+            node_id,
+            Arc::new(move || {
+                config
+                    .lock()
+                    .ok()
+                    .map(|cfg| {
+                        let actions = if cfg.disabled {
+                            Vec::new()
+                        } else {
+                            vec![AccessibilityAction::Focus, AccessibilityAction::Press]
+                        };
+                        AccessibilityMetadata::new(AccessibilityRole::Button)
+                            .with_name(cfg.label.clone())
+                            .with_focusable(true)
+                            .with_disabled(cfg.disabled)
+                            .with_actions(actions)
+                    })
+                    .unwrap_or_else(|| {
+                        AccessibilityMetadata::new(AccessibilityRole::Button)
+                            .with_focusable(true)
+                            .with_actions(vec![
+                                AccessibilityAction::Focus,
+                                AccessibilityAction::Press,
+                            ])
+                    })
+            }),
+        );
         node_id
     }
 

@@ -32,7 +32,7 @@ use crate::stateful::{stateful_with_key, ButtonState};
 use crate::svg::svg;
 use crate::text::text;
 use crate::tree::{LayoutNodeId, LayoutTree};
-use blinc_platform::AccessibilityRole;
+use blinc_platform::{AccessibilityAction, AccessibilityRole};
 
 /// Checkbox configuration
 ///
@@ -339,6 +339,11 @@ impl Checkbox {
         };
 
         let accessibility_provider: AccessibilityMetadataProvider = Arc::new(move || {
+            let actions = if disabled {
+                Vec::new()
+            } else {
+                vec![AccessibilityAction::Focus, AccessibilityAction::Toggle]
+            };
             AccessibilityMetadata::new(AccessibilityRole::Checkbox)
                 .with_name(label_text.clone())
                 .with_value(Some(if checked_for_semantics.get() {
@@ -348,6 +353,7 @@ impl Checkbox {
                 }))
                 .with_focusable(true)
                 .with_disabled(disabled)
+                .with_actions(actions)
         });
 
         Self {

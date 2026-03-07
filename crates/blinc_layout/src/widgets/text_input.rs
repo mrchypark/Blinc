@@ -613,6 +613,13 @@ impl Default for TextInputData {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TextInputPreview {
+    value: String,
+    cursor: usize,
+    selection: Option<(usize, usize)>,
+}
+
 impl TextInputData {
     pub fn new() -> Self {
         Self {
@@ -657,28 +664,75 @@ impl TextInputData {
         }
     }
 
-    /// Get display text (masked for password, or actual value)
-    pub fn value_with_composition(&self) -> String {
-        let Some(composition) = self.composition.as_ref() else {
-            return self.value.clone();
-        };
-        let (from, to) = if let Some(start) = self.selection_start {
-            if start < self.cursor {
+    fn active_selection_range(&self) -> Option<(usize, usize)> {
+        self.selection_start.and_then(|start| {
+            let (from, to) = if start < self.cursor {
                 (start, self.cursor)
             } else {
                 (self.cursor, start)
-            }
-        } else {
-            (self.cursor, self.cursor)
+            };
+            (from != to).then_some((from, to))
+        })
+    }
+
+    fn preview(&self) -> TextInputPreview {
+        let fallback_selection = self.active_selection_range();
+
+        let Some(composition) = self.composition.as_ref() else {
+            return TextInputPreview {
+                value: self.value.clone(),
+                cursor: self.cursor,
+                selection: fallback_selection,
+            };
         };
 
+        let (from, to) = fallback_selection.unwrap_or((self.cursor, self.cursor));
         let before: String = self.value.chars().take(from).collect();
         let after: String = self.value.chars().skip(to).collect();
-        before + &composition.text + &after
+        let value = before + &composition.text + &after;
+
+        let composition_len = composition.text.chars().count();
+        let selection = composition.selection.map(|selection| {
+            let start = from + selection.start.min(composition_len);
+            let end = from + selection.end.min(composition_len);
+            if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            }
+        });
+        let cursor = selection
+            .map(|(_, end)| end)
+            .unwrap_or(from + composition_len);
+        let selection = selection.and_then(|(start, end)| (start != end).then_some((start, end)));
+
+        TextInputPreview {
+            value,
+            cursor,
+            selection,
+        }
+    }
+
+    pub fn accessible_name(&self) -> Option<String> {
+        (!self.placeholder.is_empty()).then(|| self.placeholder.clone())
+    }
+
+    pub fn accessible_value(&self) -> String {
+        let preview = self.preview();
+        if self.masked {
+            "•".repeat(preview.value.chars().count())
+        } else {
+            preview.value
+        }
+    }
+
+    /// Get display text (masked for password, or actual value)
+    pub fn value_with_composition(&self) -> String {
+        self.preview().value
     }
 
     pub fn display_text(&self) -> String {
-        let value = self.value_with_composition();
+        let value = self.preview().value;
         if self.masked {
             "•".repeat(value.chars().count())
         } else {
@@ -1681,7 +1735,12 @@ impl TextInput {
         data: &TextInputData,
         config: &TextInputConfig,
     ) -> Div {
-        let display_value = data.display_text();
+        let preview = data.preview();
+        let display_value = if data.masked {
+            "•".repeat(preview.value.chars().count())
+        } else {
+            preview.value.clone()
+        };
         let has_display_text = !display_value.is_empty();
         let display = if has_display_text {
             display_value
@@ -1704,17 +1763,10 @@ impl TextInput {
         let is_focused = visual.is_focused();
         let cursor_color = config.cursor_color;
         let selection_color = config.selection_color;
-        let cursor_pos = data.cursor;
+        let cursor_pos = preview.cursor;
         let cursor_height = config.font_size * 1.2;
         let scroll_offset = data.scroll_offset_x;
-
-        let selection_range: Option<(usize, usize)> = data.selection_start.map(|start| {
-            if start < cursor_pos {
-                (start, cursor_pos)
-            } else {
-                (cursor_pos, start)
-            }
-        });
+        let selection_range = preview.selection;
 
         let cursor_state_for_canvas = Arc::clone(&data.cursor_state);
 
@@ -2191,12 +2243,8 @@ impl ElementBuilder for TextInput {
                     .ok()
                     .map(|data| {
                         AccessibilityMetadata::new(AccessibilityRole::TextInput)
-                            .with_name(if data.placeholder.is_empty() {
-                                data.css_element_id.clone()
-                            } else {
-                                Some(data.placeholder.clone())
-                            })
-                            .with_value(Some(data.value_with_composition()))
+                            .with_name(data.accessible_name())
+                            .with_value(Some(data.accessible_value()))
                             .with_focusable(true)
                             .with_focused(data.visual.is_focused())
                             .with_disabled(data.disabled)
@@ -2265,6 +2313,14 @@ impl ElementBuilder for TextInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blinc_platform::ImeCompositionSelection;
+    use blinc_theme::ThemeState;
+    use std::sync::Once;
+
+    fn ensure_theme() {
+        static INIT: Once = Once::new();
+        INIT.call_once(ThemeState::init_default);
+    }
 
     #[test]
     fn test_text_input_data_insert() {
@@ -2325,5 +2381,61 @@ mod tests {
         data.composition = Some(ImeCompositionUpdate::new("한", None));
 
         assert_eq!(data.value_with_composition(), "h한o");
+    }
+
+    #[test]
+    fn test_text_input_build_content_anchors_ime_to_composition_preview() {
+        ensure_theme();
+        let mut data = TextInputData::with_value("hello");
+        data.cursor = 4;
+        data.selection_start = Some(1);
+        data.composition = Some(ImeCompositionUpdate::new("한", None));
+        data.visual = TextFieldState::Focused;
+
+        let config = TextInputConfig::default();
+        let _ = TextInput::build_content(TextFieldState::Focused, &data, &config);
+
+        let ime_bounds = data
+            .ime_cursor_bounds_storage
+            .lock()
+            .expect("ime bounds lock")
+            .expect("ime bounds");
+        let expected_x =
+            config.padding_x + crate::text_measure::measure_text("h한", config.font_size).width;
+
+        assert!(
+            (ime_bounds.x - expected_x).abs() < 0.5,
+            "ime bounds should track composition preview cursor: got {:?}, expected x {expected_x}",
+            ime_bounds
+        );
+    }
+
+    #[test]
+    fn test_text_input_build_content_anchors_ime_to_composition_selection() {
+        ensure_theme();
+        let mut data = TextInputData::with_value("hello");
+        data.cursor = 1;
+        data.composition = Some(ImeCompositionUpdate::new(
+            "한국",
+            Some(ImeCompositionSelection::new(1, 1)),
+        ));
+        data.visual = TextFieldState::Focused;
+
+        let config = TextInputConfig::default();
+        let _ = TextInput::build_content(TextFieldState::Focused, &data, &config);
+
+        let ime_bounds = data
+            .ime_cursor_bounds_storage
+            .lock()
+            .expect("ime bounds lock")
+            .expect("ime bounds");
+        let expected_x =
+            config.padding_x + crate::text_measure::measure_text("h한", config.font_size).width;
+
+        assert!(
+            (ime_bounds.x - expected_x).abs() < 0.5,
+            "ime bounds should track composition selection: got {:?}, expected x {expected_x}",
+            ime_bounds
+        );
     }
 }
