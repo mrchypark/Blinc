@@ -26,6 +26,8 @@ const IOS_NATIVE_BRIDGE_TEMPLATE: &str =
 
 /// Create a new Blinc project with full workspace structure
 pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Result<()> {
+    validate_org_name(org)?;
+
     // Create directory structure
     fs::create_dir_all(path.join("src"))?;
     fs::create_dir_all(path.join("assets"))?;
@@ -53,7 +55,7 @@ pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Res
     fs::write(path.join("src/main.blinc"), main_content)?;
 
     // Create platform entry points
-    create_platform_files(path, name)?;
+    create_platform_files(path, name, org)?;
 
     // Create plugins README
     fs::write(
@@ -175,23 +177,23 @@ Edit `.blincproj` to configure:
 }
 
 /// Create platform-specific files
-fn create_platform_files(path: &Path, name: &str) -> Result<()> {
+fn create_platform_files(path: &Path, name: &str, org: &str) -> Result<()> {
     let package_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Android
-    create_android_files(path, name, &package_name)?;
+    create_android_files(path, name, &package_name, org)?;
 
     // iOS
-    create_ios_files(path, name, &package_name)?;
+    create_ios_files(path, name, &package_name, org)?;
 
     // macOS
-    create_macos_files(path, name, &package_name)?;
+    create_macos_files(path, name, &package_name, org)?;
 
     // Windows
     create_windows_files(path, name)?;
 
     // Linux
-    create_linux_files(path, name)?;
+    create_linux_files(path, name, &package_name, org)?;
 
     // WASM/Web
     create_wasm_files(path, name)?;
@@ -199,8 +201,9 @@ fn create_platform_files(path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn create_android_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
+fn create_android_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
     let android_path = path.join("platforms/android");
+    let package_id = format!("{org}.{package_name}");
 
     // Create basic Android structure
     fs::create_dir_all(android_path.join("app/src/main/java"))?;
@@ -237,11 +240,11 @@ plugins {
 }}
 
 android {{
-    namespace = "com.example.{package_name}"
+    namespace = "{package_id}"
     compileSdk = 35
 
     defaultConfig {{
-        applicationId = "com.example.{package_name}"
+        applicationId = "{package_id}"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
@@ -306,7 +309,7 @@ dependencies {{
     )?;
 
     // MainActivity.kt placeholder
-    let package_path = format!("com/example/{}", package_name);
+    let package_path = format!("{}/{}", org.replace('.', "/"), package_name);
     fs::create_dir_all(android_path.join(format!("app/src/main/java/{}", package_path)))?;
     fs::write(
         android_path.join(format!(
@@ -314,7 +317,7 @@ dependencies {{
             package_path
         )),
         format!(
-            r#"package com.example.{package_name}
+            r#"package {package_id}
 
 import android.app.Activity
 import android.os.Bundle
@@ -408,8 +411,9 @@ Edit `app/build.gradle.kts` to modify:
     Ok(())
 }
 
-fn create_ios_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
+fn create_ios_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
     let ios_path = path.join("platforms/ios");
+    let bundle_id = format!("{org}.{package_name}");
 
     // Create Xcode project structure
     let xcodeproj = ios_path.join(format!("{}.xcodeproj", name));
@@ -429,7 +433,7 @@ fn create_ios_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
     <key>CFBundleExecutable</key>
     <string>{name}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.example.{package_name}</string>
+    <string>{bundle_id}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -558,8 +562,9 @@ Edit `{name}/Info.plist` to modify:
     Ok(())
 }
 
-fn create_macos_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
+fn create_macos_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
     let macos_path = path.join("platforms/macos");
+    let bundle_id = format!("{org}.{package_name}");
 
     // Info.plist for macOS app bundle
     fs::write(
@@ -574,7 +579,7 @@ fn create_macos_files(path: &Path, name: &str, package_name: &str) -> Result<()>
     <key>CFBundleExecutable</key>
     <string>{name}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.example.{package_name}</string>
+    <string>{bundle_id}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -784,9 +789,10 @@ blinc build --target windows --release
     Ok(())
 }
 
-fn create_linux_files(path: &Path, name: &str) -> Result<()> {
+fn create_linux_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
     let linux_path = path.join("platforms/linux");
     let binary_name = name.to_lowercase().replace([' ', '-'], "_");
+    let appstream_id = format!("{org}.{package_name}");
 
     // Desktop entry file
     fs::write(
@@ -811,7 +817,7 @@ StartupWMClass={name}
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-    <id>com.example.{binary_name}</id>
+    <id>{appstream_id}</id>
     <name>{name}</name>
     <summary>A Blinc application</summary>
     <metadata_license>CC0-1.0</metadata_license>
@@ -2906,6 +2912,88 @@ mod tests {
             r#"com.example"; std::process::Command::new("calc").spawn().unwrap(); //"#,
         )
         .expect_err("unsafe org name should be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "error should explain org name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when org is rejected"
+        );
+    }
+
+    #[test]
+    fn non_rust_project_uses_org_for_platform_identifiers() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_non_rust_org_ids_{nonce}"));
+
+        create_project(&root, "Demo App", "default", "io.blinc.dev")
+            .expect("non-rust project template should be generated");
+
+        let android_gradle =
+            fs::read_to_string(root.join("platforms/android/app/build.gradle.kts"))
+                .expect("generated Android Gradle file should exist");
+        assert!(
+            android_gradle.contains(r#"namespace = "io.blinc.dev.demo_app""#),
+            "generated Android namespace should use the provided org"
+        );
+        assert!(
+            android_gradle.contains(r#"applicationId = "io.blinc.dev.demo_app""#),
+            "generated Android applicationId should use the provided org"
+        );
+
+        let main_activity = fs::read_to_string(
+            root.join("platforms/android/app/src/main/java/io/blinc/dev/demo_app/MainActivity.kt"),
+        )
+        .expect("generated MainActivity.kt should exist under the org package path");
+        assert!(
+            main_activity.contains("package io.blinc.dev.demo_app"),
+            "generated MainActivity should use the provided org in its package declaration"
+        );
+
+        let ios_plist = fs::read_to_string(root.join("platforms/ios/Demo App/Info.plist"))
+            .expect("generated iOS Info.plist should exist");
+        assert!(
+            ios_plist.contains("<string>io.blinc.dev.demo_app</string>"),
+            "generated iOS bundle identifier should use the provided org"
+        );
+
+        let macos_plist = fs::read_to_string(root.join("platforms/macos/Info.plist"))
+            .expect("generated macOS Info.plist should exist");
+        assert!(
+            macos_plist.contains("<string>io.blinc.dev.demo_app</string>"),
+            "generated macOS bundle identifier should use the provided org"
+        );
+
+        let linux_metainfo = fs::read_to_string(root.join("platforms/linux/demo_app.metainfo.xml"))
+            .expect("generated AppStream metadata should exist");
+        assert!(
+            linux_metainfo.contains("<id>io.blinc.dev.demo_app</id>"),
+            "generated AppStream ID should use the provided org"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn non_rust_project_rejects_unsafe_org_chars() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_non_rust_invalid_org_{nonce}"));
+
+        let err = create_project(
+            &root,
+            "DemoApp",
+            "default",
+            r#"com.example"; std::process::Command::new("calc").spawn().unwrap(); //"#,
+        )
+        .expect_err("unsafe org name should be rejected for non-rust projects");
 
         assert!(
             err.to_string().contains("Invalid organization name"),
