@@ -42,6 +42,16 @@ pub enum InputEvent {
     },
     /// Scroll gesture ended (touchpad momentum finished)
     ScrollEnd,
+    /// IME composition session started.
+    CompositionStarted,
+    /// IME preview text changed.
+    CompositionUpdated(ImeCompositionUpdate),
+    /// IME composition committed user-visible text.
+    CompositionCommitted(String),
+    /// IME composition was cancelled without a commit.
+    CompositionCancelled,
+    /// Keyboard-driven focus traversal without backend-specific key leakage.
+    FocusTraversal(FocusTraversalIntent),
 }
 
 // ============================================================================
@@ -112,6 +122,42 @@ pub struct KeyboardEvent {
     pub state: KeyState,
     /// Modifier keys held during this event
     pub modifiers: Modifiers,
+}
+
+/// Platform-agnostic focus traversal direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FocusTraversalIntent {
+    Next,
+    Previous,
+}
+
+/// Selection range within an IME preview string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ImeCompositionSelection {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl ImeCompositionSelection {
+    pub fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+}
+
+/// In-progress IME preview text and selection state.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ImeCompositionUpdate {
+    pub text: String,
+    pub selection: Option<ImeCompositionSelection>,
+}
+
+impl ImeCompositionUpdate {
+    pub fn new(text: impl Into<String>, selection: Option<ImeCompositionSelection>) -> Self {
+        Self {
+            text: text.into(),
+            selection,
+        }
+    }
 }
 
 /// Key press/release state

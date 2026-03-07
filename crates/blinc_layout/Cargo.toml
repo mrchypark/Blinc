@@ -20,6 +20,7 @@ recorder = ["dep:blinc_recorder"]
 blinc_core = { path = "../blinc_core", version = "0.1.14" }
 blinc_animation = { path = "../blinc_animation", version = "0.1.14" }
 blinc_theme = { path = "../blinc_theme", version = "0.1.14" }
+blinc_platform = { path = "../blinc_platform", version = "0.1.14" }
 blinc_recorder = { path = "../blinc_recorder", version = "0.1.14", optional = true }
 
 # Layout

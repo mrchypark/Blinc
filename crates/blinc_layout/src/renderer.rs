@@ -2237,12 +2237,14 @@ impl RenderTree {
     /// When bounds change (width or height differ), the on_change callback is invoked.
     fn update_layout_bounds_storages(&self) {
         for (&node_id, entry) in &self.layout_bounds_storages {
-            if let Some(bounds) = self.layout_tree.get_bounds(node_id, (0.0, 0.0)) {
+            if let Some(bounds) = self.layout_tree.get_absolute_bounds(node_id) {
                 let should_notify = if let Ok(mut guard) = entry.storage.lock() {
-                    // Check if bounds changed (compare width and height)
+                    // Notify when position or size changes so external readers stay in sync.
                     let changed = match guard.as_ref() {
                         Some(old_bounds) => {
-                            (old_bounds.width - bounds.width).abs() > 0.01
+                            (old_bounds.x - bounds.x).abs() > 0.01
+                                || (old_bounds.y - bounds.y).abs() > 0.01
+                                || (old_bounds.width - bounds.width).abs() > 0.01
                                 || (old_bounds.height - bounds.height).abs() > 0.01
                         }
                         None => true, // First time getting bounds

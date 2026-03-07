@@ -4,6 +4,7 @@ use slotmap::{new_key_type, Key, SlotMap};
 use std::collections::HashMap;
 use taffy::prelude::*;
 
+use crate::accessibility::{AccessibilityMetadata, AccessibilityMetadataProvider};
 use crate::element::ElementBounds;
 use crate::text_measure::{measure_text_with_options, TextLayoutOptions};
 
@@ -165,6 +166,7 @@ pub struct LayoutTree {
     node_map: SlotMap<LayoutNodeId, NodeId>,
     /// Reverse mapping from Taffy NodeId to our LayoutNodeId
     reverse_map: HashMap<NodeId, LayoutNodeId>,
+    accessibility: HashMap<LayoutNodeId, AccessibilityMetadataProvider>,
 }
 
 impl LayoutTree {
@@ -173,6 +175,7 @@ impl LayoutTree {
             taffy: TaffyTree::new(),
             node_map: SlotMap::with_key(),
             reverse_map: HashMap::new(),
+            accessibility: HashMap::new(),
         }
     }
 
@@ -246,8 +249,30 @@ impl LayoutTree {
     pub fn remove_node(&mut self, id: LayoutNodeId) {
         if let Some(taffy_node) = self.node_map.remove(id) {
             self.reverse_map.remove(&taffy_node);
+            self.accessibility.remove(&id);
             let _ = self.taffy.remove(taffy_node);
         }
+    }
+
+    pub fn set_accessibility_metadata(
+        &mut self,
+        id: LayoutNodeId,
+        metadata: AccessibilityMetadata,
+    ) {
+        self.accessibility
+            .insert(id, std::sync::Arc::new(move || metadata.clone()));
+    }
+
+    pub fn set_accessibility_provider(
+        &mut self,
+        id: LayoutNodeId,
+        provider: AccessibilityMetadataProvider,
+    ) {
+        self.accessibility.insert(id, provider);
+    }
+
+    pub fn accessibility_metadata(&self, id: LayoutNodeId) -> Option<AccessibilityMetadata> {
+        self.accessibility.get(&id).map(|provider| provider())
     }
 
     /// Get children of a layout node
@@ -311,6 +336,22 @@ impl LayoutTree {
             current = parent;
         }
         result
+    }
+
+    /// Depth-first pre-order traversal including the root node.
+    pub fn descendants_preorder(&self, root: LayoutNodeId) -> Vec<LayoutNodeId> {
+        fn visit(tree: &LayoutTree, node: LayoutNodeId, out: &mut Vec<LayoutNodeId>) {
+            out.push(node);
+            for child in tree.children(node) {
+                visit(tree, child, out);
+            }
+        }
+
+        let mut ordered = Vec::new();
+        if self.node_map.contains_key(root) {
+            visit(self, root, &mut ordered);
+        }
+        ordered
     }
 
     /// Get the content size for a scrollable node

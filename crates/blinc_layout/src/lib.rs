@@ -29,6 +29,7 @@
 //! tree.compute_layout(800.0, 600.0);
 //! ```
 
+pub mod accessibility;
 pub mod animated;
 pub mod canvas;
 pub mod diff;
@@ -110,6 +111,7 @@ pub use element::{
 };
 
 // Diff and reconciliation
+pub use accessibility::{export_accessibility_snapshot, focus_order, AccessibilityMetadata};
 pub use diff::{
     diff, diff_children, diff_elements, reconcile, ChangeCategory, ChildDiff, DiffResult, DivHash,
     ReconcileActions,
@@ -454,3 +456,6 @@ pub mod prelude {
     // Stable unique key generation for components
     pub use crate::key::{reset_call_counters, InstanceKey};
 }
+
+#[cfg(test)]
+mod tests;

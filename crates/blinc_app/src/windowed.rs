@@ -38,8 +38,8 @@ use blinc_layout::overlay_state::{get_overlay_manager, OverlayContext};
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager, OverlayManagerExt};
 use blinc_platform::{
-    ControlFlow, Event, EventLoop, InputEvent, Key, KeyState, LifecycleEvent, MouseEvent, Platform,
-    TouchEvent, Window, WindowConfig, WindowEvent,
+    ControlFlow, Event, EventLoop, ImeCursorArea, ImeState, InputEvent, Key, KeyState,
+    LifecycleEvent, MouseEvent, Platform, TouchEvent, Window, WindowConfig, WindowEvent,
 };
 
 use crate::app::BlincApp;
@@ -77,6 +77,40 @@ fn e2e_exit_after() -> bool {
     }
     e2e_is_enabled()
 }
+
+fn sync_platform_ime_state() {
+    let cursor_area = blinc_layout::widgets::focused_text_widget_ime_area().map(|bounds| {
+        ImeCursorArea::new(
+            bounds.x as f64,
+            bounds.y as f64,
+            bounds.width as f64,
+            bounds.height as f64,
+        )
+    });
+    let enabled = blinc_layout::widgets::has_live_focused_text_widget();
+    blinc_platform::set_ime_state(ImeState {
+        enabled,
+        cursor_area,
+    });
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "windows"
+))]
+fn sync_accessibility_snapshot(tree: &blinc_layout::RenderTree) {
+    if let Some(snapshot) = blinc_layout::export_accessibility_snapshot(tree) {
+        blinc_platform_desktop::update_accessibility_snapshot(snapshot);
+    }
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "windows"
+)))]
+fn sync_accessibility_snapshot(_tree: &blinc_layout::RenderTree) {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum E2eScript {
@@ -2406,6 +2440,8 @@ impl WindowedApp {
                             if !focused {
                                 blinc_layout::widgets::blur_all_text_inputs();
                             }
+
+                            sync_platform_ime_state();
                         }
                     }
 
@@ -2904,6 +2940,38 @@ impl WindowedApp {
                                     // Scroll momentum ended - full stop
                                     scroll_ended = true;
                                 }
+                                InputEvent::CompositionStarted => {
+                                    blinc_layout::widgets::set_focused_text_widget_composition(None);
+                                }
+                                InputEvent::CompositionUpdated(update) => {
+                                    blinc_layout::widgets::set_focused_text_widget_composition(Some(
+                                        update,
+                                    ));
+                                }
+                                InputEvent::CompositionCommitted(text) => {
+                                    blinc_layout::widgets::set_focused_text_widget_composition(None);
+                                    for c in text.chars().filter(|c| !c.is_control()) {
+                                        keyboard_events.push(PendingEvent {
+                                            event_type: blinc_core::events::event_types::TEXT_INPUT,
+                                            key_char: Some(c),
+                                            ..Default::default()
+                                        });
+                                    }
+                                }
+                                InputEvent::CompositionCancelled => {
+                                    blinc_layout::widgets::set_focused_text_widget_composition(None);
+                                }
+                                InputEvent::FocusTraversal(intent) => {
+                                    keyboard_events.push(PendingEvent {
+                                        event_type: blinc_core::events::event_types::KEY_DOWN,
+                                        key_code: 9,
+                                        shift: matches!(
+                                            intent,
+                                            blinc_platform::FocusTraversalIntent::Previous
+                                        ),
+                                        ..Default::default()
+                                    });
+                                }
                             }
 
                             router.clear_event_callback();
@@ -3079,6 +3147,8 @@ impl WindowedApp {
                                 window.request_redraw();
                             }
                         }
+
+                        sync_platform_ime_state();
                     }
 
                     Event::Frame => {
@@ -3719,6 +3789,7 @@ impl WindowedApp {
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
                                     }
                                 }
+                                sync_accessibility_snapshot(tree);
                             }
 
                             // Apply CSS animation/transition values AFTER state styles
@@ -3734,6 +3805,8 @@ impl WindowedApp {
                             }
 
                             if let Some(ref tree) = render_tree {
+                                sync_accessibility_snapshot(tree);
+                                sync_platform_ime_state();
                                 // Render with motion animations
                                 // Use physical pixel dimensions for the render surface
                                 let result = blinc_app.render_tree_with_motion(
