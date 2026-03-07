@@ -29,8 +29,10 @@ mod tests {
 
     #[test]
     fn snapshot_store_roundtrips_latest_value() {
-        let snapshot =
-            AccessibilityTreeSnapshot::new(1, vec![AccessibilityNode::new(1, AccessibilityRole::Window)]);
+        let snapshot = AccessibilityTreeSnapshot::new(
+            1,
+            vec![AccessibilityNode::new(1, AccessibilityRole::Window)],
+        );
         update_accessibility_snapshot(snapshot.clone());
         assert_eq!(current_accessibility_snapshot(), Some(snapshot));
     }

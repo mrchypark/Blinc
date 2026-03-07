@@ -1,7 +1,7 @@
 use blinc_platform::{
     AccessibilityAction, AccessibilityBounds, AccessibilityNode, AccessibilityRole,
-    AccessibilityTreeSnapshot, FocusTraversalIntent, InputEvent, ImeCompositionSelection,
-    ImeCompositionUpdate,
+    AccessibilityTreeSnapshot, FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate,
+    InputEvent,
 };
 
 #[test]
@@ -36,7 +36,10 @@ fn accessibility_snapshot_preserves_roles_metadata_and_actions() {
         .with_description("Type a query")
         .with_bounds(AccessibilityBounds::new(10.0, 20.0, 180.0, 36.0))
         .with_focusable(true)
-        .with_actions(vec![AccessibilityAction::Focus, AccessibilityAction::SetValue]);
+        .with_actions(vec![
+            AccessibilityAction::Focus,
+            AccessibilityAction::SetValue,
+        ]);
 
     let snapshot = AccessibilityTreeSnapshot::new(7, vec![node.clone()]);
 

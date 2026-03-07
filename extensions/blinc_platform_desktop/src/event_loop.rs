@@ -57,14 +57,26 @@ impl DesktopImeWindow for DesktopWindow {
     }
 }
 
-fn sync_ime_window_state<W: DesktopImeWindow>(window: &W, applied: &mut ImeState, requested: ImeState) {
+fn sync_ime_window_state<W: DesktopImeWindow>(
+    window: &W,
+    applied: &mut ImeState,
+    requested: ImeState,
+) {
+    if !requested.enabled && applied.cursor_area.is_some() {
+        window.set_ime_cursor_area(ImeCursorArea::new(0.0, 0.0, 0.0, 0.0));
+    }
+
     if applied.enabled != requested.enabled {
         window.set_ime_allowed(requested.enabled);
     }
 
     if requested.enabled && applied.cursor_area != requested.cursor_area {
-        if let Some(area) = requested.cursor_area {
-            window.set_ime_cursor_area(area);
+        match requested.cursor_area {
+            Some(area) => window.set_ime_cursor_area(area),
+            None if applied.cursor_area.is_some() => {
+                window.set_ime_cursor_area(ImeCursorArea::new(0.0, 0.0, 0.0, 0.0));
+            }
+            None => {}
         }
     }
 
@@ -209,7 +221,11 @@ where
         if self.window.is_none() {
             match DesktopWindow::new(event_loop, &self.window_config) {
                 Ok(window) => {
-                    sync_ime_window_state(&window, &mut self.applied_ime_state, current_ime_state());
+                    sync_ime_window_state(
+                        &window,
+                        &mut self.applied_ime_state,
+                        current_ime_state(),
+                    );
                     self.window = Some(window);
                     self.handle_event(Event::Lifecycle(LifecycleEvent::Resumed));
                 }
@@ -489,5 +505,81 @@ mod tests {
             vec![ImeCursorArea::new(12.0, 24.0, 80.0, 30.0)]
         );
         assert_eq!(applied, requested);
+    }
+
+    #[test]
+    fn sync_ime_window_state_clears_stale_cursor_area_when_requested_area_is_missing() {
+        let window = TestImeWindow::default();
+        let mut applied = ImeState {
+            enabled: true,
+            cursor_area: Some(ImeCursorArea::new(12.0, 24.0, 80.0, 30.0)),
+        };
+
+        sync_ime_window_state(
+            &window,
+            &mut applied,
+            ImeState {
+                enabled: true,
+                cursor_area: None,
+            },
+        );
+
+        assert_eq!(
+            *window.allowed.lock().expect("allowed lock"),
+            Vec::<bool>::new()
+        );
+        assert_eq!(
+            *window.cursor_areas.lock().expect("cursor area lock"),
+            vec![ImeCursorArea::new(0.0, 0.0, 0.0, 0.0)]
+        );
+        assert_eq!(
+            applied,
+            ImeState {
+                enabled: true,
+                cursor_area: None,
+            }
+        );
+    }
+
+    #[test]
+    fn sync_ime_window_state_clears_cursor_area_before_reenabling_without_bounds() {
+        let window = TestImeWindow::default();
+        let mut applied = ImeState {
+            enabled: true,
+            cursor_area: Some(ImeCursorArea::new(12.0, 24.0, 80.0, 30.0)),
+        };
+
+        sync_ime_window_state(
+            &window,
+            &mut applied,
+            ImeState {
+                enabled: false,
+                cursor_area: None,
+            },
+        );
+        sync_ime_window_state(
+            &window,
+            &mut applied,
+            ImeState {
+                enabled: true,
+                cursor_area: None,
+            },
+        );
+
+        assert_eq!(
+            *window.allowed.lock().expect("allowed lock"),
+            vec![false, true]
+        );
+        assert_eq!(
+            *window.cursor_areas.lock().expect("cursor area lock"),
+            vec![ImeCursorArea::new(0.0, 0.0, 0.0, 0.0)]
+        );
+        assert_eq!(
+            applied,
+            ImeState {
+                enabled: true,
+                cursor_area: None,
+            }
+        );
     }
 }

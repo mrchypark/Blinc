@@ -22,6 +22,7 @@ use std::sync::Arc;
 use blinc_core::{Color, State};
 use blinc_theme::{ColorToken, ThemeState};
 
+use crate::accessibility::{AccessibilityMetadata, AccessibilityMetadataProvider};
 use crate::css_parser::{active_stylesheet, ElementState, Stylesheet};
 use crate::div::{div, ElementBuilder};
 use crate::element::RenderProps;
@@ -31,6 +32,7 @@ use crate::stateful::{stateful_with_key, ButtonState};
 use crate::svg::svg;
 use crate::text::text;
 use crate::tree::{LayoutNodeId, LayoutTree};
+use blinc_platform::AccessibilityRole;
 
 /// Checkbox configuration
 ///
@@ -211,6 +213,7 @@ fn apply_style_to_checkbox(
 /// The fully-built checkbox component (Div containing stateful checkbox + optional label)
 pub struct Checkbox {
     inner: crate::div::Div,
+    accessibility_provider: AccessibilityMetadataProvider,
 }
 
 impl Checkbox {
@@ -218,6 +221,7 @@ impl Checkbox {
     fn with_config(instance_key: &InstanceKey, config: CheckboxConfig) -> Self {
         let checked_state = config.checked.clone();
         let checked_for_click = config.checked.clone();
+        let checked_for_semantics = config.checked.clone();
         let on_change = config.on_change.clone();
         let disabled = config.disabled;
 
@@ -334,13 +338,30 @@ impl Checkbox {
                 .child(checkbox)
         };
 
-        Self { inner }
+        let accessibility_provider: AccessibilityMetadataProvider = Arc::new(move || {
+            AccessibilityMetadata::new(AccessibilityRole::Checkbox)
+                .with_name(label_text.clone())
+                .with_value(Some(if checked_for_semantics.get() {
+                    "checked".to_string()
+                } else {
+                    "unchecked".to_string()
+                }))
+                .with_focusable(true)
+                .with_disabled(disabled)
+        });
+
+        Self {
+            inner,
+            accessibility_provider,
+        }
     }
 }
 
 impl ElementBuilder for Checkbox {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
-        self.inner.build(tree)
+        let node_id = self.inner.build(tree);
+        tree.set_accessibility_provider(node_id, Arc::clone(&self.accessibility_provider));
+        node_id
     }
 
     fn render_props(&self) -> RenderProps {

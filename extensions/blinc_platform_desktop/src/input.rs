@@ -1,10 +1,12 @@
 //! Desktop input conversion (winit -> blinc_platform)
 
 use blinc_platform::{
-    FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate, InputEvent, Key,
-    KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
+    FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate, InputEvent, Key, KeyState,
+    KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
 };
-use winit::event::{ElementState, Ime as WinitIme, MouseButton as WinitMouseButton, Touch, TouchPhase};
+use winit::event::{
+    ElementState, Ime as WinitIme, MouseButton as WinitMouseButton, Touch, TouchPhase,
+};
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 
 /// Convert winit mouse button to blinc MouseButton
@@ -145,7 +147,12 @@ pub fn convert_keyboard_event(
     state: ElementState,
     modifiers: ModifiersState,
 ) -> InputEvent {
-    if state == ElementState::Pressed && matches!(key, WinitKey::Named(NamedKey::Tab)) {
+    let is_shortcut_tab = modifiers.control_key() || modifiers.alt_key() || modifiers.super_key();
+
+    if state == ElementState::Pressed
+        && !is_shortcut_tab
+        && matches!(key, WinitKey::Named(NamedKey::Tab))
+    {
         let intent = if modifiers.shift_key() {
             FocusTraversalIntent::Previous
         } else {
@@ -166,14 +173,10 @@ pub fn convert_ime_event(event: &WinitIme) -> Option<InputEvent> {
     match event {
         WinitIme::Enabled => Some(InputEvent::CompositionStarted),
         WinitIme::Preedit(text, cursor) => {
-            if text.is_empty() {
-                Some(InputEvent::CompositionCancelled)
-            } else {
-                Some(InputEvent::CompositionUpdated(ImeCompositionUpdate::new(
-                    text.clone(),
-                    cursor.map(|(start, end)| ImeCompositionSelection::new(start, end)),
-                )))
-            }
+            Some(InputEvent::CompositionUpdated(ImeCompositionUpdate::new(
+                text.clone(),
+                cursor.map(|(start, end)| ImeCompositionSelection::new(start, end)),
+            )))
         }
         WinitIme::Commit(text) => {
             if text.is_empty() {

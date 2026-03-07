@@ -19,8 +19,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use blinc_core::Color;
+use blinc_platform::{AccessibilityAction, AccessibilityRole, ImeCompositionUpdate};
 use blinc_theme::{ColorToken, ThemeState};
 
+use crate::accessibility::AccessibilityMetadata;
 use crate::canvas::canvas;
 use crate::css_parser::{active_stylesheet, ElementState, Stylesheet};
 use crate::div::{div, Div, ElementBuilder};
@@ -86,6 +88,48 @@ fn notify_continuous_redraw(enabled: bool) {
 
 pub fn has_focused_text_input() -> bool {
     GLOBAL_FOCUS_COUNT.load(Ordering::Relaxed) > 0
+}
+
+fn focused_text_input_is_live() -> bool {
+    let focused = match FOCUSED_TEXT_INPUT.lock() {
+        Ok(focused) => focused,
+        Err(_) => return false,
+    };
+    let weak = match focused.as_ref() {
+        Some(weak) => weak,
+        None => return false,
+    };
+    let data = match weak.upgrade() {
+        Some(data) => data,
+        None => return false,
+    };
+    data.lock()
+        .ok()
+        .map(|guard| guard.visual.is_focused())
+        .unwrap_or(false)
+}
+
+fn focused_text_area_is_live() -> bool {
+    let focused = match FOCUSED_TEXT_AREA.lock() {
+        Ok(focused) => focused,
+        Err(_) => return false,
+    };
+    let weak = match focused.as_ref() {
+        Some(weak) => weak,
+        None => return false,
+    };
+    let data = match weak.upgrade() {
+        Some(data) => data,
+        None => return false,
+    };
+    data.lock()
+        .ok()
+        .map(|guard| guard.visual.is_focused())
+        .unwrap_or(false)
+}
+
+pub fn has_live_focused_text_widget() -> bool {
+    focused_text_input_is_live() || focused_text_area_is_live()
 }
 
 pub fn take_needs_continuous_redraw() -> bool {
@@ -169,6 +213,7 @@ pub(crate) fn set_focused_text_input(state: &SharedTextInputData) {
         if let Some(prev_state) = weak.upgrade() {
             if !Arc::ptr_eq(&prev_state, state) {
                 if let Ok(mut s) = prev_state.lock() {
+                    s.composition = None;
                     if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                         s.visual = new_state;
                         decrement_focus_count();
@@ -201,6 +246,7 @@ pub(crate) fn set_focused_text_area(state: &crate::widgets::text_area::SharedTex
         if let Some(weak) = focused.take() {
             if let Some(prev_state) = weak.upgrade() {
                 if let Ok(mut s) = prev_state.lock() {
+                    s.composition = None;
                     if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                         s.visual = new_state;
                         decrement_focus_count();
@@ -216,6 +262,7 @@ pub(crate) fn set_focused_text_area(state: &crate::widgets::text_area::SharedTex
             if let Some(prev_state) = weak.upgrade() {
                 if !Arc::ptr_eq(&prev_state, state) {
                     if let Ok(mut s) = prev_state.lock() {
+                        s.composition = None;
                         if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                             s.visual = new_state;
                             decrement_focus_count();
@@ -246,6 +293,7 @@ fn blur_focused_text_area() {
     if let Some(weak) = focused.take() {
         if let Some(prev_state) = weak.upgrade() {
             if let Ok(mut s) = prev_state.lock() {
+                s.composition = None;
                 if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                     s.visual = new_state;
                     decrement_focus_count();
@@ -268,6 +316,7 @@ pub fn blur_all_text_inputs() {
             if let Some(state) = weak.upgrade() {
                 if let Ok(mut s) = state.lock() {
                     if s.visual.is_focused() {
+                        s.composition = None;
                         if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                             s.visual = new_state;
                             decrement_focus_count();
@@ -300,6 +349,7 @@ pub fn blur_all_text_inputs() {
             if let Some(state) = weak.upgrade() {
                 if let Ok(mut s) = state.lock() {
                     if s.visual.is_focused() {
+                        s.composition = None;
                         if let Some(new_state) = s.visual.on_event(event_types::BLUR) {
                             s.visual = new_state;
                             decrement_focus_count();
@@ -322,6 +372,91 @@ pub fn blur_all_text_inputs() {
                     }
                 }
             }
+        }
+    }
+}
+
+fn focused_text_input_bounds() -> Option<crate::element::ElementBounds> {
+    let focused = FOCUSED_TEXT_INPUT.lock().ok()?;
+    let weak = focused.as_ref()?;
+    let data = weak.upgrade()?;
+    let guard = data.lock().ok()?;
+    absolute_ime_bounds(
+        &guard.layout_bounds_storage,
+        &guard.ime_cursor_bounds_storage,
+    )
+}
+
+fn focused_text_area_bounds() -> Option<crate::element::ElementBounds> {
+    let focused = FOCUSED_TEXT_AREA.lock().ok()?;
+    let weak = focused.as_ref()?;
+    let data = weak.upgrade()?;
+    let guard = data.lock().ok()?;
+    absolute_ime_bounds(
+        &guard.layout_bounds_storage,
+        &guard.ime_cursor_bounds_storage,
+    )
+}
+
+fn absolute_ime_bounds(
+    widget_bounds: &crate::renderer::LayoutBoundsStorage,
+    ime_bounds: &crate::renderer::LayoutBoundsStorage,
+) -> Option<crate::element::ElementBounds> {
+    let widget = widget_bounds.lock().ok().and_then(|bounds| *bounds)?;
+    let ime = ime_bounds.lock().ok().and_then(|bounds| *bounds);
+
+    ime.map(|cursor| crate::element::ElementBounds {
+        x: widget.x + cursor.x,
+        y: widget.y + cursor.y,
+        width: cursor.width,
+        height: cursor.height,
+    })
+    .or(Some(widget))
+}
+
+pub fn focused_text_widget_ime_area() -> Option<crate::element::ElementBounds> {
+    focused_text_input_bounds().or_else(focused_text_area_bounds)
+}
+
+pub fn set_focused_text_widget_composition(composition: Option<ImeCompositionUpdate>) {
+    use crate::stateful::refresh_stateful;
+
+    if let Some(state) = FOCUSED_TEXT_INPUT
+        .lock()
+        .ok()
+        .and_then(|focused| focused.as_ref().and_then(Weak::upgrade))
+    {
+        let stateful = {
+            let mut data = match state.lock() {
+                Ok(data) => data,
+                Err(_) => return,
+            };
+            data.composition = composition.clone();
+            data.stateful_state.clone()
+        };
+
+        if let Some(ref stateful) = stateful {
+            refresh_stateful(stateful);
+        }
+        return;
+    }
+
+    if let Some(state) = FOCUSED_TEXT_AREA
+        .lock()
+        .ok()
+        .and_then(|focused| focused.as_ref().and_then(Weak::upgrade))
+    {
+        let stateful = {
+            let mut data = match state.lock() {
+                Ok(data) => data,
+                Err(_) => return,
+            };
+            data.composition = composition;
+            data.stateful_state.clone()
+        };
+
+        if let Some(ref stateful) = stateful {
+            refresh_stateful(stateful);
         }
     }
 }
@@ -421,6 +556,7 @@ pub struct TextInputData {
     pub value: String,
     pub cursor: usize,
     pub selection_start: Option<usize>,
+    pub composition: Option<ImeCompositionUpdate>,
     pub placeholder: String,
     pub input_type: InputType,
     pub constraints: InputConstraints,
@@ -439,6 +575,8 @@ pub struct TextInputData {
     /// Layout bounds storage - updated after each layout computation
     /// Used to get the actual computed width for proper scroll behavior
     pub layout_bounds_storage: crate::renderer::LayoutBoundsStorage,
+    /// Local caret rectangle used to position IME candidate windows.
+    pub ime_cursor_bounds_storage: crate::renderer::LayoutBoundsStorage,
     /// Reference to the Stateful's shared state for triggering incremental updates
     pub(crate) stateful_state: Option<SharedState<TextFieldState>>,
     /// Callback invoked when text value changes
@@ -455,6 +593,7 @@ impl std::fmt::Debug for TextInputData {
             .field("value", &self.value)
             .field("cursor", &self.cursor)
             .field("selection_start", &self.selection_start)
+            .field("composition", &self.composition)
             .field("placeholder", &self.placeholder)
             .field("input_type", &self.input_type)
             .field("constraints", &self.constraints)
@@ -480,6 +619,7 @@ impl TextInputData {
             value: String::new(),
             cursor: 0,
             selection_start: None,
+            composition: None,
             placeholder: String::new(),
             input_type: InputType::Text,
             constraints: InputConstraints::default(),
@@ -492,6 +632,7 @@ impl TextInputData {
             scroll_offset_x: 0.0,
             computed_width: None,
             layout_bounds_storage: Arc::new(Mutex::new(None)),
+            ime_cursor_bounds_storage: Arc::new(Mutex::new(None)),
             stateful_state: None,
             on_change_callback: None,
             css_element_id: None,
@@ -517,11 +658,31 @@ impl TextInputData {
     }
 
     /// Get display text (masked for password, or actual value)
-    pub fn display_text(&self) -> String {
-        if self.masked {
-            "•".repeat(self.value.chars().count())
+    pub fn value_with_composition(&self) -> String {
+        let Some(composition) = self.composition.as_ref() else {
+            return self.value.clone();
+        };
+        let (from, to) = if let Some(start) = self.selection_start {
+            if start < self.cursor {
+                (start, self.cursor)
+            } else {
+                (self.cursor, start)
+            }
         } else {
-            self.value.clone()
+            (self.cursor, self.cursor)
+        };
+
+        let before: String = self.value.chars().take(from).collect();
+        let after: String = self.value.chars().skip(to).collect();
+        before + &composition.text + &after
+    }
+
+    pub fn display_text(&self) -> String {
+        let value = self.value_with_composition();
+        if self.masked {
+            "•".repeat(value.chars().count())
+        } else {
+            value
         }
     }
 
@@ -1520,17 +1681,19 @@ impl TextInput {
         data: &TextInputData,
         config: &TextInputConfig,
     ) -> Div {
-        let display = if data.value.is_empty() {
+        let display_value = data.display_text();
+        let has_display_text = !display_value.is_empty();
+        let display = if has_display_text {
+            display_value
+        } else {
             if !data.placeholder.is_empty() {
                 data.placeholder.clone()
             } else {
                 config.placeholder.clone()
             }
-        } else {
-            data.display_text()
         };
 
-        let text_color = if data.value.is_empty() {
+        let text_color = if !has_display_text {
             config.placeholder_color
         } else if data.disabled {
             Color::rgba(0.4, 0.4, 0.4, 1.0)
@@ -1663,6 +1826,21 @@ impl TextInput {
 
         // Add text wrapper to clip container
         clip_container = clip_container.child(text_wrapper);
+
+        if let Ok(mut bounds) = data.ime_cursor_bounds_storage.lock() {
+            *bounds = if is_focused {
+                let cursor_left = (config.padding_x + cursor_x - scroll_offset).max(0.0);
+                let cursor_top = ((inner_height - cursor_height) / 2.0).max(0.0);
+                Some(crate::element::ElementBounds {
+                    x: cursor_left,
+                    y: cursor_top,
+                    width: 2.0,
+                    height: cursor_height,
+                })
+            } else {
+                None
+            };
+        }
 
         // Add cursor via canvas as a sibling to text_wrapper, also in clip_container
         // The cursor position is adjusted for scroll offset since it's not inside text_wrapper
@@ -2004,7 +2182,40 @@ impl ElementBuilder for TextInput {
             shared.base_style = self.inner.inner_layout_style();
         }
 
-        self.inner.build(tree)
+        let node_id = self.inner.build(tree);
+        let data = Arc::clone(&self.data);
+        tree.set_accessibility_provider(
+            node_id,
+            std::sync::Arc::new(move || {
+                data.lock()
+                    .ok()
+                    .map(|data| {
+                        AccessibilityMetadata::new(AccessibilityRole::TextInput)
+                            .with_name(if data.placeholder.is_empty() {
+                                data.css_element_id.clone()
+                            } else {
+                                Some(data.placeholder.clone())
+                            })
+                            .with_value(Some(data.value_with_composition()))
+                            .with_focusable(true)
+                            .with_focused(data.visual.is_focused())
+                            .with_disabled(data.disabled)
+                            .with_actions(vec![
+                                AccessibilityAction::Focus,
+                                AccessibilityAction::SetValue,
+                            ])
+                    })
+                    .unwrap_or_else(|| {
+                        AccessibilityMetadata::new(AccessibilityRole::TextInput)
+                            .with_focusable(true)
+                            .with_actions(vec![
+                                AccessibilityAction::Focus,
+                                AccessibilityAction::SetValue,
+                            ])
+                    })
+            }),
+        );
+        node_id
     }
 
     fn render_props(&self) -> RenderProps {
@@ -2096,5 +2307,23 @@ mod tests {
         data.cursor = 0;
         data.insert("abc123");
         assert_eq!(data.value, "123");
+    }
+
+    #[test]
+    fn test_text_input_display_text_uses_composition_when_empty() {
+        let mut data = TextInputData::new();
+        data.composition = Some(ImeCompositionUpdate::new("한", None));
+
+        assert_eq!(data.display_text(), "한");
+    }
+
+    #[test]
+    fn test_text_input_composition_replaces_active_selection() {
+        let mut data = TextInputData::with_value("hello");
+        data.cursor = 4;
+        data.selection_start = Some(1);
+        data.composition = Some(ImeCompositionUpdate::new("한", None));
+
+        assert_eq!(data.value_with_composition(), "h한o");
     }
 }
