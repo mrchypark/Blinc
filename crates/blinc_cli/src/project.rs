@@ -27,6 +27,7 @@ const IOS_NATIVE_BRIDGE_TEMPLATE: &str =
 /// Create a new Blinc project with full workspace structure
 pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Result<()> {
     validate_org_name(org)?;
+    let release_artifact_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Create directory structure
     fs::create_dir_all(path.join("src"))?;
@@ -169,6 +170,39 @@ Edit `.blincproj` to configure:
 - Project metadata (name, version, description)
 - Platform-specific settings (package IDs, SDK versions)
 - Dependencies (plugins, external packages)
+
+## Updater
+
+Add updater settings under `[updates]` in `.blincproj` when you are ready to publish signed releases:
+
+```toml
+[updates]
+enabled = true
+channel = "stable"
+manifest_url = "https://example.com/releases/release-manifest.json"
+public_key = "base64-ed25519-public-key"
+```
+
+- macOS desktop self-update is the current reference path in the shared updater architecture.
+- Windows/Linux remain planned desktop updater targets and stay explicit unsupported backends in v1.
+- Android private/development distribution is supported through APK installer handoff.
+- iOS uses App Store/TestFlight distribution and is excluded from the in-app updater flow.
+
+Generate signed release metadata with the user-callable `blinc release manifest` entry point:
+
+```bash
+blinc release manifest . \
+  --platform macos \
+  --arch universal \
+  --artifact-path dist/{release_artifact_name}.zip \
+  --private-key "$BLINC_RELEASE_PRIVATE_KEY" \
+  --public-key-output dist/public-key.txt \
+  --url https://example.com/releases/{release_artifact_name}.zip \
+  --output dist/release-manifest.json \
+  --published-at 2026-03-07T00:00:00Z
+```
+
+Reuse the same --published-at value when appending more artifacts to the same release manifest.
 "#,
         ),
     )?;
@@ -1329,6 +1363,10 @@ pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
     fs::create_dir_all(path.join("platforms/android/app/src/main/kotlin/com/blinc"))?;
     fs::create_dir_all(path.join("platforms/ios/BlincApp"))?;
 
+    // Create .blincproj for release and updater workflows
+    let project = BlincProject::new(name).with_all_platforms(name, org);
+    fs::write(path.join(".blincproj"), project.to_toml()?)?;
+
     // Create Cargo.toml
     fs::write(
         path.join("Cargo.toml"),
@@ -1733,6 +1771,7 @@ cargo lipo --release
 
 ```
 {name}/
+├── .blincproj          # Project and updater configuration
 ├── Cargo.toml           # Rust project configuration
 ├── blinc.toml           # Blinc toolchain configuration
 ├── src/
@@ -1741,6 +1780,31 @@ cargo lipo --release
     ├── android/         # Android Gradle project
     └── ios/             # iOS Swift files
 ```
+
+## Updater
+
+Add updater settings under `[updates]` in `.blincproj` when you want signed desktop or Android release metadata.
+
+- macOS desktop self-update is the current reference path in the shared updater flow.
+- Windows/Linux remain planned desktop updater targets and stay explicit unsupported backends in v1.
+- Android private/development distribution is supported through APK handoff.
+- iOS uses App Store/TestFlight distribution and is excluded from in-app updater support.
+
+Generate release metadata with:
+
+```bash
+blinc release manifest . \
+  --platform macos \
+  --arch universal \
+  --artifact-path dist/{package_name}.zip \
+  --private-key "$BLINC_RELEASE_PRIVATE_KEY" \
+  --public-key-output dist/public-key.txt \
+  --url https://example.com/releases/{package_name}.zip \
+  --output dist/release-manifest.json \
+  --published-at 2026-03-07T00:00:00Z
+```
+
+Reuse the same --published-at value when appending more artifacts to the same release manifest.
 "#
         ),
     )?;
@@ -3025,6 +3089,126 @@ mod tests {
             linux_readme
                 .contains("`io.blinc.dev.demo_app.desktop` - Desktop entry for app launchers"),
             "generated Linux README file list should mention the org-based desktop entry filename"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generated_project_includes_updater_config_and_release_manifest_guidance() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_updater_guidance_{nonce}"));
+
+        create_project(&root, "Demo App", "default", "io.blinc.dev")
+            .expect("non-rust project template should be generated");
+
+        let readme =
+            fs::read_to_string(root.join("README.md")).expect("generated README should exist");
+        assert!(
+            readme.contains("[updates]"),
+            "generated README should show where updater config lives"
+        );
+        assert!(
+            readme.contains("macOS desktop self-update"),
+            "generated README should scope desktop updater guidance to the current macOS reference path"
+        );
+        assert!(
+            readme.contains("Android private/development distribution"),
+            "generated README should mention Android private updater support"
+        );
+        assert!(
+            readme.contains("iOS uses App Store/TestFlight"),
+            "generated README should explain iOS exclusion from in-app updates"
+        );
+        assert!(
+            readme.contains("Windows/Linux remain planned"),
+            "generated README should clarify that Windows and Linux are not shipped updater backends yet"
+        );
+        assert!(
+            readme.contains("blinc release manifest"),
+            "generated README should mention the user-callable release manifest entry point"
+        );
+        assert!(
+            readme.contains("blinc release manifest . \\"),
+            "generated README should use the positional source argument that the CLI actually exposes"
+        );
+        assert!(
+            !readme.contains("--source ."),
+            "generated README should not document a nonexistent --source flag"
+        );
+        assert!(
+            readme.contains("dist/demo_app.zip"),
+            "generated README should slug artifact filenames so example commands stay valid for names with spaces"
+        );
+        assert!(
+            readme.contains("https://example.com/releases/demo_app.zip"),
+            "generated README should slug artifact URLs so example commands stay valid for names with spaces"
+        );
+        assert!(
+            readme.contains("Reuse the same --published-at value"),
+            "generated README should explain how to append multiple artifacts to one release manifest"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rust_project_readme_uses_positional_release_source_and_slugged_artifact_names() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_rust_updater_guidance_{nonce}"));
+
+        create_rust_project(&root, "Demo App", "io.blinc.dev")
+            .expect("rust project template should be generated");
+
+        let readme =
+            fs::read_to_string(root.join("README.md")).expect("generated README should exist");
+        assert!(
+            readme.contains("blinc release manifest . \\"),
+            "rust README should use the positional source argument that the CLI actually exposes"
+        );
+        assert!(
+            !readme.contains("--source ."),
+            "rust README should not document a nonexistent --source flag"
+        );
+        assert!(
+            readme.contains("dist/demo_app.zip"),
+            "rust README should slug artifact filenames so example commands stay valid for names with spaces"
+        );
+        assert!(
+            readme.contains("https://example.com/releases/demo_app.zip"),
+            "rust README should slug artifact URLs so example commands stay valid for names with spaces"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rust_project_scaffold_includes_blincproj_for_release_workflow() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_rust_release_config_{nonce}"));
+
+        create_rust_project(&root, "Demo App", "io.blinc.dev")
+            .expect("rust project template should be generated");
+
+        let project = BlincProject::load_from_dir(&root)
+            .expect("rust project scaffold should include a .blincproj for release commands");
+        assert_eq!(
+            project
+                .platforms
+                .macos
+                .as_ref()
+                .map(|macos| macos.bundle_id.as_str()),
+            Some("io.blinc.dev.demo_app"),
+            "rust scaffold should preserve canonical platform identities in .blincproj"
         );
 
         let _ = fs::remove_dir_all(&root);
