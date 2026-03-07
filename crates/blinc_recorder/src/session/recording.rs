@@ -4,6 +4,7 @@ use super::config::RecordingConfig;
 use crate::capture::{
     RecordedEvent, RecordingClock, Timestamp, TimestampedEvent, TreeDiff, TreeSnapshot,
 };
+use crate::trace::{TraceEntry, TraceEntryKind};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -33,8 +34,12 @@ pub struct RecordingSession {
     events: VecDeque<TimestampedEvent>,
     /// Ring buffer of tree snapshots.
     snapshots: VecDeque<TreeSnapshot>,
+    /// Ring buffer of trace entries associated with automation/debugging commands.
+    trace_entries: VecDeque<TraceEntry>,
     /// Last snapshot for diff computation.
     last_snapshot: Option<TreeSnapshot>,
+    /// Sequence number assigned to the next trace entry.
+    next_trace_sequence: u64,
     /// Accumulated pause duration (for accurate timestamps).
     pause_duration: std::time::Duration,
     /// When the current pause started (if paused).
@@ -69,7 +74,9 @@ impl RecordingSession {
             clock: RecordingClock::new(),
             events: VecDeque::new(),
             snapshots: VecDeque::new(),
+            trace_entries: VecDeque::new(),
             last_snapshot: None,
+            next_trace_sequence: 0,
             pause_duration: std::time::Duration::ZERO,
             pause_start: None,
             stats: SessionStats::default(),
@@ -103,7 +110,9 @@ impl RecordingSession {
                 self.clock.reset();
                 self.events.clear();
                 self.snapshots.clear();
+                self.trace_entries.clear();
                 self.last_snapshot = None;
+                self.next_trace_sequence = 0;
                 self.pause_duration = std::time::Duration::ZERO;
                 self.stats = SessionStats::default();
                 self.state = SessionState::Recording;
@@ -140,7 +149,9 @@ impl RecordingSession {
         self.state = SessionState::Idle;
         self.events.clear();
         self.snapshots.clear();
+        self.trace_entries.clear();
         self.last_snapshot = None;
+        self.next_trace_sequence = 0;
         self.pause_duration = std::time::Duration::ZERO;
         self.pause_start = None;
         self.stats = SessionStats::default();
@@ -202,6 +213,28 @@ impl RecordingSession {
         diff
     }
 
+    /// Record a trace entry and return its assigned sequence number.
+    pub fn record_trace_entry(&mut self, kind: TraceEntryKind) -> u64 {
+        let sequence = self.next_trace_sequence;
+        self.next_trace_sequence = self.next_trace_sequence.saturating_add(1);
+
+        if self.state != SessionState::Recording {
+            return sequence;
+        }
+
+        if self.trace_entries.len() >= self.config.max_events {
+            self.trace_entries.pop_front();
+        }
+
+        self.trace_entries.push_back(TraceEntry {
+            sequence,
+            timestamp: self.current_timestamp(),
+            kind,
+        });
+
+        sequence
+    }
+
     /// Get recorded events.
     pub fn events(&self) -> &VecDeque<TimestampedEvent> {
         &self.events
@@ -210,6 +243,11 @@ impl RecordingSession {
     /// Get recorded snapshots.
     pub fn snapshots(&self) -> &VecDeque<TreeSnapshot> {
         &self.snapshots
+    }
+
+    /// Get recorded trace entries.
+    pub fn trace_entries(&self) -> &VecDeque<TraceEntry> {
+        &self.trace_entries
     }
 
     /// Get the last recorded snapshot.
@@ -244,6 +282,7 @@ impl RecordingSession {
             config: self.config.clone(),
             events: self.events.iter().cloned().collect(),
             snapshots: self.snapshots.iter().cloned().collect(),
+            trace_entries: self.trace_entries.iter().cloned().collect(),
             stats: self.stats.clone(),
         }
     }
@@ -255,6 +294,8 @@ pub struct RecordingExport {
     pub config: RecordingConfig,
     pub events: Vec<TimestampedEvent>,
     pub snapshots: Vec<TreeSnapshot>,
+    #[serde(default)]
+    pub trace_entries: Vec<TraceEntry>,
     pub stats: SessionStats,
 }
 
@@ -306,6 +347,10 @@ impl SharedRecordingSession {
         self.inner.write().record_snapshot(snapshot)
     }
 
+    pub fn record_trace_entry(&self, kind: TraceEntryKind) -> u64 {
+        self.inner.write().record_trace_entry(kind)
+    }
+
     pub fn stats(&self) -> SessionStats {
         self.inner.read().stats().clone()
     }
@@ -332,6 +377,9 @@ impl SharedRecordingSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trace::{
+        TraceArtifactRecord, TraceAssertionRecord, TraceCommandRecord, TraceEntryKind,
+    };
 
     #[test]
     fn test_session_state_transitions() {
@@ -378,5 +426,76 @@ mod tests {
         assert_eq!(session.events().len(), 5);
         assert_eq!(session.stats().events_dropped, 2);
         assert_eq!(session.stats().total_events, 7);
+    }
+
+    #[test]
+    fn recording_export_round_trips_with_command_and_assertion_entries() {
+        let mut session = RecordingSession::new(RecordingConfig::minimal());
+        session.start();
+        session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+            name: "click".to_string(),
+            target: Some("login.submit".to_string()),
+            payload: None,
+        }));
+        session.record_trace_entry(TraceEntryKind::Assertion(TraceAssertionRecord {
+            code: "assert_text_contains".to_string(),
+            passed: true,
+            target: Some("status".to_string()),
+            actual: Some("Signed in".to_string()),
+            expected: Some("Signed in".to_string()),
+        }));
+        session.record_trace_entry(TraceEntryKind::Artifact(TraceArtifactRecord {
+            kind: "tree_dump".to_string(),
+            path: Some("artifacts/status-tree.json".to_string()),
+            message: None,
+        }));
+
+        let export = session.export();
+        let payload = serde_json::to_string(&export).expect("recording export should serialize");
+        let decoded: RecordingExport =
+            serde_json::from_str(&payload).expect("recording export should deserialize");
+
+        assert_eq!(decoded.trace_entries.len(), 3);
+        assert!(matches!(
+            decoded.trace_entries[0].kind,
+            TraceEntryKind::Command(_)
+        ));
+        assert!(matches!(
+            decoded.trace_entries[1].kind,
+            TraceEntryKind::Assertion(_)
+        ));
+        assert!(matches!(
+            decoded.trace_entries[2].kind,
+            TraceEntryKind::Artifact(_)
+        ));
+    }
+
+    #[test]
+    fn trace_entries_keep_monotonic_sequence_numbers() {
+        let mut session = RecordingSession::new(RecordingConfig::minimal());
+        session.start();
+
+        let first = session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+            name: "click".to_string(),
+            target: Some("login.submit".to_string()),
+            payload: None,
+        }));
+        let second = session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
+            name: "press".to_string(),
+            target: Some("login.submit".to_string()),
+            payload: Some("Enter".to_string()),
+        }));
+
+        let export = session.export();
+        let sequences: Vec<u64> = export
+            .trace_entries
+            .iter()
+            .map(|entry| entry.sequence)
+            .collect();
+
+        assert_eq!(first, 0);
+        assert_eq!(second, 1);
+        assert_eq!(sequences, vec![0, 1]);
+        assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }

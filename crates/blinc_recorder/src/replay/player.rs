@@ -468,6 +468,7 @@ mod tests {
             config: RecordingConfig::minimal(),
             events,
             snapshots: Vec::new(),
+            trace_entries: Vec::new(),
             stats: Default::default(),
         }
     }

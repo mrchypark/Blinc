@@ -687,6 +687,7 @@ mod tests {
                 RecordedEvent::WindowFocus(true),
             )],
             snapshots: vec![],
+            trace_entries: vec![],
             stats: Default::default(),
         };
 

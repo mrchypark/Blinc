@@ -31,6 +31,7 @@ pub mod replay;
 pub mod server;
 pub mod session;
 pub mod testing;
+pub mod trace;
 
 pub use capture::{
     ChangeCategory, CustomEvent, ElementDiff, ElementSnapshot, FocusChangeEvent, HoverEvent, Key,
@@ -53,6 +54,10 @@ pub use session::{
 pub use testing::{
     compare_frames, CapturedFrame, FrameSequence, HeadlessConfig, HeadlessContext,
     RegressionResult, ScreenshotExporter, TestConfig, TestRunner,
+};
+pub use trace::{
+    TraceArtifactRecord, TraceAssertionRecord, TraceCommandRecord, TraceEntry, TraceEntryKind,
+    TraceLocatorResolution,
 };
 
 use parking_lot::RwLock;
