@@ -1,6 +1,9 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use time::format_description::well_known::Rfc3339;
@@ -14,9 +17,12 @@ pub(crate) struct ReleaseManifestArgs {
     pub platform: String,
     pub arch: String,
     pub url: String,
+    pub artifact_path: Option<PathBuf>,
     pub size: u64,
     pub sha256: String,
     pub signature: String,
+    pub private_key: Option<String>,
+    pub public_key_output: Option<PathBuf>,
     pub output: PathBuf,
     pub published_at: String,
     pub notes_url: Option<String>,
@@ -54,14 +60,15 @@ pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
 
     let project = load_release_project(&args.source)?;
     let target_id = resolve_target_id(&project, &args.platform)?;
+    let metadata = resolve_artifact_metadata(args)?;
     let artifact = ReleaseManifestArtifact {
         platform: args.platform.clone(),
         arch: args.arch.clone(),
         target_id,
         url: args.url.clone(),
-        size: args.size,
-        sha256: args.sha256.clone(),
-        signature: args.signature.clone(),
+        size: metadata.size,
+        sha256: metadata.sha256,
+        signature: metadata.signature,
     };
 
     let manifest = if args.output.exists() {
@@ -122,19 +129,137 @@ fn validate_release_manifest_args(args: &ReleaseManifestArgs) -> Result<()> {
     OffsetDateTime::parse(&args.published_at, &Rfc3339)
         .context("published_at must be a valid RFC 3339 timestamp")?;
 
-    if args.sha256.len() != 64 || !args.sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
+    if let Some(artifact_path) = &args.artifact_path {
+        if args.size != 0 || !args.sha256.is_empty() || !args.signature.is_empty() {
+            bail!("artifact_path mode computes size, sha256, and signature automatically");
+        }
+
+        if !artifact_path.is_file() {
+            bail!("artifact_path must point to a file");
+        }
+
+        if args
+            .private_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .is_none()
+            && std::env::var_os("BLINC_RELEASE_PRIVATE_KEY").is_none()
+        {
+            bail!("artifact_path requires a private key via --private-key or BLINC_RELEASE_PRIVATE_KEY");
+        }
+
+        return Ok(());
+    }
+
+    if args.size == 0 && args.sha256.is_empty() && args.signature.is_empty() {
+        bail!("manual manifest mode requires size, sha256, and signature, or use --artifact-path");
+    }
+
+    if args.size == 0 {
+        bail!("size must be greater than zero");
+    }
+
+    validate_sha256(&args.sha256)?;
+    validate_signature(&args.signature)
+}
+
+fn resolve_artifact_metadata(args: &ReleaseManifestArgs) -> Result<ResolvedArtifactMetadata> {
+    if let Some(artifact_path) = &args.artifact_path {
+        let signing_key = load_signing_key(args)?;
+        let bytes = fs::read(artifact_path)
+            .with_context(|| format!("Failed to read {}", artifact_path.display()))?;
+        if bytes.is_empty() {
+            bail!("artifact_path must point to a non-empty file");
+        }
+
+        if let Some(public_key_output) = &args.public_key_output {
+            write_public_key(public_key_output, &signing_key)?;
+        }
+
+        return Ok(ResolvedArtifactMetadata {
+            size: bytes.len() as u64,
+            sha256: sha256_hex(&bytes),
+            signature: STANDARD.encode(signing_key.sign(&bytes).to_bytes()),
+        });
+    }
+
+    Ok(ResolvedArtifactMetadata {
+        size: args.size,
+        sha256: args.sha256.clone(),
+        signature: args.signature.clone(),
+    })
+}
+
+fn load_signing_key(args: &ReleaseManifestArgs) -> Result<SigningKey> {
+    let private_key = args
+        .private_key
+        .clone()
+        .or_else(|| std::env::var("BLINC_RELEASE_PRIVATE_KEY").ok())
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .context(
+            "artifact_path requires a private key via --private-key or BLINC_RELEASE_PRIVATE_KEY",
+        )?;
+
+    let bytes = STANDARD
+        .decode(private_key)
+        .context("private_key must be a base64-encoded 32-byte ed25519 secret key seed")?;
+    let key_bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow!("private_key must decode to exactly 32 bytes"))?;
+
+    Ok(SigningKey::from_bytes(&key_bytes))
+}
+
+fn write_public_key(path: &Path, signing_key: &SigningKey) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::write(
+        path,
+        STANDARD.encode(signing_key.verifying_key().to_bytes()),
+    )
+    .with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn validate_sha256(sha256: &str) -> Result<()> {
+    if sha256.len() != 64 || !sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
         bail!("sha256 must be a 64-character hexadecimal digest");
     }
 
-    if args.signature.is_empty() {
+    Ok(())
+}
+
+fn validate_signature(signature: &str) -> Result<()> {
+    if signature.is_empty() {
         bail!("signature must be a non-empty base64 string");
     }
 
-    STANDARD
-        .decode(&args.signature)
+    let signature_bytes = STANDARD
+        .decode(signature)
         .context("signature must be a valid base64 string")?;
-
+    if signature_bytes.len() != 64 {
+        bail!("signature must decode to a 64-byte ed25519 signature");
+    }
     Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(&mut output, "{byte:02x}");
+    }
+    output
+}
+
+struct ResolvedArtifactMetadata {
+    size: u64,
+    sha256: String,
+    signature: String,
 }
 
 fn release_project_root(path: &Path) -> Result<&Path> {
@@ -174,8 +299,12 @@ fn resolve_target_id(project: &BlincProject, platform: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use serde_json::Value;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const VALID_SIGNATURE: &str =
+        "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ==";
 
     #[test]
     fn release_loader_preserves_updates_and_non_legacy_platforms() {
@@ -313,9 +442,12 @@ mod tests {
             platform: "macos".to_string(),
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
             size: 12_345,
             sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
-            signature: "c2ln".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
             notes_url: Some("https://example.com/releases/1.2.3".to_string()),
@@ -372,7 +504,7 @@ mod tests {
             "manifest artifact should preserve sha256"
         );
         assert_eq!(
-            json["artifacts"][0]["signature"], "c2ln",
+            json["artifacts"][0]["signature"], VALID_SIGNATURE,
             "manifest artifact should preserve signature"
         );
 
@@ -416,9 +548,12 @@ mod tests {
             platform: "macos".to_string(),
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
             size: 12_345,
             sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
-            signature: "c2ln".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
             notes_url: None,
@@ -430,9 +565,12 @@ mod tests {
             platform: "android".to_string(),
             arch: "arm64-v8a".to_string(),
             url: "https://example.com/releases/demo-1.2.3.apk".to_string(),
+            artifact_path: None,
             size: 67_890,
             sha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".to_string(),
-            signature: "YWJj".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
             notes_url: None,
@@ -489,9 +627,12 @@ mod tests {
             platform: "macos".to_string(),
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos-v1.zip".to_string(),
+            artifact_path: None,
             size: 12_345,
             sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
-            signature: "c2ln".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
             notes_url: None,
@@ -503,9 +644,12 @@ mod tests {
             platform: "macos".to_string(),
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos-v2.zip".to_string(),
+            artifact_path: None,
             size: 54_321,
             sha256: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".to_string(),
-            signature: "YWJj".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
             notes_url: None,
@@ -527,6 +671,287 @@ mod tests {
         assert_eq!(
             json["artifacts"][0]["size"], 54_321,
             "replacement artifact should keep the latest size"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_populates_artifact_signatures() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_release_manifest_signing_{nonce}"));
+        let artifact_path = root.join("dist/demo.zip");
+        let manifest_path = root.join("dist/release-manifest.json");
+        let public_key_path = root.join("dist/public-key.txt");
+
+        fs::create_dir_all(
+            artifact_path
+                .parent()
+                .expect("artifact directory should exist"),
+        )
+        .expect("artifact directory should be created");
+        fs::write(&artifact_path, b"hello signed release").expect("artifact should be written");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: Some(artifact_path),
+            size: 0,
+            sha256: String::new(),
+            signature: String::new(),
+            private_key: Some("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_string()),
+            public_key_output: Some(public_key_path.clone()),
+            output: manifest_path.clone(),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect("artifact-path mode should compute and sign artifact metadata");
+
+        let manifest = fs::read_to_string(&manifest_path).expect("manifest file should exist");
+        let json: Value = serde_json::from_str(&manifest).expect("manifest should be valid JSON");
+        let signature = json["artifacts"][0]["signature"]
+            .as_str()
+            .expect("signature should be serialized as a string");
+        let public_key =
+            fs::read_to_string(&public_key_path).expect("public key output should be written");
+
+        assert_eq!(
+            json["artifacts"][0]["size"], 20,
+            "artifact-path mode should derive artifact size from the file"
+        );
+        assert_eq!(
+            json["artifacts"][0]["sha256"],
+            "1e7baffe75a68c049cc5f0bc7f0a894d4a3e8942adbc148e4a80c98a9d70866e",
+            "artifact-path mode should derive sha256 from the file"
+        );
+        assert!(
+            !signature.is_empty(),
+            "artifact-path mode should generate a detached signature"
+        );
+        assert!(
+            !public_key.trim().is_empty(),
+            "artifact-path mode should expose the matching public key"
+        );
+        let signature_bytes = STANDARD
+            .decode(signature)
+            .expect("generated signatures should be valid base64");
+        let signature = Signature::from_bytes(
+            &signature_bytes
+                .try_into()
+                .expect("ed25519 signatures should decode to 64 bytes"),
+        );
+        let public_key_bytes = STANDARD
+            .decode(public_key.trim())
+            .expect("generated public keys should be valid base64");
+        let verifying_key = VerifyingKey::from_bytes(
+            &public_key_bytes
+                .try_into()
+                .expect("ed25519 public keys should decode to 32 bytes"),
+        )
+        .expect("public key bytes should decode into a verifying key");
+        verifying_key
+            .verify(b"hello signed release", &signature)
+            .expect("generated signature should verify against the generated public key");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_generation_requires_private_key_input() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_release_manifest_missing_key_{nonce}"));
+        let artifact_path = root.join("dist/demo.zip");
+
+        fs::create_dir_all(
+            artifact_path
+                .parent()
+                .expect("artifact directory should exist"),
+        )
+        .expect("artifact directory should be created");
+        fs::write(&artifact_path, b"hello signed release").expect("artifact should be written");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: Some(artifact_path),
+            size: 0,
+            sha256: String::new(),
+            signature: String::new(),
+            private_key: None,
+            public_key_output: None,
+            output: root.join("dist/release-manifest.json"),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("artifact-path mode should require a private key");
+
+        assert!(
+            err.to_string().contains("private key"),
+            "missing signing key errors should mention the private key requirement"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_generation_rejects_manual_metadata_with_artifact_path() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_release_manifest_mixed_metadata_{nonce}"));
+        let artifact_path = root.join("dist/demo.zip");
+
+        fs::create_dir_all(
+            artifact_path
+                .parent()
+                .expect("artifact directory should exist"),
+        )
+        .expect("artifact directory should be created");
+        fs::write(&artifact_path, b"hello signed release").expect("artifact should be written");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: Some(artifact_path),
+            size: 12_345,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: Some("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_string()),
+            public_key_output: None,
+            output: root.join("dist/release-manifest.json"),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("artifact-path mode should reject conflicting manual metadata");
+
+        assert!(
+            err.to_string().contains("artifact_path"),
+            "mixed-mode validation should mention artifact_path"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_generation_rejects_directory_artifact_path() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "blinc_cli_release_manifest_directory_artifact_{nonce}"
+        ));
+        let artifact_path = root.join("dist");
+
+        fs::create_dir_all(&artifact_path).expect("artifact directory should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: Some(artifact_path),
+            size: 0,
+            sha256: String::new(),
+            signature: String::new(),
+            private_key: Some("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_string()),
+            public_key_output: None,
+            output: root.join("dist/release-manifest.json"),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("artifact-path mode should reject directory paths");
+
+        assert!(
+            err.to_string().contains("artifact_path"),
+            "artifact path validation should mention artifact_path"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -567,9 +992,12 @@ mod tests {
             platform: "macos".to_string(),
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
             size: 12_345,
             sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
-            signature: "c2ln".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
             output: root.join("dist/release-manifest.json"),
             published_at: "not-a-timestamp".to_string(),
             notes_url: None,
@@ -618,9 +1046,12 @@ mod tests {
             platform: "macos".to_string(),
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
             size: 12_345,
             sha256: "not-hex".to_string(),
-            signature: "c2ln".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
             output: root.join("dist/release-manifest.json"),
             published_at: "2026-03-07T00:00:00Z".to_string(),
             notes_url: None,
@@ -670,9 +1101,12 @@ mod tests {
             platform: "macos".to_string(),
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
             size: 12_345,
             sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
             signature: "not-base64!!!".to_string(),
+            private_key: None,
+            public_key_output: None,
             output: root.join("dist/release-manifest.json"),
             published_at: "2026-03-07T00:00:00Z".to_string(),
             notes_url: None,
@@ -682,6 +1116,60 @@ mod tests {
         assert!(
             err.to_string().contains("signature"),
             "signature validation error should mention signature"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_command_rejects_short_signature() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_release_manifest_short_sig_{nonce}"));
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
+            size: 12_345,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            signature: "c2ln".to_string(),
+            private_key: None,
+            public_key_output: None,
+            output: root.join("dist/release-manifest.json"),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("manual mode should reject base64 signatures with the wrong length");
+
+        assert!(
+            err.to_string().contains("signature"),
+            "signature length errors should mention signature"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -721,9 +1209,12 @@ mod tests {
             platform: "macos".to_string(),
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
             size: 12_345,
             sha256: String::new(),
             signature: "c2ln".to_string(),
+            private_key: None,
+            public_key_output: None,
             output: root.join("dist/release-manifest.json"),
             published_at: "2026-03-07T00:00:00Z".to_string(),
             notes_url: None,
@@ -773,9 +1264,12 @@ mod tests {
             platform: "macos".to_string(),
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
             size: 12_345,
             sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
             signature: String::new(),
+            private_key: None,
+            public_key_output: None,
             output: root.join("dist/release-manifest.json"),
             published_at: "2026-03-07T00:00:00Z".to_string(),
             notes_url: None,
@@ -826,9 +1320,12 @@ mod tests {
             platform: "macos".to_string(),
             arch: "universal".to_string(),
             url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
             size: 12_345,
             sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
-            signature: "c2ln".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
             output: output.clone(),
             published_at: "2026-03-07T00:00:00Z".to_string(),
             notes_url: None,

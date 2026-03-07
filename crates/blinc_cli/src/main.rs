@@ -171,17 +171,29 @@ enum ReleaseCommands {
         #[arg(long)]
         url: String,
 
+        /// Built artifact to inspect and sign
+        #[arg(long)]
+        artifact_path: Option<String>,
+
         /// Artifact size in bytes
         #[arg(long)]
-        size: u64,
+        size: Option<u64>,
 
         /// Artifact SHA-256 hex digest
         #[arg(long)]
-        sha256: String,
+        sha256: Option<String>,
 
         /// Artifact signature
         #[arg(long)]
-        signature: String,
+        signature: Option<String>,
+
+        /// Base64-encoded Ed25519 private key seed
+        #[arg(long)]
+        private_key: Option<String>,
+
+        /// Optional path to write the matching base64-encoded public key
+        #[arg(long)]
+        public_key_output: Option<String>,
 
         /// Manifest output path
         #[arg(long)]
@@ -240,9 +252,12 @@ fn main() -> Result<()> {
                 platform,
                 arch,
                 url,
+                artifact_path,
                 size,
                 sha256,
                 signature,
+                private_key,
+                public_key_output,
                 output,
                 published_at,
                 notes_url,
@@ -251,9 +266,12 @@ fn main() -> Result<()> {
                 &platform,
                 &arch,
                 &url,
+                artifact_path.as_deref(),
                 size,
-                &sha256,
-                &signature,
+                sha256.as_deref(),
+                signature.as_deref(),
+                private_key.as_deref(),
+                public_key_output.as_deref(),
                 &output,
                 &published_at,
                 notes_url.as_deref(),
@@ -405,9 +423,12 @@ fn cmd_release_manifest(
     platform: &str,
     arch: &str,
     url: &str,
-    size: u64,
-    sha256: &str,
-    signature: &str,
+    artifact_path: Option<&str>,
+    size: Option<u64>,
+    sha256: Option<&str>,
+    signature: Option<&str>,
+    private_key: Option<&str>,
+    public_key_output: Option<&str>,
     output: &str,
     published_at: &str,
     notes_url: Option<&str>,
@@ -417,9 +438,12 @@ fn cmd_release_manifest(
         platform: platform.to_string(),
         arch: arch.to_string(),
         url: url.to_string(),
-        size,
-        sha256: sha256.to_string(),
-        signature: signature.to_string(),
+        artifact_path: artifact_path.map(PathBuf::from),
+        size: size.unwrap_or_default(),
+        sha256: sha256.unwrap_or_default().to_string(),
+        signature: signature.unwrap_or_default().to_string(),
+        private_key: private_key.map(str::to_owned),
+        public_key_output: public_key_output.map(PathBuf::from),
         output: PathBuf::from(output),
         published_at: published_at.to_string(),
         notes_url: notes_url.map(str::to_owned),
