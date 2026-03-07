@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ManifestError;
 
+pub const RELEASE_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseChannel {

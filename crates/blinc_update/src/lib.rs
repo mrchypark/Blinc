@@ -5,7 +5,9 @@ pub mod verify;
 pub mod version;
 
 pub use error::{ManifestError, UpdateError, VersionError};
-pub use manifest::{ReleaseArtifact, ReleaseChannel, ReleaseManifest};
+pub use manifest::{
+    ReleaseArtifact, ReleaseChannel, ReleaseManifest, RELEASE_MANIFEST_SCHEMA_VERSION,
+};
 pub use service::{InstallHandoff, InstallIntent, UpdateBackend, UpdateCheckRequest, UpdateState};
 pub use verify::{verify_artifact_bytes, verify_artifact_file};
 pub use version::is_newer_release;

@@ -1,7 +1,10 @@
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use blinc_update::{
+    ReleaseArtifact, ReleaseChannel as UpdateReleaseChannel, ReleaseManifest,
+    RELEASE_MANIFEST_SCHEMA_VERSION,
+};
 use ed25519_dalek::{Signer, SigningKey};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::fs;
@@ -28,40 +31,18 @@ pub(crate) struct ReleaseManifestArgs {
     pub notes_url: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct ReleaseManifestDocument {
-    schema_version: u32,
-    product: String,
-    channel: crate::config::ReleaseChannel,
-    version: String,
-    published_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    notes_url: Option<String>,
-    artifacts: Vec<ReleaseManifestArtifact>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct ReleaseManifestArtifact {
-    platform: String,
-    arch: String,
-    target_id: String,
-    url: String,
-    size: u64,
-    sha256: String,
-    signature: String,
-}
-
 pub(crate) fn load_release_project(path: &Path) -> Result<BlincProject> {
     BlincProject::load_from_dir(release_project_root(path)?)
 }
 
 pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
     validate_release_manifest_args(args)?;
+    let published_at = normalize_published_at(&args.published_at)?;
 
     let project = load_release_project(&args.source)?;
     let target_id = resolve_target_id(&project, &args.platform)?;
     let metadata = resolve_artifact_metadata(args)?;
-    let artifact = ReleaseManifestArtifact {
+    let artifact = ReleaseArtifact {
         platform: args.platform.clone(),
         arch: args.arch.clone(),
         target_id,
@@ -74,18 +55,21 @@ pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
     let manifest = if args.output.exists() {
         let existing = fs::read_to_string(&args.output)
             .with_context(|| format!("Failed to read {}", args.output.display()))?;
-        let mut manifest: ReleaseManifestDocument =
+        let mut manifest: ReleaseManifest =
             serde_json::from_str(&existing).context("Failed to parse existing release manifest")?;
+        let existing_published_at = normalize_published_at(&manifest.published_at)
+            .context("existing release manifest published_at must be a valid RFC 3339 timestamp")?;
 
-        if manifest.schema_version != 1
+        if manifest.schema_version != RELEASE_MANIFEST_SCHEMA_VERSION
             || manifest.product != project.project.name
-            || manifest.channel != project.updates.channel
+            || manifest.channel != update_release_channel(project.updates.channel)
             || manifest.version != project.project.version
-            || manifest.published_at != args.published_at
+            || existing_published_at != published_at
         {
             bail!("Existing release manifest metadata does not match this artifact");
         }
 
+        manifest.published_at = published_at.clone();
         match (&mut manifest.notes_url, &args.notes_url) {
             (slot @ None, Some(notes_url)) => *slot = Some(notes_url.clone()),
             (Some(existing), Some(notes_url)) if existing != notes_url => {
@@ -102,12 +86,12 @@ pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
         manifest.artifacts.push(artifact);
         manifest
     } else {
-        ReleaseManifestDocument {
-            schema_version: 1,
+        ReleaseManifest {
+            schema_version: RELEASE_MANIFEST_SCHEMA_VERSION,
             product: project.project.name.clone(),
-            channel: project.updates.channel,
+            channel: update_release_channel(project.updates.channel),
             version: project.project.version.clone(),
-            published_at: args.published_at.clone(),
+            published_at,
             notes_url: args.notes_url.clone(),
             artifacts: vec![artifact],
         }
@@ -126,8 +110,7 @@ pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
 }
 
 fn validate_release_manifest_args(args: &ReleaseManifestArgs) -> Result<()> {
-    OffsetDateTime::parse(&args.published_at, &Rfc3339)
-        .context("published_at must be a valid RFC 3339 timestamp")?;
+    normalize_published_at(&args.published_at)?;
 
     if let Some(artifact_path) = &args.artifact_path {
         if args.size != 0 || !args.sha256.is_empty() || !args.signature.is_empty() {
@@ -156,12 +139,31 @@ fn validate_release_manifest_args(args: &ReleaseManifestArgs) -> Result<()> {
         bail!("manual manifest mode requires size, sha256, and signature, or use --artifact-path");
     }
 
+    if args
+        .private_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .is_some()
+        || args.public_key_output.is_some()
+    {
+        bail!("--private-key and --public-key-output require --artifact-path");
+    }
+
     if args.size == 0 {
         bail!("size must be greater than zero");
     }
 
     validate_sha256(&args.sha256)?;
     validate_signature(&args.signature)
+}
+
+fn normalize_published_at(published_at: &str) -> Result<String> {
+    let parsed = OffsetDateTime::parse(published_at, &Rfc3339)
+        .context("published_at must be a valid RFC 3339 timestamp")?;
+    parsed
+        .format(&Rfc3339)
+        .context("published_at must be a valid RFC 3339 timestamp")
 }
 
 fn resolve_artifact_metadata(args: &ReleaseManifestArgs) -> Result<ResolvedArtifactMetadata> {
@@ -213,15 +215,24 @@ fn load_signing_key(args: &ReleaseManifestArgs) -> Result<SigningKey> {
 }
 
 fn write_public_key(path: &Path, signing_key: &SigningKey) -> Result<()> {
+    let encoded_public_key = STANDARD.encode(signing_key.verifying_key().to_bytes());
+
+    if path.exists() {
+        let existing = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        if existing.trim() != encoded_public_key {
+            bail!(
+                "public_key_output already contains a different public key; reuse the same signing key for every artifact in this release"
+            );
+        }
+    }
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    fs::write(
-        path,
-        STANDARD.encode(signing_key.verifying_key().to_bytes()),
-    )
-    .with_context(|| format!("Failed to write {}", path.display()))?;
+    fs::write(path, encoded_public_key)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -296,9 +307,21 @@ fn resolve_target_id(project: &BlincProject, platform: &str) -> Result<String> {
     }
 }
 
+fn update_release_channel(channel: crate::config::ReleaseChannel) -> UpdateReleaseChannel {
+    match channel {
+        crate::config::ReleaseChannel::Stable => UpdateReleaseChannel::Stable,
+        crate::config::ReleaseChannel::Beta => UpdateReleaseChannel::Beta,
+        crate::config::ReleaseChannel::Canary => UpdateReleaseChannel::Canary,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blinc_update::{
+        verify_artifact_bytes, ReleaseManifest as UpdateReleaseManifest,
+        RELEASE_MANIFEST_SCHEMA_VERSION,
+    };
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use serde_json::Value;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -458,8 +481,8 @@ mod tests {
         let json: Value = serde_json::from_str(&manifest).expect("manifest should be valid JSON");
 
         assert_eq!(
-            json["schema_version"], 1,
-            "manifest should use schema version 1"
+            json["schema_version"], RELEASE_MANIFEST_SCHEMA_VERSION,
+            "manifest should use the shared updater schema version"
         );
         assert_eq!(json["product"], "Demo", "manifest should use project name");
         assert_eq!(
@@ -588,6 +611,98 @@ mod tests {
         assert_eq!(
             json["artifacts"][1]["platform"], "android",
             "second artifact should preserve its platform"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_command_accepts_equivalent_existing_published_at_formats() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_release_manifest_timestamp_{nonce}"));
+        let output = root.join("dist/release-manifest.json");
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.android]
+                package = "io.test.demo"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        fs::create_dir_all(output.parent().expect("output should have a parent"))
+            .expect("manifest parent should be created");
+        fs::write(
+            &output,
+            format!(
+                r#"{{
+  "schema_version": {RELEASE_MANIFEST_SCHEMA_VERSION},
+  "product": "Demo",
+  "channel": "stable",
+  "version": "1.2.3",
+  "published_at": "2026-03-07T00:00:00+00:00",
+  "artifacts": [
+    {{
+      "platform": "macos",
+      "arch": "universal",
+      "target_id": "io.test.demo",
+      "url": "https://example.com/releases/demo-1.2.3-macos.zip",
+      "size": 12345,
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "signature": "{VALID_SIGNATURE}"
+    }}
+  ]
+}}"#
+            ),
+        )
+        .expect("existing manifest should be written");
+
+        write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "android".to_string(),
+            arch: "arm64-v8a".to_string(),
+            url: "https://example.com/releases/demo-1.2.3.apk".to_string(),
+            artifact_path: None,
+            size: 54_321,
+            sha256: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: None,
+            public_key_output: None,
+            output: output.clone(),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect("equivalent RFC 3339 timestamps should append successfully");
+
+        let manifest = fs::read_to_string(&output).expect("manifest file should exist");
+        let json: Value = serde_json::from_str(&manifest).expect("manifest should be valid JSON");
+        assert_eq!(
+            json["published_at"], "2026-03-07T00:00:00Z",
+            "append flow should rewrite equivalent timestamps into the canonical manifest form"
+        );
+        assert_eq!(
+            json["artifacts"].as_array().map(Vec::len),
+            Some(2),
+            "append flow should preserve the existing artifact and add the new one"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -896,6 +1011,61 @@ mod tests {
         assert!(
             err.to_string().contains("artifact_path"),
             "mixed-mode validation should mention artifact_path"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_generation_rejects_signing_flags_in_manual_mode() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "blinc_cli_release_manifest_manual_signing_flags_{nonce}"
+        ));
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/demo-1.2.3-macos.zip".to_string(),
+            artifact_path: None,
+            size: 12_345,
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            signature: VALID_SIGNATURE.to_string(),
+            private_key: Some(STANDARD.encode([7u8; 32])),
+            public_key_output: Some(root.join("dist/public-key.txt")),
+            output: root.join("dist/release-manifest.json"),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("manual mode should reject signing-only flags that it does not use");
+
+        assert!(
+            err.to_string().contains("--artifact-path"),
+            "manual mode signing flag errors should explain that --artifact-path is required"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -1337,6 +1507,189 @@ mod tests {
         assert_eq!(
             json["artifacts"][0]["target_id"], "io.test.demo",
             "source-file inputs should still resolve canonical target identity"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generated_manifest_round_trips_into_update_domain() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_release_roundtrip_{nonce}"));
+        let dist = root.join("dist");
+        let manifest_path = dist.join("release-manifest.json");
+        let public_key_path = dist.join("public-key.txt");
+        let macos_artifact_path = dist.join("Demo.zip");
+        let android_artifact_path = dist.join("Demo.apk");
+        let macos_bytes = b"macos signed release".to_vec();
+        let android_bytes = b"android signed release".to_vec();
+
+        fs::create_dir_all(&dist).expect("dist directory should be created");
+        fs::write(&macos_artifact_path, &macos_bytes).expect("macOS artifact should be written");
+        fs::write(&android_artifact_path, &android_bytes)
+            .expect("Android artifact should be written");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.android]
+                package = "io.test.demo"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/release-manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/Demo.zip".to_string(),
+            artifact_path: Some(macos_artifact_path.clone()),
+            size: 0,
+            sha256: String::new(),
+            signature: String::new(),
+            private_key: Some("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_string()),
+            public_key_output: Some(public_key_path.clone()),
+            output: manifest_path.clone(),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect("macOS artifact should be added to the manifest");
+
+        write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "android".to_string(),
+            arch: "arm64-v8a".to_string(),
+            url: "https://example.com/releases/Demo.apk".to_string(),
+            artifact_path: Some(android_artifact_path.clone()),
+            size: 0,
+            sha256: String::new(),
+            signature: String::new(),
+            private_key: Some("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_string()),
+            public_key_output: Some(public_key_path.clone()),
+            output: manifest_path.clone(),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect("Android artifact should be added to the manifest");
+
+        let manifest_json =
+            fs::read_to_string(&manifest_path).expect("release manifest should be written");
+        let manifest: UpdateReleaseManifest =
+            serde_json::from_str(&manifest_json).expect("manifest should parse into blinc_update");
+        manifest
+            .validate()
+            .expect("shared update domain should validate the generated manifest");
+
+        let public_key =
+            fs::read_to_string(&public_key_path).expect("public key output should be written");
+        let macos_artifact = manifest
+            .select_artifact("macos", "universal", "io.test.demo")
+            .expect("shared domain should select the macOS artifact");
+        let android_artifact = manifest
+            .select_artifact("android", "arm64-v8a", "io.test.demo")
+            .expect("shared domain should select the Android artifact");
+
+        verify_artifact_bytes(&macos_bytes, macos_artifact, public_key.trim())
+            .expect("shared verifier should accept the generated macOS artifact");
+        verify_artifact_bytes(&android_bytes, android_artifact, public_key.trim())
+            .expect("shared verifier should accept the generated Android artifact");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_manifest_generation_rejects_public_key_output_key_rotation() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_release_manifest_key_rotation_{nonce}"));
+        let dist = root.join("dist");
+        let manifest_path = dist.join("release-manifest.json");
+        let public_key_path = dist.join("public-key.txt");
+        let macos_artifact_path = dist.join("Demo.zip");
+        let android_artifact_path = dist.join("Demo.apk");
+
+        fs::create_dir_all(&dist).expect("dist directory should be created");
+        fs::write(&macos_artifact_path, b"macos signed release")
+            .expect("macOS artifact should be written");
+        fs::write(&android_artifact_path, b"android signed release")
+            .expect("Android artifact should be written");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "1.2.3"
+
+                [platforms.android]
+                package = "io.test.demo"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/release-manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "macos".to_string(),
+            arch: "universal".to_string(),
+            url: "https://example.com/releases/Demo.zip".to_string(),
+            artifact_path: Some(macos_artifact_path),
+            size: 0,
+            sha256: String::new(),
+            signature: String::new(),
+            private_key: Some(STANDARD.encode([7u8; 32])),
+            public_key_output: Some(public_key_path.clone()),
+            output: manifest_path.clone(),
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect("first artifact should write the baseline public key");
+
+        let err = write_release_manifest(&ReleaseManifestArgs {
+            source: root.clone(),
+            platform: "android".to_string(),
+            arch: "arm64-v8a".to_string(),
+            url: "https://example.com/releases/Demo.apk".to_string(),
+            artifact_path: Some(android_artifact_path),
+            size: 0,
+            sha256: String::new(),
+            signature: String::new(),
+            private_key: Some(STANDARD.encode([8u8; 32])),
+            public_key_output: Some(public_key_path.clone()),
+            output: manifest_path,
+            published_at: "2026-03-07T00:00:00Z".to_string(),
+            notes_url: None,
+        })
+        .expect_err("appending artifacts should reject rotating the emitted public key");
+
+        assert!(
+            err.to_string().contains("public_key_output"),
+            "key rotation errors should point at the emitted public key contract"
         );
 
         let _ = fs::remove_dir_all(&root);
