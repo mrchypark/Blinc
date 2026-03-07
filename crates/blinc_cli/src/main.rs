@@ -2,16 +2,17 @@
 //!
 //! Build, run, and hot-reload Blinc applications.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 mod config;
 mod doctor;
 mod project;
+mod release;
 
 use config::BlincConfig;
 
@@ -81,6 +82,12 @@ enum Commands {
         command: PluginCommands,
     },
 
+    /// Generate release metadata
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommands,
+    },
+
     /// Create a new Blinc project
     New {
         /// Project name
@@ -144,6 +151,64 @@ enum PluginCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum ReleaseCommands {
+    /// Generate a release manifest JSON file
+    Manifest {
+        /// Project directory or source path
+        #[arg(default_value = ".")]
+        source: String,
+
+        /// Artifact platform
+        #[arg(long)]
+        platform: String,
+
+        /// Artifact architecture
+        #[arg(long)]
+        arch: String,
+
+        /// Published artifact URL
+        #[arg(long)]
+        url: String,
+
+        /// Built artifact to inspect and sign
+        #[arg(long)]
+        artifact_path: Option<String>,
+
+        /// Artifact size in bytes
+        #[arg(long)]
+        size: Option<u64>,
+
+        /// Artifact SHA-256 hex digest
+        #[arg(long)]
+        sha256: Option<String>,
+
+        /// Artifact signature
+        #[arg(long)]
+        signature: Option<String>,
+
+        /// Base64-encoded Ed25519 private key seed
+        #[arg(long)]
+        private_key: Option<String>,
+
+        /// Optional path to write the matching base64-encoded public key
+        #[arg(long)]
+        public_key_output: Option<String>,
+
+        /// Manifest output path
+        #[arg(long)]
+        output: String,
+
+        /// RFC 3339 publish timestamp
+        #[arg(long)]
+        published_at: String,
+
+        /// Optional release notes URL
+        #[arg(long)]
+        notes_url: Option<String>,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -181,6 +246,38 @@ fn main() -> Result<()> {
             PluginCommands::New { name } => cmd_plugin_new(&name),
         },
 
+        Commands::Release { command } => match command {
+            ReleaseCommands::Manifest {
+                source,
+                platform,
+                arch,
+                url,
+                artifact_path,
+                size,
+                sha256,
+                signature,
+                private_key,
+                public_key_output,
+                output,
+                published_at,
+                notes_url,
+            } => cmd_release_manifest(
+                &source,
+                &platform,
+                &arch,
+                &url,
+                artifact_path.as_deref(),
+                size,
+                sha256.as_deref(),
+                signature.as_deref(),
+                private_key.as_deref(),
+                public_key_output.as_deref(),
+                &output,
+                &published_at,
+                notes_url.as_deref(),
+            ),
+        },
+
         Commands::New {
             name,
             template,
@@ -200,11 +297,11 @@ fn main() -> Result<()> {
 
 fn cmd_build(source: &str, target: &str, release: bool, output: Option<&str>) -> Result<()> {
     let path = PathBuf::from(source);
-    let config = BlincConfig::load_from_dir(&path)?;
+    let project_name = load_build_project_name(&path, release)?;
 
     info!(
         "Building {} for {} ({})",
-        config.project.name,
+        project_name,
         target,
         if release { "release" } else { "debug" }
     );
@@ -235,9 +332,34 @@ fn cmd_build(source: &str, target: &str, release: bool, output: Option<&str>) ->
     Ok(())
 }
 
+fn load_build_project_name(path: &std::path::Path, release: bool) -> Result<String> {
+    if release {
+        return Ok(release::load_release_project(path)?.project.name);
+    }
+
+    Ok(BlincConfig::load_from_dir(project_config_root(path)?)?
+        .project
+        .name)
+}
+
+fn project_config_root(path: &Path) -> Result<&Path> {
+    let start = if path.is_file() {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+
+    start
+        .ancestors()
+        .find(|candidate| {
+            candidate.join(".blincproj").exists() || candidate.join("blinc.toml").exists()
+        })
+        .context("No .blincproj or blinc.toml found for the provided project path")
+}
+
 fn cmd_dev(source: &str, target: &str, port: u16, device: Option<&str>) -> Result<()> {
     let path = PathBuf::from(source);
-    let config = BlincConfig::load_from_dir(&path)?;
+    let config = BlincConfig::load_from_dir(project_config_root(&path)?)?;
 
     info!(
         "Starting dev server for {} on port {} targeting {}",
@@ -296,11 +418,48 @@ fn cmd_plugin_new(name: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_release_manifest(
+    source: &str,
+    platform: &str,
+    arch: &str,
+    url: &str,
+    artifact_path: Option<&str>,
+    size: Option<u64>,
+    sha256: Option<&str>,
+    signature: Option<&str>,
+    private_key: Option<&str>,
+    public_key_output: Option<&str>,
+    output: &str,
+    published_at: &str,
+    notes_url: Option<&str>,
+) -> Result<()> {
+    release::write_release_manifest(&release::ReleaseManifestArgs {
+        source: PathBuf::from(source),
+        platform: platform.to_string(),
+        arch: arch.to_string(),
+        url: url.to_string(),
+        artifact_path: artifact_path.map(PathBuf::from),
+        size: size.unwrap_or_default(),
+        sha256: sha256.unwrap_or_default().to_string(),
+        signature: signature.unwrap_or_default().to_string(),
+        private_key: private_key.map(str::to_owned),
+        public_key_output: public_key_output.map(PathBuf::from),
+        output: PathBuf::from(output),
+        published_at: published_at.to_string(),
+        notes_url: notes_url.map(str::to_owned),
+    })?;
+
+    info!("Release manifest written to {}", output);
+    Ok(())
+}
+
 fn cmd_new(name: &str, template: &str, org: &str, rust: bool) -> Result<()> {
     let path = PathBuf::from(name);
 
     // Extract the actual project name from the path (last component)
     let project_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(name);
+
+    project::validate_org_name(org)?;
 
     if rust {
         info!("Creating new Rust project: {}", project_name);
@@ -325,7 +484,7 @@ fn cmd_new(name: &str, template: &str, org: &str, rust: bool) -> Result<()> {
         info!("  cd {}", name);
         info!("  cargo run --features desktop");
     } else {
-        project::create_project(&path, name, template, org)?;
+        project::create_project(&path, project_name, template, org)?;
         info!("Project created at {}/", name);
         info!("To get started:");
         info!("  cd {}", name);
@@ -366,7 +525,7 @@ fn cmd_init(template: &str, org: &str) -> Result<()> {
 
 fn cmd_check(source: &str) -> Result<()> {
     let path = PathBuf::from(source);
-    let config = BlincConfig::load_from_dir(&path)?;
+    let config = BlincConfig::load_from_dir(project_config_root(&path)?)?;
 
     info!("Checking project: {}", config.project.name);
 
@@ -419,4 +578,188 @@ fn cmd_doctor() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn release_build_path_requires_blincproj() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_release_build_loader_{nonce}"));
+
+        fs::create_dir_all(&root).expect("temp project root should be created");
+        fs::write(
+            root.join("blinc.toml"),
+            r#"
+                [project]
+                name = "LegacyDemo"
+                version = "0.1.0"
+            "#,
+        )
+        .expect("legacy blinc.toml should be written");
+
+        let err = load_build_project_name(&root, true)
+            .expect_err("release builds should require .blincproj metadata");
+        assert!(
+            err.to_string().contains("No .blincproj found"),
+            "release build path should use the release loader"
+        );
+
+        assert_eq!(
+            load_build_project_name(&root, false)
+                .expect("debug builds should keep legacy config support"),
+            "LegacyDemo",
+            "non-release builds should keep using the legacy config loader"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_build_path_discovers_project_root_from_nested_directory() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_release_build_nested_{nonce}"));
+        let nested = root.join("src/features");
+
+        fs::create_dir_all(&nested).expect("nested directory should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "0.1.0"
+
+                [platforms.macos]
+                bundle_id = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        assert_eq!(
+            load_build_project_name(&nested, true)
+                .expect("release builds should discover the project root from nested dirs"),
+            "Demo",
+            "release build path should load metadata from the nearest ancestor .blincproj"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn debug_build_path_discovers_project_root_from_nested_directory() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_debug_build_nested_{nonce}"));
+        let nested = root.join("src/features");
+
+        fs::create_dir_all(&nested).expect("nested directory should be created");
+        fs::write(
+            root.join(".blincproj"),
+            r#"
+                [project]
+                name = "Demo"
+                version = "0.1.0"
+
+                [platforms.android]
+                package = "io.test.demo"
+
+                [updates]
+                enabled = true
+                channel = "stable"
+                manifest_url = "https://example.com/releases/manifest.json"
+                public_key = "abc"
+            "#,
+        )
+        .expect(".blincproj should be written");
+
+        assert_eq!(
+            load_build_project_name(&nested, false)
+                .expect("debug builds should discover the project root from nested dirs"),
+            "Demo",
+            "debug build path should load metadata from the nearest ancestor project config"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cmd_new_does_not_leave_directory_on_invalid_org() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("blinc_cli_invalid_org_{nonce}"));
+        let path_string = path.to_string_lossy().to_string();
+
+        let err = cmd_new(&path_string, "default", "123.example", false)
+            .expect_err("invalid org should fail before scaffolding begins");
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "invalid org error should be surfaced to the caller"
+        );
+        assert!(
+            !path.exists(),
+            "failed project creation should not leave an empty directory behind"
+        );
+    }
+
+    #[test]
+    fn cmd_new_non_rust_uses_leaf_name_for_scaffold_metadata() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_nested_new_{nonce}"));
+        let path = root.join("apps/Demo App");
+        let path_string = path.to_string_lossy().to_string();
+
+        cmd_new(&path_string, "default", "io.blinc.dev", false)
+            .expect("non-rust project creation should succeed from a nested path");
+
+        let project = crate::config::BlincProject::load_from_dir(&path)
+            .expect("scaffolded non-rust project should include .blincproj");
+        assert_eq!(
+            project.project.name, "Demo App",
+            "scaffold metadata should use the leaf project name instead of the full path"
+        );
+        assert_eq!(
+            project
+                .platforms
+                .android
+                .as_ref()
+                .map(|android| android.package.as_str()),
+            Some("io.blinc.dev.demo_app"),
+            "android package ids should use the normalized leaf project name"
+        );
+
+        let readme =
+            fs::read_to_string(path.join("README.md")).expect("generated README should exist");
+        assert!(
+            readme.contains("dist/demo_app.zip"),
+            "release guidance should use the normalized leaf project name in artifact paths"
+        );
+        assert!(
+            !readme.contains("apps/Demo App"),
+            "generated files should not embed the full requested path as project metadata"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }
