@@ -1104,6 +1104,53 @@ fn assert_text_contains_reports_failure_detail() {
 }
 
 #[test]
+fn headless_asserts_can_read_text_from_tree_snapshot_backed_probe() {
+    use crate::headless_assert::{
+        evaluate_assert_text_contains, AssertionResult, DiagnosticsSnapshot,
+    };
+    use blinc_recorder::{ElementSnapshot, Rect, Timestamp, TreeSnapshot};
+
+    let mut tree = TreeSnapshot::new(Timestamp::from_micros(10), (1280, 720), 1.0);
+    let mut title = ElementSnapshot::new(
+        "title".to_string(),
+        "Text".to_string(),
+        Rect::new(0.0, 0.0, 100.0, 20.0),
+    );
+    title.text_content = Some("Welcome back".to_string());
+    tree.elements.insert("title".to_string(), title);
+
+    let snapshot = DiagnosticsSnapshot::from(tree);
+    let result = evaluate_assert_text_contains("title", "Welcome", &snapshot);
+
+    assert_eq!(result, AssertionResult::Passed);
+}
+
+#[test]
+fn missing_element_failure_uses_tree_snapshot_ids() {
+    use crate::headless_assert::{evaluate_assert_exists, AssertionResult, DiagnosticsSnapshot};
+    use blinc_recorder::{ElementSnapshot, Rect, Timestamp, TreeSnapshot};
+
+    let mut tree = TreeSnapshot::new(Timestamp::from_micros(10), (1280, 720), 1.0);
+    let element = ElementSnapshot::new(
+        "existing".to_string(),
+        "Div".to_string(),
+        Rect::new(0.0, 0.0, 100.0, 20.0),
+    );
+    tree.elements.insert("existing".to_string(), element);
+
+    let snapshot = DiagnosticsSnapshot::from(tree);
+    let result = evaluate_assert_exists("missing.node", &snapshot);
+
+    assert_eq!(
+        result,
+        AssertionResult::Failed {
+            code: "missing_element".to_string(),
+            message: "missing.node: element not found".to_string(),
+        }
+    );
+}
+
+#[test]
 fn runner_stops_on_first_failed_assertion() {
     use crate::headless_assert::DiagnosticsSnapshot;
     use crate::headless_runner::{run_scenario_with_probe, RunOutcome};

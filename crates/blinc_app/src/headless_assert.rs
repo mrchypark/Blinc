@@ -1,17 +1,54 @@
 //! Assertion helpers for headless diagnostics goals.
 
+use blinc_recorder::{ElementSnapshot, TreeSnapshot};
 use std::collections::HashMap;
 
 /// Snapshot of app-observable state used for headless assertions.
 #[derive(Debug, Clone, Default)]
 pub struct DiagnosticsSnapshot {
     pub elements: HashMap<String, DiagnosticsElement>,
+    tree: Option<TreeSnapshot>,
 }
 
 /// Minimal element representation for diagnostics checks.
 #[derive(Debug, Clone, Default)]
 pub struct DiagnosticsElement {
     pub text: Option<String>,
+}
+
+impl DiagnosticsSnapshot {
+    /// Build a diagnostics snapshot from a recorder tree snapshot.
+    pub fn from_tree_snapshot(tree: TreeSnapshot) -> Self {
+        let elements = tree
+            .elements
+            .iter()
+            .map(|(id, element)| (id.clone(), DiagnosticsElement::from(element)))
+            .collect();
+
+        Self {
+            elements,
+            tree: Some(tree),
+        }
+    }
+
+    /// Access the recorder-backed tree snapshot when available.
+    pub fn tree(&self) -> Option<&TreeSnapshot> {
+        self.tree.as_ref()
+    }
+}
+
+impl From<TreeSnapshot> for DiagnosticsSnapshot {
+    fn from(tree: TreeSnapshot) -> Self {
+        Self::from_tree_snapshot(tree)
+    }
+}
+
+impl From<&ElementSnapshot> for DiagnosticsElement {
+    fn from(element: &ElementSnapshot) -> Self {
+        Self {
+            text: element.text_content.clone(),
+        }
+    }
 }
 
 /// Assertion result with structured failure details.

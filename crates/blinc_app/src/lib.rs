@@ -157,6 +157,9 @@ pub use fuchsia::FuchsiaApp;
 mod tests;
 
 pub use app::{BlincApp, BlincConfig};
+pub use blinc_recorder::{
+    ElementSnapshot as RecorderElementSnapshot, TreeSnapshot as RecorderTreeSnapshot,
+};
 pub use context::{DebugMode, RenderContext};
 pub use error::{BlincError, Result};
 pub use headless_assert::{AssertionResult, DiagnosticsElement, DiagnosticsSnapshot};
