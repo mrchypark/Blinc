@@ -159,6 +159,15 @@ This implies `blinc build` alone is not sufficient. The CLI should evolve toward
 
 with `release` producing both artifacts and update metadata.
 
+Release-related code must not rely on the current `BlincConfig::from_project()` projection as-is, because that path only preserves legacy `desktop/android/ios` target data today. V1 release work should either:
+
+- load `BlincProject` directly for release/package commands, or
+- extend `BlincConfig` so it preserves `updates`, `macos`, `windows`, `linux`, and `wasm` fields without lossy conversion
+
+V1 also needs at least one user-callable release surface, even before the full packaging pipeline is done. A minimal `blinc release manifest` command is sufficient; an internal helper alone is not.
+
+The long-term CLI direction is still `build` / `package` / `release`, but `package` is not a v1 blocker for this updater milestone while `build` remains a stub. V1 only requires a documented `release manifest` command and the internal hooks needed for future packaging integration.
+
 ## Configuration Model
 
 Extend `.blincproj` with a dedicated updater section.
@@ -179,7 +188,6 @@ restart_strategy = "prompt"
 [updates.android]
 enabled = true
 allow_unknown_sources_prompt = true
-expected_package = "com.example.myapp"
 ```
 
 Rules:
@@ -188,6 +196,12 @@ Rules:
 - only desktop and Android platform overrides are supported in v1
 - iOS has no updater section beyond possible future release metadata
 - `manifest_url` and `public_key` are required when updates are enabled
+- updater config must not redefine package or bundle identifiers
+- canonical target identity comes from existing platform config:
+  - `platforms.android.package`
+  - `platforms.macos.bundle_id`
+  - desktop packaging metadata for any future Windows/Linux implementation
+- release generation must fail if a target artifact cannot resolve a canonical platform identity
 
 ## Release Manifest
 
@@ -198,7 +212,7 @@ Example:
 ```json
 {
   "schema_version": 1,
-  "app_id": "com.example.myapp",
+  "product": "myapp",
   "channel": "stable",
   "version": "1.2.3",
   "published_at": "2026-03-07T00:00:00Z",
@@ -207,6 +221,7 @@ Example:
     {
       "platform": "macos",
       "arch": "universal",
+      "target_id": "com.example.myapp",
       "url": "https://example.com/releases/myapp-1.2.3-macos.zip",
       "size": 12345678,
       "sha256": "hex",
@@ -215,6 +230,7 @@ Example:
     {
       "platform": "android",
       "arch": "arm64-v8a",
+      "target_id": "com.example.myapp",
       "url": "https://example.com/releases/myapp-1.2.3.apk",
       "size": 9876543,
       "sha256": "hex",
@@ -228,7 +244,20 @@ Rules:
 
 - signatures are per artifact, not only per manifest
 - the runtime must verify both checksum and signature before handoff
-- `app_id` must match the package/bundle identifier expected by the target platform
+- each artifact carries its own canonical `target_id`
+- runtime validation compares `target_id` with the platform's canonical configured identity instead of a second updater-only identity field
+
+## Signing Inputs
+
+Signed release metadata requires both verification and generation.
+
+V1 release tooling therefore needs:
+
+- a documented private-key input for signing artifacts during release generation
+- a public-key output path for application configuration
+- deterministic tests using fixture keys so signing and verification can be validated in CI
+
+Verification-only support is not enough to satisfy the signed-release goal.
 
 ## Runtime Flow
 
@@ -263,7 +292,7 @@ The shared updater service only emits an install intent; the platform backend de
 Android private/development distribution should use APK-based update handoff:
 
 - verify downloaded APK metadata
-- confirm package identifier matches expected app
+- confirm artifact `target_id` matches `platforms.android.package`
 - hand off to Android package installer intent
 - report install handoff success/failure, not “update finished inside the app”
 
@@ -278,19 +307,23 @@ iOS is excluded from the in-app updater scope.
 Before updater implementation starts, fix the project scaffolding mismatch:
 
 - `.blincproj` already stores organization-aware IDs
-- generated non-Rust Android/iOS/macOS files must stop hardcoding `com.example.*`
+- generated non-Rust Android/iOS/macOS/Linux files must stop hardcoding `com.example.*`
+- non-Rust `blinc new` and `blinc init` paths must validate `--org` with the same rules used by the Rust-first scaffold path
 
-Without this fix, any release manifest keyed by app ID will drift from generated projects.
+Without this fix, release metadata keyed by canonical target identity will drift from generated projects.
 
 ## Rollout Strategy
 
-1. Fix identifier propagation in CLI scaffolding and config serialization
-2. Introduce `blinc_update` with tests and no platform side effects
-3. Add CLI release manifest generation and signing placeholders
-4. Implement Android private-distribution updater backend
-5. Implement desktop shared backend surface
-6. Implement macOS reference backend
-7. Add Windows/Linux stubs with explicit unsupported or not-yet-implemented responses
+1. Fix identifier propagation and `org` validation in CLI scaffolding, including Linux metadata
+2. Add updater config using canonical platform identities only
+3. Define a user-callable CLI release contract and a non-lossy project loading path
+4. Introduce `blinc_update` with tests and no platform side effects
+5. Add CLI manifest generation plus artifact signing
+6. Add runtime checksum and signature verification helpers
+7. Implement Android private-distribution updater backend
+8. Implement desktop shared backend surface
+9. Implement macOS reference backend
+10. Add Windows/Linux stubs with explicit unsupported or not-yet-implemented responses
 
 ## Testing Strategy
 
@@ -301,10 +334,12 @@ Without this fix, any release manifest keyed by app ID will drift from generated
 - signature/checksum validation
 - config serialization/deserialization
 - scaffolded project identifier propagation
+- non-Rust `org` validation
+- signing with fixture keys
 
 ### Integration tests
 
-- CLI release manifest generation
+- black-box CLI release manifest generation
 - Android handoff request construction
 - macOS install intent construction
 - unsupported backend behavior for Windows/Linux stubs
@@ -320,7 +355,10 @@ Without this fix, any release manifest keyed by app ID will drift from generated
 
 - Blinc has a dedicated updater domain crate with a stable public interface
 - `.blincproj` can describe updater settings for desktop and Android
-- non-Rust project scaffolding emits correct org-aware package/bundle identifiers
+- non-Rust project scaffolding emits correct org-aware Android, Apple, and Linux identifiers
+- non-Rust project scaffolding rejects unsafe `org` values
+- release metadata derives target identity from canonical platform config, not updater-only duplicate fields
+- CLI exposes a user-callable release-manifest path
 - CLI can generate signed release metadata for updater consumption
 - Android private/development distribution update flow works through explicit install handoff
 - macOS has a reference desktop backend
