@@ -82,6 +82,12 @@ enum Commands {
         command: PluginCommands,
     },
 
+    /// Generate release metadata
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommands,
+    },
+
     /// Create a new Blinc project
     New {
         /// Project name
@@ -145,6 +151,52 @@ enum PluginCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum ReleaseCommands {
+    /// Generate a release manifest JSON file
+    Manifest {
+        /// Project directory or source path
+        #[arg(default_value = ".")]
+        source: String,
+
+        /// Artifact platform
+        #[arg(long)]
+        platform: String,
+
+        /// Artifact architecture
+        #[arg(long)]
+        arch: String,
+
+        /// Published artifact URL
+        #[arg(long)]
+        url: String,
+
+        /// Artifact size in bytes
+        #[arg(long)]
+        size: u64,
+
+        /// Artifact SHA-256 hex digest
+        #[arg(long)]
+        sha256: String,
+
+        /// Artifact signature
+        #[arg(long)]
+        signature: String,
+
+        /// Manifest output path
+        #[arg(long)]
+        output: String,
+
+        /// RFC 3339 publish timestamp
+        #[arg(long)]
+        published_at: String,
+
+        /// Optional release notes URL
+        #[arg(long)]
+        notes_url: Option<String>,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -180,6 +232,32 @@ fn main() -> Result<()> {
         Commands::Plugin { command } => match command {
             PluginCommands::Build { path, mode } => cmd_plugin_build(&path, &mode),
             PluginCommands::New { name } => cmd_plugin_new(&name),
+        },
+
+        Commands::Release { command } => match command {
+            ReleaseCommands::Manifest {
+                source,
+                platform,
+                arch,
+                url,
+                size,
+                sha256,
+                signature,
+                output,
+                published_at,
+                notes_url,
+            } => cmd_release_manifest(
+                &source,
+                &platform,
+                &arch,
+                &url,
+                size,
+                &sha256,
+                &signature,
+                &output,
+                &published_at,
+                notes_url.as_deref(),
+            ),
         },
 
         Commands::New {
@@ -308,6 +386,35 @@ fn cmd_plugin_new(name: &str) -> Result<()> {
     project::create_plugin_project(&path, name)?;
 
     info!("Plugin created at {}/", name);
+    Ok(())
+}
+
+fn cmd_release_manifest(
+    source: &str,
+    platform: &str,
+    arch: &str,
+    url: &str,
+    size: u64,
+    sha256: &str,
+    signature: &str,
+    output: &str,
+    published_at: &str,
+    notes_url: Option<&str>,
+) -> Result<()> {
+    release::write_release_manifest(&release::ReleaseManifestArgs {
+        source: PathBuf::from(source),
+        platform: platform.to_string(),
+        arch: arch.to_string(),
+        url: url.to_string(),
+        size,
+        sha256: sha256.to_string(),
+        signature: signature.to_string(),
+        output: PathBuf::from(output),
+        published_at: published_at.to_string(),
+        notes_url: notes_url.map(str::to_owned),
+    })?;
+
+    info!("Release manifest written to {}", output);
     Ok(())
 }
 
