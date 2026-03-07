@@ -860,12 +860,12 @@ The desktop entry file can be installed to:
 
 ```bash
 # User installation
-cp {binary_name}.desktop ~/.local/share/applications/
+cp {desktop_file_id} ~/.local/share/applications/
 ```
 
 ## Configuration
 
-- `{binary_name}.desktop` - Desktop entry for app launchers
+- `{desktop_file_id}` - Desktop entry for app launchers
 - `{binary_name}.metainfo.xml` - AppStream metadata for software centers
 "#
         ),
@@ -3013,6 +3013,18 @@ mod tests {
             root.join("platforms/linux/io.blinc.dev.demo_app.desktop")
                 .exists(),
             "generated Linux desktop entry filename should use the org-based identifier"
+        );
+
+        let linux_readme = fs::read_to_string(root.join("platforms/linux/README.md"))
+            .expect("generated Linux README should exist");
+        assert!(
+            linux_readme.contains("cp io.blinc.dev.demo_app.desktop ~/.local/share/applications/"),
+            "generated Linux README should document the org-based desktop entry filename"
+        );
+        assert!(
+            linux_readme
+                .contains("`io.blinc.dev.demo_app.desktop` - Desktop entry for app launchers"),
+            "generated Linux README file list should mention the org-based desktop entry filename"
         );
 
         let _ = fs::remove_dir_all(&root);
