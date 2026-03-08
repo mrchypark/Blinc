@@ -11,6 +11,38 @@ Command-line interface for the Blinc UI framework.
 
 `blinc_cli` provides commands for building, running, and developing Blinc applications with features like hot-reload.
 
+## Automation E2E
+
+`blinc automation run` is the end-user entrypoint for the agent-debugging workflow.
+
+Validated flows:
+
+- run a headless scenario against a generated app
+- run a state-machine playbook against the same app
+- run the same scenario through the desktop harness
+- write JSON reports plus snapshot/trace artifacts for `blinc_debugger`
+
+Example:
+
+```bash
+blinc new E2EApp --rust -t counter
+
+blinc automation run ./E2EApp \
+  --scenario ./scenario.json \
+  --report ./headless-report.json
+
+blinc automation run ./E2EApp \
+  --playbook ./playbook.yaml \
+  --report ./playbook-report.json
+
+blinc automation run ./E2EApp \
+  --desktop-harness \
+  --scenario ./scenario.json \
+  --report ./desktop-report.json
+```
+
+For the full validated walkthrough, including artifact export and debugger usage, see [docs/headless-diagnostics.md](../../docs/headless-diagnostics.md).
+
 ## Installation
 
 ```bash

@@ -1,16 +1,226 @@
 # Headless Diagnostics Workflow
 
-This workflow is for UI development tooling where you want to:
+This document is the real end-to-end workflow for the agent-debugging toolchain.
+It is based on the same generated-app flow that is exercised in repository tests and
+manually re-run during development:
 
-- define explicit goals/assertions,
-- inject real UI events (`click`, `fill`, `press`, `scroll`) against stable IDs,
-- run deterministic scenarios without opening a native window,
-- capture machine-readable failure reports,
-- export the same trace container that `blinc_debugger` can inspect later.
+- generate a real Blinc app
+- drive it with `click`, `fill`, `press`, and `scroll`
+- write machine-readable reports
+- export snapshot/trace artifacts
+- open the trace in `blinc_debugger`
 
-## 1) Define scenario
+If you are running from source instead of an installed CLI, replace `blinc ...` with:
 
-Example `scenario.json`:
+```bash
+cargo run -p blinc_cli -- ...
+```
+
+If you are running the debugger from source, replace `blinc-debugger ...` with:
+
+```bash
+cargo run -p blinc_debugger -- ...
+```
+
+## Validated E2E: Generated Counter App
+
+This is the shortest end-to-end path that proves the full stack works:
+
+1. Create a real Rust app from the built-in counter template.
+2. Run a headless scenario against the generated binary.
+3. Run the same logical flow through a playbook.
+4. Run the same scenario through the desktop harness.
+5. Export a trace and open it in the debugger.
+
+### 1) Create a disposable workspace
+
+```bash
+workdir="$(mktemp -d /tmp/blinc-e2e-XXXXXX)"
+export WORKDIR="$workdir"
+cd "$workdir"
+blinc new E2EApp --rust -t counter
+```
+
+This creates a real app at `"$workdir/E2EApp"`.
+
+### 2) Write a minimal scenario
+
+Create `scenario.json` next to the project:
+
+```json
+{
+  "name": "counter-smoke",
+  "steps": [
+    { "type": "click", "id": "counter.increment" },
+    { "type": "assert_text_contains", "id": "counter.value", "value": "Count: 1" }
+  ]
+}
+```
+
+Run it headlessly:
+
+```bash
+blinc automation run "$workdir/E2EApp" \
+  --scenario "$workdir/scenario.json" \
+  --report "$workdir/headless-scenario-report.json"
+```
+
+Expected result:
+
+- process exit code `0`
+- report file exists
+- report JSON contains `"status": "passed"`
+
+Quick check:
+
+```bash
+python3 - <<'PY'
+import json, pathlib, os
+workdir = pathlib.Path(os.environ["WORKDIR"])
+report = json.loads((workdir / "headless-scenario-report.json").read_text())
+print(report["status"])
+PY
+```
+
+### 3) Run the same behavior through a playbook
+
+Create `playbook.yaml`:
+
+```yaml
+initial_state: idle
+states:
+  - clicked
+transitions:
+  - name: increment
+    from: idle
+    event: click
+    to: clicked
+    steps:
+      - type: click
+        id: counter.increment
+      - type: assert_text_contains
+        id: counter.value
+        value: "Count: 1"
+```
+
+Run it:
+
+```bash
+blinc automation run "$workdir/E2EApp" \
+  --playbook "$workdir/playbook.yaml" \
+  --report "$workdir/playbook-report.json"
+```
+
+Expected result:
+
+- process exit code `0`
+- report JSON contains `"status": "passed"`
+
+### 4) Run the deterministic desktop harness path
+
+Run the same scenario through the desktop harness:
+
+```bash
+blinc automation run "$workdir/E2EApp" \
+  --desktop-harness \
+  --scenario "$workdir/scenario.json" \
+  --report "$workdir/desktop-report.json"
+```
+
+Expected result:
+
+- process exit code `0`
+- report JSON contains `"status": "passed"`
+
+This is the parity check that matters for actual tool usage:
+
+- headless scenario passes
+- playbook passes
+- desktop harness passes
+
+### 5) Export a snapshot and trace artifact
+
+Create `trace-scenario.json`:
+
+```json
+{
+  "name": "counter-with-artifacts",
+  "steps": [
+    { "type": "click", "id": "counter.increment" },
+    { "type": "snapshot", "path": "/tmp/blinc-e2e-snapshot.json" },
+    { "type": "export_trace", "path": "/tmp/blinc-e2e-trace.json" },
+    { "type": "assert_text_contains", "id": "counter.value", "value": "Count: 1" }
+  ]
+}
+```
+
+Run it:
+
+```bash
+blinc automation run "$workdir/E2EApp" \
+  --scenario "$workdir/trace-scenario.json" \
+  --report "$workdir/headless-artifact-report.json"
+```
+
+Expected result:
+
+- report JSON contains `"status": "passed"`
+- snapshot file exists
+- trace file exists
+
+Example validation:
+
+```bash
+python3 - <<'PY'
+import json, pathlib
+trace = json.loads(pathlib.Path("/tmp/blinc-e2e-trace.json").read_text())
+print("trace_entries =", len(trace["trace_entries"]))
+print("snapshots =", len(trace["snapshots"]))
+PY
+```
+
+The trace is the same `RecordingExport` container used by `blinc_debugger`.
+
+### 6) Open the exported trace in the debugger
+
+```bash
+blinc-debugger /tmp/blinc-e2e-trace.json
+```
+
+Inside the debugger, verify:
+
+- the timeline shows command and assertion markers
+- the command panel shows the `click` and assertion sequence
+- the evidence panel shows exported artifacts and assertion outcomes
+- the inspector can resolve `counter.value` in the snapshot tree
+
+## What This E2E Covers
+
+This workflow validates the actual user-facing path, not just library internals:
+
+- `blinc new --rust -t counter`
+- generated app automation entrypoint
+- `blinc automation run --scenario`
+- `blinc automation run --playbook`
+- `blinc automation run --desktop-harness`
+- snapshot export
+- trace export
+- `blinc_debugger` trace inspection
+
+## Scenario Semantics
+
+The current scenario DSL supports:
+
+- `click`
+- `fill`
+- `press`
+- `scroll`
+- `snapshot`
+- `export_trace`
+- `assert_exists`
+- `assert_text_contains`
+
+Example login scenario:
 
 ```json
 {
@@ -23,9 +233,16 @@ Example `scenario.json`:
 }
 ```
 
-## 2) Execute the app-backed runner
+Important interaction rules for automation:
 
-Use `run_headless_scenario(...)` when you want the real app UI to be built, driven, and traced:
+- locator-based `click` fails if an active overlay/backdrop would consume the interaction
+- `click_at` may dismiss overlays because it models raw coordinate input
+- `scroll` backdrop blocking is intentionally limited to blocking overlays
+- `fill` and `press` respect the same overlay occlusion rules as targeted clicks
+
+## App-Level API Surface
+
+If you want to drive the runtime directly from Rust instead of the CLI, use the same app-backed path:
 
 ```rust
 use blinc_app::prelude::*;
@@ -41,29 +258,7 @@ run.report.write_to_writer(&mut std::io::stdout())?;
 # Ok::<(), anyhow::Error>(())
 ```
 
-The returned `AutomationRun` contains:
-
-- `report`: pass/fail summary for CI or local runs
-- `export`: `RecordingExport` with events, snapshots, and trace entries
-
-## 3) Optional: validate or execute a playbook
-
-`blinc_app::Playbook` compiles state-machine YAML onto the existing FSM runtime, then flattens into the same automation execution path:
-
-```yaml
-initial_state: idle
-states: [filling, submitted]
-transitions:
-  - from: idle
-    event: fill
-    to: filling
-    steps:
-      - type: fill
-        id: login.email
-        value: person@example.com
-```
-
-You can execute that playbook through the same runtime surface:
+Playbooks compile onto the existing FSM runtime and execute through the same automation session:
 
 ```rust
 use blinc_app::prelude::*;
@@ -78,15 +273,12 @@ let run = run_headless_playbook(
 # Ok::<(), anyhow::Error>(())
 ```
 
-Generated Rust app templates and `blinc automation run` also accept either:
+The returned `AutomationRun` contains:
 
-- `--scenario scenario.json`
-- `--playbook login.yaml`
+- `report`: pass/fail summary for CI or local automation
+- `export`: `RecordingExport` with events, snapshots, and trace entries
 
-When an automation artifact is provided without an explicit mode flag, they default to the headless runner. Use `--desktop-harness` to force the deterministic desktop harness path.
-Relative `--scenario`, `--playbook`, and `--report` paths follow normal CLI semantics: they resolve from the caller's current working directory. `blinc automation run` normalizes those paths to absolute paths before it changes into the app source directory, so the generated app receives the same file locations you named at the call site.
-
-## 4) Legacy probe path
+## Legacy Probe Path
 
 The older probe-driven APIs still exist for assertion-only diagnostics:
 
@@ -95,9 +287,11 @@ The older probe-driven APIs still exist for assertion-only diagnostics:
 
 Use them when you want to assert against a synthetic or domain-level snapshot instead of driving the real UI runtime.
 
-## Exit behavior recommendation
+## CI Recommendation
 
-- exit `0` on pass,
-- exit non-zero on failure,
-- persist JSON report and exported trace as CI artifacts,
-- open the exported trace in `blinc_debugger` for forensic inspection.
+For CI or agent loops:
+
+- fail the job on non-zero exit
+- always persist the JSON report
+- persist exported trace/snapshot artifacts on both pass and fail when possible
+- open the trace in `blinc_debugger` for forensic inspection when a run fails
