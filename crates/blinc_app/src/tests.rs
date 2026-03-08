@@ -1398,6 +1398,17 @@ fn automation_test_guard() -> std::sync::MutexGuard<'static, ()> {
 fn ensure_automation_theme() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(blinc_theme::ThemeState::init_default);
+
+    if !blinc_core::BlincContextState::is_initialized() {
+        blinc_core::BlincContextState::init_with_callback(
+            std::sync::Arc::new(std::sync::Mutex::new(blinc_core::ReactiveGraph::new())),
+            std::sync::Arc::new(std::sync::Mutex::new(blinc_core::HookState::new())),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(|signal_ids| {
+                blinc_layout::check_stateful_deps(signal_ids);
+            }),
+        );
+    }
 }
 
 #[test]
@@ -3426,6 +3437,66 @@ fn automation_session_records_snapshot_and_trace_exports_as_artifacts() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn automation_session_snapshot_captures_semantic_and_view_model_state() {
+    use crate::{AutomationSession, HeadlessRunConfig};
+
+    let _guard = automation_test_guard();
+    ensure_automation_theme();
+
+    let session = AutomationSession::new_headless(HeadlessRunConfig::default(), |ctx| {
+        let count = ctx.use_state_keyed("counter.count", || 1i32);
+        let increment_button = ctx.use_state_for("counter.increment.button", ButtonState::Idle);
+
+        div()
+            .w(ctx.width)
+            .h(ctx.height)
+            .flex_col()
+            .gap(16.0)
+            .child(button(increment_button, "Increment").id("counter.increment"))
+            .child(
+                div()
+                    .id("counter.value")
+                    .child(text(format!("Count: {}", count.get()))),
+            )
+    });
+
+    let snapshot = session
+        .export_recording()
+        .snapshots
+        .last()
+        .cloned()
+        .expect("automation session should capture an initial snapshot");
+    let button = snapshot
+        .elements
+        .get("counter.increment")
+        .expect("button element should exist in the captured snapshot");
+    let semantic = button
+        .semantic
+        .as_ref()
+        .expect("button snapshot should include semantic metadata");
+    assert_eq!(semantic.tag.as_deref(), Some("button"));
+    assert_eq!(semantic.role.as_deref(), Some("Button"));
+    assert_eq!(semantic.name.as_deref(), Some("Increment"));
+    assert!(
+        snapshot.view_model_states.iter().any(|entry| {
+            entry.key == "counter.count"
+                && entry.value_summary == "1"
+                && entry.type_name.contains("i32")
+        }),
+        "expected keyed count state in snapshot inventory: {:?}",
+        snapshot.view_model_states
+    );
+    assert!(
+        snapshot
+            .view_model_states
+            .iter()
+            .any(|entry| entry.type_name.contains("ButtonState")),
+        "expected button state in snapshot inventory: {:?}",
+        snapshot.view_model_states
+    );
 }
 
 #[test]

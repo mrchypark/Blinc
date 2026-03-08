@@ -1026,7 +1026,10 @@ impl WindowedContext {
             let initial = init();
             let signal = self.reactive.lock().unwrap().create_signal(initial);
             let raw_id = signal.id().to_raw();
-            self.hooks.lock().unwrap().insert(state_key, raw_id);
+            self.hooks
+                .lock()
+                .unwrap()
+                .insert::<T>(state_key, key, raw_id);
             signal
         };
 
@@ -1080,7 +1083,10 @@ impl WindowedContext {
             let initial = init();
             let signal = self.reactive.lock().unwrap().create_signal(initial);
             let raw_id = signal.id().to_raw();
-            self.hooks.lock().unwrap().insert(state_key, raw_id);
+            self.hooks
+                .lock()
+                .unwrap()
+                .insert::<T>(state_key, key, raw_id);
             signal
         }
     }
@@ -1140,7 +1146,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(Arc::clone(&new_inner));
             let raw_id = signal.id().to_raw();
-            hooks.insert(state_key, raw_id);
+            hooks.insert::<SharedScrollRefInner>(state_key, key, raw_id);
             (signal.id(), new_inner)
         };
 
@@ -1528,7 +1534,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(shared_state.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert(state_key, raw_id);
+            hooks.insert_opaque::<blinc_layout::SharedState<S>>(state_key, raw_id);
             shared_state
         }
     }
@@ -1607,7 +1613,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(animated_value.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert(state_key, raw_id);
+            hooks.insert_opaque::<SharedAnimatedValue>(state_key, raw_id);
             animated_value
         }
     }
@@ -1685,7 +1691,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(timeline.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert(state_key, raw_id);
+            hooks.insert_opaque::<SharedAnimatedTimeline>(state_key, raw_id);
             timeline
         }
     }
@@ -1772,7 +1778,7 @@ impl WindowedContext {
                 .animation_handle()
                 .register_tick_callback(callback)
                 .expect("Animation scheduler should be alive");
-            hooks.insert(state_key, id.to_raw());
+            hooks.insert_opaque::<TickCallbackMarker>(state_key, id.to_raw());
             id
         }
     }

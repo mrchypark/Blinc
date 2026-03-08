@@ -10,7 +10,7 @@ use blinc_layout::event_handler::EventHandlers;
 use blinc_layout::prelude::*;
 use blinc_layout::selector::ScrollRef;
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
-use blinc_recorder::ElementSnapshot;
+use blinc_recorder::{ElementSnapshot, TreeSnapshot};
 use blinc_theme::{ColorToken, ThemeState};
 
 use crate::app::SelectedTraceContext;
@@ -24,6 +24,12 @@ struct InspectorPanelConfig {
     is_focused: bool,
     is_hovered: bool,
     is_interactive: bool,
+    semantic_tag: Option<String>,
+    semantic_role: Option<String>,
+    semantic_name: Option<String>,
+    semantic_description: Option<String>,
+    semantic_value: Option<String>,
+    view_model_lines: Arc<[String]>,
     locator_lines: Arc<[String]>,
     assertion_lines: Arc<[String]>,
     scroll_ref: ScrollRef,
@@ -106,6 +112,33 @@ impl BuiltInspectorPanel {
                 ),
             ],
         ));
+
+        let mut semantic_properties = Vec::new();
+        if let Some(tag) = config.semantic_tag.as_deref() {
+            semantic_properties.push(("Tag", tag));
+        }
+        if let Some(role) = config.semantic_role.as_deref() {
+            semantic_properties.push(("Role", role));
+        }
+        if let Some(name) = config.semantic_name.as_deref() {
+            semantic_properties.push(("Name", name));
+        }
+        if let Some(description) = config.semantic_description.as_deref() {
+            semantic_properties.push(("Description", description));
+        }
+        if let Some(value) = config.semantic_value.as_deref() {
+            semantic_properties.push(("Value", value));
+        }
+        if !semantic_properties.is_empty() {
+            container = container.child(Self::section("Semantic", semantic_properties));
+        }
+
+        if !config.view_model_lines.is_empty() {
+            container = container.child(Self::list_section(
+                "ViewModel State",
+                &config.view_model_lines,
+            ));
+        }
 
         if !config.locator_lines.is_empty() {
             container = container.child(Self::list_section("Locators", &config.locator_lines));
@@ -240,6 +273,7 @@ pub struct InspectorPanel {
 impl InspectorPanel {
     pub fn new(
         selected: Option<&ElementSnapshot>,
+        snapshot: Option<&TreeSnapshot>,
         trace_context: SelectedTraceContext,
         scroll_ref: ScrollRef,
     ) -> Self {
@@ -252,6 +286,35 @@ impl InspectorPanel {
                 is_focused: selected.map(|e| e.is_focused).unwrap_or(false),
                 is_hovered: selected.map(|e| e.is_hovered).unwrap_or(false),
                 is_interactive: selected.map(|e| e.is_interactive).unwrap_or(false),
+                semantic_tag: selected
+                    .and_then(|e| e.semantic.as_ref())
+                    .and_then(|semantic| semantic.tag.clone()),
+                semantic_role: selected
+                    .and_then(|e| e.semantic.as_ref())
+                    .and_then(|semantic| semantic.role.clone()),
+                semantic_name: selected
+                    .and_then(|e| e.semantic.as_ref())
+                    .and_then(|semantic| semantic.name.clone()),
+                semantic_description: selected
+                    .and_then(|e| e.semantic.as_ref())
+                    .and_then(|semantic| semantic.description.clone()),
+                semantic_value: selected
+                    .and_then(|e| e.semantic.as_ref())
+                    .and_then(|semantic| semantic.value.clone()),
+                view_model_lines: snapshot
+                    .map(|tree| {
+                        tree.view_model_states
+                            .iter()
+                            .map(|state| {
+                                format!(
+                                    "{} = {} ({})",
+                                    state.key, state.value_summary, state.type_name
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .into()
+                    })
+                    .unwrap_or_default(),
                 locator_lines: trace_context.locator_lines,
                 assertion_lines: trace_context.assertion_lines,
                 scroll_ref,

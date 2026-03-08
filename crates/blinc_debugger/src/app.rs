@@ -640,6 +640,7 @@ fn build_debugger_ui(ctx: &WindowedContext, app_state: &SharedAppState) -> impl 
                         .flex_col()
                         .child(InspectorPanel::new(
                             state.selected_element(),
+                            state.current_snapshot.as_ref(),
                             trace_context,
                             inspector_scroll,
                         ))
@@ -1203,6 +1204,7 @@ mod tests {
                 is_interactive: false,
                 text_content: Some("Ready".to_string()),
                 visual_props: None,
+                semantic: None,
             },
         );
         export.snapshots[0]
@@ -1268,6 +1270,11 @@ mod tests {
     fn sample_recording_export() -> RecordingExport {
         let mut snapshot = TreeSnapshot::new(Timestamp::from_micros(10), (400, 300), 1.0);
         snapshot.root_id = Some("root".to_string());
+        snapshot.view_model_states = vec![blinc_recorder::ViewModelStateEntry {
+            key: "session.status".to_string(),
+            type_name: "alloc::string::String".to_string(),
+            value_summary: "\"Ready\"".to_string(),
+        }];
         snapshot.elements.insert(
             "root".to_string(),
             ElementSnapshot {
@@ -1287,6 +1294,13 @@ mod tests {
                 is_interactive: false,
                 text_content: None,
                 visual_props: None,
+                semantic: Some(blinc_recorder::ElementSemanticInfo {
+                    tag: Some("div".to_string()),
+                    role: Some("Group".to_string()),
+                    name: None,
+                    description: None,
+                    value: None,
+                }),
             },
         );
         snapshot.elements.insert(
@@ -1308,6 +1322,13 @@ mod tests {
                 is_interactive: true,
                 text_content: Some("Ready".to_string()),
                 visual_props: None,
+                semantic: Some(blinc_recorder::ElementSemanticInfo {
+                    tag: Some("button".to_string()),
+                    role: Some("Button".to_string()),
+                    name: Some("Ready".to_string()),
+                    description: None,
+                    value: None,
+                }),
             },
         );
 

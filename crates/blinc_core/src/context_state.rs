@@ -35,7 +35,7 @@
 //! ```
 
 use crate::reactive::{ReactiveGraph, Signal, SignalId, State};
-use std::any::{Any, TypeId};
+use std::any::{type_name, Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -81,13 +81,28 @@ impl StateKey {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HookDebugRegistration {
+    signal_id: u64,
+    key: String,
+    type_name: &'static str,
+}
+
+/// Debug-facing keyed state inventory entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyedStateDebugEntry {
+    pub key: String,
+    pub type_name: String,
+    pub value_summary: String,
+}
+
 /// Stores keyed state across rebuilds
 ///
 /// This enables component-level state management where each signal
 /// is identified by a unique string key rather than call order.
 pub struct HookState {
     /// Keyed signals: key -> raw signal ID
-    signals: HashMap<StateKey, u64>,
+    signals: HashMap<StateKey, HookDebugRegistration>,
 }
 
 impl Default for HookState {
@@ -106,12 +121,36 @@ impl HookState {
 
     /// Get an existing signal by key
     pub fn get(&self, key: &StateKey) -> Option<u64> {
-        self.signals.get(key).copied()
+        self.signals.get(key).map(|entry| entry.signal_id)
     }
 
     /// Store a signal with the given key
-    pub fn insert(&mut self, key: StateKey, signal_id: u64) {
-        self.signals.insert(key, signal_id);
+    pub fn insert<T: 'static>(
+        &mut self,
+        key: StateKey,
+        debug_key: impl Into<String>,
+        signal_id: u64,
+    ) {
+        self.signals.insert(
+            key,
+            HookDebugRegistration {
+                signal_id,
+                key: debug_key.into(),
+                type_name: type_name::<T>(),
+            },
+        );
+    }
+
+    /// Store a signal whose originating key is not directly printable.
+    pub fn insert_opaque<T: 'static>(&mut self, key: StateKey, signal_id: u64) {
+        let debug_key = format!("#{:016x}", key.key_hash);
+        self.insert::<T>(key, debug_key, signal_id);
+    }
+
+    fn debug_registrations(&self) -> Vec<HookDebugRegistration> {
+        let mut entries = self.signals.values().cloned().collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.key.cmp(&right.key));
+        entries
     }
 
     pub fn clear(&mut self) {
@@ -637,6 +676,36 @@ impl BlincContextState {
         self.active_resources().dirty_flag()
     }
 
+    /// Return a best-effort debug inventory of keyed state currently active
+    /// for this thread's resources.
+    pub fn debug_keyed_state_entries(&self) -> Vec<KeyedStateDebugEntry> {
+        let registrations = {
+            let hooks = self.active_hooks();
+            let registrations = hooks.lock().unwrap().debug_registrations();
+            registrations
+        };
+
+        let reactive = self.active_reactive();
+        let graph = reactive.lock().unwrap();
+        registrations
+            .into_iter()
+            .map(|entry| {
+                let signal_id = SignalId::from_raw(entry.signal_id);
+                let value_summary = match graph.debug_signal_summary(signal_id) {
+                    Some(summary) => summary,
+                    None if graph.has_signal(signal_id) => "<opaque>".to_string(),
+                    None => "<stale>".to_string(),
+                };
+
+                KeyedStateDebugEntry {
+                    key: entry.key,
+                    type_name: entry.type_name.to_string(),
+                    value_summary,
+                }
+            })
+            .collect()
+    }
+
     /// Create a persistent state value that survives across UI rebuilds (keyed)
     ///
     /// This creates component-level state identified by a unique string key.
@@ -659,7 +728,11 @@ impl BlincContextState {
             let initial = init();
             let signal = resources.reactive.lock().unwrap().create_signal(initial);
             let raw_id = signal.id().to_raw();
-            resources.hooks.lock().unwrap().insert(state_key, raw_id);
+            resources
+                .hooks
+                .lock()
+                .unwrap()
+                .insert::<T>(state_key, key, raw_id);
             signal
         };
 
@@ -701,7 +774,11 @@ impl BlincContextState {
             let initial = init();
             let signal = resources.reactive.lock().unwrap().create_signal(initial);
             let raw_id = signal.id().to_raw();
-            resources.hooks.lock().unwrap().insert(state_key, raw_id);
+            resources
+                .hooks
+                .lock()
+                .unwrap()
+                .insert::<T>(state_key, key, raw_id);
             signal
         }
     }
@@ -1341,7 +1418,7 @@ impl BlincContextState {
                 .unwrap()
                 .create_signal(new_value.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert(state_key, raw_id);
+            hooks.insert::<T>(state_key, key, raw_id);
             (signal.id(), new_value)
         }
     }
@@ -1494,8 +1571,16 @@ mod tests {
 
         assert!(hooks.get(&key).is_none());
 
-        hooks.insert(key.clone(), 42);
+        hooks.insert::<i32>(key.clone(), "test", 42);
         assert_eq!(hooks.get(&key), Some(42));
+        assert_eq!(
+            hooks.debug_registrations(),
+            vec![HookDebugRegistration {
+                signal_id: 42,
+                key: "test".to_string(),
+                type_name: "i32",
+            }]
+        );
     }
 
     #[test]

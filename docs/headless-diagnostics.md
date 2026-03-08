@@ -197,6 +197,8 @@ Inside the debugger, verify:
 - the command panel shows the `click` and assertion sequence
 - the evidence panel shows exported artifacts and assertion outcomes
 - the inspector can resolve `counter.value` in the snapshot tree
+- the inspector shows semantic metadata when the selected element exposes accessibility info
+- the inspector shows `ViewModel State` entries captured from keyed runtime state
 
 ## What This E2E Covers
 
