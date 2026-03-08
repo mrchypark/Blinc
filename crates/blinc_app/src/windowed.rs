@@ -627,6 +627,47 @@ pub struct WindowedContext {
 }
 
 impl WindowedContext {
+    /// Create a deterministic headless context for offscreen rendering and screenshot tests.
+    ///
+    /// Unlike the internal runtime constructor, this convenience API initializes the
+    /// shared animation/context globals when they are not yet available so tests can
+    /// build a `WindowedContext` without recreating the full windowed runtime setup.
+    pub fn new_headless(logical_width: f32, logical_height: f32) -> Self {
+        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(AnimationScheduler::new()));
+        let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
+        let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
+        let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
+        let element_registry: SharedElementRegistry =
+            Arc::new(blinc_layout::selector::ElementRegistry::new());
+        let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
+
+        let ctx = Self::new_headless_runtime(
+            logical_width,
+            logical_height,
+            animations,
+            Arc::clone(&ref_dirty_flag),
+            Arc::clone(&reactive),
+            Arc::clone(&hooks),
+            Arc::clone(&element_registry),
+            ready_callbacks,
+        );
+
+        if !BlincContextState::is_initialized() {
+            BlincContextState::init(reactive, hooks, ref_dirty_flag);
+        }
+
+        if !blinc_animation::is_scheduler_initialized() {
+            let scheduler_handle = ctx.animations.lock().unwrap().handle();
+            blinc_animation::set_global_scheduler(scheduler_handle);
+        }
+
+        let global = BlincContextState::get();
+        global.set_viewport_size(logical_width, logical_height);
+        global.set_element_registry(Arc::clone(&element_registry) as blinc_core::AnyElementRegistry);
+
+        ctx
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn from_window<W: Window>(
         window: &W,
@@ -799,7 +840,7 @@ impl WindowedContext {
     }
 
     /// Create a deterministic windowless context for headless automation/testing.
-    pub(crate) fn new_headless(
+    pub(crate) fn new_headless_runtime(
         logical_width: f32,
         logical_height: f32,
         animations: SharedAnimationScheduler,
@@ -830,6 +871,18 @@ impl WindowedContext {
             stylesheet: None,
             css_sources: Vec::new(),
         }
+    }
+
+    /// Update the logical and physical size for a headless context.
+    pub fn set_headless_size(&mut self, logical_width: f32, logical_height: f32) {
+        self.width = logical_width;
+        self.height = logical_height;
+        self.physical_width = logical_width;
+        self.physical_height = logical_height;
+
+        let global = BlincContextState::get();
+        global.set_viewport_size(logical_width, logical_height);
+        global.set_element_registry(Arc::clone(&self.element_registry) as blinc_core::AnyElementRegistry);
     }
 
     /// Update context from window (preserving event router, dirty flag, and reactive graph)
@@ -2024,6 +2077,43 @@ impl WindowedContext {
                 self.stylesheet = Some(Arc::new(sheet));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod windowed_context_tests {
+    use super::WindowedContext;
+    use std::sync::{Mutex, OnceLock};
+
+    fn test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn headless_context_initializes_expected_defaults() {
+        let _guard = test_lock().lock().unwrap();
+        let ctx = WindowedContext::new_headless(640.0, 360.0);
+
+        assert_eq!(ctx.width, 640.0);
+        assert_eq!(ctx.height, 360.0);
+        assert_eq!(ctx.physical_width(), 640.0);
+        assert_eq!(ctx.physical_height(), 360.0);
+        assert_eq!(ctx.scale_factor, 1.0);
+        assert!(ctx.focused);
+    }
+
+    #[test]
+    fn headless_context_resize_updates_logical_and_physical_size() {
+        let _guard = test_lock().lock().unwrap();
+        let mut ctx = WindowedContext::new_headless(640.0, 360.0);
+
+        ctx.set_headless_size(1024.0, 768.0);
+
+        assert_eq!(ctx.width, 1024.0);
+        assert_eq!(ctx.height, 768.0);
+        assert_eq!(ctx.physical_width(), 1024.0);
+        assert_eq!(ctx.physical_height(), 768.0);
     }
 }
 

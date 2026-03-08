@@ -144,7 +144,7 @@ where
             Arc::new(Mutex::new(Vec::new()));
         let pending_focus_changes: PendingFocusChanges = Arc::new(Mutex::new(Vec::new()));
         let pending_scroll_requests: PendingScrollRequests = Arc::new(Mutex::new(Vec::new()));
-        let mut ctx = WindowedContext::new_headless(
+        let mut ctx = WindowedContext::new_headless_runtime(
             runtime_cfg.width as f32,
             runtime_cfg.height as f32,
             animations,
