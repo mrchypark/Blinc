@@ -3082,7 +3082,8 @@ mod tests {
 
     #[test]
     fn dependency_path_literal_escapes_windows_style_roots_for_toml() {
-        let cargo_toml_path = dependency_path_literal(Path::new(r#"D:\a\Blinc\Blinc"#), "crates/blinc_app");
+        let cargo_toml_path =
+            dependency_path_literal(Path::new(r#"D:\a\Blinc\Blinc"#), "crates/blinc_app");
         assert!(
             cargo_toml_path.starts_with(r#""D:\\a\\Blinc\\Blinc"#),
             "dependency path should escape windows-style roots: {cargo_toml_path}"
