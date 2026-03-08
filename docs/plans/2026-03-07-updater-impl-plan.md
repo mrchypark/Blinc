@@ -2,11 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Add an interface-first updater architecture to Blinc, with shared updater domain types, desktop and Android backend boundaries, updater-aware project configuration, and CLI release metadata generation.
+**Goal:** Add an interface-first updater architecture to Blinc, with canonical platform-derived release identity, user-callable CLI release metadata generation, artifact signing and verification, and Android plus macOS updater backends.
 
-**Architecture:** Keep update orchestration in a new shared crate and push platform-specific install behavior into dedicated extension crates. Treat `blinc_cli` as the owner of package/release metadata while keeping `crates/blinc_platform` unchanged. Implement real behavior for Android and macOS first, with explicit stubs for Windows and Linux.
+**Architecture:** Keep update orchestration in a new shared crate and push platform-specific install behavior into dedicated extension crates. Treat `blinc_cli` as the owner of package/release metadata, load `BlincProject` without lossy conversion for release paths, and keep `crates/blinc_platform` unchanged. Implement real behavior for Android and macOS first, with explicit stubs for Windows and Linux.
 
-**Tech Stack:** Rust 2021, Cargo workspace crates, `serde`/`serde_json`, `thiserror`, `anyhow`, Blinc CLI/config scaffolding, platform extension crates.
+**Tech Stack:** Rust 2021, Cargo workspace crates, `serde`/`serde_json`, `thiserror`, `anyhow`, `sha2`, `ed25519-dalek` or `ring`, Blinc CLI/config scaffolding, platform extension crates.
 
 ---
 
@@ -14,15 +14,15 @@
 
 - Follow TDD for every new behavior: write a failing test first, confirm the failure, then add the minimum code to pass.
 - Keep `crates/blinc_platform::Platform` unchanged in this plan.
-- Do not claim desktop support generically unless the backend is explicitly implemented.
+- Do not add updater-only duplicate identity fields such as Android `expected_package`.
+- Canonical release identity must come from existing platform config or platform packaging metadata.
+- Expose at least one user-callable CLI release entry point in v1.
 - Treat Windows/Linux as capability-limited stubs in v1.
-- Fix project identifier propagation before building updater metadata on top of it.
 
-### Task 1: Fix scaffolded app identifiers before updater work
+### Task 1: Fix non-Rust scaffolding identity drift and validate `org`
 
 **Files:**
 - Modify: `crates/blinc_cli/src/project.rs`
-- Modify: `crates/blinc_cli/src/config.rs`
 - Test: `crates/blinc_cli/src/project.rs`
 
 **Step 1: Write the failing tests**
@@ -31,50 +31,74 @@ Add tests beside the existing `#[cfg(test)]` module in `crates/blinc_cli/src/pro
 
 ```rust
 #[test]
-fn non_rust_project_uses_org_for_android_and_apple_ids() {
+fn non_rust_project_uses_org_for_android_apple_and_linux_ids() {
     // create_project(&root, "Demo App", "default", "io.test") ...
-    // assert generated Android and plist files contain io.test.demo_app
+    // assert Android, plist, and Linux metainfo files contain io.test.demo_app
+}
+
+#[test]
+fn non_rust_project_rejects_unsafe_org_chars() {
+    // create_project(..., r#"io.test"; rm -rf /"#) should fail
 }
 ```
 
-**Step 2: Run test to verify it fails**
+**Step 2: Run tests to verify failure**
 
-Run: `cargo test -p blinc_cli non_rust_project_uses_org_for_android_and_apple_ids -- --nocapture`
-Expected: FAIL because generated files still contain `com.example`.
+Run:
+
+```bash
+cargo test -p blinc_cli non_rust_project_uses_org_for_android_apple_and_linux_ids -- --nocapture
+cargo test -p blinc_cli non_rust_project_rejects_unsafe_org_chars -- --nocapture
+```
+
+Expected: FAIL because non-Rust scaffolding still emits `com.example.*` and does not validate `org`.
 
 **Step 3: Write minimal implementation**
 
-Update `create_platform_files`, `create_android_files`, `create_ios_files`, and `create_macos_files` so they accept and use `org`, not a hardcoded prefix. Keep generated identifiers consistent with `BlincProject::with_all_platforms`.
+Update `create_project()` and its helpers to:
 
-**Step 4: Run targeted tests to verify they pass**
+- reuse `validate_org_name()`
+- propagate `org` into Android files
+- propagate `org` into iOS/macOS bundle IDs
+- propagate `org` into Linux AppStream metadata
+
+Keep generated identifiers aligned with `BlincProject::with_all_platforms()`.
+
+**Step 4: Run targeted tests**
 
 Run: `cargo test -p blinc_cli project::tests -- --nocapture`
-Expected: PASS with existing scaffold tests plus the new org propagation test.
+Expected: PASS with existing scaffold tests plus the new identity and validation tests.
 
 **Step 5: Commit**
 
 ```bash
-git add crates/blinc_cli/src/project.rs crates/blinc_cli/src/config.rs
-git commit -m "fix: align scaffolded app identifiers with project config"
+git add crates/blinc_cli/src/project.rs
+git commit -m "fix: align non-rust scaffold identities and validate org"
 ```
 
-### Task 2: Add updater configuration to `.blincproj`
+### Task 2: Add updater config without duplicating platform identity
 
 **Files:**
 - Modify: `crates/blinc_cli/src/config.rs`
-- Test: `crates/blinc_cli/src/config.rs` or `crates/blinc_cli/src/project.rs`
+- Test: `crates/blinc_cli/src/config.rs`
 
 **Step 1: Write the failing tests**
 
-Add round-trip tests for config serialization:
+Add config tests such as:
 
 ```rust
 #[test]
-fn updater_config_round_trips_with_desktop_and_android_overrides() {
+fn updater_config_round_trips_without_identity_overrides() {
     let toml = r#"
         [project]
         name = "Demo"
         version = "0.1.0"
+
+        [platforms.android]
+        package = "io.test.demo"
+
+        [platforms.macos]
+        bundle_id = "io.test.demo"
 
         [updates]
         enabled = true
@@ -87,15 +111,15 @@ fn updater_config_round_trips_with_desktop_and_android_overrides() {
 
         [updates.android]
         enabled = true
-        expected_package = "io.test.demo"
+        allow_unknown_sources_prompt = true
     "#;
     // parse + serialize + parse again
 }
 ```
 
-**Step 2: Run test to verify it fails**
+**Step 2: Run test to verify failure**
 
-Run: `cargo test -p blinc_cli updater_config_round_trips_with_desktop_and_android_overrides -- --nocapture`
+Run: `cargo test -p blinc_cli updater_config_round_trips_without_identity_overrides -- --nocapture`
 Expected: FAIL because `BlincProject` has no updater schema.
 
 **Step 3: Write minimal implementation**
@@ -107,21 +131,107 @@ Add new config structs:
 - `AndroidUpdateConfig`
 - `ReleaseChannel` string representation for config
 
-Extend `BlincProject` with `#[serde(default)] pub updates: UpdatesConfig`.
+Do not add any updater-owned package or bundle ID field. Extend `BlincProject` with `#[serde(default)] pub updates: UpdatesConfig`.
 
 **Step 4: Run focused tests**
 
-Run: `cargo test -p blinc_cli updater_config_round_trips_with_desktop_and_android_overrides -- --nocapture`
+Run: `cargo test -p blinc_cli updater_config_round_trips_without_identity_overrides -- --nocapture`
 Expected: PASS.
 
 **Step 5: Commit**
 
 ```bash
 git add crates/blinc_cli/src/config.rs
-git commit -m "feat: add updater settings to blinc project config"
+git commit -m "feat: add updater config without duplicate app identity"
 ```
 
-### Task 3: Create the shared updater domain crate
+### Task 3: Preserve full project metadata for release commands
+
+**Files:**
+- Modify: `crates/blinc_cli/src/config.rs`
+- Modify: `crates/blinc_cli/src/main.rs`
+- Create: `crates/blinc_cli/src/release.rs`
+- Test: `crates/blinc_cli/src/release.rs`
+
+**Step 1: Write the failing tests**
+
+Add tests that prove release code sees fields missing from the legacy `BlincConfig` projection:
+
+```rust
+#[test]
+fn release_loader_preserves_updates_and_non_legacy_platforms() {}
+```
+
+**Step 2: Run test to verify failure**
+
+Run: `cargo test -p blinc_cli release_loader_preserves_updates_and_non_legacy_platforms -- --nocapture`
+Expected: FAIL because current release paths would be forced through lossy `BlincConfig`.
+
+**Step 3: Write minimal implementation**
+
+Add a release-focused loading path that either:
+
+- loads `BlincProject` directly, or
+- extends `BlincConfig` and `from_project()` so release commands can access `updates`, `macos`, `windows`, `linux`, and `wasm`
+
+Make the choice explicit in code and tests.
+
+**Step 4: Run focused tests**
+
+Run: `cargo test -p blinc_cli release_loader_preserves_updates_and_non_legacy_platforms -- --nocapture`
+Expected: PASS.
+
+**Step 5: Commit**
+
+```bash
+git add crates/blinc_cli/src/config.rs crates/blinc_cli/src/main.rs crates/blinc_cli/src/release.rs
+git commit -m "refactor: preserve full project metadata for release commands"
+```
+
+### Task 4: Define and expose a user-callable CLI release contract
+
+**Files:**
+- Modify: `crates/blinc_cli/src/main.rs`
+- Modify: `crates/blinc_cli/src/release.rs`
+- Test: `crates/blinc_cli/src/release.rs`
+
+**Step 1: Write the failing black-box test**
+
+Add a CLI-level test such as:
+
+```rust
+#[test]
+fn release_manifest_command_writes_manifest_json() {
+    // invoke CLI with a temp project and assert manifest file is created
+}
+```
+
+**Step 2: Run test to verify failure**
+
+Run: `cargo test -p blinc_cli release_manifest_command_writes_manifest_json -- --nocapture`
+Expected: FAIL because the CLI exposes no release command yet.
+
+**Step 3: Write minimal implementation**
+
+Add a user-callable release surface. The minimum acceptable contract is:
+
+- `blinc release manifest`
+
+with explicit input and output arguments. Document that this is the v1 public interface even if packaging is still incomplete.
+
+**Step 4: Run focused tests**
+
+Run: `cargo test -p blinc_cli release_manifest_command_writes_manifest_json -- --nocapture`
+Expected: PASS.
+
+**Step 5: Commit**
+
+```bash
+git add crates/blinc_cli/src/main.rs crates/blinc_cli/src/release.rs
+git commit -m "feat: add user-callable release manifest command"
+```
+
+### Task 5: Create the shared updater domain crate
 
 **Files:**
 - Modify: `Cargo.toml`
@@ -131,7 +241,7 @@ git commit -m "feat: add updater settings to blinc project config"
 - Create: `crates/blinc_update/src/manifest.rs`
 - Create: `crates/blinc_update/src/service.rs`
 - Create: `crates/blinc_update/src/version.rs`
-- Test: `crates/blinc_update/src/lib.rs` or dedicated unit test modules
+- Test: `crates/blinc_update/src/lib.rs`
 
 **Step 1: Write the failing tests**
 
@@ -142,13 +252,13 @@ Start with unit tests for:
 fn selects_matching_artifact_for_platform_and_arch() {}
 
 #[test]
-fn rejects_manifest_with_missing_signature() {}
+fn rejects_manifest_with_missing_target_id() {}
 
 #[test]
 fn version_check_detects_newer_release() {}
 ```
 
-**Step 2: Run test to verify it fails**
+**Step 2: Run test to verify failure**
 
 Run: `cargo test -p blinc_update`
 Expected: FAIL because crate does not exist yet.
@@ -157,7 +267,7 @@ Expected: FAIL because crate does not exist yet.
 
 Create the crate and implement:
 
-- manifest structs
+- manifest structs using per-artifact `target_id`
 - artifact selector helper
 - update state enum
 - backend trait with install/check/download shape
@@ -177,55 +287,62 @@ git add Cargo.toml crates/blinc_update
 git commit -m "feat: add shared updater domain crate"
 ```
 
-### Task 4: Add release manifest generation to the CLI
+### Task 6: Add artifact signing to release generation
 
 **Files:**
-- Modify: `crates/blinc_cli/src/main.rs`
-- Create: `crates/blinc_cli/src/release.rs`
 - Modify: `crates/blinc_cli/Cargo.toml`
+- Modify: `crates/blinc_cli/src/release.rs`
+- Modify: `crates/blinc_update/src/manifest.rs`
 - Test: `crates/blinc_cli/src/release.rs`
 
 **Step 1: Write the failing tests**
 
-Add tests for release manifest generation:
+Add tests such as:
 
 ```rust
 #[test]
-fn generates_manifest_with_expected_app_id_channel_and_artifacts() {}
+fn release_manifest_populates_artifact_signatures() {}
 
 #[test]
-fn rejects_release_when_updates_enabled_but_public_key_is_missing() {}
+fn release_manifest_generation_requires_private_key_input() {}
 ```
 
-**Step 2: Run tests to verify failure**
+**Step 2: Run test to verify failure**
 
-Run: `cargo test -p blinc_cli generates_manifest_with_expected_app_id_channel_and_artifacts -- --nocapture`
-Expected: FAIL because release manifest logic is missing.
+Run:
+
+```bash
+cargo test -p blinc_cli release_manifest_populates_artifact_signatures -- --nocapture
+cargo test -p blinc_cli release_manifest_generation_requires_private_key_input -- --nocapture
+```
+
+Expected: FAIL because release generation does not sign artifacts yet.
 
 **Step 3: Write minimal implementation**
 
-Add a new module that:
+Add release signing support that:
 
-- reads `BlincProject`
-- builds `blinc_update::UpdateManifest`
-- serializes JSON
-- validates required updater fields when updates are enabled
+- accepts signing key material from a documented CLI argument or environment variable
+- computes artifact signatures during manifest generation
+- writes `artifact.signature`
+- exposes the matching public key for application configuration
+- picks one concrete crypto stack and uses it consistently across release generation and runtime verification
 
-Expose the smallest possible CLI entry point first, even if it is an internal command helper used by future `package`/`release` commands.
+Use fixture keys in tests rather than real release keys.
 
-**Step 4: Run tests**
+**Step 4: Run focused tests**
 
 Run: `cargo test -p blinc_cli release -- --nocapture`
-Expected: PASS for manifest generation tests.
+Expected: PASS for signing-related tests.
 
 **Step 5: Commit**
 
 ```bash
-git add crates/blinc_cli/src/main.rs crates/blinc_cli/src/release.rs crates/blinc_cli/Cargo.toml
-git commit -m "feat: generate updater release manifests from the CLI"
+git add crates/blinc_cli/Cargo.toml crates/blinc_cli/src/release.rs crates/blinc_update/src/manifest.rs
+git commit -m "feat: sign release artifacts during manifest generation"
 ```
 
-### Task 5: Add artifact checksum and signature verification helpers
+### Task 7: Add runtime checksum and signature verification helpers
 
 **Files:**
 - Modify: `crates/blinc_update/Cargo.toml`
@@ -255,7 +372,9 @@ Expected: FAIL because verification helpers are missing.
 Add pure helpers to verify:
 
 - SHA-256 checksum
-- detached signature using the chosen public-key scheme
+- detached signature using the same public-key scheme produced by release generation
+
+Use the same concrete crypto crates chosen in Task 6 rather than a second parallel implementation.
 
 Return typed `UpdateError` values. Keep this layer file-based and deterministic.
 
@@ -271,7 +390,7 @@ git add crates/blinc_update/Cargo.toml crates/blinc_update/src/lib.rs crates/bli
 git commit -m "feat: add updater artifact verification helpers"
 ```
 
-### Task 6: Add Android updater backend crate
+### Task 8: Add Android updater backend crate
 
 **Files:**
 - Modify: `Cargo.toml`
@@ -286,7 +405,7 @@ Start with backend-level tests that avoid real Android runtime dependencies:
 
 ```rust
 #[test]
-fn android_backend_rejects_manifest_artifact_with_wrong_package_id() {}
+fn android_backend_rejects_artifact_with_wrong_target_id() {}
 
 #[test]
 fn android_backend_builds_install_intent_for_matching_apk() {}
@@ -302,7 +421,7 @@ Expected: FAIL because crate and backend do not exist.
 Implement a backend that:
 
 - chooses Android APK artifacts
-- validates expected package name from config
+- validates `artifact.target_id` against `platforms.android.package`
 - returns an `InstallIntent` representing Android package installer handoff
 
 Do not attempt real install execution in unit tests.
@@ -319,7 +438,7 @@ git add Cargo.toml extensions/blinc_update_android
 git commit -m "feat: add android updater backend"
 ```
 
-### Task 7: Add desktop updater backend crate with macOS reference backend
+### Task 9: Add desktop updater backend crate with macOS reference backend
 
 **Files:**
 - Modify: `Cargo.toml`
@@ -356,7 +475,7 @@ Expected: FAIL because crate and backends do not exist.
 Implement:
 
 - shared desktop backend dispatch
-- macOS install intent builder
+- macOS install intent builder using canonical bundle identity
 - explicit unsupported/stub responses for Windows/Linux
 
 Avoid real installer side effects in tests. Model installation as a handoff plan, not an in-process overwrite.
@@ -373,7 +492,7 @@ git add Cargo.toml extensions/blinc_update_desktop
 git commit -m "feat: add desktop updater backend with macos reference path"
 ```
 
-### Task 8: Thread updater config through generated projects and templates
+### Task 10: Surface updater config and release contract in generated docs
 
 **Files:**
 - Modify: `crates/blinc_cli/src/project.rs`
@@ -386,12 +505,12 @@ Add a scaffolding test that asserts generated projects include updater configura
 
 ```rust
 #[test]
-fn generated_project_includes_updater_config_placeholders() {}
+fn generated_project_includes_updater_config_and_release_manifest_guidance() {}
 ```
 
 **Step 2: Run the test**
 
-Run: `cargo test -p blinc_cli generated_project_includes_updater_config_placeholders -- --nocapture`
+Run: `cargo test -p blinc_cli generated_project_includes_updater_config_and_release_manifest_guidance -- --nocapture`
 Expected: FAIL because templates do not include updater guidance.
 
 **Step 3: Write minimal implementation**
@@ -401,22 +520,23 @@ Update generated README and config examples to describe:
 - updater config location
 - desktop and Android support
 - iOS exclusion
+- the user-callable `blinc release manifest` entry point
 
 Keep templates simple; do not add fake implementation code.
 
 **Step 4: Run tests**
 
-Run: `cargo test -p blinc_cli generated_project_includes_updater_config_placeholders -- --nocapture`
+Run: `cargo test -p blinc_cli generated_project_includes_updater_config_and_release_manifest_guidance -- --nocapture`
 Expected: PASS.
 
 **Step 5: Commit**
 
 ```bash
 git add crates/blinc_cli/src/project.rs crates/blinc_cli/README.md
-git commit -m "docs: surface updater configuration in generated projects"
+git commit -m "docs: surface updater config and release contract"
 ```
 
-### Task 9: Add end-to-end CLI plus crate verification
+### Task 11: Add end-to-end release and runtime verification
 
 **Files:**
 - Modify: `crates/blinc_cli/src/main.rs`
@@ -426,19 +546,19 @@ git commit -m "docs: surface updater configuration in generated projects"
 - Test: `extensions/blinc_update_android/src/lib.rs`
 - Test: `extensions/blinc_update_desktop/src/lib.rs`
 
-**Step 1: Write the failing integration-style test**
+**Step 1: Write the failing integration-style tests**
 
-Add a temporary-dir test that:
+Add tests that:
 
-- creates a sample project config
-- generates a manifest
-- parses it through `blinc_update`
-- selects the correct platform artifact
+- invoke `blinc release manifest` on a temp project
+- parse the resulting manifest through `blinc_update`
+- assert signatures and `target_id` fields are present
+- assert Android and macOS selectors choose the correct artifacts
 
 **Step 2: Run test to verify failure**
 
 Run: `cargo test -p blinc_cli generated_manifest_round_trips_into_update_domain -- --nocapture`
-Expected: FAIL until the pieces connect cleanly.
+Expected: FAIL until the CLI contract, manifest schema, and runtime domain align.
 
 **Step 3: Write minimal integration glue**
 
@@ -464,7 +584,7 @@ git add crates/blinc_cli/src/main.rs crates/blinc_cli/src/release.rs crates/blin
 git commit -m "test: verify updater manifest flow across CLI and backends"
 ```
 
-### Task 10: Final verification, formatting, and documentation pass
+### Task 12: Final verification, formatting, and documentation pass
 
 **Files:**
 - Modify: `docs/plans/2026-03-07-updater-design.md` if implementation changed scope

@@ -38,6 +38,9 @@ fn find_blinc_workspace_from(start: &Path) -> Option<String> {
 
 /// Create a new Blinc project with full workspace structure
 pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Result<()> {
+    validate_org_name(org)?;
+    let release_artifact_name = name.replace(['-', ' '], "_").to_lowercase();
+
     // Create directory structure
     fs::create_dir_all(path.join("src"))?;
     fs::create_dir_all(path.join("assets"))?;
@@ -65,7 +68,7 @@ pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Res
     fs::write(path.join("src/main.blinc"), main_content)?;
 
     // Create platform entry points
-    create_platform_files(path, name)?;
+    create_platform_files(path, name, org)?;
 
     // Create plugins README
     fs::write(
@@ -179,6 +182,39 @@ Edit `.blincproj` to configure:
 - Project metadata (name, version, description)
 - Platform-specific settings (package IDs, SDK versions)
 - Dependencies (plugins, external packages)
+
+## Updater
+
+Add updater settings under `[updates]` in `.blincproj` when you are ready to publish signed releases:
+
+```toml
+[updates]
+enabled = true
+channel = "stable"
+manifest_url = "https://example.com/releases/release-manifest.json"
+public_key = "base64-ed25519-public-key"
+```
+
+- macOS desktop self-update is the current reference path in the shared updater architecture.
+- Windows/Linux remain planned desktop updater targets and stay explicit unsupported backends in v1.
+- Android private/development distribution is supported through APK installer handoff.
+- iOS uses App Store/TestFlight distribution and is excluded from the in-app updater flow.
+
+Generate signed release metadata with the user-callable `blinc release manifest` entry point:
+
+```bash
+blinc release manifest . \
+  --platform macos \
+  --arch universal \
+  --artifact-path dist/{release_artifact_name}.zip \
+  --private-key "$BLINC_RELEASE_PRIVATE_KEY" \
+  --public-key-output dist/public-key.txt \
+  --url https://example.com/releases/{release_artifact_name}.zip \
+  --output dist/release-manifest.json \
+  --published-at 2026-03-07T00:00:00Z
+```
+
+Reuse the same --published-at value when appending more artifacts to the same release manifest.
 "#,
         ),
     )?;
@@ -187,23 +223,23 @@ Edit `.blincproj` to configure:
 }
 
 /// Create platform-specific files
-fn create_platform_files(path: &Path, name: &str) -> Result<()> {
+fn create_platform_files(path: &Path, name: &str, org: &str) -> Result<()> {
     let package_name = name.replace(['-', ' '], "_").to_lowercase();
 
     // Android
-    create_android_files(path, name, &package_name)?;
+    create_android_files(path, name, &package_name, org)?;
 
     // iOS
-    create_ios_files(path, name, &package_name)?;
+    create_ios_files(path, name, &package_name, org)?;
 
     // macOS
-    create_macos_files(path, name, &package_name)?;
+    create_macos_files(path, name, &package_name, org)?;
 
     // Windows
     create_windows_files(path, name)?;
 
     // Linux
-    create_linux_files(path, name)?;
+    create_linux_files(path, name, &package_name, org)?;
 
     // WASM/Web
     create_wasm_files(path, name)?;
@@ -211,8 +247,9 @@ fn create_platform_files(path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn create_android_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
+fn create_android_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
     let android_path = path.join("platforms/android");
+    let package_id = format!("{org}.{package_name}");
 
     // Create basic Android structure
     fs::create_dir_all(android_path.join("app/src/main/java"))?;
@@ -249,11 +286,11 @@ plugins {
 }}
 
 android {{
-    namespace = "com.example.{package_name}"
+    namespace = "{package_id}"
     compileSdk = 35
 
     defaultConfig {{
-        applicationId = "com.example.{package_name}"
+        applicationId = "{package_id}"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
@@ -318,7 +355,7 @@ dependencies {{
     )?;
 
     // MainActivity.kt placeholder
-    let package_path = format!("com/example/{}", package_name);
+    let package_path = format!("{}/{}", org.replace('.', "/"), package_name);
     fs::create_dir_all(android_path.join(format!("app/src/main/java/{}", package_path)))?;
     fs::write(
         android_path.join(format!(
@@ -326,7 +363,7 @@ dependencies {{
             package_path
         )),
         format!(
-            r#"package com.example.{package_name}
+            r#"package {package_id}
 
 import android.app.Activity
 import android.os.Bundle
@@ -420,8 +457,9 @@ Edit `app/build.gradle.kts` to modify:
     Ok(())
 }
 
-fn create_ios_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
+fn create_ios_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
     let ios_path = path.join("platforms/ios");
+    let bundle_id = format!("{org}.{package_name}");
 
     // Create Xcode project structure
     let xcodeproj = ios_path.join(format!("{}.xcodeproj", name));
@@ -441,7 +479,7 @@ fn create_ios_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
     <key>CFBundleExecutable</key>
     <string>{name}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.example.{package_name}</string>
+    <string>{bundle_id}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -570,8 +608,9 @@ Edit `{name}/Info.plist` to modify:
     Ok(())
 }
 
-fn create_macos_files(path: &Path, name: &str, package_name: &str) -> Result<()> {
+fn create_macos_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
     let macos_path = path.join("platforms/macos");
+    let bundle_id = format!("{org}.{package_name}");
 
     // Info.plist for macOS app bundle
     fs::write(
@@ -586,7 +625,7 @@ fn create_macos_files(path: &Path, name: &str, package_name: &str) -> Result<()>
     <key>CFBundleExecutable</key>
     <string>{name}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.example.{package_name}</string>
+    <string>{bundle_id}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -796,13 +835,15 @@ blinc build --target windows --release
     Ok(())
 }
 
-fn create_linux_files(path: &Path, name: &str) -> Result<()> {
+fn create_linux_files(path: &Path, name: &str, package_name: &str, org: &str) -> Result<()> {
     let linux_path = path.join("platforms/linux");
     let binary_name = name.to_lowercase().replace([' ', '-'], "_");
+    let appstream_id = format!("{org}.{package_name}");
+    let desktop_file_id = format!("{appstream_id}.desktop");
 
     // Desktop entry file
     fs::write(
-        linux_path.join(format!("{}.desktop", binary_name)),
+        linux_path.join(&desktop_file_id),
         format!(
             r#"[Desktop Entry]
 Type=Application
@@ -823,7 +864,7 @@ StartupWMClass={name}
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-    <id>com.example.{binary_name}</id>
+    <id>{appstream_id}</id>
     <name>{name}</name>
     <summary>A Blinc application</summary>
     <metadata_license>CC0-1.0</metadata_license>
@@ -833,7 +874,7 @@ StartupWMClass={name}
             {name} is a cross-platform application built with Blinc.
         </p>
     </description>
-    <launchable type="desktop-id">{binary_name}.desktop</launchable>
+    <launchable type="desktop-id">{desktop_file_id}</launchable>
     <provides>
         <binary>{binary_name}</binary>
     </provides>
@@ -865,12 +906,12 @@ The desktop entry file can be installed to:
 
 ```bash
 # User installation
-cp {binary_name}.desktop ~/.local/share/applications/
+cp {desktop_file_id} ~/.local/share/applications/
 ```
 
 ## Configuration
 
-- `{binary_name}.desktop` - Desktop entry for app launchers
+- `{desktop_file_id}` - Desktop entry for app launchers
 - `{binary_name}.metainfo.xml` - AppStream metadata for software centers
 "#
         ),
@@ -1331,6 +1372,10 @@ pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
     fs::create_dir_all(path.join("src"))?;
     fs::create_dir_all(path.join("platforms/android/app/src/main/kotlin/com/blinc"))?;
     fs::create_dir_all(path.join("platforms/ios/BlincApp"))?;
+
+    // Create .blincproj for release and updater workflows
+    let project = BlincProject::new(name).with_all_platforms(name, org);
+    fs::write(path.join(".blincproj"), project.to_toml()?)?;
 
     // Create Cargo.toml
     fs::write(
@@ -1857,6 +1902,7 @@ cargo lipo --release
 
 ```
 {name}/
+├── .blincproj          # Project and updater configuration
 ├── Cargo.toml           # Rust project configuration
 ├── blinc.toml           # Blinc toolchain configuration
 ├── src/
@@ -1865,6 +1911,31 @@ cargo lipo --release
     ├── android/         # Android Gradle project
     └── ios/             # iOS Swift files
 ```
+
+## Updater
+
+Add updater settings under `[updates]` in `.blincproj` when you want signed desktop or Android release metadata.
+
+- macOS desktop self-update is the current reference path in the shared updater flow.
+- Windows/Linux remain planned desktop updater targets and stay explicit unsupported backends in v1.
+- Android private/development distribution is supported through APK handoff.
+- iOS uses App Store/TestFlight distribution and is excluded from in-app updater support.
+
+Generate release metadata with:
+
+```bash
+blinc release manifest . \
+  --platform macos \
+  --arch universal \
+  --artifact-path dist/{package_name}.zip \
+  --private-key "$BLINC_RELEASE_PRIVATE_KEY" \
+  --public-key-output dist/public-key.txt \
+  --url https://example.com/releases/{package_name}.zip \
+  --output dist/release-manifest.json \
+  --published-at 2026-03-07T00:00:00Z
+```
+
+Reuse the same --published-at value when appending more artifacts to the same release manifest.
 "#
         ),
     )?;
@@ -1919,17 +1990,22 @@ fn validate_rust_project_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_org_name(org: &str) -> Result<()> {
+pub(crate) fn validate_org_name(org: &str) -> Result<()> {
     if org.is_empty() {
         bail!("Organization name cannot be empty");
     }
 
-    let is_valid = org
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_'));
-    if !is_valid || org.starts_with('.') || org.ends_with('.') || org.contains("..") {
+    let is_valid = org.split('.').all(|segment| {
+        let mut chars = segment.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+
+        first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    });
+    if !is_valid {
         bail!(
-            "Invalid organization name '{}'. Use only ASCII letters, digits, '.' or '_'",
+            "Invalid organization name '{}'. Use dot-separated segments that start with ASCII letters and then contain only ASCII letters, digits, or '_'",
             org
         );
     }
@@ -3568,6 +3644,275 @@ transitions:
             r#"com.example"; std::process::Command::new("calc").spawn().unwrap(); //"#,
         )
         .expect_err("unsafe org name should be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "error should explain org name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when org is rejected"
+        );
+    }
+
+    #[test]
+    fn rust_project_rejects_android_invalid_org_segments() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_headless_invalid_org_segment_{nonce}"));
+
+        let err = create_rust_project(&root, "DemoApp", "123.example")
+            .expect_err("android-invalid org segments should be rejected");
+
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "error should explain org name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when org is rejected"
+        );
+    }
+
+    #[test]
+    fn non_rust_project_uses_org_for_platform_identifiers() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_non_rust_org_ids_{nonce}"));
+
+        create_project(&root, "Demo App", "default", "io.blinc.dev")
+            .expect("non-rust project template should be generated");
+
+        let android_gradle =
+            fs::read_to_string(root.join("platforms/android/app/build.gradle.kts"))
+                .expect("generated Android Gradle file should exist");
+        assert!(
+            android_gradle.contains(r#"namespace = "io.blinc.dev.demo_app""#),
+            "generated Android namespace should use the provided org"
+        );
+        assert!(
+            android_gradle.contains(r#"applicationId = "io.blinc.dev.demo_app""#),
+            "generated Android applicationId should use the provided org"
+        );
+
+        let main_activity = fs::read_to_string(
+            root.join("platforms/android/app/src/main/java/io/blinc/dev/demo_app/MainActivity.kt"),
+        )
+        .expect("generated MainActivity.kt should exist under the org package path");
+        assert!(
+            main_activity.contains("package io.blinc.dev.demo_app"),
+            "generated MainActivity should use the provided org in its package declaration"
+        );
+
+        let ios_plist = fs::read_to_string(root.join("platforms/ios/Demo App/Info.plist"))
+            .expect("generated iOS Info.plist should exist");
+        assert!(
+            ios_plist.contains("<string>io.blinc.dev.demo_app</string>"),
+            "generated iOS bundle identifier should use the provided org"
+        );
+
+        let macos_plist = fs::read_to_string(root.join("platforms/macos/Info.plist"))
+            .expect("generated macOS Info.plist should exist");
+        assert!(
+            macos_plist.contains("<string>io.blinc.dev.demo_app</string>"),
+            "generated macOS bundle identifier should use the provided org"
+        );
+
+        let linux_metainfo = fs::read_to_string(root.join("platforms/linux/demo_app.metainfo.xml"))
+            .expect("generated AppStream metadata should exist");
+        assert!(
+            linux_metainfo.contains("<id>io.blinc.dev.demo_app</id>"),
+            "generated AppStream ID should use the provided org"
+        );
+        assert!(
+            linux_metainfo.contains(
+                "<launchable type=\"desktop-id\">io.blinc.dev.demo_app.desktop</launchable>"
+            ),
+            "generated AppStream launchable should point at the org-based desktop file"
+        );
+        assert!(
+            root.join("platforms/linux/io.blinc.dev.demo_app.desktop")
+                .exists(),
+            "generated Linux desktop entry filename should use the org-based identifier"
+        );
+
+        let linux_readme = fs::read_to_string(root.join("platforms/linux/README.md"))
+            .expect("generated Linux README should exist");
+        assert!(
+            linux_readme.contains("cp io.blinc.dev.demo_app.desktop ~/.local/share/applications/"),
+            "generated Linux README should document the org-based desktop entry filename"
+        );
+        assert!(
+            linux_readme
+                .contains("`io.blinc.dev.demo_app.desktop` - Desktop entry for app launchers"),
+            "generated Linux README file list should mention the org-based desktop entry filename"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generated_project_includes_updater_config_and_release_manifest_guidance() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_updater_guidance_{nonce}"));
+
+        create_project(&root, "Demo App", "default", "io.blinc.dev")
+            .expect("non-rust project template should be generated");
+
+        let readme =
+            fs::read_to_string(root.join("README.md")).expect("generated README should exist");
+        assert!(
+            readme.contains("[updates]"),
+            "generated README should show where updater config lives"
+        );
+        assert!(
+            readme.contains("macOS desktop self-update"),
+            "generated README should scope desktop updater guidance to the current macOS reference path"
+        );
+        assert!(
+            readme.contains("Android private/development distribution"),
+            "generated README should mention Android private updater support"
+        );
+        assert!(
+            readme.contains("iOS uses App Store/TestFlight"),
+            "generated README should explain iOS exclusion from in-app updates"
+        );
+        assert!(
+            readme.contains("Windows/Linux remain planned"),
+            "generated README should clarify that Windows and Linux are not shipped updater backends yet"
+        );
+        assert!(
+            readme.contains("blinc release manifest"),
+            "generated README should mention the user-callable release manifest entry point"
+        );
+        assert!(
+            readme.contains("blinc release manifest . \\"),
+            "generated README should use the positional source argument that the CLI actually exposes"
+        );
+        assert!(
+            !readme.contains("--source ."),
+            "generated README should not document a nonexistent --source flag"
+        );
+        assert!(
+            readme.contains("dist/demo_app.zip"),
+            "generated README should slug artifact filenames so example commands stay valid for names with spaces"
+        );
+        assert!(
+            readme.contains("https://example.com/releases/demo_app.zip"),
+            "generated README should slug artifact URLs so example commands stay valid for names with spaces"
+        );
+        assert!(
+            readme.contains("Reuse the same --published-at value"),
+            "generated README should explain how to append multiple artifacts to one release manifest"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rust_project_readme_uses_positional_release_source_and_slugged_artifact_names() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_rust_updater_guidance_{nonce}"));
+
+        create_rust_project(&root, "Demo App", "io.blinc.dev")
+            .expect("rust project template should be generated");
+
+        let readme =
+            fs::read_to_string(root.join("README.md")).expect("generated README should exist");
+        assert!(
+            readme.contains("blinc release manifest . \\"),
+            "rust README should use the positional source argument that the CLI actually exposes"
+        );
+        assert!(
+            !readme.contains("--source ."),
+            "rust README should not document a nonexistent --source flag"
+        );
+        assert!(
+            readme.contains("dist/demo_app.zip"),
+            "rust README should slug artifact filenames so example commands stay valid for names with spaces"
+        );
+        assert!(
+            readme.contains("https://example.com/releases/demo_app.zip"),
+            "rust README should slug artifact URLs so example commands stay valid for names with spaces"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rust_project_scaffold_includes_blincproj_for_release_workflow() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_rust_release_config_{nonce}"));
+
+        create_rust_project(&root, "Demo App", "io.blinc.dev")
+            .expect("rust project template should be generated");
+
+        let project = BlincProject::load_from_dir(&root)
+            .expect("rust project scaffold should include a .blincproj for release commands");
+        assert_eq!(
+            project
+                .platforms
+                .macos
+                .as_ref()
+                .map(|macos| macos.bundle_id.as_str()),
+            Some("io.blinc.dev.demo_app"),
+            "rust scaffold should preserve canonical platform identities in .blincproj"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn non_rust_project_rejects_unsafe_org_chars() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_non_rust_invalid_org_{nonce}"));
+
+        let err = create_project(
+            &root,
+            "DemoApp",
+            "default",
+            r#"com.example"; std::process::Command::new("calc").spawn().unwrap(); //"#,
+        )
+        .expect_err("unsafe org name should be rejected for non-rust projects");
+
+        assert!(
+            err.to_string().contains("Invalid organization name"),
+            "error should explain org name validation failure"
+        );
+        assert!(
+            !root.exists(),
+            "project directory should not be created when org is rejected"
+        );
+    }
+
+    #[test]
+    fn non_rust_project_rejects_android_invalid_org_segments() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("blinc_cli_non_rust_invalid_org_segment_{nonce}"));
+
+        let err = create_project(&root, "DemoApp", "default", "123.example")
+            .expect_err("android-invalid org segments should be rejected");
 
         assert!(
             err.to_string().contains("Invalid organization name"),

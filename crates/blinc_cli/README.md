@@ -119,6 +119,30 @@ Checking Blinc development environment...
 Environment is ready for Blinc development!
 ```
 
+### Release
+
+Generate signed release metadata for the current macOS desktop path and Android artifacts:
+
+```bash
+blinc release manifest . \
+  --platform macos \
+  --arch universal \
+  --artifact-path dist/Demo.zip \
+  --private-key "$BLINC_RELEASE_PRIVATE_KEY" \
+  --public-key-output dist/public-key.txt \
+  --url https://example.com/releases/Demo.zip \
+  --output dist/release-manifest.json \
+  --published-at 2026-03-07T00:00:00Z
+```
+
+Updater scope in v1:
+- macOS desktop self-update reference path
+- Windows/Linux desktop updater backends stay planned and explicitly unsupported in v1
+- Android private/development distribution handoff
+- iOS stays on App Store/TestFlight distribution
+
+Reuse the same `--published-at` value when appending multiple artifacts into one release manifest.
+
 ## Configuration
 
 Create a `Blinc.toml` in your project root:

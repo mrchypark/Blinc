@@ -20,12 +20,15 @@ members = [
     "crates/blinc_tabler_icons",
     "crates/blinc_debugger",
     "crates/blinc_runtime",
+    "crates/blinc_update",
     "crates/blinc_canvas_kit",
     "crates/blinc_test_suite",
     "extensions/blinc_platform_desktop",
     "extensions/blinc_platform_android",
     "extensions/blinc_platform_ios",
     "extensions/blinc_platform_harmony",
+    "extensions/blinc_update_android",
+    "extensions/blinc_update_desktop",
 ]
 
 # Platform-specific crates are included but have target-gated dependencies
