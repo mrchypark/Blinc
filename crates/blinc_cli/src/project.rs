@@ -1553,9 +1553,21 @@ fn parse_automation_args() -> Result<ParsedAutomationArgs> {{
     while let Some(arg) = args.next() {{
         match arg.as_str() {{
             "--headless" => {{
+                if matches!(mode, Some(AutomationMode::DesktopHarness)) {{
+                    return Err(BlincError::Other(
+                        "automation accepts either --headless or --desktop-harness, not both"
+                            .to_string(),
+                    ));
+                }}
                 mode = Some(AutomationMode::Headless);
             }}
             "--desktop-harness" => {{
+                if matches!(mode, Some(AutomationMode::Headless)) {{
+                    return Err(BlincError::Other(
+                        "automation accepts either --headless or --desktop-harness, not both"
+                            .to_string(),
+                    ));
+                }}
                 mode = Some(AutomationMode::DesktopHarness);
             }}
             "--scenario" => {{
@@ -3425,6 +3437,52 @@ transitions:
         assert!(
             stderr.contains("automation requires --scenario or --playbook"),
             "expected missing artifact error in stderr: {stderr}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generated_rust_template_rejects_conflicting_automation_modes() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("blinc_cli_conflicting_modes_{nonce}"));
+        let target_dir = std::env::temp_dir().join("blinc_cli_generated_template_target");
+
+        create_rust_project(&root, "DemoApp", "com.example")
+            .expect("rust project template should be generated");
+        fs::write(root.join("scenario.json"), r#"{"steps":[]}"#)
+            .expect("scenario fixture should be written");
+
+        let output = Command::new("cargo")
+            .arg("run")
+            .arg("--offline")
+            .arg("--manifest-path")
+            .arg(root.join("Cargo.toml"))
+            .arg("--bin")
+            .arg("demoapp_desktop")
+            .arg("--features")
+            .arg("desktop")
+            .arg("--")
+            .arg("--headless")
+            .arg("--desktop-harness")
+            .arg("--scenario")
+            .arg(root.join("scenario.json"))
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .current_dir(&root)
+            .output()
+            .expect("generated project should reject conflicting automation modes");
+
+        assert!(
+            !output.status.success(),
+            "generated app should fail when both automation mode flags are provided"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("automation accepts either --headless or --desktop-harness, not both"),
+            "expected conflicting mode error in stderr: {stderr}"
         );
 
         let _ = fs::remove_dir_all(&root);
