@@ -386,8 +386,22 @@ where
         let resolved = self.resolve_target(&locator)?;
         self.ensure_target_is_unoccluded(&resolved, "fill")?;
         self.ensure_target_focused(&resolved)?;
-        let select_all_key = parse_key("A").expect("select-all key should parse");
-        let backspace_key = parse_key("Backspace").expect("backspace key should parse");
+        let select_all_key = parse_key("A").ok_or_else(|| {
+            self.fail(
+                "internal_error",
+                "could not parse select-all key",
+                resolved.target.clone(),
+                None,
+            )
+        })?;
+        let backspace_key = parse_key("Backspace").ok_or_else(|| {
+            self.fail(
+                "internal_error",
+                "could not parse backspace key",
+                resolved.target.clone(),
+                None,
+            )
+        })?;
         self.dispatch_key_event(&resolved, select_all_key.key_code, select_all_modifiers())?;
         self.dispatch_key_event(&resolved, backspace_key.key_code, 0)?;
         for ch in value.chars() {
