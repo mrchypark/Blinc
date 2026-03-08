@@ -486,6 +486,17 @@ impl Default for RenderTree {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct ScrollDispatchOutcome {
+    pub(crate) remaining_x: f32,
+    pub(crate) remaining_y: f32,
+    pub(crate) physics_consumed_x: bool,
+    pub(crate) physics_consumed_y: bool,
+    pub(crate) custom_consumed_x: bool,
+    pub(crate) custom_consumed_y: bool,
+    pub(crate) dispatched: bool,
+}
+
 impl RenderTree {
     /// Create a new empty render tree
     pub fn new() -> Self {
@@ -3511,9 +3522,24 @@ impl RenderTree {
         ancestors: &[LayoutNodeId],
         mouse_x: f32,
         mouse_y: f32,
+        delta_x: f32,
+        delta_y: f32,
+    ) -> (f32, f32) {
+        let outcome = self.dispatch_scroll_chain_with_outcome(
+            hit_node, ancestors, mouse_x, mouse_y, delta_x, delta_y,
+        );
+        (outcome.remaining_x, outcome.remaining_y)
+    }
+
+    pub(crate) fn dispatch_scroll_chain_with_outcome(
+        &mut self,
+        hit_node: LayoutNodeId,
+        ancestors: &[LayoutNodeId],
+        mouse_x: f32,
+        mouse_y: f32,
         mut delta_x: f32,
         mut delta_y: f32,
-    ) -> (f32, f32) {
+    ) -> ScrollDispatchOutcome {
         // Build the chain from leaf to root (hit_node first, then ancestors in reverse)
         // ancestors is root to leaf, so we iterate in reverse and include hit_node
         let mut chain: Vec<LayoutNodeId> = vec![hit_node];
@@ -3522,6 +3548,8 @@ impl RenderTree {
                 chain.push(ancestor);
             }
         }
+
+        let mut outcome = ScrollDispatchOutcome::default();
 
         tracing::trace!(
             "dispatch_scroll_chain: hit={:?}, chain_len={}, delta=({:.1}, {:.1})",
@@ -3592,6 +3620,7 @@ impl RenderTree {
                     dispatch_x,
                     dispatch_y
                 );
+                outcome.dispatched = true;
                 self.handler_registry.dispatch(&ctx);
 
                 // Consume the delta for axes this scroll CAN consume (has room to scroll)
@@ -3600,23 +3629,29 @@ impl RenderTree {
                 if has_scroll_physics {
                     if can_consume_x && handles_x {
                         delta_x = 0.0;
+                        outcome.physics_consumed_x = true;
                     }
                     if can_consume_y && handles_y {
                         delta_y = 0.0;
+                        outcome.physics_consumed_y = true;
                     }
                 } else {
                     // Custom scroll handler - consume all delta (it handles its own bounds)
                     if handles_x {
                         delta_x = 0.0;
+                        outcome.custom_consumed_x = true;
                     }
                     if handles_y {
                         delta_y = 0.0;
+                        outcome.custom_consumed_y = true;
                     }
                 }
             }
         }
 
-        (delta_x, delta_y)
+        outcome.remaining_x = delta_x;
+        outcome.remaining_y = delta_y;
+        outcome
     }
 
     /// Dispatch scroll with time for touch velocity tracking (mobile)
@@ -3921,8 +3956,15 @@ impl RenderTree {
     }
 
     pub fn get_scroll_offset(&self, node_id: LayoutNodeId) -> (f32, f32) {
-        // Check scroll physics first (has direction-aware scroll from element)
-        let (x, y) = if let Some(physics) = self.scroll_physics.get(&node_id) {
+        let (x, y) = self.get_precise_scroll_offset(node_id);
+
+        // Round to whole pixels to prevent subpixel jitter
+        (x.round(), y.round())
+    }
+
+    /// Get the exact scroll offset without display rounding.
+    pub(crate) fn get_precise_scroll_offset(&self, node_id: LayoutNodeId) -> (f32, f32) {
+        if let Some(physics) = self.scroll_physics.get(&node_id) {
             if let Ok(p) = physics.try_lock() {
                 (p.offset_x, p.offset_y)
             } else {
@@ -3932,15 +3974,23 @@ impl RenderTree {
                     .unwrap_or((0.0, 0.0))
             }
         } else {
-            // Fallback to legacy scroll_offsets
             self.scroll_offsets
                 .get(&node_id)
                 .copied()
                 .unwrap_or((0.0, 0.0))
-        };
+        }
+    }
 
-        // Round to whole pixels to prevent subpixel jitter
-        (x.round(), y.round())
+    pub(crate) fn is_zero_scroll_delta(delta: f32) -> bool {
+        delta.abs() < 0.001
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scroll_physics_handle(
+        &self,
+        node_id: LayoutNodeId,
+    ) -> Option<crate::scroll::SharedScrollPhysics> {
+        self.scroll_physics.get(&node_id).cloned()
     }
 
     /// Apply a programmatic scroll delta directly to a specific node.

@@ -1450,14 +1450,11 @@ theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
 //! A Blinc UI application with desktop, Android, and iOS support.
 
 use blinc_app::prelude::*;
-use blinc_app::{{
-    BlincError, HeadlessRunConfig, HeadlessScenario, Playbook, ReportStatus,
-    run_desktop_harness_playbook, run_desktop_harness_scenario, run_headless_playbook,
-    run_headless_scenario,
-}};
 use blinc_app::windowed::{{WindowedApp, WindowedContext}};
 use blinc_core::reactive::State;
-use std::path::Path;
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod automation;
 
 /// Counter button with stateful hover/press states
 fn counter_button(
@@ -1535,216 +1532,6 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {{
         )
 }}
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn next_automation_value<I>(
-    args: &mut std::iter::Peekable<I>,
-    flag: &str,
-) -> Result<String>
-where
-    I: Iterator<Item = String>,
-{{
-    if args.peek().map_or(true, |next| next.starts_with("--")) {{
-        let msg = match flag {{
-            "--scenario" => "--scenario requires a file path",
-            "--playbook" => "--playbook requires a file path",
-            "--report" => "--report requires a file path",
-            _ => "flag requires a file path",
-        }};
-        return Err(BlincError::Other(msg.to_string()));
-    }}
-
-    Ok(args.next().expect("peeked value should exist"))
-}}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AutomationMode {{
-    Headless,
-    DesktopHarness,
-}}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-enum AutomationArtifact {{
-    Scenario(HeadlessScenario),
-    Playbook(Playbook),
-}}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-struct ParsedAutomationArgs {{
-    mode: Option<AutomationMode>,
-    artifact: Option<AutomationArtifact>,
-    report: Option<String>,
-}}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn parse_automation_args() -> Result<ParsedAutomationArgs> {{
-    let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
-    let has_automation_flag = raw_args.iter().any(|arg| is_automation_flag(arg));
-    if !has_automation_flag {{
-        return Ok(ParsedAutomationArgs {{
-            mode: None,
-            artifact: None,
-            report: None,
-        }});
-    }}
-
-    let mut mode: Option<AutomationMode> = None;
-    let mut scenario: Option<String> = None;
-    let mut playbook: Option<String> = None;
-    let mut report: Option<String> = None;
-
-    let mut args = raw_args.into_iter().peekable();
-
-    while let Some(arg) = args.next() {{
-        match arg.as_str() {{
-            "--headless" => {{
-                if matches!(mode, Some(AutomationMode::DesktopHarness)) {{
-                    return Err(BlincError::Other(
-                        "automation accepts either --headless or --desktop-harness, not both"
-                            .to_string(),
-                    ));
-                }}
-                mode = Some(AutomationMode::Headless);
-            }}
-            "--desktop-harness" => {{
-                if matches!(mode, Some(AutomationMode::Headless)) {{
-                    return Err(BlincError::Other(
-                        "automation accepts either --headless or --desktop-harness, not both"
-                            .to_string(),
-                    ));
-                }}
-                mode = Some(AutomationMode::DesktopHarness);
-            }}
-            "--scenario" => {{
-                scenario = Some(next_automation_value(&mut args, "--scenario")?);
-            }}
-            _ if arg.starts_with("--scenario=") => {{
-                scenario = Some(arg["--scenario=".len()..].to_string());
-            }}
-            "--playbook" => {{
-                playbook = Some(next_automation_value(&mut args, "--playbook")?);
-            }}
-            _ if arg.starts_with("--playbook=") => {{
-                playbook = Some(arg["--playbook=".len()..].to_string());
-            }}
-            "--report" => {{
-                report = Some(next_automation_value(&mut args, "--report")?);
-            }}
-            _ if arg.starts_with("--report=") => {{
-                report = Some(arg["--report=".len()..].to_string());
-            }}
-            _ if arg.starts_with("--") => {{
-                // Allow app-specific flags or cargo-injected options to coexist
-                // with automation mode selection in generated projects.
-            }}
-            _ => {{}}
-        }}
-    }}
-
-    if scenario.is_some() && playbook.is_some() {{
-        return Err(BlincError::Other(
-            "automation accepts either --scenario or --playbook, not both".to_string(),
-        ));
-    }}
-
-    let artifact_base = automation_artifact_base_dir()?;
-    let artifact = match (scenario, playbook) {{
-        (Some(path), None) => {{
-            let mut scenario = HeadlessScenario::from_path(Path::new(&path))?;
-            scenario.resolve_embedded_paths(&artifact_base);
-            Some(AutomationArtifact::Scenario(scenario))
-        }}
-        (None, Some(path)) => {{
-            let mut playbook = Playbook::from_path(Path::new(&path))?;
-            playbook.resolve_embedded_paths(&artifact_base);
-            Some(AutomationArtifact::Playbook(playbook))
-        }}
-        (None, None) => None,
-        (Some(_), Some(_)) => unreachable!("validated mutually exclusive automation inputs"),
-    }};
-
-    if artifact.is_none() && (mode.is_some() || report.is_some()) {{
-        return Err(BlincError::Other(
-            "automation requires --scenario or --playbook".to_string(),
-        ));
-    }}
-
-    let mode = artifact
-        .as_ref()
-        .map(|_| mode.unwrap_or(AutomationMode::Headless));
-
-    Ok(ParsedAutomationArgs {{
-        mode,
-        artifact,
-        report,
-    }})
-}}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn is_automation_flag(arg: &str) -> bool {{
-    matches!(
-        arg,
-        "--headless" | "--desktop-harness" | "--scenario" | "--playbook" | "--report"
-    ) || arg.starts_with("--scenario=")
-        || arg.starts_with("--playbook=")
-        || arg.starts_with("--report=")
-}}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn automation_artifact_base_dir() -> Result<std::path::PathBuf> {{
-    if let Some(invocation_cwd) = std::env::var_os("BLINC_AUTOMATION_INVOCATION_CWD") {{
-        return Ok(std::path::PathBuf::from(invocation_cwd));
-    }}
-    std::env::current_dir().map_err(|err| BlincError::Other(err.to_string()))
-}}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn run_automation_and_report_failure(
-    mode: AutomationMode,
-    artifact: AutomationArtifact,
-    report_path: Option<&str>,
-) -> Result<bool> {{
-    let runtime_cfg = HeadlessRunConfig {{
-        width: 400,
-        height: 600,
-        max_frames: 120,
-        tick_ms: 16,
-        probe_every_frames: 4,
-    }};
-    let outcome = match (mode, artifact) {{
-        (AutomationMode::Headless, AutomationArtifact::Scenario(scenario)) => {{
-            run_headless_scenario(runtime_cfg, &scenario, |ctx| app_ui(ctx))?
-        }}
-        (AutomationMode::Headless, AutomationArtifact::Playbook(playbook)) => {{
-            run_headless_playbook(runtime_cfg, &playbook, |ctx| app_ui(ctx))?
-        }}
-        (AutomationMode::DesktopHarness, AutomationArtifact::Scenario(scenario)) => {{
-            run_desktop_harness_scenario(runtime_cfg, &scenario, |ctx| app_ui(ctx))?
-        }}
-        (AutomationMode::DesktopHarness, AutomationArtifact::Playbook(playbook)) => {{
-            run_desktop_harness_playbook(runtime_cfg, &playbook, |ctx| app_ui(ctx))?
-        }}
-    }};
-
-    let report = &outcome.report;
-    if let Some(path) = report_path {{
-        let report_path = Path::new(path);
-        if let Some(parent) = report_path.parent() {{
-            if !parent.as_os_str().is_empty() {{
-                std::fs::create_dir_all(parent)
-                    .map_err(|err| BlincError::Other(err.to_string()))?;
-            }}
-        }}
-        let mut file = std::fs::File::create(report_path)
-            .map_err(|err| BlincError::Other(err.to_string()))?;
-        report.write_to_writer(&mut file)?;
-    }} else {{
-        report.write_to_writer(&mut std::io::stdout())?;
-    }}
-
-    Ok(matches!(report.status, ReportStatus::Failed))
-}}
-
 // =============================================================================
 // Desktop Entry Point
 // =============================================================================
@@ -1756,17 +1543,7 @@ fn main() -> Result<()> {{
         .init();
     ThemeState::init_default();
 
-    let automation = parse_automation_args()?;
-
-    if let Some(mode) = automation.mode {{
-        let artifact = automation.artifact.ok_or_else(|| {{
-            BlincError::Other("automation requires --scenario or --playbook".to_string())
-        }})?;
-        let failed = run_automation_and_report_failure(
-            mode,
-            artifact,
-            automation.report.as_deref(),
-        )?;
+    if let Some(failed) = automation::run_generated_automation()? {{
         if failed {{
             std::process::exit(2);
         }}
@@ -1818,6 +1595,249 @@ fn main() {{}}
 fn main() {{}}
 "#
         ),
+    )?;
+
+    fs::write(
+        path.join("src/automation.rs"),
+        r#"#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use blinc_app::prelude::*;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use blinc_app::{
+    BlincError, HeadlessRunConfig, HeadlessScenario, Playbook, ReportStatus,
+    run_desktop_harness_playbook, run_desktop_harness_scenario, run_headless_playbook,
+    run_headless_scenario,
+};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::path::Path;
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn next_automation_value<I>(
+    args: &mut std::iter::Peekable<I>,
+    flag: &str,
+) -> Result<String>
+where
+    I: Iterator<Item = String>,
+{
+    if args.peek().map_or(true, |next| next.starts_with("--")) {
+        let msg = match flag {
+            "--scenario" => "--scenario requires a file path",
+            "--playbook" => "--playbook requires a file path",
+            "--report" => "--report requires a file path",
+            _ => "flag requires a file path",
+        };
+        return Err(BlincError::Other(msg.to_string()));
+    }
+
+    Ok(args.next().expect("peeked value should exist"))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AutomationMode {
+    Headless,
+    DesktopHarness,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+enum AutomationArtifact {
+    Scenario(HeadlessScenario),
+    Playbook(Playbook),
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+struct ParsedAutomationArgs {
+    mode: Option<AutomationMode>,
+    artifact: Option<AutomationArtifact>,
+    report: Option<String>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn run_generated_automation() -> Result<Option<bool>> {
+    let automation = parse_automation_args()?;
+    let Some(mode) = automation.mode else {
+        return Ok(None);
+    };
+    let artifact = automation.artifact.ok_or_else(|| {
+        BlincError::Other("automation requires --scenario or --playbook".to_string())
+    })?;
+    let failed = run_automation_and_report_failure(mode, artifact, automation.report.as_deref())?;
+    Ok(Some(failed))
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub fn run_generated_automation() -> blinc_app::prelude::Result<Option<bool>> {
+    Ok(None)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn parse_automation_args() -> Result<ParsedAutomationArgs> {
+    let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
+    let has_automation_flag = raw_args.iter().any(|arg| is_automation_flag(arg));
+    if !has_automation_flag {
+        return Ok(ParsedAutomationArgs {
+            mode: None,
+            artifact: None,
+            report: None,
+        });
+    }
+
+    let mut mode: Option<AutomationMode> = None;
+    let mut scenario: Option<String> = None;
+    let mut playbook: Option<String> = None;
+    let mut report: Option<String> = None;
+
+    let mut args = raw_args.into_iter().peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--headless" => {
+                if matches!(mode, Some(AutomationMode::DesktopHarness)) {
+                    return Err(BlincError::Other(
+                        "automation accepts either --headless or --desktop-harness, not both"
+                            .to_string(),
+                    ));
+                }
+                mode = Some(AutomationMode::Headless);
+            }
+            "--desktop-harness" => {
+                if matches!(mode, Some(AutomationMode::Headless)) {
+                    return Err(BlincError::Other(
+                        "automation accepts either --headless or --desktop-harness, not both"
+                            .to_string(),
+                    ));
+                }
+                mode = Some(AutomationMode::DesktopHarness);
+            }
+            "--scenario" => {
+                scenario = Some(next_automation_value(&mut args, "--scenario")?);
+            }
+            _ if arg.starts_with("--scenario=") => {
+                scenario = Some(arg["--scenario=".len()..].to_string());
+            }
+            "--playbook" => {
+                playbook = Some(next_automation_value(&mut args, "--playbook")?);
+            }
+            _ if arg.starts_with("--playbook=") => {
+                playbook = Some(arg["--playbook=".len()..].to_string());
+            }
+            "--report" => {
+                report = Some(next_automation_value(&mut args, "--report")?);
+            }
+            _ if arg.starts_with("--report=") => {
+                report = Some(arg["--report=".len()..].to_string());
+            }
+            _ if arg.starts_with("--") => {
+                // Allow app-specific flags or cargo-injected options to coexist
+                // with automation mode selection in generated projects.
+            }
+            _ => {}
+        }
+    }
+
+    if scenario.is_some() && playbook.is_some() {
+        return Err(BlincError::Other(
+            "automation accepts either --scenario or --playbook, not both".to_string(),
+        ));
+    }
+
+    let artifact_base = automation_artifact_base_dir()?;
+    let artifact = match (scenario, playbook) {
+        (Some(path), None) => {
+            let mut scenario = HeadlessScenario::from_path(Path::new(&path))?;
+            scenario.resolve_embedded_paths(&artifact_base);
+            Some(AutomationArtifact::Scenario(scenario))
+        }
+        (None, Some(path)) => {
+            let mut playbook = Playbook::from_path(Path::new(&path))?;
+            playbook.resolve_embedded_paths(&artifact_base);
+            Some(AutomationArtifact::Playbook(playbook))
+        }
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("validated mutually exclusive automation inputs"),
+    };
+
+    if artifact.is_none() && (mode.is_some() || report.is_some()) {
+        return Err(BlincError::Other(
+            "automation requires --scenario or --playbook".to_string(),
+        ));
+    }
+
+    let mode = artifact
+        .as_ref()
+        .map(|_| mode.unwrap_or(AutomationMode::Headless));
+
+    Ok(ParsedAutomationArgs {
+        mode,
+        artifact,
+        report,
+    })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_automation_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--headless" | "--desktop-harness" | "--scenario" | "--playbook" | "--report"
+    ) || arg.starts_with("--scenario=")
+        || arg.starts_with("--playbook=")
+        || arg.starts_with("--report=")
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn automation_artifact_base_dir() -> Result<std::path::PathBuf> {
+    if let Some(invocation_cwd) = std::env::var_os("BLINC_AUTOMATION_INVOCATION_CWD") {
+        return Ok(std::path::PathBuf::from(invocation_cwd));
+    }
+    std::env::current_dir().map_err(|err| BlincError::Other(err.to_string()))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn run_automation_and_report_failure(
+    mode: AutomationMode,
+    artifact: AutomationArtifact,
+    report_path: Option<&str>,
+) -> Result<bool> {
+    let runtime_cfg = HeadlessRunConfig {
+        width: 400,
+        height: 600,
+        max_frames: 120,
+        tick_ms: 16,
+        probe_every_frames: 4,
+    };
+    let outcome = match (mode, artifact) {
+        (AutomationMode::Headless, AutomationArtifact::Scenario(scenario)) => {
+            run_headless_scenario(runtime_cfg, &scenario, |ctx| crate::app_ui(ctx))?
+        }
+        (AutomationMode::Headless, AutomationArtifact::Playbook(playbook)) => {
+            run_headless_playbook(runtime_cfg, &playbook, |ctx| crate::app_ui(ctx))?
+        }
+        (AutomationMode::DesktopHarness, AutomationArtifact::Scenario(scenario)) => {
+            run_desktop_harness_scenario(runtime_cfg, &scenario, |ctx| crate::app_ui(ctx))?
+        }
+        (AutomationMode::DesktopHarness, AutomationArtifact::Playbook(playbook)) => {
+            run_desktop_harness_playbook(runtime_cfg, &playbook, |ctx| crate::app_ui(ctx))?
+        }
+    };
+
+    let report = &outcome.report;
+    if let Some(path) = report_path {
+        let report_path = Path::new(path);
+        if let Some(parent) = report_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| BlincError::Other(err.to_string()))?;
+            }
+        }
+        let mut file = std::fs::File::create(report_path)
+            .map_err(|err| BlincError::Other(err.to_string()))?;
+        report.write_to_writer(&mut file)?;
+    } else {
+        report.write_to_writer(&mut std::io::stdout())?;
+    }
+
+    Ok(matches!(report.status, ReportStatus::Failed))
+}
+"#,
     )?;
 
     // Create blinc.toml
@@ -2982,38 +3002,40 @@ mod tests {
 
         let main_rs =
             fs::read_to_string(root.join("src/main.rs")).expect("generated main.rs should exist");
+        let automation_rs = fs::read_to_string(root.join("src/automation.rs"))
+            .expect("generated automation.rs should exist");
 
         assert!(
-            main_rs.contains("--headless"),
-            "generated template should parse --headless flag"
+            automation_rs.contains("--headless"),
+            "generated automation module should parse --headless flag"
         );
         assert!(
-            main_rs.contains("parse_automation_args"),
-            "generated template should include automation argument parsing"
+            automation_rs.contains("parse_automation_args"),
+            "generated automation module should include automation argument parsing"
         );
         assert!(
-            main_rs.contains("has_automation_flag"),
-            "generated template should only activate automation parsing when automation flags are present"
+            automation_rs.contains("is_automation_flag"),
+            "generated automation module should only activate automation parsing when automation flags are present"
         );
         assert!(
-            main_rs.contains("run_headless_scenario"),
-            "generated template should wire the automation session runner"
+            automation_rs.contains("run_headless_scenario"),
+            "generated automation module should wire the automation session runner"
         );
         assert!(
-            main_rs.contains("run_desktop_harness_playbook"),
-            "generated template should bridge desktop harness playbook execution"
+            automation_rs.contains("run_desktop_harness_playbook"),
+            "generated automation module should bridge desktop harness playbook execution"
         );
         assert!(
-            main_rs.contains("fn next_automation_value"),
-            "generated template should avoid borrowing args through a capturing closure"
+            automation_rs.contains("fn next_automation_value"),
+            "generated automation module should avoid borrowing args through a capturing closure"
         );
         assert!(
-            main_rs.contains("--playbook"),
-            "generated template should parse playbook automation arguments"
+            automation_rs.contains("--playbook"),
+            "generated automation module should parse playbook automation arguments"
         );
         assert!(
-            main_rs.contains("--desktop-harness"),
-            "generated template should parse desktop harness mode"
+            automation_rs.contains("--desktop-harness"),
+            "generated automation module should parse desktop harness mode"
         );
         assert!(
             main_rs.contains("ThemeState::init_default()"),
@@ -3577,6 +3599,8 @@ transitions:
 
         let main_rs = fs::read_to_string(root.join("src").join("main.rs"))
             .expect("generated main.rs should be readable");
+        let automation_rs = fs::read_to_string(root.join("src").join("automation.rs"))
+            .expect("generated automation.rs should be readable");
         assert!(
             !main_rs.contains("starts_with(\"--head\")"),
             "generated template should not hijack unrelated --head* flags"
@@ -3598,8 +3622,8 @@ transitions:
             "generated template should not hijack unrelated --report* flags"
         );
         assert!(
-            main_rs.contains("fn is_automation_flag"),
-            "generated template should centralize exact automation flag detection"
+            automation_rs.contains("fn is_automation_flag"),
+            "generated automation module should centralize exact automation flag detection"
         );
 
         let _ = fs::remove_dir_all(&root);

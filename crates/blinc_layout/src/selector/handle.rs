@@ -128,6 +128,21 @@ fn bounds_center(bounds: ElementBounds) -> (f32, f32) {
     )
 }
 
+fn fallback_scroll_delta(
+    original: f32,
+    remaining: f32,
+    physics_consumed: bool,
+    custom_consumed: bool,
+) -> f32 {
+    if custom_consumed {
+        0.0
+    } else if physics_consumed {
+        original
+    } else {
+        remaining
+    }
+}
+
 fn modifier_flags(modifiers: u8) -> (bool, bool, bool, bool) {
     (
         modifiers & 0b0001 != 0,
@@ -224,17 +239,43 @@ pub fn dispatch_programmatic_event_to_node(
             let hover_events = router.on_mouse_move(tree, mouse_x, mouse_y);
             let _ = dispatch_pointer_events(tree, router, hover_events, mouse_x, mouse_y);
             let ancestors = ancestor_chain_for(tree, node_id);
-            let (remaining_x, remaining_y) =
-                tree.dispatch_scroll_chain(node_id, &ancestors, mouse_x, mouse_y, dx, dy);
-            if (remaining_x - dx).abs() > f32::EPSILON || (remaining_y - dy).abs() > f32::EPSILON {
-                return true;
-            }
             let mut chain = vec![node_id];
             chain.extend(ancestors.iter().rev().copied().filter(|id| *id != node_id));
+            let before_offsets = chain
+                .iter()
+                .copied()
+                .map(|candidate| (candidate, tree.get_precise_scroll_offset(candidate)))
+                .collect::<Vec<_>>();
+            let outcome = tree
+                .dispatch_scroll_chain_with_outcome(node_id, &ancestors, mouse_x, mouse_y, dx, dy);
+            if before_offsets
+                .iter()
+                .any(|(candidate, before)| tree.get_precise_scroll_offset(*candidate) != *before)
+            {
+                return true;
+            }
+            let fallback_x = fallback_scroll_delta(
+                dx,
+                outcome.remaining_x,
+                outcome.physics_consumed_x,
+                outcome.custom_consumed_x,
+            );
+            let fallback_y = fallback_scroll_delta(
+                dy,
+                outcome.remaining_y,
+                outcome.physics_consumed_y,
+                outcome.custom_consumed_y,
+            );
+            if RenderTree::is_zero_scroll_delta(fallback_x)
+                && RenderTree::is_zero_scroll_delta(fallback_y)
+            {
+                return outcome.dispatched;
+            }
             chain
                 .iter()
                 .copied()
-                .any(|candidate| tree.scroll_node_by(candidate, remaining_x, remaining_y))
+                .any(|candidate| tree.scroll_node_by(candidate, fallback_x, fallback_y))
+                || outcome.dispatched
         }
         ProgrammaticElementEvent::Custom(event_type) => {
             let Some(bounds) = tree.get_absolute_bounds(node_id) else {
@@ -1098,6 +1139,110 @@ mod tests {
             ProgrammaticElementEvent::Scroll { dx: 0.0, dy: -40.0 },
         ));
         assert_eq!(scroll_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(tree.get_scroll_offset(host), (0.0, -40.0));
+    }
+
+    #[test]
+    fn programmatic_scroll_does_not_double_apply_fractional_handler_updates() {
+        let _guard = selector_test_guard();
+
+        let ui = div()
+            .id("scroll.host")
+            .w(160.0)
+            .h(80.0)
+            .overflow_y_scroll()
+            .on_scroll(|_| {})
+            .child(div().h(320.0).child(text("Scrollable content")));
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 120.0);
+        let mut router = EventRouter::new();
+        let host = tree
+            .query_by_id("scroll.host")
+            .expect("scroll host should exist");
+
+        assert!(dispatch_programmatic_event_to_node(
+            &mut tree,
+            &mut router,
+            host,
+            ProgrammaticElementEvent::Scroll { dx: 0.0, dy: -0.4 },
+        ));
+        assert_eq!(tree.get_precise_scroll_offset(host), (0.0, -0.4));
+        assert_eq!(tree.get_scroll_offset(host), (0.0, 0.0));
+    }
+
+    #[test]
+    fn programmatic_scroll_does_not_bypass_custom_scroll_handlers() {
+        let _guard = selector_test_guard();
+
+        let scroll_hits = Arc::new(AtomicUsize::new(0));
+        let scroll_hits_for_handler = Arc::clone(&scroll_hits);
+
+        let ui = div().child(
+            div()
+                .id("scroll.host")
+                .w(160.0)
+                .h(80.0)
+                .on_scroll(move |_| {
+                    scroll_hits_for_handler.fetch_add(1, Ordering::SeqCst);
+                })
+                .child(text("Handler-owned scroll")),
+        );
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 120.0);
+        let mut router = EventRouter::new();
+        let host = tree
+            .query_by_id("scroll.host")
+            .expect("scroll host should exist");
+
+        assert!(dispatch_programmatic_event_to_node(
+            &mut tree,
+            &mut router,
+            host,
+            ProgrammaticElementEvent::Scroll { dx: 0.0, dy: -24.0 },
+        ));
+        assert_eq!(scroll_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(tree.get_precise_scroll_offset(host), (0.0, 0.0));
+    }
+
+    #[test]
+    fn programmatic_scroll_succeeds_while_scroll_physics_is_bouncing() {
+        let _guard = selector_test_guard();
+
+        let scroll_hits = Arc::new(AtomicUsize::new(0));
+        let scroll_hits_for_handler = Arc::clone(&scroll_hits);
+
+        let ui = div()
+            .id("scroll.host")
+            .w(160.0)
+            .h(80.0)
+            .overflow_y_scroll()
+            .on_scroll(move |_| {
+                scroll_hits_for_handler.fetch_add(1, Ordering::SeqCst);
+            })
+            .child(div().h(320.0).child(text("Scrollable content")));
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 120.0);
+        let mut router = EventRouter::new();
+        let host = tree
+            .query_by_id("scroll.host")
+            .expect("scroll host should exist");
+        let physics = tree
+            .scroll_physics_handle(host)
+            .expect("scroll physics should exist");
+        {
+            let mut physics = physics.lock().expect("scroll physics should lock");
+            physics.state = crate::stateful::ScrollState::Bouncing;
+            physics.offset_y = 12.0;
+        }
+
+        assert!(dispatch_programmatic_event_to_node(
+            &mut tree,
+            &mut router,
+            host,
+            ProgrammaticElementEvent::Scroll { dx: 0.0, dy: -24.0 },
+        ));
+        assert_eq!(scroll_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(tree.get_precise_scroll_offset(host), (0.0, 12.0));
     }
 
     #[test]

@@ -300,12 +300,16 @@ impl EventRouter {
             }
         });
 
-        let result = operation(self);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
         self.event_callback = previous_callback;
-        let collected = Rc::into_inner(collected)
-            .expect("event collection callback should be dropped before returning")
-            .into_inner();
-        (collected, result)
+        let collected = match Rc::try_unwrap(collected) {
+            Ok(collected) => collected.into_inner(),
+            Err(collected) => std::mem::take(&mut *collected.borrow_mut()),
+        };
+        match result {
+            Ok(result) => (collected, result),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     /// Get the currently focused element
@@ -1936,6 +1940,32 @@ mod tests {
             let captured = events.borrow();
             assert!(captured.contains(&event_types::WINDOW_FOCUS));
         }
+    }
+
+    #[test]
+    fn collect_events_restores_previous_callback_after_panic() {
+        let ui = div().w(400.0).h(300.0).child(div().w(100.0).h(100.0));
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(400.0, 300.0);
+
+        let events: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+        let events_clone = Rc::clone(&events);
+
+        let mut router = EventRouter::new();
+        router.set_event_callback(move |_node, event| {
+            events_clone.borrow_mut().push(event);
+        });
+
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = router.collect_events(|_| panic!("boom"));
+        }));
+        assert!(panic_result.is_err());
+        assert!(router.event_callback.is_some());
+
+        let node = router.hit_test(&tree, 50.0, 50.0).unwrap().node;
+        router.emit_event(node, event_types::FOCUS);
+
+        assert_eq!(events.borrow().as_slice(), &[event_types::FOCUS]);
     }
 
     #[test]
