@@ -18,7 +18,7 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 blinc_core = { path = "../blinc_core", version = "0.1.14" }
-blinc_layout = { path = "../blinc_layout", version = "0.1.14" }
+blinc_layout = { path = "../blinc_layout", version = "0.1.14", features = ["recorder"] }
 blinc_gpu = { path = "../blinc_gpu", version = "0.1.14", default-features = false }
 blinc_svg = { path = "../blinc_svg", version = "0.1.14" }
 blinc_text = { path = "../blinc_text", version = "0.1.14" }
@@ -46,6 +46,7 @@ anyhow.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 
 # Logging
 tracing.workspace = true

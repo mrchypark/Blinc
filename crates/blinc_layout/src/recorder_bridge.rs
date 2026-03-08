@@ -7,6 +7,9 @@ use blinc_core::BlincContextState;
 use std::any::Any;
 use std::collections::HashMap;
 
+#[cfg(feature = "recorder")]
+use blinc_recorder::{get_recorder, TraceEntryKind, TraceLocatorResolution};
+
 /// Mouse button for recorder events
 #[derive(Clone, Copy, Debug)]
 pub enum RecorderMouseButton {
@@ -157,6 +160,31 @@ pub fn record_update(element_id: &str, category: blinc_core::UpdateCategory) {
         if ctx.is_recording_updates() {
             ctx.record_update(element_id, category);
         }
+    }
+}
+
+/// Record locator resolution evidence in the active recorder session.
+pub fn record_locator_resolution(
+    query: &str,
+    matched_target: Option<&str>,
+    candidate_targets: &[String],
+    failure_reason: Option<&str>,
+) {
+    #[cfg(feature = "recorder")]
+    if let Some(session) = get_recorder() {
+        let _ = session.try_record_trace_entry(TraceEntryKind::LocatorResolution(
+            TraceLocatorResolution {
+                query: query.to_string(),
+                matched_target: matched_target.map(str::to_string),
+                candidate_targets: candidate_targets.to_vec(),
+                failure_reason: failure_reason.map(str::to_string),
+            },
+        ));
+    }
+
+    #[cfg(not(feature = "recorder"))]
+    {
+        let _ = (query, matched_target, candidate_targets, failure_reason);
     }
 }
 
@@ -486,7 +514,7 @@ pub(crate) fn to_recorded_event(event: RecorderEventData) -> blinc_recorder::Rec
 }
 
 #[cfg(feature = "recorder")]
-pub(crate) fn to_tree_snapshot(snapshot: TreeSnapshotData) -> blinc_recorder::TreeSnapshot {
+pub fn to_tree_snapshot(snapshot: TreeSnapshotData) -> blinc_recorder::TreeSnapshot {
     let mut converted = blinc_recorder::TreeSnapshot::new(
         blinc_recorder::Timestamp::zero(),
         snapshot.window_size,
@@ -540,6 +568,7 @@ pub(crate) fn to_tree_snapshot(snapshot: TreeSnapshotData) -> blinc_recorder::Tr
 #[cfg(all(test, feature = "recorder"))]
 mod tests {
     use super::*;
+    use crate::prelude::*;
 
     #[test]
     fn converts_mouse_click_to_recorded_event() {
@@ -615,6 +644,28 @@ mod tests {
         assert_eq!(props.transform, Some([1.0, 0.0, 0.0, 1.0, 4.0, 8.0]));
         assert_eq!(props.styles.get("z-index").map(String::as_str), Some("3"));
     }
+
+    #[test]
+    fn capture_tree_snapshot_prefers_registered_element_ids() {
+        let ui = div()
+            .id("root")
+            .child(div().id("status").child(text("Ready")));
+        let mut tree = crate::renderer::RenderTree::from_element(&ui);
+        tree.compute_layout(400.0, 200.0);
+
+        let snapshot = capture_tree_snapshot(
+            &tree,
+            tree.query_by_id("status"),
+            &std::collections::HashSet::new(),
+            400,
+            200,
+        );
+
+        assert_eq!(snapshot.root_id.as_deref(), Some("root"));
+        assert!(snapshot.elements.contains_key("root"));
+        assert!(snapshot.elements.contains_key("status"));
+        assert_eq!(snapshot.focused_element.as_deref(), Some("status"));
+    }
 }
 
 /// Capture a tree snapshot from a RenderTree.
@@ -632,13 +683,19 @@ pub fn capture_tree_snapshot(
     let mut snapshot = TreeSnapshotData::new((window_width, window_height), scale_factor);
 
     if let Some(root) = tree.root() {
-        snapshot.root_id = Some(format!("{:?}", root));
+        snapshot.root_id = Some(snapshot_node_id(tree, root));
         capture_node_recursive(tree, root, None, focused_node, hovered_nodes, &mut snapshot);
     }
 
-    snapshot.focused_element = focused_node.map(|n| format!("{:?}", n));
+    snapshot.focused_element = focused_node.map(|node| snapshot_node_id(tree, node));
 
     snapshot
+}
+
+fn snapshot_node_id(tree: &crate::renderer::RenderTree, node: crate::tree::LayoutNodeId) -> String {
+    tree.element_registry()
+        .get_id(node)
+        .unwrap_or_else(|| format!("node#{}", node.to_raw()))
 }
 
 /// Recursively capture a node and its children.
@@ -650,7 +707,7 @@ fn capture_node_recursive(
     hovered_nodes: &std::collections::HashSet<crate::tree::LayoutNodeId>,
     snapshot: &mut TreeSnapshotData,
 ) {
-    let node_id_str = format!("{:?}", node);
+    let node_id_str = snapshot_node_id(tree, node);
 
     // Get bounds
     let bounds = tree
@@ -704,7 +761,10 @@ fn capture_node_recursive(
 
     // Get children
     let children = tree.layout().children(node);
-    let child_ids: Vec<String> = children.iter().map(|c| format!("{:?}", c)).collect();
+    let child_ids: Vec<String> = children
+        .iter()
+        .map(|child| snapshot_node_id(tree, *child))
+        .collect();
 
     // Simplified check - a more thorough check would need handler registry access
     let is_interactive = render_node.is_some();
@@ -718,7 +778,7 @@ fn capture_node_recursive(
         is_hovered: hovered_nodes.contains(&node),
         is_interactive,
         children: child_ids,
-        parent: parent.map(|p| format!("{:?}", p)),
+        parent: parent.map(|parent| snapshot_node_id(tree, parent)),
         visual_props,
         text_content,
     };
@@ -727,7 +787,7 @@ fn capture_node_recursive(
 
     // Update hovered element in snapshot if this node is hovered
     if hovered_nodes.contains(&node) {
-        snapshot.hovered_element = Some(format!("{:?}", node));
+        snapshot.hovered_element = Some(snapshot_node_id(tree, node));
     }
 
     // Recurse into children

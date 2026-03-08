@@ -219,8 +219,8 @@ div()
 | ----- | ----------- |
 | [**blinc_cli**](crates/blinc_cli/README.md) | Command-line tooling |
 | [**blinc_macros**](crates/blinc_macros/README.md) | Procedural macros for components |
-| [**blinc_debugger**](crates/blinc_debugger/README.md) | Visual debugger overlay |
-| [**blinc_recorder**](crates/blinc_recorder/README.md) | Frame recording and debugging |
+| [**blinc_debugger**](crates/blinc_debugger/README.md) | Trace-aware debugger for recordings and automation runs |
+| [**blinc_recorder**](crates/blinc_recorder/README.md) | Event, snapshot, and trace capture |
 | [**blinc_runtime**](crates/blinc_runtime/README.md) | Embedding SDK for host applications |
 | [**blinc_test_suite**](crates/blinc_test_suite/README.md) | Visual regression testing framework |
 
@@ -544,7 +544,7 @@ Reference docs:
 
 - **Zyntax DSL** - `.blinc` file syntax with compile-time optimization
 - Hot reload during development
-- Developer tools (inspector, animation debugger)
+- Developer tools (inspector, recorder, automation debugger)
 - IDE integration (VS Code extension, LSP)
 
 ## Documentation

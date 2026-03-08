@@ -2196,6 +2196,9 @@ impl ElementBuilder for TextInput {
                             } else {
                                 Some(data.placeholder.clone())
                             })
+                            .with_description(
+                                (!data.placeholder.is_empty()).then(|| data.placeholder.clone()),
+                            )
                             .with_value(Some(data.value_with_composition()))
                             .with_focusable(true)
                             .with_focused(data.visual.is_focused())
@@ -2232,6 +2235,14 @@ impl ElementBuilder for TextInput {
 
     fn semantic_type_name(&self) -> Option<&'static str> {
         Some("input")
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {

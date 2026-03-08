@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 blinc_core = { path = "../blinc_core", version = "0.1.14" }
 blinc_animation = { path = "../blinc_animation", version = "0.1.14" }
+blinc_app = { path = "../blinc_app", version = "0.1.14" }
 
 # CLI
 clap.workspace = true

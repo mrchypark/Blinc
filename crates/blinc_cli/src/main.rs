@@ -9,10 +9,12 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+mod automation;
 mod config;
 mod doctor;
 mod project;
 
+use automation::{cmd_automation, AutomationCommands};
 use config::BlincConfig;
 
 #[derive(Parser)]
@@ -122,6 +124,12 @@ enum Commands {
 
     /// Check platform setup and dependencies
     Doctor,
+
+    /// Run automation scenarios; validate or export playbooks
+    Automation {
+        #[command(subcommand)]
+        command: AutomationCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -195,6 +203,8 @@ fn main() -> Result<()> {
         Commands::Info => cmd_info(),
 
         Commands::Doctor => cmd_doctor(),
+
+        Commands::Automation { command } => cmd_automation(command),
     }
 }
 

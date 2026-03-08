@@ -203,6 +203,17 @@ impl ReactiveGraph {
         }
     }
 
+    /// Clear all signals, derived values, and effects.
+    pub fn clear(&mut self) {
+        self.signals.clear();
+        self.derived.clear();
+        self.effects.clear();
+        self.pending_effects.borrow_mut().clear();
+        self.batch_depth.set(0);
+        *self.tracking.borrow_mut() = None;
+        self.global_version.set(0);
+    }
+
     // =========================================================================
     // SIGNALS
     // =========================================================================

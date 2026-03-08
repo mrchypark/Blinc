@@ -3018,6 +3018,162 @@ impl RenderTree {
         }
     }
 
+    fn apply_pending_scroll(
+        &mut self,
+        node_id: LayoutNodeId,
+        pending_scroll: crate::selector::PendingScroll,
+    ) -> bool {
+        use crate::selector::PendingScroll;
+
+        let Some(physics_arc) = self.scroll_physics.get(&node_id).cloned() else {
+            return false;
+        };
+        let mut physics = physics_arc.lock().unwrap();
+
+        match pending_scroll {
+            PendingScroll::ToOffset { x, y, smooth: _ } => {
+                physics.offset_x = -x;
+                physics.offset_y = -y;
+            }
+            PendingScroll::ByAmount { dx, dy, smooth: _ } => {
+                physics.apply_scroll_delta(dx, dy);
+            }
+            PendingScroll::ToTop { smooth: _ } => {
+                physics.offset_y = 0.0;
+            }
+            PendingScroll::ToBottom { smooth: _ } => {
+                physics.offset_y = physics.max_offset_y();
+            }
+            PendingScroll::ToElement {
+                element_id,
+                options,
+            } => {
+                drop(physics);
+                let Some(target_node) = self.element_registry.get(&element_id) else {
+                    return false;
+                };
+                let Some(target_bounds) = self.get_absolute_bounds(target_node) else {
+                    return false;
+                };
+                let Some(container_bounds) = self.get_absolute_bounds(node_id) else {
+                    return false;
+                };
+
+                physics = physics_arc.lock().unwrap();
+                let relative_y = target_bounds.y - container_bounds.y;
+                let relative_x = target_bounds.x - container_bounds.x;
+                let viewport_height = physics.viewport_height;
+                let viewport_width = physics.viewport_width;
+                let target_offset_y = match options.block {
+                    crate::selector::ScrollBlock::Start => (physics.offset_y - relative_y)
+                        .clamp(physics.max_offset_y(), physics.min_offset_y()),
+                    crate::selector::ScrollBlock::Center => {
+                        let target_center_y =
+                            relative_y + target_bounds.height / 2.0 - viewport_height / 2.0;
+                        (physics.offset_y - target_center_y)
+                            .clamp(physics.max_offset_y(), physics.min_offset_y())
+                    }
+                    crate::selector::ScrollBlock::End => {
+                        let target_end_y = relative_y + target_bounds.height - viewport_height;
+                        (physics.offset_y - target_end_y)
+                            .clamp(physics.max_offset_y(), physics.min_offset_y())
+                    }
+                    crate::selector::ScrollBlock::Nearest => {
+                        if relative_y < 0.0 {
+                            (physics.offset_y - relative_y)
+                                .clamp(physics.max_offset_y(), physics.min_offset_y())
+                        } else if relative_y + target_bounds.height > viewport_height {
+                            let target_end_y = relative_y + target_bounds.height - viewport_height;
+                            (physics.offset_y - target_end_y)
+                                .clamp(physics.max_offset_y(), physics.min_offset_y())
+                        } else {
+                            physics.offset_y
+                        }
+                    }
+                };
+
+                let target_offset_x = match options.inline {
+                    crate::selector::ScrollInline::Start => (physics.offset_x - relative_x)
+                        .clamp(physics.max_offset_x(), physics.min_offset_x()),
+                    crate::selector::ScrollInline::Center => {
+                        let target_center_x =
+                            relative_x + target_bounds.width / 2.0 - viewport_width / 2.0;
+                        (physics.offset_x - target_center_x)
+                            .clamp(physics.max_offset_x(), physics.min_offset_x())
+                    }
+                    crate::selector::ScrollInline::End => {
+                        let target_end_x = relative_x + target_bounds.width - viewport_width;
+                        (physics.offset_x - target_end_x)
+                            .clamp(physics.max_offset_x(), physics.min_offset_x())
+                    }
+                    crate::selector::ScrollInline::Nearest => {
+                        if relative_x < 0.0 {
+                            (physics.offset_x - relative_x)
+                                .clamp(physics.max_offset_x(), physics.min_offset_x())
+                        } else if relative_x + target_bounds.width > viewport_width {
+                            let target_end_x = relative_x + target_bounds.width - viewport_width;
+                            (physics.offset_x - target_end_x)
+                                .clamp(physics.max_offset_x(), physics.min_offset_x())
+                        } else {
+                            physics.offset_x
+                        }
+                    }
+                };
+
+                if options.behavior == crate::selector::ScrollBehavior::Smooth {
+                    physics.scroll_to_animated(target_offset_x, target_offset_y);
+                } else {
+                    physics.offset_y = target_offset_y;
+                    if matches!(
+                        physics.config.direction,
+                        crate::scroll::ScrollDirection::Horizontal
+                            | crate::scroll::ScrollDirection::Both
+                    ) {
+                        physics.offset_x = target_offset_x;
+                    }
+                }
+            }
+        }
+
+        if let Some(scroll_ref) = self.scroll_refs.get(&node_id) {
+            scroll_ref.update_state(
+                (physics.offset_x.abs(), physics.offset_y.abs()),
+                (physics.content_width, physics.content_height),
+                (physics.viewport_width, physics.viewport_height),
+            );
+        }
+
+        true
+    }
+
+    /// Scroll the nearest scrollable ancestor until the requested element becomes visible.
+    pub fn scroll_element_into_view(
+        &mut self,
+        element_id: &str,
+        options: crate::selector::ScrollOptions,
+    ) -> bool {
+        let Some(target_node) = self.element_registry.get(element_id) else {
+            return false;
+        };
+
+        let mut current = self.element_registry.get_parent(target_node);
+        let mut handled = false;
+        while let Some(node_id) = current {
+            if self.scroll_physics.contains_key(&node_id) {
+                handled |= self.apply_pending_scroll(
+                    node_id,
+                    crate::selector::PendingScroll::ToElement {
+                        element_id: element_id.to_string(),
+                        options,
+                    },
+                );
+            }
+            current = self.element_registry.get_parent(node_id);
+        }
+
+        handled
+    }
+
     /// Process all pending scroll operations from bound ScrollRefs
     ///
     /// This should be called each frame before rendering to apply any
@@ -3025,8 +3181,6 @@ impl RenderTree {
     ///
     /// Returns true if any scroll state was modified.
     pub fn process_pending_scroll_refs(&mut self) -> bool {
-        use crate::selector::PendingScroll;
-
         let mut any_modified = false;
 
         // Collect scroll refs that have pending operations from active_scroll_refs
@@ -3042,88 +3196,7 @@ impl RenderTree {
             })
             .collect();
         for (node_id, pending_scroll) in pending {
-            let Some(physics) = self.scroll_physics.get(&node_id) else {
-                continue;
-            };
-
-            let mut physics = physics.lock().unwrap();
-            any_modified = true;
-
-            match pending_scroll {
-                PendingScroll::ToOffset { x, y, smooth: _ } => {
-                    // For now, instant scroll (smooth animation TBD)
-                    physics.offset_x = -x;
-                    physics.offset_y = -y;
-                }
-                PendingScroll::ByAmount { dx, dy, smooth: _ } => {
-                    physics.apply_scroll_delta(dx, dy);
-                }
-                PendingScroll::ToTop { smooth: _ } => {
-                    physics.offset_y = 0.0;
-                }
-                PendingScroll::ToBottom { smooth: _ } => {
-                    physics.offset_y = physics.max_offset_y();
-                }
-                PendingScroll::ToElement {
-                    element_id,
-                    options,
-                } => {
-                    // Look up element bounds and scroll to make it visible
-                    if let Some(target_node) = self.element_registry.get(&element_id) {
-                        // Get target element's bounds
-                        if let Some(target_bounds) = self.get_bounds(target_node) {
-                            // Get scroll container's bounds
-                            if let Some(container_bounds) = self.get_bounds(node_id) {
-                                // Calculate scroll offset to bring element into view
-                                // Element's position relative to scroll container
-                                let relative_y = target_bounds.y - container_bounds.y;
-                                let relative_x = target_bounds.x - container_bounds.x;
-
-                                // Scroll to center the element (or just make it visible)
-                                let viewport_height = physics.viewport_height;
-                                let viewport_width = physics.viewport_width;
-
-                                // Calculate target offsets
-                                // Center vertically
-                                let target_center_y =
-                                    relative_y + target_bounds.height / 2.0 - viewport_height / 2.0;
-                                let target_offset_y = (-target_center_y)
-                                    .clamp(physics.max_offset_y(), physics.min_offset_y());
-
-                                // Center horizontally
-                                let target_center_x =
-                                    relative_x + target_bounds.width / 2.0 - viewport_width / 2.0;
-                                let target_offset_x = (-target_center_x)
-                                    .clamp(physics.max_offset_x(), physics.min_offset_x());
-
-                                // Use smooth animation if requested
-                                if options.behavior == crate::selector::ScrollBehavior::Smooth {
-                                    physics.scroll_to_animated(target_offset_x, target_offset_y);
-                                } else {
-                                    // Instant scroll
-                                    physics.offset_y = target_offset_y;
-                                    if matches!(
-                                        physics.config.direction,
-                                        crate::scroll::ScrollDirection::Horizontal
-                                            | crate::scroll::ScrollDirection::Both
-                                    ) {
-                                        physics.offset_x = target_offset_x;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Update ScrollRef with current state
-            if let Some(scroll_ref) = self.scroll_refs.get(&node_id) {
-                scroll_ref.update_state(
-                    (physics.offset_x.abs(), physics.offset_y.abs()),
-                    (physics.content_width, physics.content_height),
-                    (physics.viewport_width, physics.viewport_height),
-                );
-            }
+            any_modified |= self.apply_pending_scroll(node_id, pending_scroll);
         }
 
         any_modified
@@ -3870,6 +3943,29 @@ impl RenderTree {
         (x.round(), y.round())
     }
 
+    /// Apply a programmatic scroll delta directly to a specific node.
+    ///
+    /// Returns `true` when the node's visible scroll position changed.
+    pub fn scroll_node_by(&mut self, node_id: LayoutNodeId, delta_x: f32, delta_y: f32) -> bool {
+        let before = self.get_scroll_offset(node_id);
+
+        if let Some(physics) = self.scroll_physics.get(&node_id) {
+            let mut physics = physics.lock().unwrap();
+            physics.apply_scroll_delta(delta_x, delta_y);
+            if let Some(scroll_ref) = self.scroll_refs.get(&node_id) {
+                scroll_ref.update_state(
+                    (physics.offset_x.abs(), physics.offset_y.abs()),
+                    (physics.content_width, physics.content_height),
+                    (physics.viewport_width, physics.viewport_height),
+                );
+            }
+        } else {
+            self.apply_scroll_delta_with_bounds(node_id, delta_x, delta_y);
+        }
+
+        self.get_scroll_offset(node_id) != before
+    }
+
     /// Get the motion translation for a node (if it has motion bindings)
     ///
     /// Returns the current translation transform from any bound AnimatedValue(s).
@@ -4088,6 +4184,81 @@ impl RenderTree {
     pub fn transfer_scroll_physics_from(&mut self, other: &RenderTree) {
         for (node_id, physics) in &other.scroll_physics {
             self.scroll_physics.insert(*node_id, physics.clone());
+        }
+    }
+
+    /// Transfer scroll offsets and physics using stable bindings where possible.
+    ///
+    /// Unlike the raw node-id transfer helpers above, this method matches scroll
+    /// containers by their string ID first and then falls back to bound
+    /// `ScrollRef` identity. That makes it safe to use after rebuilding a fresh
+    /// tree whose internal node IDs may have changed.
+    pub fn transfer_scroll_state_from(&mut self, other: &RenderTree) {
+        let mut node_ids = self.scroll_physics.keys().copied().collect::<Vec<_>>();
+        node_ids.extend(
+            self.scroll_refs
+                .keys()
+                .copied()
+                .filter(|node_id| !self.scroll_physics.contains_key(node_id)),
+        );
+        for node_id in node_ids {
+            let old_node_id = self
+                .element_registry
+                .get_id(node_id)
+                .as_deref()
+                .and_then(|element_id| other.element_registry.get(element_id))
+                .or_else(|| {
+                    let scroll_ref = self.scroll_refs.get(&node_id)?;
+                    let inner = scroll_ref.inner();
+                    let inner_ptr = Arc::as_ptr(&inner);
+                    other
+                        .scroll_refs
+                        .iter()
+                        .find_map(|(other_node_id, other_scroll_ref)| {
+                            let other_inner = other_scroll_ref.inner();
+                            (Arc::as_ptr(&other_inner) == inner_ptr).then_some(*other_node_id)
+                        })
+                });
+
+            let Some(old_node_id) = old_node_id else {
+                continue;
+            };
+
+            if let Some(offset) = other.scroll_offsets.get(&old_node_id).copied() {
+                self.scroll_offsets.insert(node_id, offset);
+            }
+            if let Some(physics) = other.scroll_physics.get(&old_node_id) {
+                self.scroll_physics.insert(node_id, physics.clone());
+            }
+        }
+
+        self.restore_bound_scroll_ref_offsets();
+    }
+
+    /// Restore bound ScrollRef offsets onto the current scroll physics state.
+    ///
+    /// This is useful after constructing a replacement tree so bound scroll refs
+    /// keep their observed offsets even when the scroll container node instances
+    /// were recreated.
+    pub fn restore_bound_scroll_ref_offsets(&mut self) {
+        let node_ids = self.scroll_refs.keys().copied().collect::<Vec<_>>();
+        for node_id in node_ids {
+            let Some(scroll_ref) = self.scroll_refs.get(&node_id).cloned() else {
+                continue;
+            };
+            let Some(physics) = self.scroll_physics.get(&node_id) else {
+                continue;
+            };
+
+            let (offset_x, offset_y) = scroll_ref.offset();
+            let mut physics = physics.lock().unwrap();
+            physics.offset_x = -offset_x;
+            physics.offset_y = -offset_y;
+            scroll_ref.update_state(
+                (physics.offset_x.abs(), physics.offset_y.abs()),
+                (physics.content_width, physics.content_height),
+                (physics.viewport_width, physics.viewport_height),
+            );
         }
     }
 
@@ -11685,10 +11856,9 @@ impl RenderTree {
         let mut bounds = self.layout_tree.get_absolute_bounds(node)?;
         // Walk up ancestors and apply scroll offsets from scroll containers
         for ancestor in self.layout_tree.ancestors(node) {
-            if let Some(&(sx, sy)) = self.scroll_offsets.get(&ancestor) {
-                bounds.x += sx;
-                bounds.y += sy;
-            }
+            let (sx, sy) = self.get_scroll_offset(ancestor);
+            bounds.x += sx;
+            bounds.y += sy;
         }
         Some(bounds)
     }

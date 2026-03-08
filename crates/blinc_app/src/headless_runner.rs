@@ -199,7 +199,17 @@ where
                 );
                 return Ok(RunOutcome::Failed { report });
             }
-            ScenarioStep::AssertExists { id } => {
+            ScenarioStep::AssertExists { target } => {
+                let Some(id) = target.id.as_deref() else {
+                    let report = HeadlessReport::failed(
+                        "unsupported_semantic_locator",
+                        step_index,
+                        "legacy probe assertions require an id-based locator".to_string(),
+                        elapsed_frames,
+                        elapsed_ms,
+                    );
+                    return Ok(RunOutcome::Failed { report });
+                };
                 let snapshot = ensure_snapshot(
                     &mut latest_snapshot,
                     probe,
@@ -222,7 +232,17 @@ where
                     return Ok(RunOutcome::Failed { report });
                 }
             }
-            ScenarioStep::AssertTextContains { id, value } => {
+            ScenarioStep::AssertTextContains { target, value } => {
+                let Some(id) = target.id.as_deref() else {
+                    let report = HeadlessReport::failed(
+                        "unsupported_semantic_locator",
+                        step_index,
+                        "legacy probe assertions require an id-based locator".to_string(),
+                        elapsed_frames,
+                        elapsed_ms,
+                    );
+                    return Ok(RunOutcome::Failed { report });
+                };
                 let snapshot = ensure_snapshot(
                     &mut latest_snapshot,
                     probe,

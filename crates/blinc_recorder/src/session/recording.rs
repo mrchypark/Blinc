@@ -219,19 +219,13 @@ impl RecordingSession {
             return None;
         }
 
-        let sequence = self.next_trace_sequence;
-        self.next_trace_sequence = self.next_trace_sequence.saturating_add(1);
-
-        if self.trace_entries.len() >= self.config.max_events {
-            self.trace_entries.pop_front();
-        }
-
-        self.trace_entries.push_back(TraceEntry {
-            sequence,
+        let entry = TraceEntry {
+            sequence: self.next_trace_sequence,
             timestamp: self.current_timestamp(),
             kind,
-        });
-
+        };
+        let sequence = entry.sequence;
+        self.append_trace_entry(entry);
         Some(sequence)
     }
 
@@ -248,6 +242,31 @@ impl RecordingSession {
     /// Get recorded events.
     pub fn events(&self) -> &VecDeque<TimestampedEvent> {
         &self.events
+    }
+
+    /// Create the next trace entry without mutating session state.
+    pub fn prepare_trace_entry(&self, kind: TraceEntryKind) -> Option<TraceEntry> {
+        (self.state == SessionState::Recording).then(|| TraceEntry {
+            sequence: self.next_trace_sequence,
+            timestamp: self.current_timestamp(),
+            kind,
+        })
+    }
+
+    /// Append a prebuilt trace entry.
+    pub fn append_trace_entry(&mut self, entry: TraceEntry) -> bool {
+        if self.state != SessionState::Recording {
+            return false;
+        }
+
+        if self.trace_entries.len() >= self.config.max_events {
+            self.trace_entries.pop_front();
+        }
+        self.next_trace_sequence = self
+            .next_trace_sequence
+            .max(entry.sequence.saturating_add(1));
+        self.trace_entries.push_back(entry);
+        true
     }
 
     /// Get recorded snapshots.
@@ -280,10 +299,14 @@ impl RecordingSession {
 
     /// Get the recording duration.
     pub fn duration(&self) -> Timestamp {
-        self.stats
-            .last_event_time
-            .or(self.stats.last_snapshot_time)
-            .unwrap_or_default()
+        let event_duration = self.stats.last_event_time.unwrap_or_default();
+        let snapshot_duration = self.stats.last_snapshot_time.unwrap_or_default();
+        let trace_duration = self
+            .trace_entries
+            .back()
+            .map(|entry| entry.timestamp)
+            .unwrap_or_default();
+        event_duration.max(snapshot_duration).max(trace_duration)
     }
 
     /// Export all recorded data.
@@ -363,6 +386,14 @@ impl SharedRecordingSession {
 
     pub fn record_trace_entry(&self, kind: TraceEntryKind) -> u64 {
         self.inner.write().record_trace_entry(kind)
+    }
+
+    pub fn prepare_trace_entry(&self, kind: TraceEntryKind) -> Option<TraceEntry> {
+        self.inner.read().prepare_trace_entry(kind)
+    }
+
+    pub fn append_trace_entry(&self, entry: TraceEntry) -> bool {
+        self.inner.write().append_trace_entry(entry)
     }
 
     pub fn stats(&self) -> SessionStats {
@@ -654,5 +685,22 @@ mod tests {
         assert_eq!(sequence, 0);
         assert_eq!(export.trace_entries.len(), 1);
         assert_eq!(export.trace_entries[0].sequence, 0);
+    }
+
+    #[test]
+    fn duration_includes_trace_only_exports() {
+        let mut session = RecordingSession::new(RecordingConfig::debug());
+        session.start();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        session.record_trace_entry(TraceEntryKind::Artifact(TraceArtifactRecord {
+            kind: "runtime_mode".to_string(),
+            path: None,
+            message: Some("headless".to_string()),
+        }));
+
+        assert!(
+            session.duration().as_micros() > 0,
+            "trace-only sessions should still report a non-zero duration"
+        );
     }
 }

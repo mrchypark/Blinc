@@ -283,6 +283,29 @@ impl EventRouter {
         self.event_callback = None;
     }
 
+    /// Execute an operation while collecting events emitted through the router's
+    /// callback path, restoring any previous callback afterwards.
+    pub fn collect_events<R>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> R,
+    ) -> (Vec<(LayoutNodeId, u32)>, R) {
+        let previous_callback = self.event_callback.take();
+        let mut collected = Vec::new();
+        self.set_event_callback({
+            let collected_ptr = &mut collected as *mut Vec<(LayoutNodeId, u32)>;
+            move |node, event_type| {
+                // SAFETY: the callback is only active during this function call.
+                unsafe {
+                    (*collected_ptr).push((node, event_type));
+                }
+            }
+        });
+
+        let result = operation(self);
+        self.event_callback = previous_callback;
+        (collected, result)
+    }
+
     /// Get the currently focused element
     pub fn focused(&self) -> Option<LayoutNodeId> {
         self.focused

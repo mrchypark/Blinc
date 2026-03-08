@@ -31,7 +31,7 @@ impl DiagnosticsSnapshot {
         }
     }
 
-    /// Access the recorder-backed tree snapshot when available.
+    /// Legacy compatibility hook.
     pub fn tree(&self) -> Option<&TreeSnapshot> {
         self.tree.as_ref()
     }
