@@ -663,7 +663,8 @@ impl WindowedContext {
 
         let global = BlincContextState::get();
         global.set_viewport_size(logical_width, logical_height);
-        global.set_element_registry(Arc::clone(&element_registry) as blinc_core::AnyElementRegistry);
+        global
+            .set_element_registry(Arc::clone(&element_registry) as blinc_core::AnyElementRegistry);
 
         ctx
     }
@@ -882,7 +883,9 @@ impl WindowedContext {
 
         let global = BlincContextState::get();
         global.set_viewport_size(logical_width, logical_height);
-        global.set_element_registry(Arc::clone(&self.element_registry) as blinc_core::AnyElementRegistry);
+        global.set_element_registry(
+            Arc::clone(&self.element_registry) as blinc_core::AnyElementRegistry
+        );
     }
 
     /// Update context from window (preserving event router, dirty flag, and reactive graph)
