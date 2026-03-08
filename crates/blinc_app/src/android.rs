@@ -259,7 +259,9 @@ impl AndroidApp {
         // Set global scheduler handle
         {
             let scheduler_handle = animations.lock().unwrap().handle();
-            blinc_animation::set_global_scheduler(scheduler_handle);
+            if !blinc_animation::is_scheduler_initialized() {
+                blinc_animation::set_global_scheduler(scheduler_handle);
+            }
         }
 
         // Element registry for query API
