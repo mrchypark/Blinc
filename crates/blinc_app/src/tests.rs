@@ -1409,6 +1409,56 @@ fn ensure_automation_theme() {
             }),
         );
     }
+
+    let ctx = blinc_core::BlincContextState::get();
+    ctx.reseed_for_tests();
+    blinc_layout::widgets::reset_text_widget_test_state();
+    blinc_layout::click_outside::clear_click_outside_handlers();
+    blinc_recorder::uninstall_hooks();
+    blinc_recorder::uninstall_recorder();
+}
+
+#[test]
+fn ensure_automation_theme_reseeds_context_state_between_runs() {
+    let _guard = automation_test_guard();
+    ensure_automation_theme();
+
+    let ctx = blinc_core::BlincContextState::get();
+    ctx.set_query_callback(std::sync::Arc::new(|_| Some(7)));
+    ctx.set_focus(Some("stale.focus"));
+    ctx.set_viewport_size(640.0, 480.0);
+    ctx.set_programmatic_event_callback(std::sync::Arc::new(|_, _| {}));
+    ctx.set_element_registry(std::sync::Arc::new(123usize));
+    ctx.set_recorder_event_callback(std::sync::Arc::new(|_| {}));
+    ctx.set_recorder_snapshot_callback(std::sync::Arc::new(|_| {}));
+    ctx.set_recorder_update_callback(std::sync::Arc::new(|_, _| {}));
+    let _: blinc_core::State<i32> = ctx.use_state_keyed("stale.counter", || 1);
+
+    let _previous_resources = ctx.set_resource_override(blinc_core::ContextResourceOverride::new(
+        std::sync::Arc::new(std::sync::Mutex::new(blinc_core::ReactiveGraph::new())),
+        std::sync::Arc::new(std::sync::Mutex::new(blinc_core::HookState::new())),
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    ));
+    let _previous_bindings =
+        ctx.set_binding_override(blinc_core::context_state::ContextBindingOverride::default());
+
+    blinc_layout::widgets::set_continuous_redraw_callback(|_| {});
+    blinc_layout::click_outside::register_click_outside("stale", "node", || {});
+
+    ensure_automation_theme();
+
+    assert_eq!(ctx.query("node"), None);
+    assert_eq!(ctx.focused_element(), None);
+    assert_eq!(ctx.viewport_size(), (0.0, 0.0));
+    assert!(ctx.programmatic_event_callback().is_none());
+    assert!(ctx.element_registry_any().is_none());
+    assert!(!ctx.is_recording_events());
+    assert!(!ctx.is_recording_snapshots());
+    assert!(!ctx.is_recording_updates());
+    assert!(
+        ctx.debug_keyed_state_entries().is_empty(),
+        "expected keyed state inventory to be empty after reseed"
+    );
 }
 
 #[test]

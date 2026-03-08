@@ -628,12 +628,15 @@ transitions:
             desktop_harness: false,
         };
 
-        let command = super::build_run_command(Path::new("/tmp"), source, &manifest, &args)
+        let invocation_cwd = Path::new("/tmp");
+        let command = super::build_run_command(invocation_cwd, source, &manifest, &args)
             .expect("command should build");
         let args = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
+        let expected_scenario = invocation_cwd.join("scenario.json");
+        let expected_report = invocation_cwd.join("report.json");
 
         assert!(
             args.windows(2)
@@ -641,13 +644,15 @@ transitions:
             "expected --bin example_desktop in cargo run args: {args:?}"
         );
         assert!(
-            args.windows(2)
-                .any(|pair| { pair[0] == "--scenario" && pair[1] == "/tmp/scenario.json" }),
+            args.windows(2).any(|pair| {
+                pair[0] == "--scenario" && pair[1] == expected_scenario.to_string_lossy().as_ref()
+            }),
             "expected scenario path to resolve against invocation cwd: {args:?}"
         );
         assert!(
-            args.windows(2)
-                .any(|pair| { pair[0] == "--report" && pair[1] == "/tmp/report.json" }),
+            args.windows(2).any(|pair| {
+                pair[0] == "--report" && pair[1] == expected_report.to_string_lossy().as_ref()
+            }),
             "expected report path to resolve against invocation cwd: {args:?}"
         );
     }

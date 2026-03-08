@@ -596,6 +596,43 @@ impl BlincContextState {
         CONTEXT_STATE.get().is_some()
     }
 
+    /// Reset mutable singleton state and scoped overrides for test isolation.
+    ///
+    /// This preserves the OnceLock instance and any installed stateful callback,
+    /// but clears reactive state, keyed hooks, runtime callbacks, recorder hooks,
+    /// and thread-local overrides so tests start from a clean baseline.
+    #[doc(hidden)]
+    pub fn reseed_for_tests(&self) {
+        self.reactive.lock().unwrap().clear();
+        self.hooks.lock().unwrap().clear();
+        self.dirty_flag.store(false, Ordering::SeqCst);
+
+        *self.query_callback.write().unwrap() = None;
+        *self.bounds_callback.write().unwrap() = None;
+        *self.focus_callback.write().unwrap() = None;
+        *self.scroll_callback.write().unwrap() = None;
+        *self.programmatic_event_callback.write().unwrap() = None;
+        *self.viewport_size.write().unwrap() = (0.0, 0.0);
+        *self.focused_element.write().unwrap() = None;
+        *self.element_registry.write().unwrap() = None;
+        *self.motion_state_callback.write().unwrap() = None;
+        *self.motion_cancel_exit_callback.write().unwrap() = None;
+        *self.recorder_event_callback.write().unwrap() = None;
+        *self.recorder_snapshot_callback.write().unwrap() = None;
+        *self.recorder_update_callback.write().unwrap() = None;
+
+        CONTEXT_RESOURCE_OVERRIDE.with(|override_slot| {
+            if let Some(resources) = override_slot.borrow_mut().take() {
+                resources.reactive().lock().unwrap().clear();
+                resources.hooks().lock().unwrap().clear();
+                resources.dirty_flag().store(false, Ordering::SeqCst);
+            }
+        });
+        CONTEXT_BINDING_OVERRIDE.with(|override_slot| {
+            override_slot.borrow_mut().take();
+        });
+    }
+
     // =========================================================================
     // Reactive State Management
     // =========================================================================
@@ -1666,5 +1703,59 @@ mod tests {
         assert_eq!(state.query("node"), Some(7));
         assert_eq!(state.focused_element().as_deref(), Some("base"));
         assert_eq!(state.viewport_size(), (10.0, 20.0));
+    }
+
+    #[test]
+    fn reseed_for_tests_clears_base_state_and_thread_overrides() {
+        let state = make_test_state();
+        state.set_query_callback(Arc::new(|_| Some(7)));
+        state.set_focus(Some("base"));
+        state.set_viewport_size(10.0, 20.0);
+        state.set_programmatic_event_callback(Arc::new(|_, _| {}));
+        state.set_element_registry(Arc::new(123usize));
+        state.set_recorder_event_callback(Arc::new(|_| {}));
+        state.set_recorder_snapshot_callback(Arc::new(|_| {}));
+        state.set_recorder_update_callback(Arc::new(|_, _| {}));
+        let _: State<i32> = state.use_state_keyed("base-counter", || 1);
+
+        let override_reactive = Arc::new(Mutex::new(ReactiveGraph::new()));
+        let override_hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
+        let override_dirty = Arc::new(AtomicBool::new(true));
+        state.set_resource_override(ContextResourceOverride::new(
+            Arc::clone(&override_reactive),
+            Arc::clone(&override_hooks),
+            Arc::clone(&override_dirty),
+        ));
+        state.set_binding_override(ContextBindingOverride::default());
+        state.set_query_callback(Arc::new(|_| Some(99)));
+        state.set_focus(Some("override"));
+        state.set_viewport_size(30.0, 40.0);
+        let _: State<i32> = state.use_state_keyed("override-counter", || 2);
+
+        state.reseed_for_tests();
+
+        assert_eq!(state.query("node"), None);
+        assert_eq!(state.focused_element(), None);
+        assert_eq!(state.viewport_size(), (0.0, 0.0));
+        assert!(state.programmatic_event_callback().is_none());
+        assert!(state.element_registry_any().is_none());
+        assert!(!state.is_recording_events());
+        assert!(!state.is_recording_snapshots());
+        assert!(!state.is_recording_updates());
+        assert!(state.debug_keyed_state_entries().is_empty());
+        assert!(state.with_binding_override(|_| ()).is_none());
+        assert!(state
+            .active_hooks()
+            .lock()
+            .unwrap()
+            .debug_registrations()
+            .is_empty());
+        assert!(!Arc::ptr_eq(&state.active_reactive(), &override_reactive));
+        assert!(override_hooks
+            .lock()
+            .unwrap()
+            .debug_registrations()
+            .is_empty());
+        assert!(!override_dirty.load(Ordering::SeqCst));
     }
 }
