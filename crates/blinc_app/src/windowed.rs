@@ -582,6 +582,11 @@ fn shared_headless_scheduler() -> SharedAnimationScheduler {
         .clone()
 }
 
+fn headless_context_init_lock() -> &'static Mutex<()> {
+    static HEADLESS_CONTEXT_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    HEADLESS_CONTEXT_INIT_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// Context passed to the UI builder function
 pub struct WindowedContext {
     /// Current window width in logical pixels (for UI layout)
@@ -640,6 +645,7 @@ impl WindowedContext {
     /// shared animation/context globals when they are not yet available so tests can
     /// build a `WindowedContext` without recreating the full windowed runtime setup.
     pub fn new_headless(logical_width: f32, logical_height: f32) -> Self {
+        let _init_guard = headless_context_init_lock().lock().unwrap();
         let animations = shared_headless_scheduler();
         let (reactive, hooks, ref_dirty_flag) = if BlincContextState::is_initialized() {
             let global = BlincContextState::get();
