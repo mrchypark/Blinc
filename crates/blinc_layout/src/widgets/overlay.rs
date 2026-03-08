@@ -2151,8 +2151,6 @@ pub trait OverlayManagerExt {
     fn handle_escape(&self) -> bool;
     /// Handle backdrop click (dismiss if applicable)
     fn handle_backdrop_click(&self) -> bool;
-    /// Check whether a point hits the visible backdrop instead of overlay content
-    fn is_backdrop_click(&self, x: f32, y: f32) -> bool;
     /// Handle click at position - dismisses if on backdrop
     fn handle_click_at(&self, x: f32, y: f32) -> bool;
     /// Update viewport dimensions (logical pixels)
@@ -2287,10 +2285,6 @@ impl OverlayManagerExt for OverlayManager {
 
     fn handle_backdrop_click(&self) -> bool {
         self.lock().unwrap().handle_backdrop_click()
-    }
-
-    fn is_backdrop_click(&self, x: f32, y: f32) -> bool {
-        self.lock().unwrap().is_backdrop_click(x, y)
     }
 
     fn handle_click_at(&self, x: f32, y: f32) -> bool {

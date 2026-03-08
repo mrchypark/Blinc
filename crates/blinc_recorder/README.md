@@ -13,7 +13,6 @@ Recording, replay, and debug-server infrastructure for Blinc applications.
 
 - user input/event recording
 - element tree snapshot capture
-- trace entries for automation commands, locator resolution, assertions, and artifacts
 - replay with virtual time controls
 - local debug server for debugger tooling
 - basic test helpers (headless/framebuffer/visual comparison)
@@ -36,13 +35,6 @@ let json = serde_json::to_string_pretty(&export)?;
 std::fs::write("recording.json", json)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
-
-`RecordingExport` is also the shared evidence container for automation runs. Besides `events` and `snapshots`, it now carries `trace_entries` such as:
-
-- commands (`click`, `fill`, `assert_text_contains`)
-- locator resolution evidence
-- assertion outcomes
-- runtime artifacts (`runtime_mode`, exported files)
 
 ## Loading + Replay
 
@@ -102,10 +94,10 @@ MIT OR Apache-2.0
 
 ## With App Headless Diagnostics
 
-Use `blinc_recorder` as the capture/evidence source and `blinc_app` automation/headless diagnostics as the goal/assertion runner.
+Use `blinc_recorder` as the capture/control source and `blinc_app` headless diagnostics as the goal/assertion runner.
 
 Recommended split:
 
-- `blinc_recorder`: event/snapshot/trace capture + debug-server transport
-- `blinc_app`: scenario execution, playbook execution, assertion evaluation, failure report
-- `blinc_debugger`: post-run timeline, command stream, locator context, and evidence analysis
+- `blinc_recorder`: event/snapshot capture + debug-server transport
+- `blinc_app` headless diagnostics: scenario execution + assertion evaluation + failure report
+- `blinc_debugger`: post-run visualization and analysis

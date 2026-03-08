@@ -31,7 +31,7 @@ tracing = "0.1"
 blinc_platform = { path = "../blinc_platform", version = "0.1.14", optional = true }
 
 # Text rendering for emoji (optional)
-blinc_text = { path = "../blinc_text", version = "0.1.14", optional = true }
+blinc_text = { path = "../../../../crates/blinc_text", version = "0.1.14", optional = true }
 
 [features]
 default = ["platform", "emoji"]

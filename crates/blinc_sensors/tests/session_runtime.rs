@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use blinc_platform::sensors::{
+use blinc_sensors::{
     SensorAccuracy, SensorBackend, SensorClient, SensorConfig, SensorError, SensorFrame,
     SensorKind, SensorStatus,
 };
@@ -17,30 +17,30 @@ impl SensorBackend for QueueBackend {
     }
 
     fn start(&self, _session_id: &str) -> Result<(), SensorError> {
-        *self.running.lock().expect("running lock") = true;
+        *self.running.lock().unwrap() = true;
         Ok(())
     }
 
     fn stop(&self, _session_id: &str) -> Result<(), SensorError> {
-        *self.running.lock().expect("running lock") = false;
+        *self.running.lock().unwrap() = false;
         Ok(())
     }
 
     fn status(&self) -> Result<SensorStatus, SensorError> {
         Ok(SensorStatus {
-            running: *self.running.lock().expect("running lock"),
+            running: *self.running.lock().unwrap(),
             buffered_frames: 0,
             active_session_id: None,
         })
     }
 
     fn drain_frames(&self, max_frames: usize) -> Result<Vec<SensorFrame>, SensorError> {
-        if !*self.running.lock().expect("running lock") {
+        if !*self.running.lock().unwrap() {
             return Ok(Vec::new());
         }
 
         let count = max_frames.min(3);
-        let mut seq = self.next_seq.lock().expect("seq lock");
+        let mut seq = self.next_seq.lock().unwrap();
         let mut out = Vec::with_capacity(count);
         for index in 0..count {
             *seq += 1;
@@ -73,22 +73,20 @@ impl SensorBackend for QueueBackend {
 #[test]
 fn session_collects_frames_and_stops_cleanly() {
     let client = SensorClient::new(QueueBackend::default());
-    client
-        .configure(&SensorConfig::default())
-        .expect("configure");
+    client.configure(&SensorConfig::default()).unwrap();
 
-    assert!(!client.status().expect("status").running);
-    assert_eq!(client.supported_kinds().expect("supported kinds").len(), 4);
+    assert!(!client.status().unwrap().running);
+    assert_eq!(client.supported_kinds().unwrap().len(), 4);
 
-    client.start_session("runtime-check").expect("start");
-    assert!(client.status().expect("status").running);
+    client.start_session("runtime-check").unwrap();
+    assert!(client.status().unwrap().running);
 
-    let frames = client.drain_frames(2).expect("drain");
+    let frames = client.drain_frames(2).unwrap();
     assert_eq!(frames.len(), 2);
     assert!(frames[0].seq < frames[1].seq);
     assert!(!frames[0].values.is_empty());
 
-    client.stop_session("runtime-check").expect("stop");
-    assert!(!client.status().expect("status").running);
-    assert!(client.drain_frames(8).expect("drain").is_empty());
+    client.stop_session("runtime-check").unwrap();
+    assert!(!client.status().unwrap().running);
+    assert!(client.drain_frames(8).unwrap().is_empty());
 }

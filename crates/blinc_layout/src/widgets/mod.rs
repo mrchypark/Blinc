@@ -61,17 +61,13 @@ pub use text_input::{
     blur_all_text_inputs,
     // Cursor blink timing utilities
     elapsed_ms,
-    focused_text_widget_ime_area,
     has_focused_text_input,
-    has_live_focused_text_widget,
     request_css_reparse,
     // Rebuild/relayout request functions
     request_full_rebuild,
     request_rebuild,
-    reset_text_widget_test_state,
     // Continuous redraw callback for animation scheduler integration
     set_continuous_redraw_callback,
-    set_focused_text_widget_composition,
     take_needs_continuous_redraw,
     take_needs_css_reparse,
     take_needs_rebuild,

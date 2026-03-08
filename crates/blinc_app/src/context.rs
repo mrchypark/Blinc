@@ -22,13 +22,12 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use crate::error::Result;
-use crate::svg_atlas::SvgAtlas;
 
 /// Maximum number of images to keep in cache (prevents unbounded memory growth)
 const IMAGE_CACHE_CAPACITY: usize = 32;
 
 /// Maximum number of parsed SVG documents to cache
-const SVG_CACHE_CAPACITY: usize = 128;
+const SVG_CACHE_CAPACITY: usize = 32;
 
 /// Intersect two axis-aligned clip rects [x, y, w, h], returning their overlap.
 fn intersect_clip_rects(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
@@ -56,7 +55,9 @@ fn effective_single_clip(primary: Option<[f32; 4]>, scroll: Option<[f32; 4]>) ->
     }
 }
 
-// Rasterized SVG textures are now packed into SvgAtlas (single shared GPU texture)
+/// Maximum number of rasterized SVG textures to cache
+/// Key is (svg_hash, width, height, tint_hash) - separate textures for different sizes/tints
+const RASTERIZED_SVG_CACHE_CAPACITY: usize = 32;
 
 /// Internal render context that manages GPU resources and rendering
 pub struct RenderContext {
@@ -74,8 +75,8 @@ pub struct RenderContext {
     image_cache: LruCache<String, GpuImage>,
     // LRU cache for parsed SVG documents (avoids re-parsing)
     svg_cache: LruCache<u64, SvgDocument>,
-    // Texture atlas for rasterized SVGs (single shared GPU texture, shelf-packed)
-    svg_atlas: SvgAtlas,
+    // LRU cache for rasterized SVG textures (CPU-rasterized with proper AA)
+    rasterized_svg_cache: LruCache<u64, GpuImage>,
     // Scratch buffers for per-frame allocations (reused to avoid allocations)
     scratch_glyphs: Vec<GpuGlyph>,
     scratch_texts: Vec<TextElement>,
@@ -220,7 +221,7 @@ struct ImageElement {
 /// SVG element data for rendering
 #[derive(Clone)]
 struct SvgElement {
-    source: Arc<str>,
+    source: String,
     x: f32,
     y: f32,
     width: f32,
@@ -293,7 +294,6 @@ impl RenderContext {
         sample_count: u32,
     ) -> Self {
         let image_ctx = ImageRenderingContext::new(device.clone(), queue.clone());
-        let svg_atlas = SvgAtlas::new(&device);
         Self {
             renderer,
             text_ctx,
@@ -305,7 +305,9 @@ impl RenderContext {
             msaa_texture: None,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAPACITY).unwrap()),
             svg_cache: LruCache::new(NonZeroUsize::new(SVG_CACHE_CAPACITY).unwrap()),
-            svg_atlas,
+            rasterized_svg_cache: LruCache::new(
+                NonZeroUsize::new(RASTERIZED_SVG_CACHE_CAPACITY).unwrap(),
+            ),
             scratch_glyphs: Vec::with_capacity(1024), // Pre-allocate for typical text
             scratch_texts: Vec::with_capacity(64),    // Pre-allocate for text elements
             scratch_svgs: Vec::with_capacity(32),     // Pre-allocate for SVG elements
@@ -773,16 +775,14 @@ impl RenderContext {
         let color_cap = self.text_ctx.color_glyph_cache_capacity();
         let img_cache = self.image_cache.len();
         let svg_cache = self.svg_cache.len();
-        let svg_atlas_entries = self.svg_atlas.entry_count();
-        let svg_atlas_util = self.svg_atlas.utilization();
-        let (svg_aw, svg_ah) = (self.svg_atlas.width(), self.svg_atlas.height());
+        let rast_svg = self.rasterized_svg_cache.len();
 
         tracing::info!(
             "Cache stats [frame {}]: \
              atlas={}x{} ({} glyphs, {:.1}% used), \
              color_atlas={}x{} ({} glyphs, {:.1}% used), \
              glyph_lru={}/{}, color_glyph_lru={}/{}, \
-             image={}/{}, svg_doc={}/{}, svg_atlas={}x{} ({} entries, {:.1}% used)",
+             image={}/{}, svg_doc={}/{}, rasterized_svg={}/{}",
             self.frame_count,
             aw,
             ah,
@@ -800,10 +800,8 @@ impl RenderContext {
             IMAGE_CACHE_CAPACITY,
             svg_cache,
             SVG_CACHE_CAPACITY,
-            svg_aw,
-            svg_ah,
-            svg_atlas_entries,
-            svg_atlas_util * 100.0,
+            rast_svg,
+            RASTERIZED_SVG_CACHE_CAPACITY,
         );
     }
 
@@ -1688,9 +1686,6 @@ impl RenderContext {
         svgs: &[SvgElement],
         scale_factor: f32,
     ) {
-        // Collect all instances for a single batched draw call
-        let mut instances: Vec<GpuImageInstance> = Vec::with_capacity(svgs.len());
-
         for svg in svgs {
             // Skip completely transparent SVGs
             if svg.motion_opacity <= 0.001 {
@@ -1810,8 +1805,8 @@ impl RenderContext {
                 hasher.finish()
             };
 
-            // Check atlas first — skip string manipulation entirely on cache hit
-            if self.svg_atlas.get(cache_key).is_none() {
+            // Check cache first — skip string manipulation entirely on cache hit
+            if self.rasterized_svg_cache.get(&cache_key).is_none() {
                 // Cache miss: build SVG source with inline attribute overrides
                 let has_overrides = svg.tint.is_some()
                     || svg.fill.is_some()
@@ -1890,7 +1885,7 @@ impl RenderContext {
                         }
                     }
 
-                    let mut modified = String::from(&*svg.source);
+                    let mut modified = svg.source.clone();
 
                     // Strip existing attributes from the <svg> tag
                     if let Some(svg_close) = modified.find('>') {
@@ -2067,7 +2062,7 @@ impl RenderContext {
 
                     std::borrow::Cow::Owned(modified)
                 } else {
-                    std::borrow::Cow::Borrowed(&*svg.source)
+                    std::borrow::Cow::Borrowed(&svg.source)
                 };
 
                 // Resolve currentColor references in SVG source.
@@ -2098,32 +2093,23 @@ impl RenderContext {
                     }
                 };
 
-                // Insert into atlas (handles grow/clear internally)
-                if self
-                    .svg_atlas
-                    .insert(
-                        cache_key,
-                        rasterized.width,
-                        rasterized.height,
-                        rasterized.data(),
-                        &self.device,
-                    )
-                    .is_none()
-                {
-                    tracing::warn!(
-                        "SVG atlas full, could not allocate {}x{}",
-                        raster_width,
-                        raster_height
-                    );
-                    continue;
-                }
+                // Upload to GPU
+                let gpu_image = GpuImage::from_rgba(
+                    &self.device,
+                    &self.queue,
+                    rasterized.data(),
+                    rasterized.width,
+                    rasterized.height,
+                    Some("Rasterized SVG"),
+                );
+
+                self.rasterized_svg_cache.put(cache_key, gpu_image);
             }
 
-            // Get the atlas region for this SVG
-            let Some(region) = self.svg_atlas.get(cache_key) else {
+            // Get the cached GPU image
+            let Some(gpu_image) = self.rasterized_svg_cache.get(&cache_key) else {
                 continue;
             };
-            let src_uv = region.uv_bounds(self.svg_atlas.width(), self.svg_atlas.height());
 
             // Apply CSS affine transform to SVG bounds if present.
             // Pass full 2x2 affine to shader for rotation, scale, and skew support.
@@ -2154,9 +2140,8 @@ impl RenderContext {
                     (svg.x, svg.y, svg.width, svg.height, 1.0, 0.0, 0.0, 1.0)
                 };
 
-            // Create instance with atlas UV coordinates
+            // Create instance at (possibly transformed) SVG position
             let mut instance = GpuImageInstance::new(draw_x, draw_y, draw_w, draw_h)
-                .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
                 .with_opacity(svg.motion_opacity)
                 .with_transform(ta, tb, tc, td);
 
@@ -2173,14 +2158,9 @@ impl RenderContext {
                 instance = instance.with_clip_rect(clip_x, clip_y, clip_w, clip_h);
             }
 
-            instances.push(instance);
-        }
-
-        // Upload atlas to GPU if dirty, then batch-render all SVG instances
-        if !instances.is_empty() {
-            self.svg_atlas.upload(&self.queue);
+            // Render the rasterized SVG as an image
             self.renderer
-                .render_images(target, self.svg_atlas.view(), &instances);
+                .render_images(target, gpu_image.view(), &[instance]);
         }
     }
 

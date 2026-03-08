@@ -80,26 +80,6 @@ fn main() -> Result<()> {
 }
 ```
 
-### Automation E2E
-
-Blinc now includes a full agent-debugging workflow on top of the existing runtime:
-
-- generate a real Rust app with `blinc new --rust`
-- drive it with scenario JSON or playbook YAML via `blinc automation run`
-- export snapshot/trace artifacts
-- inspect the result in `blinc_debugger`
-
-Minimal example:
-
-```bash
-blinc new E2EApp --rust -t counter
-blinc automation run ./E2EApp --scenario ./scenario.json --report ./headless-report.json
-blinc automation run ./E2EApp --playbook ./playbook.yaml --report ./playbook-report.json
-blinc automation run ./E2EApp --desktop-harness --scenario ./scenario.json --report ./desktop-report.json
-```
-
-For the full validated end-to-end walkthrough, see [docs/headless-diagnostics.md](docs/headless-diagnostics.md).
-
 ### Glassmorphism Example
 
 ```rust
@@ -239,8 +219,8 @@ div()
 | ----- | ----------- |
 | [**blinc_cli**](crates/blinc_cli/README.md) | Command-line tooling |
 | [**blinc_macros**](crates/blinc_macros/README.md) | Procedural macros for components |
-| [**blinc_debugger**](crates/blinc_debugger/README.md) | Trace-aware debugger for recordings and automation runs |
-| [**blinc_recorder**](crates/blinc_recorder/README.md) | Event, snapshot, and trace capture |
+| [**blinc_debugger**](crates/blinc_debugger/README.md) | Visual debugger overlay |
+| [**blinc_recorder**](crates/blinc_recorder/README.md) | Frame recording and debugging |
 | [**blinc_runtime**](crates/blinc_runtime/README.md) | Embedding SDK for host applications |
 | [**blinc_test_suite**](crates/blinc_test_suite/README.md) | Visual regression testing framework |
 
@@ -564,7 +544,7 @@ Reference docs:
 
 - **Zyntax DSL** - `.blinc` file syntax with compile-time optimization
 - Hot reload during development
-- Developer tools (inspector, recorder, automation debugger)
+- Developer tools (inspector, animation debugger)
 - IDE integration (VS Code extension, LSP)
 
 ## Documentation

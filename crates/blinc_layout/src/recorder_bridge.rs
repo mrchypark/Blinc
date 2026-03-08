@@ -7,9 +7,6 @@ use blinc_core::BlincContextState;
 use std::any::Any;
 use std::collections::HashMap;
 
-#[cfg(feature = "recorder")]
-use blinc_recorder::{get_recorder, TraceEntryKind, TraceLocatorResolution};
-
 /// Mouse button for recorder events
 #[derive(Clone, Copy, Debug)]
 pub enum RecorderMouseButton {
@@ -163,31 +160,6 @@ pub fn record_update(element_id: &str, category: blinc_core::UpdateCategory) {
     }
 }
 
-/// Record locator resolution evidence in the active recorder session.
-pub fn record_locator_resolution(
-    query: &str,
-    matched_target: Option<&str>,
-    candidate_targets: &[String],
-    failure_reason: Option<&str>,
-) {
-    #[cfg(feature = "recorder")]
-    if let Some(session) = get_recorder() {
-        let _ = session.try_record_trace_entry(TraceEntryKind::LocatorResolution(
-            TraceLocatorResolution {
-                query: query.to_string(),
-                matched_target: matched_target.map(str::to_string),
-                candidate_targets: candidate_targets.to_vec(),
-                failure_reason: failure_reason.map(str::to_string),
-            },
-        ));
-    }
-
-    #[cfg(not(feature = "recorder"))]
-    {
-        let _ = (query, matched_target, candidate_targets, failure_reason);
-    }
-}
-
 /// Convert ChangeCategory from diff module to UpdateCategory for recording.
 pub fn change_category_to_update(
     change: &crate::diff::ChangeCategory,
@@ -251,7 +223,6 @@ pub struct ElementSnapshotData {
     pub parent: Option<String>,
     pub visual_props: Option<SnapshotVisualProps>,
     pub text_content: Option<String>,
-    pub semantic: Option<SnapshotSemanticInfo>,
 }
 
 /// Complete tree snapshot.
@@ -263,7 +234,6 @@ pub struct TreeSnapshotData {
     pub hovered_element: Option<String>,
     pub window_size: (u32, u32),
     pub scale_factor: f64,
-    pub view_model_states: Vec<SnapshotViewModelState>,
 }
 
 impl TreeSnapshotData {
@@ -276,27 +246,8 @@ impl TreeSnapshotData {
             hovered_element: None,
             window_size,
             scale_factor,
-            view_model_states: Vec::new(),
         }
     }
-}
-
-/// Semantic metadata captured for an element.
-#[derive(Clone, Debug, Default)]
-pub struct SnapshotSemanticInfo {
-    pub tag: Option<String>,
-    pub role: Option<String>,
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub value: Option<String>,
-}
-
-/// Snapshot of keyed state visible while the tree was captured.
-#[derive(Clone, Debug)]
-pub struct SnapshotViewModelState {
-    pub key: String,
-    pub type_name: String,
-    pub value_summary: String,
 }
 
 /// Send a tree snapshot to the recorder if recording is enabled.
@@ -535,7 +486,7 @@ pub(crate) fn to_recorded_event(event: RecorderEventData) -> blinc_recorder::Rec
 }
 
 #[cfg(feature = "recorder")]
-pub fn to_tree_snapshot(snapshot: TreeSnapshotData) -> blinc_recorder::TreeSnapshot {
+pub(crate) fn to_tree_snapshot(snapshot: TreeSnapshotData) -> blinc_recorder::TreeSnapshot {
     let mut converted = blinc_recorder::TreeSnapshot::new(
         blinc_recorder::Timestamp::zero(),
         snapshot.window_size,
@@ -544,15 +495,6 @@ pub fn to_tree_snapshot(snapshot: TreeSnapshotData) -> blinc_recorder::TreeSnaps
     converted.root_id = snapshot.root_id;
     converted.focused_element = snapshot.focused_element;
     converted.hovered_element = snapshot.hovered_element;
-    converted.view_model_states = snapshot
-        .view_model_states
-        .into_iter()
-        .map(|state| blinc_recorder::ViewModelStateEntry {
-            key: state.key,
-            type_name: state.type_name,
-            value_summary: state.value_summary,
-        })
-        .collect();
     converted.elements = snapshot
         .elements
         .into_iter()
@@ -588,15 +530,6 @@ pub fn to_tree_snapshot(snapshot: TreeSnapshotData) -> blinc_recorder::TreeSnaps
                     parent: element.parent,
                     visual_props,
                     text_content: element.text_content,
-                    semantic: element.semantic.map(|semantic| {
-                        blinc_recorder::ElementSemanticInfo {
-                            tag: semantic.tag,
-                            role: semantic.role,
-                            name: semantic.name,
-                            description: semantic.description,
-                            value: semantic.value,
-                        }
-                    }),
                 },
             )
         })
@@ -607,7 +540,6 @@ pub fn to_tree_snapshot(snapshot: TreeSnapshotData) -> blinc_recorder::TreeSnaps
 #[cfg(all(test, feature = "recorder"))]
 mod tests {
     use super::*;
-    use crate::prelude::*;
 
     #[test]
     fn converts_mouse_click_to_recorded_event() {
@@ -645,11 +577,6 @@ mod tests {
         snapshot.root_id = Some("root".to_string());
         snapshot.focused_element = Some("root".to_string());
         snapshot.hovered_element = Some("root".to_string());
-        snapshot.view_model_states = vec![SnapshotViewModelState {
-            key: "counter.count".to_string(),
-            type_name: "i32".to_string(),
-            value_summary: "1".to_string(),
-        }];
         snapshot.elements.insert(
             "root".to_string(),
             ElementSnapshotData {
@@ -672,13 +599,6 @@ mod tests {
                     styles: HashMap::from([("z-index".to_string(), "3".to_string())]),
                 }),
                 text_content: Some("hello".to_string()),
-                semantic: Some(SnapshotSemanticInfo {
-                    tag: Some("button".to_string()),
-                    role: Some("Button".to_string()),
-                    name: Some("Submit".to_string()),
-                    description: Some("Primary CTA".to_string()),
-                    value: None,
-                }),
             },
         );
 
@@ -687,9 +607,6 @@ mod tests {
         assert_eq!(converted.scale_factor, 2.0);
         assert_eq!(converted.root_id.as_deref(), Some("root"));
         assert!(converted.elements.contains_key("root"));
-        assert_eq!(converted.view_model_states.len(), 1);
-        assert_eq!(converted.view_model_states[0].key, "counter.count");
-        assert_eq!(converted.view_model_states[0].value_summary, "1");
         let props = converted
             .elements
             .get("root")
@@ -697,35 +614,6 @@ mod tests {
             .expect("visual props");
         assert_eq!(props.transform, Some([1.0, 0.0, 0.0, 1.0, 4.0, 8.0]));
         assert_eq!(props.styles.get("z-index").map(String::as_str), Some("3"));
-        let semantic = converted
-            .elements
-            .get("root")
-            .and_then(|e| e.semantic.as_ref())
-            .expect("semantic metadata");
-        assert_eq!(semantic.role.as_deref(), Some("Button"));
-        assert_eq!(semantic.name.as_deref(), Some("Submit"));
-    }
-
-    #[test]
-    fn capture_tree_snapshot_prefers_registered_element_ids() {
-        let ui = div()
-            .id("root")
-            .child(div().id("status").child(text("Ready")));
-        let mut tree = crate::renderer::RenderTree::from_element(&ui);
-        tree.compute_layout(400.0, 200.0);
-
-        let snapshot = capture_tree_snapshot(
-            &tree,
-            tree.query_by_id("status"),
-            &std::collections::HashSet::new(),
-            400,
-            200,
-        );
-
-        assert_eq!(snapshot.root_id.as_deref(), Some("root"));
-        assert!(snapshot.elements.contains_key("root"));
-        assert!(snapshot.elements.contains_key("status"));
-        assert_eq!(snapshot.focused_element.as_deref(), Some("status"));
     }
 }
 
@@ -744,31 +632,13 @@ pub fn capture_tree_snapshot(
     let mut snapshot = TreeSnapshotData::new((window_width, window_height), scale_factor);
 
     if let Some(root) = tree.root() {
-        snapshot.root_id = Some(snapshot_node_id(tree, root));
+        snapshot.root_id = Some(format!("{:?}", root));
         capture_node_recursive(tree, root, None, focused_node, hovered_nodes, &mut snapshot);
     }
 
-    if let Some(ctx) = BlincContextState::try_get() {
-        snapshot.view_model_states = ctx
-            .debug_keyed_state_entries()
-            .into_iter()
-            .map(|state| SnapshotViewModelState {
-                key: state.key,
-                type_name: state.type_name,
-                value_summary: state.value_summary,
-            })
-            .collect();
-    }
-
-    snapshot.focused_element = focused_node.map(|node| snapshot_node_id(tree, node));
+    snapshot.focused_element = focused_node.map(|n| format!("{:?}", n));
 
     snapshot
-}
-
-fn snapshot_node_id(tree: &crate::renderer::RenderTree, node: crate::tree::LayoutNodeId) -> String {
-    tree.element_registry()
-        .get_id(node)
-        .unwrap_or_else(|| format!("node#{}", node.to_raw()))
 }
 
 /// Recursively capture a node and its children.
@@ -780,7 +650,7 @@ fn capture_node_recursive(
     hovered_nodes: &std::collections::HashSet<crate::tree::LayoutNodeId>,
     snapshot: &mut TreeSnapshotData,
 ) {
-    let node_id_str = snapshot_node_id(tree, node);
+    let node_id_str = format!("{:?}", node);
 
     // Get bounds
     let bounds = tree
@@ -791,29 +661,6 @@ fn capture_node_recursive(
 
     // Get render node for element type and visual props
     let render_node = tree.get_render_node(node);
-    let accessibility = tree.layout().accessibility_metadata(node);
-    let semantic = Some(SnapshotSemanticInfo {
-        tag: tree.element_registry().get_element_type(node),
-        role: accessibility
-            .as_ref()
-            .map(|metadata| format!("{:?}", metadata.role)),
-        name: accessibility
-            .as_ref()
-            .and_then(|metadata| metadata.name.clone()),
-        description: accessibility
-            .as_ref()
-            .and_then(|metadata| metadata.description.clone()),
-        value: accessibility
-            .as_ref()
-            .and_then(|metadata| metadata.value.clone()),
-    })
-    .filter(|semantic| {
-        semantic.tag.is_some()
-            || semantic.role.is_some()
-            || semantic.name.is_some()
-            || semantic.description.is_some()
-            || semantic.value.is_some()
-    });
     let element_type = render_node
         .map(|n| match &n.element_type {
             crate::renderer::ElementType::Div => "Div".to_string(),
@@ -857,10 +704,7 @@ fn capture_node_recursive(
 
     // Get children
     let children = tree.layout().children(node);
-    let child_ids: Vec<String> = children
-        .iter()
-        .map(|child| snapshot_node_id(tree, *child))
-        .collect();
+    let child_ids: Vec<String> = children.iter().map(|c| format!("{:?}", c)).collect();
 
     // Simplified check - a more thorough check would need handler registry access
     let is_interactive = render_node.is_some();
@@ -874,17 +718,16 @@ fn capture_node_recursive(
         is_hovered: hovered_nodes.contains(&node),
         is_interactive,
         children: child_ids,
-        parent: parent.map(|parent| snapshot_node_id(tree, parent)),
+        parent: parent.map(|p| format!("{:?}", p)),
         visual_props,
         text_content,
-        semantic,
     };
 
     snapshot.elements.insert(node_id_str, elem);
 
     // Update hovered element in snapshot if this node is hovered
     if hovered_nodes.contains(&node) {
-        snapshot.hovered_element = Some(snapshot_node_id(tree, node));
+        snapshot.hovered_element = Some(format!("{:?}", node));
     }
 
     // Recurse into children

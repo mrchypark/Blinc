@@ -37,33 +37,6 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-fn debug_signal_value_summary(value: &(dyn Any + Send)) -> Option<String> {
-    macro_rules! summarize_copy {
-        ($($ty:ty),* $(,)?) => {
-            $(
-                if let Some(inner) = value.downcast_ref::<$ty>() {
-                    return Some(inner.to_string());
-                }
-            )*
-        };
-    }
-
-    summarize_copy!(
-        bool, char, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64
-    );
-
-    if let Some(inner) = value.downcast_ref::<String>() {
-        let truncated = if inner.chars().count() > 96 {
-            format!("{}...", inner.chars().take(96).collect::<String>())
-        } else {
-            inner.clone()
-        };
-        return Some(format!("{truncated:?}"));
-    }
-
-    None
-}
-
 new_key_type! {
     /// Unique identifier for a signal
     pub struct SignalId;
@@ -228,29 +201,6 @@ impl ReactiveGraph {
             tracking: RefCell::new(None),
             global_version: Cell::new(0),
         }
-    }
-
-    /// Clear all signals, derived values, and effects.
-    pub fn clear(&mut self) {
-        self.signals.clear();
-        self.derived.clear();
-        self.effects.clear();
-        self.pending_effects.borrow_mut().clear();
-        self.batch_depth.set(0);
-        *self.tracking.borrow_mut() = None;
-        self.global_version.set(0);
-    }
-
-    /// Return a best-effort debug summary for a signal value.
-    pub fn debug_signal_summary(&self, signal_id: SignalId) -> Option<String> {
-        self.signals
-            .get(signal_id)
-            .and_then(|node| debug_signal_value_summary(&*node.value))
-    }
-
-    /// Check whether a signal is still present in the graph.
-    pub fn has_signal(&self, signal_id: SignalId) -> bool {
-        self.signals.contains_key(signal_id)
     }
 
     // =========================================================================
@@ -746,6 +696,9 @@ impl<T: Clone + Send + 'static> State<T> {
     /// For visual-only changes (colors, opacity, animations), use `set()`.
     pub fn set_rebuild(&self, value: T) {
         self.reactive.lock().unwrap().set(self.signal, value);
+        if let Some(ref callback) = self.stateful_deps_callback {
+            callback(&[self.signal.id()]);
+        }
         self.dirty_flag.store(true, Ordering::SeqCst);
     }
 
@@ -763,6 +716,9 @@ impl<T: Clone + Send + 'static> State<T> {
     /// Update the value AND trigger a UI tree rebuild
     pub fn update_rebuild(&self, f: impl FnOnce(T) -> T) {
         self.reactive.lock().unwrap().update(self.signal, f);
+        if let Some(ref callback) = self.stateful_deps_callback {
+            callback(&[self.signal.id()]);
+        }
         self.dirty_flag.store(true, Ordering::SeqCst);
     }
 
@@ -953,5 +909,49 @@ mod tests {
         let stats = graph.stats();
         assert_eq!(stats.signal_count, 2);
         assert_eq!(stats.derived_count, 1);
+    }
+
+    #[test]
+    fn test_set_rebuild_notifies_stateful_deps() {
+        let mut graph = ReactiveGraph::new();
+        let signal = graph.create_signal(1i32);
+        let reactive = Arc::new(Mutex::new(graph));
+        let dirty_flag = Arc::new(AtomicBool::new(false));
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let notifications_for_callback = notifications.clone();
+        let callback: StatefulDepsCallback = Arc::new(move |signal_ids| {
+            notifications_for_callback
+                .lock()
+                .unwrap()
+                .extend_from_slice(signal_ids);
+        });
+        let state = State::with_stateful_callback(signal, reactive, dirty_flag, callback);
+
+        state.set_rebuild(2);
+
+        assert_eq!(state.get(), 2);
+        assert_eq!(notifications.lock().unwrap().as_slice(), &[signal.id()]);
+    }
+
+    #[test]
+    fn test_update_rebuild_notifies_stateful_deps() {
+        let mut graph = ReactiveGraph::new();
+        let signal = graph.create_signal(2i32);
+        let reactive = Arc::new(Mutex::new(graph));
+        let dirty_flag = Arc::new(AtomicBool::new(false));
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let notifications_for_callback = notifications.clone();
+        let callback: StatefulDepsCallback = Arc::new(move |signal_ids| {
+            notifications_for_callback
+                .lock()
+                .unwrap()
+                .extend_from_slice(signal_ids);
+        });
+        let state = State::with_stateful_callback(signal, reactive, dirty_flag, callback);
+
+        state.update_rebuild(|value| value + 3);
+
+        assert_eq!(state.get(), 5);
+        assert_eq!(notifications.lock().unwrap().as_slice(), &[signal.id()]);
     }
 }

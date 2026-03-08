@@ -151,52 +151,37 @@ cargo run -p blinc_app --example hello_world --features windowed
 
 MIT OR Apache-2.0
 
-## Automation And Headless Diagnostics
+## Headless Diagnostics (Developer Tooling)
 
-`blinc_app` now exposes two complementary diagnostics paths:
+`blinc_app` provides headless diagnostics primitives for goal-driven UI development:
 
-- app-backed headless automation via `AutomationSession` and `run_headless_scenario`
-- desktop-harness automation via `run_desktop_harness_scenario`
-- state-machine playbooks via `Playbook`, `run_headless_playbook`, and `run_desktop_harness_playbook`
-- legacy probe-driven assertions via `run_loaded_scenario_with_probe`
+- `HeadlessScenario` / `ScenarioStep`: scenario steps (`wait`, `tick`, assertions)
+- `run_loaded_scenario_with_probe`: execute checks against app-observable snapshots
+- `HeadlessReport`: machine-readable pass/fail output for CI or local debugging
 
-Scenario-driven automation:
+Minimal flow:
 
 ```rust
-use blinc_app::prelude::*;
+use blinc_app::headless_assert::{DiagnosticsElement, DiagnosticsSnapshot};
+use blinc_app::headless_runner::run_loaded_scenario_with_probe;
+use blinc_app::headless_runtime::HeadlessRunConfig;
+use blinc_app::headless_scenario::HeadlessScenario;
 
-let scenario = HeadlessScenario::from_json(r#"{
-  "steps": [
-    { "type": "click", "id": "counter.increment" },
-    { "type": "assert_text_contains", "id": "counter.value", "value": "Count: 1" }
-  ]
-}"#)?;
+let scenario = HeadlessScenario::from_path("scenario.json".as_ref())?;
+let mut probe = |_ctx: &blinc_app::ProbeContext| {
+    let mut snapshot = DiagnosticsSnapshot::default();
+    snapshot.elements.insert(
+        "app.title".to_string(),
+        DiagnosticsElement { text: Some("Welcome".to_string()) },
+    );
+    snapshot
+};
 
-let run = run_headless_scenario(
-    HeadlessRunConfig::default(),
+let outcome = run_loaded_scenario_with_probe(
     &scenario,
-    |ctx| app_ui(ctx),
-)?;
-
-run.report.write_to_writer(&mut std::io::stdout())?;
-# Ok::<(), anyhow::Error>(())
-```
-
-Playbook validation and execution:
-
-```rust
-use blinc_app::prelude::*;
-
-let playbook = Playbook::from_path("login.yaml".as_ref())?;
-let compiled = playbook.compile()?;
-compiled.validate_execution_order()?;
-let run = run_headless_playbook(
     HeadlessRunConfig::default(),
-    &playbook,
-    |ctx| app_ui(ctx),
+    &mut probe,
 )?;
-# let _ = run;
+outcome.report().write_to_writer(&mut std::io::stdout())?;
 # Ok::<(), anyhow::Error>(())
 ```
-
-Legacy probe-driven assertions remain available when you want to assert over synthetic snapshots instead of the real UI runtime.

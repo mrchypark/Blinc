@@ -4,7 +4,6 @@ use super::config::RecordingConfig;
 use crate::capture::{
     RecordedEvent, RecordingClock, Timestamp, TimestampedEvent, TreeDiff, TreeSnapshot,
 };
-use crate::trace::{TraceEntry, TraceEntryKind};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -34,12 +33,8 @@ pub struct RecordingSession {
     events: VecDeque<TimestampedEvent>,
     /// Ring buffer of tree snapshots.
     snapshots: VecDeque<TreeSnapshot>,
-    /// Ring buffer of trace entries associated with automation/debugging commands.
-    trace_entries: VecDeque<TraceEntry>,
     /// Last snapshot for diff computation.
     last_snapshot: Option<TreeSnapshot>,
-    /// Sequence number assigned to the next trace entry.
-    next_trace_sequence: u64,
     /// Accumulated pause duration (for accurate timestamps).
     pause_duration: std::time::Duration,
     /// When the current pause started (if paused).
@@ -47,8 +42,6 @@ pub struct RecordingSession {
     /// Statistics.
     stats: SessionStats,
 }
-
-pub const RECORDING_EXPORT_VERSION: u32 = 1;
 
 /// Statistics for a recording session.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -76,9 +69,7 @@ impl RecordingSession {
             clock: RecordingClock::new(),
             events: VecDeque::new(),
             snapshots: VecDeque::new(),
-            trace_entries: VecDeque::new(),
             last_snapshot: None,
-            next_trace_sequence: 0,
             pause_duration: std::time::Duration::ZERO,
             pause_start: None,
             stats: SessionStats::default(),
@@ -112,9 +103,7 @@ impl RecordingSession {
                 self.clock.reset();
                 self.events.clear();
                 self.snapshots.clear();
-                self.trace_entries.clear();
                 self.last_snapshot = None;
-                self.next_trace_sequence = 0;
                 self.pause_duration = std::time::Duration::ZERO;
                 self.stats = SessionStats::default();
                 self.state = SessionState::Recording;
@@ -151,9 +140,7 @@ impl RecordingSession {
         self.state = SessionState::Idle;
         self.events.clear();
         self.snapshots.clear();
-        self.trace_entries.clear();
         self.last_snapshot = None;
-        self.next_trace_sequence = 0;
         self.pause_duration = std::time::Duration::ZERO;
         self.pause_start = None;
         self.stats = SessionStats::default();
@@ -215,70 +202,14 @@ impl RecordingSession {
         diff
     }
 
-    /// Attempt to record a trace entry and return its assigned sequence number.
-    pub fn try_record_trace_entry(&mut self, kind: TraceEntryKind) -> Option<u64> {
-        if self.state != SessionState::Recording {
-            return None;
-        }
-
-        let entry = TraceEntry {
-            sequence: self.next_trace_sequence,
-            timestamp: self.current_timestamp(),
-            kind,
-        };
-        let sequence = entry.sequence;
-        self.append_trace_entry(entry);
-        Some(sequence)
-    }
-
-    /// Record a trace entry and return the current sequence number.
-    ///
-    /// When the session is not recording, no entry is stored and the next sequence
-    /// number is returned unchanged for backward compatibility.
-    pub fn record_trace_entry(&mut self, kind: TraceEntryKind) -> u64 {
-        let fallback_sequence = self.next_trace_sequence;
-        self.try_record_trace_entry(kind)
-            .unwrap_or(fallback_sequence)
-    }
-
     /// Get recorded events.
     pub fn events(&self) -> &VecDeque<TimestampedEvent> {
         &self.events
     }
 
-    /// Create the next trace entry without mutating session state.
-    pub fn prepare_trace_entry(&self, kind: TraceEntryKind) -> Option<TraceEntry> {
-        (self.state == SessionState::Recording).then(|| TraceEntry {
-            sequence: self.next_trace_sequence,
-            timestamp: self.current_timestamp(),
-            kind,
-        })
-    }
-
-    /// Append a prebuilt trace entry.
-    pub fn append_trace_entry(&mut self, entry: TraceEntry) -> bool {
-        if self.state != SessionState::Recording {
-            return false;
-        }
-
-        if self.trace_entries.len() >= self.config.max_events {
-            self.trace_entries.pop_front();
-        }
-        self.next_trace_sequence = self
-            .next_trace_sequence
-            .max(entry.sequence.saturating_add(1));
-        self.trace_entries.push_back(entry);
-        true
-    }
-
     /// Get recorded snapshots.
     pub fn snapshots(&self) -> &VecDeque<TreeSnapshot> {
         &self.snapshots
-    }
-
-    /// Get recorded trace entries.
-    pub fn trace_entries(&self) -> &VecDeque<TraceEntry> {
-        &self.trace_entries
     }
 
     /// Get the last recorded snapshot.
@@ -301,24 +232,18 @@ impl RecordingSession {
 
     /// Get the recording duration.
     pub fn duration(&self) -> Timestamp {
-        let event_duration = self.stats.last_event_time.unwrap_or_default();
-        let snapshot_duration = self.stats.last_snapshot_time.unwrap_or_default();
-        let trace_duration = self
-            .trace_entries
-            .back()
-            .map(|entry| entry.timestamp)
-            .unwrap_or_default();
-        event_duration.max(snapshot_duration).max(trace_duration)
+        self.stats
+            .last_event_time
+            .or(self.stats.last_snapshot_time)
+            .unwrap_or_default()
     }
 
     /// Export all recorded data.
     pub fn export(&self) -> RecordingExport {
         RecordingExport {
-            schema_version: RECORDING_EXPORT_VERSION,
             config: self.config.clone(),
             events: self.events.iter().cloned().collect(),
             snapshots: self.snapshots.iter().cloned().collect(),
-            trace_entries: self.trace_entries.iter().cloned().collect(),
             stats: self.stats.clone(),
         }
     }
@@ -327,18 +252,10 @@ impl RecordingSession {
 /// Exported recording data for serialization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordingExport {
-    #[serde(default = "default_recording_export_version")]
-    pub schema_version: u32,
     pub config: RecordingConfig,
     pub events: Vec<TimestampedEvent>,
     pub snapshots: Vec<TreeSnapshot>,
-    #[serde(default)]
-    pub trace_entries: Vec<TraceEntry>,
     pub stats: SessionStats,
-}
-
-const fn default_recording_export_version() -> u32 {
-    RECORDING_EXPORT_VERSION
 }
 
 /// Thread-safe wrapper around RecordingSession.
@@ -389,22 +306,6 @@ impl SharedRecordingSession {
         self.inner.write().record_snapshot(snapshot)
     }
 
-    pub fn try_record_trace_entry(&self, kind: TraceEntryKind) -> Option<u64> {
-        self.inner.write().try_record_trace_entry(kind)
-    }
-
-    pub fn record_trace_entry(&self, kind: TraceEntryKind) -> u64 {
-        self.inner.write().record_trace_entry(kind)
-    }
-
-    pub fn prepare_trace_entry(&self, kind: TraceEntryKind) -> Option<TraceEntry> {
-        self.inner.read().prepare_trace_entry(kind)
-    }
-
-    pub fn append_trace_entry(&self, entry: TraceEntry) -> bool {
-        self.inner.write().append_trace_entry(entry)
-    }
-
     pub fn stats(&self) -> SessionStats {
         self.inner.read().stats().clone()
     }
@@ -431,9 +332,6 @@ impl SharedRecordingSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace::{
-        TraceArtifactRecord, TraceAssertionRecord, TraceCommandRecord, TraceEntryKind,
-    };
 
     #[test]
     fn test_session_state_transitions() {
@@ -480,254 +378,5 @@ mod tests {
         assert_eq!(session.events().len(), 5);
         assert_eq!(session.stats().events_dropped, 2);
         assert_eq!(session.stats().total_events, 7);
-    }
-
-    #[test]
-    fn recording_export_round_trips_with_command_and_assertion_entries() {
-        let mut session = RecordingSession::new(RecordingConfig::minimal());
-        session.start();
-        session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "click".to_string(),
-                target: Some("login.submit".to_string()),
-                payload: None,
-            }))
-            .expect("trace entry should record while active");
-        session
-            .try_record_trace_entry(TraceEntryKind::Assertion(TraceAssertionRecord {
-                code: "assert_text_contains".to_string(),
-                passed: true,
-                target: Some("status".to_string()),
-                actual: Some("Signed in".to_string()),
-                expected: Some("Signed in".to_string()),
-            }))
-            .expect("trace entry should record while active");
-        session
-            .try_record_trace_entry(TraceEntryKind::Artifact(TraceArtifactRecord {
-                kind: "tree_dump".to_string(),
-                path: Some("artifacts/status-tree.json".to_string()),
-                message: None,
-            }))
-            .expect("trace entry should record while active");
-
-        let export = session.export();
-        let payload = serde_json::to_string(&export).expect("recording export should serialize");
-        let decoded: RecordingExport =
-            serde_json::from_str(&payload).expect("recording export should deserialize");
-
-        assert_eq!(decoded.schema_version, RECORDING_EXPORT_VERSION);
-        assert_eq!(decoded.trace_entries.len(), 3);
-        assert!(matches!(
-            decoded.trace_entries[0].kind,
-            TraceEntryKind::Command(_)
-        ));
-        assert!(matches!(
-            decoded.trace_entries[1].kind,
-            TraceEntryKind::Assertion(_)
-        ));
-        assert!(matches!(
-            decoded.trace_entries[2].kind,
-            TraceEntryKind::Artifact(_)
-        ));
-    }
-
-    #[test]
-    fn recording_export_defaults_schema_version_for_legacy_payloads() {
-        let payload = serde_json::json!({
-            "config": RecordingConfig::minimal(),
-            "events": [],
-            "snapshots": [],
-            "trace_entries": [],
-            "stats": SessionStats::default(),
-        })
-        .to_string();
-
-        let decoded: RecordingExport =
-            serde_json::from_str(&payload).expect("legacy payload should deserialize");
-
-        assert_eq!(decoded.schema_version, RECORDING_EXPORT_VERSION);
-    }
-
-    #[test]
-    fn trace_entries_keep_monotonic_sequence_numbers() {
-        let mut session = RecordingSession::new(RecordingConfig::minimal());
-        session.start();
-
-        let first = session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "click".to_string(),
-                target: Some("login.submit".to_string()),
-                payload: None,
-            }))
-            .expect("trace entry should record while active");
-        let second = session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "press".to_string(),
-                target: Some("login.submit".to_string()),
-                payload: Some("Enter".to_string()),
-            }))
-            .expect("trace entry should record while active");
-
-        let export = session.export();
-        let sequences: Vec<u64> = export
-            .trace_entries
-            .iter()
-            .map(|entry| entry.sequence)
-            .collect();
-
-        assert_eq!(first, 0);
-        assert_eq!(second, 1);
-        assert_eq!(sequences, vec![0, 1]);
-        assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
-    }
-
-    #[test]
-    fn trace_entries_do_not_advance_sequence_when_session_is_not_recording() {
-        let mut session = RecordingSession::new(RecordingConfig::minimal());
-
-        assert_eq!(
-            session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "click".to_string(),
-                target: Some("idle.button".to_string()),
-                payload: None,
-            })),
-            0
-        );
-        assert!(session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "click".to_string(),
-                target: Some("idle.button".to_string()),
-                payload: None,
-            }))
-            .is_none());
-
-        session.start();
-        let sequence = session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "click".to_string(),
-                target: Some("active.button".to_string()),
-                payload: None,
-            }))
-            .expect("first active trace entry should record");
-
-        assert_eq!(sequence, 0);
-        assert_eq!(session.trace_entries().len(), 1);
-
-        session.pause();
-        assert_eq!(
-            session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "click".to_string(),
-                target: Some("paused.button".to_string()),
-                payload: None,
-            })),
-            1
-        );
-        assert!(session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "click".to_string(),
-                target: Some("paused.button".to_string()),
-                payload: None,
-            }))
-            .is_none());
-
-        session.start();
-        let resumed_sequence = session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "click".to_string(),
-                target: Some("resumed.button".to_string()),
-                payload: None,
-            }))
-            .expect("resumed trace entry should continue sequence");
-
-        assert_eq!(resumed_sequence, 1);
-
-        session.stop();
-        assert_eq!(
-            session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "click".to_string(),
-                target: Some("stopped.button".to_string()),
-                payload: None,
-            })),
-            2
-        );
-        assert!(session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "click".to_string(),
-                target: Some("stopped.button".to_string()),
-                payload: None,
-            }))
-            .is_none());
-
-        assert_eq!(session.trace_entries().len(), 2);
-    }
-
-    #[test]
-    fn shared_session_trace_entries_only_record_while_active() {
-        let session = SharedRecordingSession::new(RecordingConfig::minimal());
-
-        assert_eq!(
-            session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "idle".to_string(),
-                target: Some("app.title".to_string()),
-                payload: None,
-            })),
-            0
-        );
-        assert!(session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "idle".to_string(),
-                target: Some("app.title".to_string()),
-                payload: None,
-            }))
-            .is_none());
-
-        session.start();
-        let sequence = session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "active".to_string(),
-                target: Some("app.title".to_string()),
-                payload: None,
-            }))
-            .expect("active shared session should record trace entries");
-
-        session.pause();
-
-        assert_eq!(
-            session.record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "paused".to_string(),
-                target: Some("app.title".to_string()),
-                payload: None,
-            })),
-            1
-        );
-        assert!(session
-            .try_record_trace_entry(TraceEntryKind::Command(TraceCommandRecord {
-                name: "paused".to_string(),
-                target: Some("app.title".to_string()),
-                payload: None,
-            }))
-            .is_none());
-
-        let export = session.export();
-        assert_eq!(sequence, 0);
-        assert_eq!(export.trace_entries.len(), 1);
-        assert_eq!(export.trace_entries[0].sequence, 0);
-    }
-
-    #[test]
-    fn duration_includes_trace_only_exports() {
-        let mut session = RecordingSession::new(RecordingConfig::debug());
-        session.start();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        session.record_trace_entry(TraceEntryKind::Artifact(TraceArtifactRecord {
-            kind: "runtime_mode".to_string(),
-            path: None,
-            message: Some("headless".to_string()),
-        }));
-
-        assert!(
-            session.duration().as_micros() > 0,
-            "trace-only sessions should still report a non-zero duration"
-        );
     }
 }

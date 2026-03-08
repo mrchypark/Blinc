@@ -47,10 +47,6 @@
     <string>Blinc may use location in the background for active sensor sessions.</string>
     <key>NSMotionUsageDescription</key>
     <string>Blinc uses motion sensors to collect accelerometer and gyroscope data.</string>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Blinc uses microphone permission for platform capability checks.</string>
-    <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>Blinc uses Bluetooth to discover nearby BLE devices.</string>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>

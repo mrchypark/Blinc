@@ -309,7 +309,7 @@ impl<'a> TestContext<'a> {
                 }
                 ElementType::Svg(svg_data) => {
                     svgs.push((
-                        svg_data.source.to_string(),
+                        svg_data.source.clone(),
                         abs_x,
                         abs_y,
                         bounds.width,

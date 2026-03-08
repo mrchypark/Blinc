@@ -21,9 +21,6 @@ pub struct TreeSnapshot {
     pub window_size: (u32, u32),
     /// Scale factor at time of snapshot.
     pub scale_factor: f64,
-    /// Best-effort ViewModel/keyed-state inventory visible at capture time.
-    #[serde(default)]
-    pub view_model_states: Vec<ViewModelStateEntry>,
 }
 
 impl TreeSnapshot {
@@ -37,7 +34,6 @@ impl TreeSnapshot {
             hovered_element: None,
             window_size,
             scale_factor,
-            view_model_states: Vec::new(),
         }
     }
 
@@ -87,9 +83,6 @@ pub struct ElementSnapshot {
     pub visual_props: Option<VisualProps>,
     /// Optional text content (for text elements).
     pub text_content: Option<String>,
-    /// Optional semantic/accessibility metadata for automation and debugging.
-    #[serde(default)]
-    pub semantic: Option<ElementSemanticInfo>,
 }
 
 impl ElementSnapshot {
@@ -107,7 +100,6 @@ impl ElementSnapshot {
             parent: None,
             visual_props: None,
             text_content: None,
-            semantic: None,
         }
     }
 
@@ -139,32 +131,6 @@ pub struct VisualProps {
     pub transform: Option<[f32; 6]>,
     /// Additional CSS-like properties.
     pub styles: HashMap<String, String>,
-}
-
-/// Semantic metadata captured for an element.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ElementSemanticInfo {
-    /// Semantic tag/type registered in the element registry (for example "button").
-    pub tag: Option<String>,
-    /// Accessibility role exposed for semantic locators.
-    pub role: Option<String>,
-    /// Accessible name/label.
-    pub name: Option<String>,
-    /// Accessible description, often used for placeholder/help text.
-    pub description: Option<String>,
-    /// Accessible value when the element represents user-editable state.
-    pub value: Option<String>,
-}
-
-/// Keyed-state inventory entry captured alongside a snapshot.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ViewModelStateEntry {
-    /// Stable key passed into `use_state_keyed` / `use_signal_keyed`.
-    pub key: String,
-    /// Rust type name of the stored state.
-    pub type_name: String,
-    /// Best-effort display value, or `<opaque>` when the runtime value is not inspectable.
-    pub value_summary: String,
 }
 
 /// Difference between two tree snapshots.

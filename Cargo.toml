@@ -12,7 +12,6 @@ members = [
     "crates/blinc_paint",
     "crates/blinc_platform",
     "crates/blinc_recorder",
-    "crates/blinc_text",
     "crates/blinc_svg",
     "crates/blinc_theme",
     "crates/blinc_cn",
@@ -20,15 +19,13 @@ members = [
     "crates/blinc_tabler_icons",
     "crates/blinc_debugger",
     "crates/blinc_runtime",
-    "crates/blinc_update",
     "crates/blinc_canvas_kit",
     "crates/blinc_test_suite",
+    "crates/blinc_sensors",
     "extensions/blinc_platform_desktop",
     "extensions/blinc_platform_android",
     "extensions/blinc_platform_ios",
     "extensions/blinc_platform_harmony",
-    "extensions/blinc_update_android",
-    "extensions/blinc_update_desktop",
 ]
 
 # Platform-specific crates are included but have target-gated dependencies
@@ -81,7 +78,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
 toml = "0.8"
 
 # Data structures

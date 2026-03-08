@@ -78,11 +78,10 @@ pub use value::{
 pub use context::{BlincContext, BlincContextExt};
 pub use context_state::{
     query, query_motion, request_rebuild, use_signal_keyed, use_state_keyed, AnyElementRegistry,
-    BlincContextState, Bounds, BoundsCallback, ContextResourceOverride, FocusCallback, HookState,
-    MotionAnimationState, MotionStateCallback, ProgrammaticElementEvent, ProgrammaticEventCallback,
-    QueryCallback, RecordedEventAny, RecorderEventCallback, RecorderSnapshotCallback,
-    RecorderUpdateCallback, ScrollBehaviorHint, ScrollBlockHint, ScrollCallback, ScrollInlineHint,
-    ScrollIntoViewOptions, SharedHookState, StateKey, TreeSnapshotAny, UpdateCategory,
+    BlincContextState, Bounds, BoundsCallback, FocusCallback, HookState, MotionAnimationState,
+    MotionStateCallback, QueryCallback, RecordedEventAny, RecorderEventCallback,
+    RecorderSnapshotCallback, RecorderUpdateCallback, ScrollCallback, SharedHookState, StateKey,
+    TreeSnapshotAny, UpdateCategory,
 };
 
 // Re-export flow DAG types

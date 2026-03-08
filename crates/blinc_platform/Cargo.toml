@@ -18,6 +18,3 @@ default = []
 
 [dependencies]
 thiserror.workspace = true
-blinc_core = { path = "../blinc_core", version = "0.1.14" }
-serde.workspace = true
-serde_json.workspace = true

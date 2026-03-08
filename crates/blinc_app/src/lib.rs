@@ -125,9 +125,7 @@ pub fn system_font_paths() -> &'static [&'static str] {
 mod app;
 mod context;
 mod error;
-mod frame_utils;
 mod runloop;
-mod svg_atlas;
 mod text_measurer;
 
 // Windowed module is compiled for desktop (windowed feature), Android, iOS, Fuchsia, and HarmonyOS
@@ -157,49 +155,16 @@ pub use fuchsia::FuchsiaApp;
 #[cfg(test)]
 mod tests;
 
-#[cfg(any(
-    feature = "windowed",
-    all(feature = "android", target_os = "android"),
-    all(feature = "ios", target_os = "ios"),
-    all(feature = "fuchsia", target_os = "fuchsia"),
-    all(feature = "harmony", target_env = "ohos")
-))]
-pub mod automation_session;
-
 pub use app::{BlincApp, BlincConfig};
-#[cfg(any(
-    feature = "windowed",
-    all(feature = "android", target_os = "android"),
-    all(feature = "ios", target_os = "ios"),
-    all(feature = "fuchsia", target_os = "fuchsia"),
-    all(feature = "harmony", target_env = "ohos")
-))]
-pub use automation_session::{
-    run_desktop_harness_scenario, run_headless_scenario, AutomationFailure, AutomationLocator,
-    AutomationRun, AutomationRuntimeMode, AutomationSession,
-};
-pub use blinc_recorder::{
-    ElementSnapshot as RecorderElementSnapshot, TreeSnapshot as RecorderTreeSnapshot,
-};
 pub use context::{DebugMode, RenderContext};
 pub use error::{BlincError, Result};
 pub use headless_assert::{AssertionResult, DiagnosticsElement, DiagnosticsSnapshot};
-pub use headless_report::{HeadlessReport, ReportStatus};
+pub use headless_report::HeadlessReport;
 pub use headless_runner::{
-    run_loaded_scenario_with_owned_probe, run_loaded_scenario_with_probe, run_scenario,
-    run_scenario_with_owned_probe, run_scenario_with_probe, ProbeContext, RunOutcome,
+    run_loaded_scenario_with_probe, run_scenario, run_scenario_with_probe, ProbeContext, RunOutcome,
 };
 pub use headless_runtime::{HeadlessContext, HeadlessRunConfig, HeadlessRuntime};
 pub use headless_scenario::{HeadlessScenario, ScenarioStep};
-#[cfg(any(
-    feature = "windowed",
-    all(feature = "android", target_os = "android"),
-    all(feature = "ios", target_os = "ios"),
-    all(feature = "fuchsia", target_os = "fuchsia"),
-    all(feature = "harmony", target_env = "ohos")
-))]
-pub use playbook::{run_desktop_harness_playbook, run_headless_playbook};
-pub use playbook::{CompiledPlaybook, CompiledTransition, Playbook, PlaybookTransition};
 pub use text_measurer::{init_text_measurer, init_text_measurer_with_registry, FontTextMeasurer};
 
 // Re-export layout API for convenience
@@ -215,36 +180,16 @@ pub use blinc_macros::BlincComponent;
 /// Prelude module - import everything commonly needed
 pub mod prelude {
     pub use crate::app::{BlincApp, BlincConfig};
-    #[cfg(any(
-        feature = "windowed",
-        all(feature = "android", target_os = "android"),
-        all(feature = "ios", target_os = "ios"),
-        all(feature = "fuchsia", target_os = "fuchsia"),
-        all(feature = "harmony", target_env = "ohos")
-    ))]
-    pub use crate::automation_session::{
-        run_desktop_harness_scenario, run_headless_scenario, AutomationFailure, AutomationLocator,
-        AutomationRun, AutomationRuntimeMode, AutomationSession,
-    };
     pub use crate::context::{DebugMode, RenderContext};
     pub use crate::error::{BlincError, Result};
     pub use crate::headless_assert::{AssertionResult, DiagnosticsElement, DiagnosticsSnapshot};
-    pub use crate::headless_report::{HeadlessReport, ReportStatus};
+    pub use crate::headless_report::HeadlessReport;
     pub use crate::headless_runner::{
-        run_loaded_scenario_with_owned_probe, run_loaded_scenario_with_probe, run_scenario,
-        run_scenario_with_owned_probe, run_scenario_with_probe, ProbeContext, RunOutcome,
+        run_loaded_scenario_with_probe, run_scenario, run_scenario_with_probe, ProbeContext,
+        RunOutcome,
     };
     pub use crate::headless_runtime::{HeadlessContext, HeadlessRunConfig, HeadlessRuntime};
     pub use crate::headless_scenario::{HeadlessScenario, ScenarioStep};
-    #[cfg(any(
-        feature = "windowed",
-        all(feature = "android", target_os = "android"),
-        all(feature = "ios", target_os = "ios"),
-        all(feature = "fuchsia", target_os = "fuchsia"),
-        all(feature = "harmony", target_env = "ohos")
-    ))]
-    pub use crate::playbook::{run_desktop_harness_playbook, run_headless_playbook};
-    pub use crate::playbook::{CompiledPlaybook, CompiledTransition, Playbook, PlaybookTransition};
     pub use crate::text_measurer::{init_text_measurer, init_text_measurer_with_registry};
 
     // Layout builders
@@ -272,4 +217,3 @@ pub mod headless_report;
 pub mod headless_runner;
 pub mod headless_runtime;
 pub mod headless_scenario;
-pub mod playbook;

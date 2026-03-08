@@ -27,7 +27,7 @@ blinc_core = { path = "../blinc_core", version = "0.1.14" }
 blinc_gpu = { path = "../blinc_gpu", version = "0.1.14" }
 blinc_layout = { path = "../blinc_layout", version = "0.1.14" }
 blinc_paint = { path = "../blinc_paint", version = "0.1.14" }
-blinc_text = { path = "../blinc_text", version = "0.1.14" }
+blinc_text = { path = "../../../../crates/blinc_text", version = "0.1.14" }
 blinc_svg = { path = "../blinc_svg", version = "0.1.14" }
 
 # GPU and windowing

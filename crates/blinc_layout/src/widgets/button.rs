@@ -30,14 +30,12 @@ use blinc_core::reactive::SignalId;
 use blinc_core::Color;
 use blinc_theme::{ColorToken, ThemeState};
 
-use crate::accessibility::AccessibilityMetadata;
 use crate::css_parser::{active_stylesheet, ElementState};
 use crate::div::{div, Div, ElementBuilder};
 use crate::element::RenderProps;
 use crate::stateful::{ButtonState, SharedState, Stateful};
 use crate::text::text;
 use crate::tree::{LayoutNodeId, LayoutTree};
-use blinc_platform::AccessibilityRole;
 
 /// Button visual states (re-exported from stateful)
 pub use crate::stateful::ButtonState as ButtonVisualState;
@@ -613,22 +611,7 @@ impl ElementBuilder for Button {
         }
 
         // Build the inner Stateful - it will apply the callback we just set
-        let node_id = self.inner.build(tree);
-        let metadata = self
-            .config
-            .lock()
-            .ok()
-            .map(|cfg| {
-                AccessibilityMetadata::new(AccessibilityRole::Button)
-                    .with_name(cfg.label.clone())
-                    .with_focusable(true)
-                    .with_disabled(cfg.disabled)
-            })
-            .unwrap_or_else(|| {
-                AccessibilityMetadata::new(AccessibilityRole::Button).with_focusable(true)
-            });
-        tree.set_accessibility_metadata(node_id, metadata);
-        node_id
+        self.inner.build(tree)
     }
 
     fn render_props(&self) -> RenderProps {

@@ -1,8 +1,8 @@
 //! Main application module for the debugger.
 
 use crate::panels::{
-    CommandPanel, EvidencePanel, InspectorPanel, PreviewConfig, PreviewPanel, TimelinePanel,
-    TimelinePanelState, TreePanel, TreePanelState,
+    InspectorPanel, PreviewConfig, PreviewPanel, TimelinePanel, TimelinePanelState, TreePanel,
+    TreePanelState,
 };
 use crate::theme::DebuggerColors;
 use anyhow::{anyhow, bail, Context, Result};
@@ -12,11 +12,7 @@ use blinc_layout::prelude::*;
 use blinc_recorder::replay::{
     FrameUpdate, ReplayConfig, ReplayPlayer, ReplayState, SimulatedInput,
 };
-use blinc_recorder::{
-    RecordedEvent, RecordingExport, Timestamp, TimestampedEvent, TraceEntry, TraceEntryKind,
-    TreeSnapshot,
-};
-use std::collections::BTreeSet;
+use blinc_recorder::{RecordingExport, Timestamp, TreeSnapshot};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -47,18 +43,6 @@ pub struct AppState {
     pub cursor_position: Option<(f32, f32)>,
     /// Server address
     pub server_addr: Option<String>,
-    /// Cached command stream lines for the current recording.
-    pub command_lines: Arc<[String]>,
-    /// Cached evidence lines for the current recording.
-    pub evidence_lines: Arc<[String]>,
-    /// Cached locator/assertion context for the selected element.
-    pub selected_trace_context: SelectedTraceContext,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct SelectedTraceContext {
-    pub locator_lines: Arc<[String]>,
-    pub assertion_lines: Arc<[String]>,
 }
 
 impl AppState {
@@ -85,234 +69,6 @@ impl AppState {
         snapshot.elements.get(id)
     }
 
-    fn build_command_lines(recording: &RecordingExport, cutoff: Timestamp) -> Arc<[String]> {
-        recording
-            .trace_entries
-            .iter()
-            .filter(|entry| entry.timestamp <= cutoff)
-            .filter_map(|entry| match &entry.kind {
-                TraceEntryKind::Command(command) => {
-                    let mut line = match command.target.as_deref() {
-                        Some(target) => format!("{} -> {}", command.name, target),
-                        None => command.name.clone(),
-                    };
-                    if let Some(payload) = command.payload.as_deref() {
-                        line.push_str(&format!(" [{payload}]"));
-                    }
-                    Some(line)
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .into()
-    }
-
-    fn build_evidence_lines(recording: &RecordingExport, cutoff: Timestamp) -> Arc<[String]> {
-        recording
-            .trace_entries
-            .iter()
-            .filter(|entry| entry.timestamp <= cutoff)
-            .filter_map(|entry| match &entry.kind {
-                TraceEntryKind::LocatorResolution(resolution) => Some(format!(
-                    "locator {}{} [{}]{}",
-                    resolution.query,
-                    resolution
-                        .matched_target
-                        .as_deref()
-                        .map(|target| format!(" -> {target}"))
-                        .unwrap_or_default(),
-                    resolution.failure_reason.as_deref().unwrap_or_else(|| {
-                        if resolution.matched_target.is_some() {
-                            "matched"
-                        } else {
-                            "unresolved"
-                        }
-                    }),
-                    if resolution.candidate_targets.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" candidates={}", resolution.candidate_targets.join(", "))
-                    }
-                )),
-                TraceEntryKind::Assertion(assertion) => Some(format!(
-                    "{} {}{}",
-                    if assertion.passed { "PASS" } else { "FAIL" },
-                    assertion.code,
-                    assertion
-                        .target
-                        .as_deref()
-                        .map(|target| format!(" -> {target}"))
-                        .unwrap_or_default()
-                )),
-                TraceEntryKind::Artifact(artifact) => Some(format!(
-                    "artifact {}{}{}",
-                    artifact.kind,
-                    artifact
-                        .message
-                        .as_deref()
-                        .map(|message| format!(": {message}"))
-                        .unwrap_or_default(),
-                    artifact
-                        .path
-                        .as_deref()
-                        .map(|path| format!(" @ {path}"))
-                        .unwrap_or_default()
-                )),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .into()
-    }
-
-    fn build_selected_trace_context(
-        recording: Option<&RecordingExport>,
-        snapshot: Option<&TreeSnapshot>,
-        selected_id: Option<&str>,
-        cutoff: Timestamp,
-    ) -> SelectedTraceContext {
-        let (Some(selected_id), Some(recording)) = (selected_id, recording) else {
-            return SelectedTraceContext::default();
-        };
-        let aliases = selected_trace_aliases(snapshot, selected_id);
-
-        let locator_lines = recording
-            .trace_entries
-            .iter()
-            .filter(|entry| entry.timestamp <= cutoff)
-            .filter_map(|entry| match &entry.kind {
-                TraceEntryKind::LocatorResolution(resolution)
-                    if resolution
-                        .matched_target
-                        .as_deref()
-                        .is_some_and(|target| aliases.contains(target))
-                        || resolution
-                            .candidate_targets
-                            .iter()
-                            .any(|target| aliases.contains(target)) =>
-                {
-                    let status = if resolution
-                        .matched_target
-                        .as_deref()
-                        .is_some_and(|target| aliases.contains(target))
-                    {
-                        resolution.failure_reason.as_deref().unwrap_or("matched")
-                    } else {
-                        "candidate"
-                    };
-                    Some(format!("{} [{}]", resolution.query, status))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .into();
-        let assertion_lines = recording
-            .trace_entries
-            .iter()
-            .filter(|entry| entry.timestamp <= cutoff)
-            .filter_map(|entry| match &entry.kind {
-                TraceEntryKind::Assertion(assertion)
-                    if assertion
-                        .target
-                        .as_deref()
-                        .is_some_and(|target| aliases.contains(target)) =>
-                {
-                    Some(format!(
-                        "{} {}{}{}",
-                        if assertion.passed { "PASS" } else { "FAIL" },
-                        assertion.code,
-                        assertion
-                            .expected
-                            .as_deref()
-                            .map(|expected| format!(" expected={expected:?}"))
-                            .unwrap_or_default(),
-                        assertion
-                            .actual
-                            .as_deref()
-                            .map(|actual| format!(" actual={actual:?}"))
-                            .unwrap_or_default()
-                    ))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .into();
-
-        SelectedTraceContext {
-            locator_lines,
-            assertion_lines,
-        }
-    }
-
-    fn refresh_trace_lists(&mut self) {
-        if let Some(recording) = self.recording.as_ref() {
-            let cutoff = self.trace_cutoff();
-            self.command_lines = Self::build_command_lines(recording, cutoff);
-            self.evidence_lines = Self::build_evidence_lines(recording, cutoff);
-        } else {
-            self.command_lines = Arc::default();
-            self.evidence_lines = Arc::default();
-        }
-    }
-
-    fn refresh_selected_trace_context(&mut self) {
-        self.selected_trace_context = Self::build_selected_trace_context(
-            self.recording.as_ref(),
-            self.current_snapshot.as_ref(),
-            self.selected_element_id.as_deref(),
-            self.trace_cutoff(),
-        );
-    }
-
-    fn refresh_trace_views(&mut self) {
-        self.refresh_trace_lists();
-        self.refresh_selected_trace_context();
-    }
-
-    fn trace_cutoff(&self) -> Timestamp {
-        self.timeline_state.position
-    }
-
-    fn sync_snapshot_to_position(&mut self, position: Timestamp, snapshots: &[TreeSnapshot]) {
-        self.current_snapshot = snapshots
-            .iter()
-            .rfind(|snapshot| snapshot.timestamp <= position)
-            .cloned();
-    }
-
-    fn sync_cursor_to_position(&mut self, position: Timestamp, events: &[TimestampedEvent]) {
-        self.cursor_position = events
-            .iter()
-            .filter(|event| event.timestamp <= position)
-            .fold(None, |cursor, event| match &event.event {
-                RecordedEvent::MouseDown(event) => Some((event.position.x, event.position.y)),
-                RecordedEvent::MouseUp(event) => Some((event.position.x, event.position.y)),
-                RecordedEvent::Click(event) => Some((event.position.x, event.position.y)),
-                RecordedEvent::DoubleClick(event) => Some((event.position.x, event.position.y)),
-                RecordedEvent::MouseMove(event) => Some((event.position.x, event.position.y)),
-                RecordedEvent::Scroll(event) => Some((event.position.x, event.position.y)),
-                RecordedEvent::HoverEnter(event) => Some((event.position.x, event.position.y)),
-                RecordedEvent::HoverLeave(event) => Some((event.position.x, event.position.y)),
-                _ => cursor,
-            });
-    }
-
-    pub fn set_selected_element_id(&mut self, id: Option<String>) {
-        self.selected_element_id = id;
-        self.refresh_selected_trace_context();
-    }
-
-    pub fn command_stream_lines(&self) -> Arc<[String]> {
-        Arc::clone(&self.command_lines)
-    }
-
-    pub fn evidence_lines(&self) -> Arc<[String]> {
-        Arc::clone(&self.evidence_lines)
-    }
-
-    pub fn selected_trace_context(&self) -> SelectedTraceContext {
-        self.selected_trace_context.clone()
-    }
-
     /// Tick replay state once per UI build.
     pub fn tick(&mut self) {
         let player_arc = self.player.clone();
@@ -325,26 +81,14 @@ impl AppState {
             if player.state() == ReplayState::Playing {
                 let update = player.update();
                 self.apply_frame_update(update);
-                let snapshots = player.all_snapshots().to_vec();
-                let position = player.position();
-                let events = self
-                    .recording
-                    .as_ref()
-                    .map(|recording| recording.events.clone());
-                self.sync_snapshot_to_position(position, &snapshots);
-                if let Some(events) = events {
-                    self.sync_cursor_to_position(position, &events);
-                }
             } else {
-                let snapshots = player.all_snapshots().to_vec();
-                let position = player.position();
-                let events = self
-                    .recording
-                    .as_ref()
-                    .map(|recording| recording.events.clone());
-                self.sync_snapshot_to_position(position, &snapshots);
-                if let Some(events) = events {
-                    self.sync_cursor_to_position(position, &events);
+                if let Some(snapshot) = player
+                    .all_snapshots()
+                    .iter()
+                    .rfind(|s| s.timestamp <= player.position())
+                    .cloned()
+                {
+                    self.current_snapshot = Some(snapshot);
                 }
             }
 
@@ -355,14 +99,12 @@ impl AppState {
         }
 
         self.ensure_selected_element_exists();
-        self.refresh_trace_views();
     }
 
     pub fn toggle_playback(&mut self) {
         self.with_player(|state, player| {
             player.toggle();
             state.timeline_state.playback_state = player.state();
-            state.refresh_trace_views();
         });
     }
 
@@ -370,19 +112,8 @@ impl AppState {
         self.with_player(|state, player| {
             let update = player.step_back();
             state.apply_frame_update(update);
-            let position = player.position();
-            state.timeline_state.position = position;
+            state.timeline_state.position = player.position();
             state.timeline_state.playback_state = player.state();
-            let snapshots = player.all_snapshots().to_vec();
-            let events = state
-                .recording
-                .as_ref()
-                .map(|recording| recording.events.clone());
-            state.sync_snapshot_to_position(position, &snapshots);
-            if let Some(events) = events {
-                state.sync_cursor_to_position(position, &events);
-            }
-            state.refresh_trace_views();
         });
     }
 
@@ -390,19 +121,8 @@ impl AppState {
         self.with_player(|state, player| {
             let update = player.step();
             state.apply_frame_update(update);
-            let position = player.position();
-            state.timeline_state.position = position;
+            state.timeline_state.position = player.position();
             state.timeline_state.playback_state = player.state();
-            let snapshots = player.all_snapshots().to_vec();
-            let events = state
-                .recording
-                .as_ref()
-                .map(|recording| recording.events.clone());
-            state.sync_snapshot_to_position(position, &snapshots);
-            if let Some(events) = events {
-                state.sync_cursor_to_position(position, &events);
-            }
-            state.refresh_trace_views();
         });
     }
 
@@ -411,19 +131,13 @@ impl AppState {
             let micros =
                 (player.duration().as_micros() as f32 * normalized.clamp(0.0, 1.0)).round() as u64;
             player.seek(Timestamp::from_micros(micros));
-            let position = player.position();
-            state.timeline_state.position = position;
+            state.timeline_state.position = player.position();
             state.timeline_state.playback_state = ReplayState::Paused;
-            let snapshots = player.all_snapshots().to_vec();
-            let events = state
-                .recording
-                .as_ref()
-                .map(|recording| recording.events.clone());
-            state.sync_snapshot_to_position(position, &snapshots);
-            if let Some(events) = events {
-                state.sync_cursor_to_position(position, &events);
-            }
-            state.refresh_trace_views();
+            state.current_snapshot = player
+                .all_snapshots()
+                .iter()
+                .rfind(|s| s.timestamp <= player.position())
+                .cloned();
         });
     }
 
@@ -441,16 +155,15 @@ impl AppState {
         self.timeline_state.playback_state = ReplayState::Idle;
         self.timeline_state.speed = player.clock().speed();
 
-        self.sync_snapshot_to_position(self.timeline_state.position, &export.snapshots);
+        self.current_snapshot = export.snapshots.first().cloned();
         self.selected_element_id = self.current_snapshot.as_ref().and_then(|s| {
             s.root_id
                 .clone()
                 .or_else(|| s.elements.keys().next().cloned())
         });
-        self.sync_cursor_to_position(self.timeline_state.position, &export.events);
+        self.cursor_position = None;
 
         self.recording = Some(export);
-        self.refresh_trace_views();
         self.player = Some(Arc::new(Mutex::new(player)));
     }
 
@@ -478,20 +191,18 @@ impl AppState {
 
     fn ensure_selected_element_exists(&mut self) {
         let Some(snapshot) = self.current_snapshot.as_ref() else {
-            self.set_selected_element_id(None);
+            self.selected_element_id = None;
             return;
         };
 
-        let selected_exists = self
-            .selected_element_id
-            .as_ref()
-            .is_some_and(|id| snapshot.elements.contains_key(id));
-        if !selected_exists {
-            let next = snapshot
-                .root_id
-                .clone()
-                .or_else(|| snapshot.elements.keys().next().cloned());
-            self.set_selected_element_id(next);
+        match self.selected_element_id.as_ref() {
+            Some(id) if snapshot.elements.contains_key(id) => {}
+            _ => {
+                self.selected_element_id = snapshot
+                    .root_id
+                    .clone()
+                    .or_else(|| snapshot.elements.keys().next().cloned());
+            }
         }
     }
 
@@ -572,7 +283,7 @@ fn build_debugger_ui(ctx: &WindowedContext, app_state: &SharedAppState) -> impl 
     };
 
     let on_tree_select = make_state_callback(app_state, |state, id: String| {
-        state.set_selected_element_id(Some(id));
+        state.selected_element_id = Some(id);
     });
     let on_toggle_bounds = make_state_callback(app_state, |state, value: bool| {
         state.preview_config.show_bounds = value;
@@ -598,12 +309,6 @@ fn build_debugger_ui(ctx: &WindowedContext, app_state: &SharedAppState) -> impl 
     let on_speed_change = make_state_callback(app_state, |state, speed: f64| {
         state.set_playback_speed(speed);
     });
-    let command_lines = state.command_stream_lines();
-    let evidence_lines = state.evidence_lines();
-    let trace_context = state.selected_trace_context();
-    let command_scroll = ctx.use_scroll_ref("debugger.command_stream");
-    let inspector_scroll = ctx.use_scroll_ref("debugger.inspector");
-    let evidence_scroll = ctx.use_scroll_ref("debugger.evidence");
 
     div()
         .w(ctx.width)
@@ -620,43 +325,21 @@ fn build_debugger_ui(ctx: &WindowedContext, app_state: &SharedAppState) -> impl 
                     &state.tree_state,
                     Some(on_tree_select),
                 ))
-                .child(
-                    div()
-                        .flex_grow()
-                        .flex_col()
-                        .child(PreviewPanel::new(
-                            state.current_snapshot.as_ref(),
-                            &state.preview_config,
-                            state.cursor_position,
-                            Some(on_toggle_bounds),
-                            Some(on_toggle_cursor),
-                            Some(on_zoom),
-                        ))
-                        .child(CommandPanel::with_scroll_ref(command_lines, command_scroll)),
-                )
-                .child(
-                    div()
-                        .h_full()
-                        .flex_col()
-                        .child(InspectorPanel::new(
-                            state.selected_element(),
-                            state.current_snapshot.as_ref(),
-                            trace_context,
-                            inspector_scroll,
-                        ))
-                        .child(EvidencePanel::new(evidence_lines, evidence_scroll)),
-                ),
+                .child(PreviewPanel::new(
+                    state.current_snapshot.as_ref(),
+                    &state.preview_config,
+                    state.cursor_position,
+                    Some(on_toggle_bounds),
+                    Some(on_toggle_cursor),
+                    Some(on_zoom),
+                ))
+                .child(InspectorPanel::new(state.selected_element())),
         )
         .child(TimelinePanel::new(
             state
                 .recording
                 .as_ref()
                 .map(|r| r.events.as_slice())
-                .unwrap_or(&[]),
-            state
-                .recording
-                .as_ref()
-                .map(|r| r.trace_entries.as_slice())
                 .unwrap_or(&[]),
             &state.timeline_state,
             Some(on_step_back),
@@ -731,32 +414,6 @@ where
             action(&mut state, value);
         }
     })
-}
-
-fn selected_trace_aliases(snapshot: Option<&TreeSnapshot>, selected_id: &str) -> BTreeSet<String> {
-    let mut aliases = BTreeSet::new();
-    let mut current = Some(selected_id.to_string());
-    while let Some(id) = current.take() {
-        if !aliases.insert(id.clone()) {
-            break;
-        }
-        if let Some(raw) = parse_snapshot_node_raw(&id) {
-            aliases.insert(format!("node#{raw}"));
-        }
-        current = snapshot
-            .and_then(|snapshot| snapshot.elements.get(&id))
-            .and_then(|element| element.parent.clone());
-    }
-    aliases
-}
-
-fn parse_snapshot_node_raw(id: &str) -> Option<u64> {
-    if let Some(raw) = id.strip_prefix("node#") {
-        return raw.parse().ok();
-    }
-    id.strip_prefix("LayoutNodeId(")
-        .and_then(|rest| rest.strip_suffix(')'))
-        .and_then(|raw| raw.parse().ok())
 }
 
 fn make_state_callback0<F>(app_state: &SharedAppState, action: F) -> Arc<dyn Fn() + Send + Sync>
@@ -898,16 +555,8 @@ fn add_payload_budget(total_payload_bytes: &mut usize, payload_len: usize) -> Re
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        add_payload_budget, read_len_prefixed, resolve_connect_target, AppState, ConnectTarget,
-        SelectedTraceContext, MAX_EXPORT_STREAM_PAYLOAD_BYTES, MAX_NETWORK_PAYLOAD_BYTES,
-    };
-    use blinc_recorder::trace::{
-        TraceArtifactRecord, TraceAssertionRecord, TraceCommandRecord, TraceLocatorResolution,
-    };
-    use blinc_recorder::{
-        capture::Rect, ElementSnapshot, Key, KeyEvent, Modifiers, MouseMoveEvent, Point,
-        RecordedEvent, RecordingConfig, RecordingExport, SessionStats, Timestamp, TimestampedEvent,
-        TraceEntry, TraceEntryKind, TreeSnapshot,
+        add_payload_budget, read_len_prefixed, resolve_connect_target, ConnectTarget,
+        MAX_EXPORT_STREAM_PAYLOAD_BYTES, MAX_NETWORK_PAYLOAD_BYTES,
     };
     use std::io::Cursor;
 
@@ -1006,385 +655,5 @@ mod tests {
             err.to_string().contains("total payload size"),
             "unexpected error: {err}"
         );
-    }
-
-    #[test]
-    fn debugger_reads_enriched_recording_export_and_shows_command_stream() {
-        let mut state = AppState::default();
-        state.load_from_server("test", sample_recording_export());
-        state.seek_normalized(1.0);
-
-        let command_lines = state.command_stream_lines();
-        let evidence_lines = state.evidence_lines();
-
-        assert!(
-            command_lines
-                .iter()
-                .any(|line| line == "fill -> login.submit [value=<redacted:17 chars>]"),
-            "expected command stream to include click command: {command_lines:?}"
-        );
-        assert!(
-            evidence_lines
-                .iter()
-                .any(|line| line.contains("FAIL assert_text_contains -> status")),
-            "expected assertion evidence: {evidence_lines:?}"
-        );
-        assert!(
-            evidence_lines
-                .iter()
-                .any(|line| line
-                    .contains("artifact trace_export: wrote trace @ /tmp/blinc/trace.json")),
-            "expected artifact path in evidence lines: {evidence_lines:?}"
-        );
-    }
-
-    #[test]
-    fn debugger_trace_panels_follow_replay_position() {
-        let mut state = AppState::default();
-        state.load_from_server("test", sample_recording_export());
-
-        assert!(
-            state.command_stream_lines().is_empty(),
-            "expected command stream to stay empty before the first trace timestamp"
-        );
-        assert!(
-            state.current_snapshot.is_none(),
-            "expected no snapshot to be selected before the first snapshot timestamp"
-        );
-        assert!(
-            state.selected_element_id.is_none(),
-            "expected no selected element before the first snapshot timestamp"
-        );
-
-        state.seek_normalized(1.0);
-        assert!(
-            !state.command_stream_lines().is_empty(),
-            "expected command stream to populate after seeking through the trace"
-        );
-    }
-
-    #[test]
-    fn inspector_shows_locator_resolution_and_assertion_context() {
-        let mut state = AppState::default();
-        state.load_from_server("test", sample_recording_export());
-        state.seek_normalized(1.0);
-        state.set_selected_element_id(Some("status".to_string()));
-
-        let SelectedTraceContext {
-            locator_lines,
-            assertion_lines,
-        } = state.selected_trace_context();
-
-        assert!(
-            locator_lines
-                .iter()
-                .any(|line| line.contains("role=Button") && line.contains("matched")),
-            "expected locator context for selected element: {locator_lines:?}"
-        );
-        assert!(
-            assertion_lines
-                .iter()
-                .any(|line| line.contains("FAIL assert_text_contains")),
-            "expected assertion context for selected element: {assertion_lines:?}"
-        );
-        let element = state
-            .selected_element()
-            .expect("selected element should exist");
-        assert_eq!(element.element_type, "button");
-    }
-
-    #[test]
-    fn debugger_cursor_tracks_replay_position() {
-        let mut state = AppState::default();
-        state.load_from_server("test", sample_recording_export());
-
-        assert_eq!(state.cursor_position, None);
-
-        state.seek_normalized(1.0);
-        assert_eq!(state.cursor_position, Some((48.0, 72.0)));
-
-        state.seek_normalized(0.0);
-        assert_eq!(
-            state.cursor_position, None,
-            "expected cursor to clear when scrubbing before the first event"
-        );
-    }
-
-    #[test]
-    fn debugger_cursor_keeps_last_pointer_position_after_non_pointer_events() {
-        let mut export = sample_recording_export();
-        export.events.push(TimestampedEvent {
-            timestamp: Timestamp::from_micros(25),
-            event: RecordedEvent::KeyDown(KeyEvent {
-                key: Key::Enter,
-                modifiers: Modifiers::default(),
-                is_repeat: false,
-                focused_element: Some("status".to_string()),
-            }),
-        });
-
-        let mut state = AppState::default();
-        state.load_from_server("test", export);
-        state.seek_normalized(1.0);
-
-        assert_eq!(
-            state.cursor_position,
-            Some((48.0, 72.0)),
-            "expected cursor to keep the last known pointer position"
-        );
-    }
-
-    #[test]
-    fn debugger_cursor_tracks_hover_leave_position() {
-        let mut export = sample_recording_export();
-        export.events.push(TimestampedEvent {
-            timestamp: Timestamp::from_micros(25),
-            event: RecordedEvent::HoverLeave(blinc_recorder::HoverEvent {
-                position: Point::new(64.0, 96.0),
-                element_id: "status".to_string(),
-            }),
-        });
-
-        let mut state = AppState::default();
-        state.load_from_server("test", export);
-        state.seek_normalized(1.0);
-
-        assert_eq!(
-            state.cursor_position,
-            Some((64.0, 96.0)),
-            "expected hover leave to keep the last pointer location visible"
-        );
-    }
-
-    #[test]
-    fn inspector_marks_non_selected_locator_candidates_as_candidates() {
-        let mut export = sample_recording_export();
-        export.trace_entries[1].kind = TraceEntryKind::LocatorResolution(TraceLocatorResolution {
-            query: "role=Button".to_string(),
-            matched_target: Some("other-button".to_string()),
-            candidate_targets: vec!["status".to_string(), "other-button".to_string()],
-            failure_reason: None,
-        });
-
-        let mut state = AppState::default();
-        state.load_from_server("test", export);
-        state.seek_normalized(1.0);
-        state.set_selected_element_id(Some("status".to_string()));
-
-        let context = state.selected_trace_context();
-        assert!(
-            context
-                .locator_lines
-                .iter()
-                .any(|line| line.contains("[candidate]")),
-            "expected non-selected locator candidates to be labeled as candidates: {:?}",
-            context.locator_lines
-        );
-    }
-
-    #[test]
-    fn inspector_matches_trace_context_for_selected_idless_descendants() {
-        let mut export = sample_recording_export();
-        export.snapshots[0].elements.insert(
-            "node#42".to_string(),
-            ElementSnapshot {
-                id: "node#42".to_string(),
-                element_type: "text".to_string(),
-                bounds: Rect {
-                    x: 24.0,
-                    y: 32.0,
-                    width: 72.0,
-                    height: 18.0,
-                },
-                parent: Some("status".to_string()),
-                children: Vec::new(),
-                is_visible: true,
-                is_focused: false,
-                is_hovered: false,
-                is_interactive: false,
-                text_content: Some("Ready".to_string()),
-                visual_props: None,
-                semantic: None,
-            },
-        );
-        export.snapshots[0]
-            .elements
-            .get_mut("status")
-            .expect("status element should exist")
-            .children
-            .push("node#42".to_string());
-
-        let mut state = AppState::default();
-        state.load_from_server("test", export);
-        state.seek_normalized(1.0);
-        state.set_selected_element_id(Some("node#42".to_string()));
-
-        let context = state.selected_trace_context();
-        assert!(
-            context
-                .locator_lines
-                .iter()
-                .any(|line| line.contains("role=Button") && line.contains("[matched]")),
-            "expected locator context for selected id-less descendant: {:?}",
-            context.locator_lines
-        );
-        assert!(
-            context
-                .assertion_lines
-                .iter()
-                .any(|line| line.contains("assert_text_contains")),
-            "expected assertion context for selected id-less descendant: {:?}",
-            context.assertion_lines
-        );
-    }
-
-    #[test]
-    fn debugger_evidence_surfaces_targetless_locator_failures() {
-        let mut export = sample_recording_export();
-        export.trace_entries.push(TraceEntry {
-            sequence: 4,
-            timestamp: Timestamp::from_micros(13),
-            kind: TraceEntryKind::LocatorResolution(TraceLocatorResolution {
-                query: "role=Button, text=\"Missing\"".to_string(),
-                matched_target: None,
-                candidate_targets: vec!["status".to_string(), "other".to_string()],
-                failure_reason: Some("ambiguous_match".to_string()),
-            }),
-        });
-
-        let mut state = AppState::default();
-        state.load_from_server("test", export);
-        state.seek_normalized(1.0);
-
-        let evidence_lines = state.evidence_lines();
-        assert!(
-            evidence_lines.iter().any(|line| {
-                line.contains("locator role=Button, text=\"Missing\"")
-                    && line.contains("[ambiguous_match]")
-                    && line.contains("candidates=status, other")
-            }),
-            "expected targetless locator failure to appear in evidence: {evidence_lines:?}"
-        );
-    }
-
-    fn sample_recording_export() -> RecordingExport {
-        let mut snapshot = TreeSnapshot::new(Timestamp::from_micros(10), (400, 300), 1.0);
-        snapshot.root_id = Some("root".to_string());
-        snapshot.view_model_states = vec![blinc_recorder::ViewModelStateEntry {
-            key: "session.status".to_string(),
-            type_name: "alloc::string::String".to_string(),
-            value_summary: "\"Ready\"".to_string(),
-        }];
-        snapshot.elements.insert(
-            "root".to_string(),
-            ElementSnapshot {
-                id: "root".to_string(),
-                element_type: "div".to_string(),
-                bounds: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 400.0,
-                    height: 300.0,
-                },
-                parent: None,
-                children: vec!["status".to_string()],
-                is_visible: true,
-                is_focused: false,
-                is_hovered: false,
-                is_interactive: false,
-                text_content: None,
-                visual_props: None,
-                semantic: Some(blinc_recorder::ElementSemanticInfo {
-                    tag: Some("div".to_string()),
-                    role: Some("Group".to_string()),
-                    name: None,
-                    description: None,
-                    value: None,
-                }),
-            },
-        );
-        snapshot.elements.insert(
-            "status".to_string(),
-            ElementSnapshot {
-                id: "status".to_string(),
-                element_type: "button".to_string(),
-                bounds: Rect {
-                    x: 16.0,
-                    y: 24.0,
-                    width: 120.0,
-                    height: 32.0,
-                },
-                parent: Some("root".to_string()),
-                children: Vec::new(),
-                is_visible: true,
-                is_focused: false,
-                is_hovered: false,
-                is_interactive: true,
-                text_content: Some("Ready".to_string()),
-                visual_props: None,
-                semantic: Some(blinc_recorder::ElementSemanticInfo {
-                    tag: Some("button".to_string()),
-                    role: Some("Button".to_string()),
-                    name: Some("Ready".to_string()),
-                    description: None,
-                    value: None,
-                }),
-            },
-        );
-
-        RecordingExport {
-            schema_version: blinc_recorder::session::RECORDING_EXPORT_VERSION,
-            config: RecordingConfig::minimal(),
-            events: vec![TimestampedEvent {
-                timestamp: Timestamp::from_micros(20),
-                event: RecordedEvent::MouseMove(MouseMoveEvent {
-                    position: Point::new(48.0, 72.0),
-                    hover_element: Some("status".to_string()),
-                }),
-            }],
-            snapshots: vec![snapshot],
-            trace_entries: vec![
-                TraceEntry {
-                    sequence: 1,
-                    timestamp: Timestamp::from_micros(10),
-                    kind: TraceEntryKind::Command(TraceCommandRecord {
-                        name: "fill".to_string(),
-                        target: Some("login.submit".to_string()),
-                        payload: Some("value=<redacted:17 chars>".to_string()),
-                    }),
-                },
-                TraceEntry {
-                    sequence: 2,
-                    timestamp: Timestamp::from_micros(11),
-                    kind: TraceEntryKind::LocatorResolution(TraceLocatorResolution {
-                        query: "role=Button".to_string(),
-                        matched_target: Some("status".to_string()),
-                        candidate_targets: vec!["status".to_string()],
-                        failure_reason: None,
-                    }),
-                },
-                TraceEntry {
-                    sequence: 3,
-                    timestamp: Timestamp::from_micros(12),
-                    kind: TraceEntryKind::Assertion(TraceAssertionRecord {
-                        code: "assert_text_contains".to_string(),
-                        passed: false,
-                        target: Some("status".to_string()),
-                        actual: Some("Ready".to_string()),
-                        expected: Some("Signed in".to_string()),
-                    }),
-                },
-                TraceEntry {
-                    sequence: 4,
-                    timestamp: Timestamp::from_micros(13),
-                    kind: TraceEntryKind::Artifact(TraceArtifactRecord {
-                        kind: "trace_export".to_string(),
-                        path: Some("/tmp/blinc/trace.json".to_string()),
-                        message: Some("wrote trace".to_string()),
-                    }),
-                },
-            ],
-            stats: SessionStats::default(),
-        }
     }
 }

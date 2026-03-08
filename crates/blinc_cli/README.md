@@ -11,42 +11,6 @@ Command-line interface for the Blinc UI framework.
 
 `blinc_cli` provides commands for building, running, and developing Blinc applications with features like hot-reload.
 
-## Automation E2E
-
-`blinc automation run` is the end-user entrypoint for the agent-debugging workflow.
-
-Current repository-backed limitation:
-- `blinc new --rust` generates path dependencies into a Blinc checkout.
-- Use it from a source checkout, or set `BLINC_PATH` to a local Blinc workspace root before scaffolding.
-
-Validated flows:
-
-- run a headless scenario against a generated app
-- run a state-machine playbook against the same app
-- run the same scenario through the desktop harness
-- write JSON reports plus snapshot/trace artifacts for `blinc_debugger`
-
-Example:
-
-```bash
-blinc new E2EApp --rust -t counter
-
-blinc automation run ./E2EApp \
-  --scenario ./scenario.json \
-  --report ./headless-report.json
-
-blinc automation run ./E2EApp \
-  --playbook ./playbook.yaml \
-  --report ./playbook-report.json
-
-blinc automation run ./E2EApp \
-  --desktop-harness \
-  --scenario ./scenario.json \
-  --report ./desktop-report.json
-```
-
-For the full validated walkthrough, including artifact export and debugger usage, see [docs/headless-diagnostics.md](../../docs/headless-diagnostics.md).
-
 ## Installation
 
 ```bash
@@ -122,30 +86,6 @@ Checking Blinc development environment...
 
 Environment is ready for Blinc development!
 ```
-
-### Release
-
-Generate signed release metadata for the current macOS desktop path and Android artifacts:
-
-```bash
-blinc release manifest . \
-  --platform macos \
-  --arch universal \
-  --artifact-path dist/Demo.zip \
-  --private-key "$BLINC_RELEASE_PRIVATE_KEY" \
-  --public-key-output dist/public-key.txt \
-  --url https://example.com/releases/Demo.zip \
-  --output dist/release-manifest.json \
-  --published-at 2026-03-07T00:00:00Z
-```
-
-Updater scope in v1:
-- macOS desktop self-update reference path
-- Windows/Linux desktop updater backends stay planned and explicitly unsupported in v1
-- Android private/development distribution handoff
-- iOS stays on App Store/TestFlight distribution
-
-Reuse the same `--published-at` value when appending multiple artifacts into one release manifest.
 
 ## Configuration
 

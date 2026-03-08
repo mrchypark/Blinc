@@ -18,18 +18,6 @@ Platform abstraction layer for Blinc UI.
 - **Event Loop**: Handle platform events and callbacks
 - **Input Events**: Mouse, keyboard, touch input
 - **Asset Loading**: Platform-agnostic asset access
-- **Platform Services**: Permissions, Clipboard, Microphone permission, BLE scan runtime
-- **Sensor Runtime**: Unified sensor API now available at `blinc_platform::sensors`
-
-## Platform Services
-
-`blinc_platform` also exposes mobile capability services as thin wrappers around the native bridge:
-
-- `permissions`: unified permission query/request helpers
-- `clipboard`: copy/paste/clear/has-content
-- `microphone`: permission-only helper (`status`, `request`)
-- `ble`: scan configuration, start/stop, status, and result draining
-- `sensors`: migrated typed API previously provided by `blinc_sensors`
 
 ## Traits
 

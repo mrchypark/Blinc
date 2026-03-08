@@ -1858,7 +1858,9 @@ impl<S: StateTransitions> StateContext<S> {
     ) -> Option<blinc_core::State<T>> {
         let signal_id = self.deps.get(index)?;
         let signal = blinc_core::Signal::from_id(*signal_id);
-        let dirty_flag = blinc_core::context_state::BlincContextState::get().active_dirty_flag();
+        let dirty_flag = blinc_core::context_state::BlincContextState::get()
+            .dirty_flag()
+            .clone();
         Some(blinc_core::State::new(
             signal,
             self.reactive.clone(),
@@ -2138,7 +2140,9 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         let shared_state = use_shared_state_with::<S>(&key_str, initial);
 
         // Get the reactive graph from context
-        let reactive = blinc_core::context_state::BlincContextState::get().active_reactive();
+        let reactive = blinc_core::context_state::BlincContextState::get()
+            .reactive()
+            .clone();
 
         // Wrap the callback to use StateContext
         let callback = Arc::new(callback);
@@ -4209,9 +4213,6 @@ mod tests {
     use std::sync::Once;
 
     fn ensure_context_state() {
-        if blinc_core::context_state::BlincContextState::try_get().is_some() {
-            return;
-        }
         static INIT: Once = Once::new();
         INIT.call_once(|| {
             let reactive: blinc_core::reactive::SharedReactiveGraph = std::sync::Arc::new(

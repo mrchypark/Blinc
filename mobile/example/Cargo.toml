@@ -19,7 +19,7 @@ required-features = ["desktop"]
 [dependencies]
 blinc_core = { path = "../../crates/blinc_core" }
 blinc_layout = { path = "../../crates/blinc_layout" }
-blinc_platform = { path = "../../crates/blinc_platform" }
+blinc_sensors = { path = "../../crates/blinc_sensors" }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 serde_json = "1"

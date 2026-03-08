@@ -32,17 +32,14 @@ use blinc_animation::{
     AnimatedTimeline, AnimatedValue, AnimationContext, AnimationScheduler, SchedulerHandle,
     SharedAnimatedTimeline, SharedAnimatedValue, SpringConfig,
 };
-use blinc_core::context_state::{
-    BlincContextState, ContextBindingOverride, ContextResourceOverride, HookState, SharedHookState,
-    StateKey,
-};
+use blinc_core::context_state::{BlincContextState, HookState, SharedHookState, StateKey};
 use blinc_core::reactive::{Derived, ReactiveGraph, Signal, SignalId, State, StatefulDepsCallback};
 use blinc_layout::overlay_state::{get_overlay_manager, OverlayContext};
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager, OverlayManagerExt};
 use blinc_platform::{
-    ControlFlow, Event, EventLoop, ImeCursorArea, ImeState, InputEvent, Key, KeyState,
-    LifecycleEvent, MouseEvent, Platform, TouchEvent, Window, WindowConfig, WindowEvent,
+    ControlFlow, Event, EventLoop, InputEvent, Key, KeyState, LifecycleEvent, MouseEvent, Platform,
+    TouchEvent, Window, WindowConfig, WindowEvent,
 };
 
 use crate::app::BlincApp;
@@ -79,59 +76,6 @@ fn e2e_exit_after() -> bool {
         return !(v.is_empty() || v == "0" || v == "false" || v == "no");
     }
     e2e_is_enabled()
-}
-
-fn sync_platform_ime_state() {
-    let cursor_area = blinc_layout::widgets::focused_text_widget_ime_area().map(|bounds| {
-        ImeCursorArea::new(
-            bounds.x as f64,
-            bounds.y as f64,
-            bounds.width as f64,
-            bounds.height as f64,
-        )
-    });
-    let enabled = blinc_layout::widgets::has_live_focused_text_widget();
-    blinc_platform::set_ime_state(ImeState {
-        enabled,
-        cursor_area,
-    });
-}
-
-#[cfg(any(
-    target_os = "macos",
-    all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "windows"
-))]
-fn sync_accessibility_snapshot(tree: &blinc_layout::RenderTree) {
-    if let Some(snapshot) = blinc_layout::export_accessibility_snapshot(tree) {
-        blinc_platform_desktop::update_accessibility_snapshot(snapshot);
-    }
-}
-
-#[cfg(not(any(
-    target_os = "macos",
-    all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "windows"
-)))]
-fn sync_accessibility_snapshot(_tree: &blinc_layout::RenderTree) {}
-
-fn maybe_record_tree_snapshot(tree: &blinc_layout::RenderTree, windowed_ctx: &WindowedContext) {
-    if !blinc_layout::recorder_bridge::is_recording_snapshots() {
-        return;
-    }
-
-    let hovered_nodes = windowed_ctx
-        .event_router
-        .hovered_nodes()
-        .collect::<std::collections::HashSet<_>>();
-    let snapshot = blinc_layout::recorder_bridge::capture_tree_snapshot(
-        tree,
-        windowed_ctx.event_router.focused(),
-        &hovered_nodes,
-        windowed_ctx.width as u32,
-        windowed_ctx.height as u32,
-    );
-    blinc_layout::recorder_bridge::record_snapshot(snapshot);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -627,6 +571,80 @@ pub struct WindowedContext {
 }
 
 impl WindowedContext {
+    /// Create a headless context for offscreen rendering and screenshot tests.
+    ///
+    /// This mirrors the state container used by the windowed runtime without
+    /// requiring an actual platform window, making it suitable for deterministic
+    /// route rendering in golden tests.
+    pub fn new_headless(width: f32, height: f32) -> Self {
+        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(AnimationScheduler::new()));
+        let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
+        let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
+        let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
+        let element_registry: SharedElementRegistry =
+            Arc::new(blinc_layout::selector::ElementRegistry::new());
+        let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
+
+        let ctx = Self {
+            width,
+            height,
+            scale_factor: 1.0,
+            physical_width: width,
+            physical_height: height,
+            focused: true,
+            rebuild_count: 0,
+            event_router: EventRouter::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
+            animations,
+            ref_dirty_flag,
+            reactive,
+            hooks,
+            overlay_manager: overlay_manager(),
+            had_visible_overlays: false,
+            element_registry,
+            ready_callbacks,
+            stylesheet: None,
+            css_sources: Vec::new(),
+        };
+
+        if !BlincContextState::is_initialized() {
+            BlincContextState::init(
+                Arc::clone(&ctx.reactive),
+                Arc::clone(&ctx.hooks),
+                Arc::clone(&ctx.ref_dirty_flag),
+            );
+        }
+
+        if !blinc_animation::is_scheduler_initialized() {
+            let handle = ctx.animations.lock().unwrap().handle();
+            blinc_animation::set_global_scheduler(handle);
+        }
+
+        if let Some(global) = BlincContextState::try_get() {
+            let registry: blinc_core::context_state::AnyElementRegistry =
+                ctx.element_registry.clone();
+            global.set_viewport_size(width, height);
+            global.set_element_registry(registry);
+        }
+
+        ctx
+    }
+
+    /// Update the logical and physical size for a headless context.
+    pub fn set_headless_size(&mut self, width: f32, height: f32) {
+        self.width = width;
+        self.height = height;
+        self.physical_width = width;
+        self.physical_height = height;
+
+        if let Some(global) = BlincContextState::try_get() {
+            let registry: blinc_core::context_state::AnyElementRegistry =
+                self.element_registry.clone();
+            global.set_viewport_size(width, height);
+            global.set_element_registry(registry);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn from_window<W: Window>(
         window: &W,
@@ -798,40 +816,6 @@ impl WindowedContext {
         }
     }
 
-    /// Create a deterministic windowless context for headless automation/testing.
-    pub(crate) fn new_headless(
-        logical_width: f32,
-        logical_height: f32,
-        animations: SharedAnimationScheduler,
-        ref_dirty_flag: RefDirtyFlag,
-        reactive: SharedReactiveGraph,
-        hooks: SharedHookState,
-        element_registry: SharedElementRegistry,
-        ready_callbacks: SharedReadyCallbacks,
-    ) -> Self {
-        Self {
-            width: logical_width,
-            height: logical_height,
-            scale_factor: 1.0,
-            physical_width: logical_width,
-            physical_height: logical_height,
-            focused: true,
-            rebuild_count: 0,
-            event_router: EventRouter::new(),
-            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
-            animations,
-            ref_dirty_flag,
-            reactive,
-            hooks,
-            overlay_manager: overlay_manager(),
-            had_visible_overlays: false,
-            element_registry,
-            ready_callbacks,
-            stylesheet: None,
-            css_sources: Vec::new(),
-        }
-    }
-
     /// Update context from window (preserving event router, dirty flag, and reactive graph)
     fn update_from_window<W: Window>(&mut self, window: &W) {
         let (physical_width, physical_height) = window.size();
@@ -843,41 +827,6 @@ impl WindowedContext {
         self.height = physical_height as f32 / scale_factor as f32;
         self.scale_factor = scale_factor;
         self.focused = window.is_focused();
-    }
-
-    pub(crate) fn prepare_windowless_frame(&mut self, current_time: u64) {
-        self.overlay_manager.set_viewport_with_scale(
-            self.width,
-            self.height,
-            self.scale_factor as f32,
-        );
-        self.overlay_manager.update(current_time);
-    }
-
-    pub(crate) fn compose_runtime_ui<E: ElementBuilder + 'static>(
-        &mut self,
-        user_ui: E,
-    ) -> impl ElementBuilder {
-        let overlay_layer = self.overlay_manager.build_overlay_layer();
-        div()
-            .w(self.width)
-            .h(self.height)
-            .relative()
-            .child(user_ui)
-            .child(overlay_layer)
-    }
-
-    pub(crate) fn finish_runtime_rebuild(&mut self) {
-        let was_first_rebuild = self.rebuild_count == 0;
-        self.rebuild_count = self.rebuild_count.saturating_add(1);
-
-        if was_first_rebuild {
-            if let Ok(mut callbacks) = self.ready_callbacks.lock() {
-                for callback in callbacks.drain(..) {
-                    callback();
-                }
-            }
-        }
     }
 
     // =========================================================================
@@ -1026,10 +975,7 @@ impl WindowedContext {
             let initial = init();
             let signal = self.reactive.lock().unwrap().create_signal(initial);
             let raw_id = signal.id().to_raw();
-            self.hooks
-                .lock()
-                .unwrap()
-                .insert::<T>(state_key, key, raw_id);
+            self.hooks.lock().unwrap().insert(state_key, raw_id);
             signal
         };
 
@@ -1083,10 +1029,7 @@ impl WindowedContext {
             let initial = init();
             let signal = self.reactive.lock().unwrap().create_signal(initial);
             let raw_id = signal.id().to_raw();
-            self.hooks
-                .lock()
-                .unwrap()
-                .insert::<T>(state_key, key, raw_id);
+            self.hooks.lock().unwrap().insert(state_key, raw_id);
             signal
         }
     }
@@ -1146,7 +1089,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(Arc::clone(&new_inner));
             let raw_id = signal.id().to_raw();
-            hooks.insert::<SharedScrollRefInner>(state_key, key, raw_id);
+            hooks.insert(state_key, raw_id);
             (signal.id(), new_inner)
         };
 
@@ -1534,7 +1477,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(shared_state.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert_opaque::<blinc_layout::SharedState<S>>(state_key, raw_id);
+            hooks.insert(state_key, raw_id);
             shared_state
         }
     }
@@ -1613,7 +1556,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(animated_value.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert_opaque::<SharedAnimatedValue>(state_key, raw_id);
+            hooks.insert(state_key, raw_id);
             animated_value
         }
     }
@@ -1691,7 +1634,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(timeline.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert_opaque::<SharedAnimatedTimeline>(state_key, raw_id);
+            hooks.insert(state_key, raw_id);
             timeline
         }
     }
@@ -1778,7 +1721,7 @@ impl WindowedContext {
                 .animation_handle()
                 .register_tick_callback(callback)
                 .expect("Animation scheduler should be alive");
-            hooks.insert_opaque::<TickCallbackMarker>(state_key, id.to_raw());
+            hooks.insert(state_key, id.to_raw());
             id
         }
     }
@@ -2248,9 +2191,6 @@ impl WindowedApp {
 
         // Get a wake proxy to allow the animation thread to wake up the event loop
         let wake_proxy = event_loop.wake_proxy();
-        let programmatic_event_wake_proxy = event_loop.wake_proxy();
-        let focus_wake_proxy = event_loop.wake_proxy();
-        let scroll_wake_proxy = event_loop.wake_proxy();
 
         // We need to defer BlincApp creation until we have a window
         let mut app: Option<BlincApp> = None;
@@ -2274,25 +2214,6 @@ impl WindowedApp {
         // Shared hook state for use_state persistence
         let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
 
-        struct ResourceOverrideGuard(Option<ContextResourceOverride>);
-        struct BindingOverrideGuard(Option<ContextBindingOverride>);
-
-        impl Drop for ResourceOverrideGuard {
-            fn drop(&mut self) {
-                if let Some(ctx) = BlincContextState::try_get() {
-                    ctx.restore_resource_override(self.0.take());
-                }
-            }
-        }
-
-        impl Drop for BindingOverrideGuard {
-            fn drop(&mut self) {
-                if let Some(ctx) = BlincContextState::try_get() {
-                    ctx.restore_binding_override(self.0.take());
-                }
-            }
-        }
-
         // Initialize global context state singleton (if not already initialized)
         // This allows components to create internal state without context parameters
         if !BlincContextState::is_initialized() {
@@ -2308,16 +2229,6 @@ impl WindowedApp {
                 stateful_callback,
             );
         }
-        let _resource_override_guard = ResourceOverrideGuard(
-            BlincContextState::get().set_resource_override(ContextResourceOverride::new(
-                Arc::clone(&reactive),
-                Arc::clone(&hooks),
-                Arc::clone(&ref_dirty_flag),
-            )),
-        );
-        let _binding_override_guard = BindingOverrideGuard(
-            BlincContextState::get().set_binding_override(ContextBindingOverride::default()),
-        );
 
         // Shared animation scheduler for spring/keyframe animations
         // Runs on background thread so animations continue even when window loses focus
@@ -2355,15 +2266,6 @@ impl WindowedApp {
         // Shared element registry for query API
         let element_registry: SharedElementRegistry =
             Arc::new(blinc_layout::selector::ElementRegistry::new());
-        let programmatic_events = Arc::new(Mutex::new(Vec::<(
-            String,
-            blinc_core::ProgrammaticElementEvent,
-        )>::new()));
-        let pending_focus_changes = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
-        let pending_scroll_requests = Arc::new(Mutex::new(Vec::<(
-            String,
-            blinc_core::ScrollIntoViewOptions,
-        )>::new()));
 
         // Set up query callback in BlincContextState so components can query elements globally
         {
@@ -2380,42 +2282,6 @@ impl WindowedApp {
             let bounds_callback: blinc_core::BoundsCallback =
                 Arc::new(move |id: &str| registry_for_bounds.get_bounds(id));
             BlincContextState::get().set_bounds_callback(bounds_callback);
-        }
-
-        // Route query API focus requests through the runtime event loop.
-        {
-            let pending_focus_changes = Arc::clone(&pending_focus_changes);
-            let focus_callback: blinc_core::FocusCallback = Arc::new(move |id| {
-                if let Ok(mut pending) = pending_focus_changes.lock() {
-                    pending.push(id.map(str::to_string));
-                }
-                focus_wake_proxy.wake();
-            });
-            BlincContextState::get().set_focus_callback(focus_callback);
-        }
-
-        // Route scroll-into-view requests through the runtime scroll path.
-        {
-            let pending_scroll_requests = Arc::clone(&pending_scroll_requests);
-            let scroll_callback: blinc_core::ScrollCallback = Arc::new(move |id, options| {
-                if let Ok(mut pending) = pending_scroll_requests.lock() {
-                    pending.push((id.to_string(), options));
-                }
-                scroll_wake_proxy.wake();
-            });
-            BlincContextState::get().set_scroll_callback(scroll_callback);
-        }
-
-        // Route ElementHandle interactions through the existing runtime path.
-        {
-            let programmatic_events = Arc::clone(&programmatic_events);
-            let callback: blinc_core::ProgrammaticEventCallback = Arc::new(move |id, event| {
-                if let Ok(mut pending) = programmatic_events.lock() {
-                    pending.push((id.to_string(), event));
-                }
-                programmatic_event_wake_proxy.wake();
-            });
-            BlincContextState::get().set_programmatic_event_callback(callback);
         }
 
         // Store element registry in BlincContextState for global query() function
@@ -2614,8 +2480,6 @@ impl WindowedApp {
                             if !focused {
                                 blinc_layout::widgets::blur_all_text_inputs();
                             }
-
-                            sync_platform_ime_state();
                         }
                     }
 
@@ -2951,6 +2815,16 @@ impl WindowedApp {
 
                                     // Key code for special key handling (backspace, arrows, etc)
                                     let key_code = match &kb_event.key {
+                                        Key::Num0 => 0x30,
+                                        Key::Num1 => 0x31,
+                                        Key::Num2 => 0x32,
+                                        Key::Num3 => 0x33,
+                                        Key::Num4 => 0x34,
+                                        Key::Num5 => 0x35,
+                                        Key::Num6 => 0x36,
+                                        Key::Num7 => 0x37,
+                                        Key::Num8 => 0x38,
+                                        Key::Num9 => 0x39,
                                         Key::Backspace => 8,
                                         Key::Delete => 127,
                                         Key::Enter => 13,
@@ -3114,38 +2988,6 @@ impl WindowedApp {
                                     // Scroll momentum ended - full stop
                                     scroll_ended = true;
                                 }
-                                InputEvent::CompositionStarted => {
-                                    blinc_layout::widgets::set_focused_text_widget_composition(None);
-                                }
-                                InputEvent::CompositionUpdated(update) => {
-                                    blinc_layout::widgets::set_focused_text_widget_composition(Some(
-                                        update,
-                                    ));
-                                }
-                                InputEvent::CompositionCommitted(text) => {
-                                    blinc_layout::widgets::set_focused_text_widget_composition(None);
-                                    for c in text.chars().filter(|c| !c.is_control()) {
-                                        keyboard_events.push(PendingEvent {
-                                            event_type: blinc_core::events::event_types::TEXT_INPUT,
-                                            key_char: Some(c),
-                                            ..Default::default()
-                                        });
-                                    }
-                                }
-                                InputEvent::CompositionCancelled => {
-                                    blinc_layout::widgets::set_focused_text_widget_composition(None);
-                                }
-                                InputEvent::FocusTraversal(intent) => {
-                                    keyboard_events.push(PendingEvent {
-                                        event_type: blinc_core::events::event_types::KEY_DOWN,
-                                        key_code: 9,
-                                        shift: matches!(
-                                            intent,
-                                            blinc_platform::FocusTraversalIntent::Previous
-                                        ),
-                                        ..Default::default()
-                                    });
-                                }
                             }
 
                             router.clear_event_callback();
@@ -3243,6 +3085,9 @@ impl WindowedApp {
                                 }
                             }
 
+                            let had_pointer_input = !pending_events.is_empty();
+                            let had_keyboard_input = !keyboard_events.is_empty();
+
                             // Dispatch mouse/touch events (scroll is handled above with nested support)
                             if let Some(ref mut windowed_ctx) = ctx {
                                 let router = &windowed_ctx.event_router;
@@ -3320,9 +3165,11 @@ impl WindowedApp {
                                 // Request redraw to animate bounce-back
                                 window.request_redraw();
                             }
-                        }
 
-                        sync_platform_ime_state();
+                            if had_pointer_input || had_keyboard_input {
+                                window.request_redraw();
+                            }
+                        }
                     }
 
                     Event::Frame => {
@@ -3373,17 +3220,6 @@ impl WindowedApp {
                             // This ensures ScrollRef has up-to-date values when stateful components
                             // query scroll position during rebuild
                             let scroll_animating = if let Some(ref mut tree) = render_tree {
-                                blinc_layout::selector::drain_programmatic_runtime_requests(
-                                    tree,
-                                    &mut windowed_ctx.event_router,
-                                    &pending_focus_changes,
-                                    &pending_scroll_requests,
-                                    &programmatic_events,
-                                );
-                                blinc_layout::selector::sync_context_focus_from_runtime(
-                                    tree,
-                                    &windowed_ctx.event_router,
-                                );
                                 let animating = tree.tick_scroll_physics(current_time);
                                 tree.process_pending_scroll_refs();
                                 animating
@@ -3710,7 +3546,17 @@ impl WindowedApp {
                                 }
 
                                 needs_rebuild = false;
-                                windowed_ctx.finish_runtime_rebuild();
+                                let was_first_rebuild = windowed_ctx.rebuild_count == 0;
+                                windowed_ctx.rebuild_count = windowed_ctx.rebuild_count.saturating_add(1);
+
+                                // Execute on_ready callbacks after first rebuild
+                                if was_first_rebuild {
+                                    if let Ok(mut callbacks) = ready_callbacks.lock() {
+                                        for callback in callbacks.drain(..) {
+                                            callback();
+                                        }
+                                    }
+                                }
                             } else {
                                 // No rebuild needed - still need to end the motion frame
                                 // If an existing tree exists, initialize motions to mark them as used
@@ -3964,11 +3810,6 @@ impl WindowedApp {
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
                                     }
                                 }
-                                blinc_layout::selector::sync_context_focus_from_runtime(
-                                    tree,
-                                    &windowed_ctx.event_router,
-                                );
-                                sync_accessibility_snapshot(tree);
                             }
 
                             // Apply CSS animation/transition values AFTER state styles
@@ -3984,9 +3825,6 @@ impl WindowedApp {
                             }
 
                             if let Some(ref tree) = render_tree {
-                                sync_accessibility_snapshot(tree);
-                                maybe_record_tree_snapshot(tree, &windowed_ctx);
-                                sync_platform_ime_state();
                                 // Render with motion animations
                                 // Use physical pixel dimensions for the render surface
                                 let result = blinc_app.render_tree_with_motion(
@@ -4345,10 +4183,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blinc_core::BlincContextState;
-    use blinc_recorder::{
-        install_recorder, uninstall_recorder, RecordingConfig, SharedRecordingSession,
-    };
 
     fn make_test_ctx() -> WindowedContext {
         let animations: SharedAnimationScheduler = Arc::new(Mutex::new(AnimationScheduler::new()));
@@ -4404,38 +4238,5 @@ mod tests {
         });
 
         assert_eq!(ctx.get(sig), Some(14));
-    }
-
-    #[test]
-    fn maybe_record_tree_snapshot_writes_into_installed_recorder() {
-        if !BlincContextState::is_initialized() {
-            let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
-            let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
-            let dirty: RefDirtyFlag = Arc::new(AtomicBool::new(false));
-            BlincContextState::init_with_callback(reactive, hooks, dirty, Arc::new(|_| {}));
-        }
-
-        let recorder = Arc::new(SharedRecordingSession::new(RecordingConfig::debug()));
-        install_recorder(Arc::clone(&recorder));
-        recorder.start();
-
-        let ctx = make_test_ctx();
-        let ui = div()
-            .id("root")
-            .w(100.0)
-            .h(100.0)
-            .child(div().id("status").child(text("Ready")));
-        let mut tree =
-            RenderTree::from_element_with_registry(&ui, Arc::clone(&ctx.element_registry));
-        tree.compute_layout(ctx.width, ctx.height);
-
-        maybe_record_tree_snapshot(&tree, &ctx);
-
-        let export = recorder.export();
-        assert_eq!(export.snapshots.len(), 1);
-        assert_eq!(export.snapshots[0].root_id.as_deref(), Some("root"));
-        assert!(export.snapshots[0].elements.contains_key("status"));
-
-        uninstall_recorder();
     }
 }

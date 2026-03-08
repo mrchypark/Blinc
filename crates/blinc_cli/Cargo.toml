@@ -15,8 +15,6 @@ path = "src/main.rs"
 [dependencies]
 blinc_core = { path = "../blinc_core", version = "0.1.14" }
 blinc_animation = { path = "../blinc_animation", version = "0.1.14" }
-blinc_app = { path = "../blinc_app", version = "0.1.14" }
-blinc_update = { path = "../blinc_update", version = "0.1.14" }
 
 # CLI
 clap.workspace = true
@@ -42,7 +40,3 @@ tracing-subscriber.workspace = true
 
 # System paths
 dirs = "5.0"
-base64 = "0.22"
-ed25519-dalek = "2.1"
-sha2 = "0.10"
-time = { version = "0.3", features = ["formatting", "parsing"] }
