@@ -125,6 +125,7 @@ pub fn system_font_paths() -> &'static [&'static str] {
 mod app;
 mod context;
 mod error;
+mod frame_utils;
 mod runloop;
 mod svg_atlas;
 mod text_measurer;

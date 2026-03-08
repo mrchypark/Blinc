@@ -1,5 +1,6 @@
 //! Scenario runner that executes headless diagnostics goals.
 
+use crate::frame_utils::wait_frames_for_duration;
 use crate::headless_assert::{
     evaluate_assert_exists, evaluate_assert_text_contains, AssertionResult, DiagnosticsSnapshot,
 };
@@ -114,7 +115,7 @@ where
     for (step_index, step) in scenario.steps.iter().enumerate() {
         match step {
             ScenarioStep::Wait { ms } => {
-                let frames = wait_frames(*ms, runtime_cfg.tick_ms);
+                let frames = wait_frames_for_duration(*ms, runtime_cfg.tick_ms);
                 let mut remaining_ms = *ms;
                 run_sampled_frames(
                     runtime_cfg,
@@ -334,36 +335,4 @@ where
     })?;
 
     Ok(())
-}
-
-fn wait_frames(wait_ms: u64, tick_ms: u64) -> u32 {
-    if wait_ms == 0 {
-        return 1;
-    }
-    let tick = tick_ms.max(1);
-    let frames = wait_ms / tick + u64::from(wait_ms % tick != 0);
-    frames.min(u32::MAX as u64) as u32
-}
-
-#[cfg(test)]
-mod tests {
-    use super::wait_frames;
-
-    #[test]
-    fn wait_frames_clamps_before_narrowing_to_u32() {
-        assert_eq!(wait_frames(u64::from(u32::MAX) + 1, 1), u32::MAX);
-    }
-
-    #[test]
-    fn wait_frames_uses_ceil_division_without_overflow() {
-        assert_eq!(wait_frames(u64::MAX, 2), u32::MAX);
-        assert_eq!(wait_frames(u64::MAX, 16), u32::MAX);
-        assert_eq!(wait_frames(u64::MAX, u64::from(u32::MAX) + 3), u32::MAX);
-    }
-
-    #[test]
-    fn wait_frames_advances_one_frame_for_zero_duration_waits() {
-        assert_eq!(wait_frames(0, 16), 1);
-        assert_eq!(wait_frames(0, 0), 1);
-    }
 }

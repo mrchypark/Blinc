@@ -2,6 +2,7 @@ use anyhow::Result;
 use blinc_layout::selector::SemanticLocator;
 use blinc_platform::AccessibilityRole;
 
+use crate::frame_utils::wait_frames_for_duration;
 use crate::headless_report::HeadlessReport;
 use crate::headless_runtime::HeadlessRunConfig;
 use crate::headless_scenario::{HeadlessScenario, ScenarioStep, ScenarioTarget};
@@ -67,7 +68,7 @@ where
     for (step_index, step) in scenario.steps.iter().enumerate() {
         let result = match step {
             ScenarioStep::Wait { ms } => {
-                let frames = wait_frames(*ms, runtime_cfg.tick_ms);
+                let frames = wait_frames_for_duration(*ms, runtime_cfg.tick_ms);
                 session.tick_frames(frames)?;
                 elapsed_frames += frames as u64;
                 elapsed_ms += ms;
@@ -209,30 +210,4 @@ fn automation_locator_from_target(
     }
 
     Ok(AutomationLocator::semantic(locator))
-}
-
-fn wait_frames(ms: u64, tick_ms: u64) -> u32 {
-    if ms == 0 {
-        return 1;
-    }
-    let tick_ms = tick_ms.max(1);
-    let frames = ms / tick_ms + u64::from(ms % tick_ms != 0);
-    frames.max(1).min(u64::from(u32::MAX)) as u32
-}
-
-#[cfg(test)]
-mod tests {
-    use super::wait_frames;
-
-    #[test]
-    fn wait_frames_clamps_before_narrowing_to_u32() {
-        assert_eq!(wait_frames(u64::from(u32::MAX) + 1, 1), u32::MAX);
-    }
-
-    #[test]
-    fn wait_frames_saturates_large_addition_before_dividing() {
-        assert_eq!(wait_frames(u64::MAX, 2), u32::MAX);
-        assert_eq!(wait_frames(u64::MAX, 16), u32::MAX);
-        assert_eq!(wait_frames(u64::MAX, u64::from(u32::MAX) + 3), u32::MAX);
-    }
 }
