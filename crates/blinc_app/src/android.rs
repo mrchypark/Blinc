@@ -28,7 +28,6 @@ use android_activity::input::{InputEvent as AndroidInputEvent, MotionAction};
 use android_activity::{AndroidApp as NdkAndroidApp, InputStatus, MainEvent, PollEvent};
 use ndk::native_window::NativeWindow;
 
-use blinc_animation::AnimationScheduler;
 use blinc_core::context_state::{BlincContextState, HookState, SharedHookState};
 use blinc_core::reactive::{ReactiveGraph, SignalId};
 use blinc_layout::event_router::MouseButton;
@@ -47,8 +46,8 @@ use blinc_platform_android::AndroidAssetLoader;
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
 use crate::windowed::{
-    RefDirtyFlag, SharedAnimationScheduler, SharedElementRegistry, SharedReactiveGraph,
-    SharedReadyCallbacks, WindowedContext,
+    shared_runtime_scheduler, RefDirtyFlag, SharedAnimationScheduler, SharedElementRegistry,
+    SharedReactiveGraph, SharedReadyCallbacks, WindowedContext,
 };
 
 /// Android application runner
@@ -253,8 +252,7 @@ impl AndroidApp {
         // Animation scheduler - single-threaded for mobile efficiency
         // Unlike desktop, we tick animations on main thread to avoid mutex contention
         // and high CPU usage from background thread + main thread fighting
-        let scheduler = AnimationScheduler::new();
-        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(scheduler));
+        let animations: SharedAnimationScheduler = shared_runtime_scheduler();
 
         // Set global scheduler handle
         {
