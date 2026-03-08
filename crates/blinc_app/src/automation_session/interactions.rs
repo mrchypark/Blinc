@@ -1,5 +1,9 @@
 use super::*;
 
+const MODIFIER_CTRL: u8 = 0b0010;
+const MODIFIER_META: u8 = 0b1000;
+const TEXT_INPUT_SHORTCUT_MODIFIERS: u8 = MODIFIER_CTRL | MODIFIER_META;
+
 impl<F, E> AutomationSession<F, E>
 where
     F: FnMut(&mut WindowedContext) -> E,
@@ -279,7 +283,10 @@ where
         };
         self.ensure_target_is_unoccluded(&resolved, "press")?;
         self.dispatch_key_down_event(&resolved, parsed.key_code, parsed.modifiers)?;
-        if let Some(text) = parsed.text.filter(|_| parsed.modifiers & 0b1010 == 0) {
+        if let Some(text) = parsed
+            .text
+            .filter(|_| parsed.modifiers & TEXT_INPUT_SHORTCUT_MODIFIERS == 0)
+        {
             self.dispatch_text_input_event(&resolved, text, parsed.modifiers)?;
         }
         self.dispatch_key_up_event(&resolved, parsed.key_code, parsed.modifiers)?;
