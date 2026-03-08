@@ -25,7 +25,7 @@
 use std::hash::Hash;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 
 use blinc_animation::{
@@ -575,6 +575,13 @@ pub type ReadyCallback = Box<dyn FnOnce() + Send + Sync>;
 /// Shared storage for ready callbacks
 pub type SharedReadyCallbacks = Arc<Mutex<Vec<ReadyCallback>>>;
 
+fn shared_headless_scheduler() -> SharedAnimationScheduler {
+    static HEADLESS_SCHEDULER: OnceLock<SharedAnimationScheduler> = OnceLock::new();
+    HEADLESS_SCHEDULER
+        .get_or_init(|| Arc::new(Mutex::new(AnimationScheduler::new())))
+        .clone()
+}
+
 /// Context passed to the UI builder function
 pub struct WindowedContext {
     /// Current window width in logical pixels (for UI layout)
@@ -633,10 +640,25 @@ impl WindowedContext {
     /// shared animation/context globals when they are not yet available so tests can
     /// build a `WindowedContext` without recreating the full windowed runtime setup.
     pub fn new_headless(logical_width: f32, logical_height: f32) -> Self {
-        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(AnimationScheduler::new()));
-        let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
-        let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
-        let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
+        let animations = shared_headless_scheduler();
+        let (reactive, hooks, ref_dirty_flag) = if BlincContextState::is_initialized() {
+            let global = BlincContextState::get();
+            (
+                global.active_reactive(),
+                global.active_hooks(),
+                global.active_dirty_flag(),
+            )
+        } else {
+            let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
+            let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
+            let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
+            BlincContextState::init(
+                Arc::clone(&reactive),
+                Arc::clone(&hooks),
+                Arc::clone(&ref_dirty_flag),
+            );
+            (reactive, hooks, ref_dirty_flag)
+        };
         let element_registry: SharedElementRegistry =
             Arc::new(blinc_layout::selector::ElementRegistry::new());
         let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
@@ -651,10 +673,6 @@ impl WindowedContext {
             Arc::clone(&element_registry),
             ready_callbacks,
         );
-
-        if !BlincContextState::is_initialized() {
-            BlincContextState::init(reactive, hooks, ref_dirty_flag);
-        }
 
         if !blinc_animation::is_scheduler_initialized() {
             let scheduler_handle = ctx.animations.lock().unwrap().handle();
