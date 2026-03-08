@@ -77,6 +77,19 @@ where
     *guard = Some(Box::new(callback));
 }
 
+/// Reset global text-widget test state.
+#[doc(hidden)]
+pub fn reset_text_widget_test_state() {
+    GLOBAL_FOCUS_COUNT.store(0, Ordering::SeqCst);
+    NEEDS_REBUILD.store(false, Ordering::SeqCst);
+    NEEDS_RELAYOUT.store(false, Ordering::SeqCst);
+    NEEDS_CSS_REPARSE.store(false, Ordering::SeqCst);
+    NEEDS_CONTINUOUS_REDRAW.store(false, Ordering::SeqCst);
+    *FOCUSED_TEXT_INPUT.lock().unwrap() = None;
+    *FOCUSED_TEXT_AREA.lock().unwrap() = None;
+    *CONTINUOUS_REDRAW_CALLBACK.lock().unwrap() = None;
+}
+
 /// Internal function to notify animation scheduler about cursor animation needs
 fn notify_continuous_redraw(enabled: bool) {
     if let Ok(guard) = CONTINUOUS_REDRAW_CALLBACK.lock() {
@@ -2196,6 +2209,9 @@ impl ElementBuilder for TextInput {
                             } else {
                                 Some(data.placeholder.clone())
                             })
+                            .with_description(
+                                (!data.placeholder.is_empty()).then(|| data.placeholder.clone()),
+                            )
                             .with_value(Some(data.value_with_composition()))
                             .with_focusable(true)
                             .with_focused(data.visual.is_focused())
@@ -2232,6 +2248,14 @@ impl ElementBuilder for TextInput {
 
     fn semantic_type_name(&self) -> Option<&'static str> {
         Some("input")
+    }
+
+    fn element_id(&self) -> Option<&str> {
+        self.inner.element_id()
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.inner.element_classes()
     }
 
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {

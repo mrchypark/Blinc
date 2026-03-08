@@ -119,11 +119,12 @@ impl ReplayPlayer {
             .last()
             .map(|s| s.timestamp)
             .unwrap_or_default();
-        if event_duration > snapshot_duration {
-            event_duration
-        } else {
-            snapshot_duration
-        }
+        let trace_duration = export
+            .trace_entries
+            .last()
+            .map(|entry| entry.timestamp)
+            .unwrap_or_default();
+        event_duration.max(snapshot_duration).max(trace_duration)
     }
 
     /// Get the current state.
@@ -465,11 +466,36 @@ mod tests {
         ];
 
         RecordingExport {
+            schema_version: crate::session::RECORDING_EXPORT_VERSION,
             config: RecordingConfig::minimal(),
             events,
             snapshots: Vec::new(),
+            trace_entries: Vec::new(),
             stats: Default::default(),
         }
+    }
+
+    #[test]
+    fn replay_duration_uses_trace_entries_when_no_events_or_snapshots_exist() {
+        let export = RecordingExport {
+            schema_version: crate::session::RECORDING_EXPORT_VERSION,
+            config: crate::RecordingConfig::minimal(),
+            events: Vec::new(),
+            snapshots: Vec::new(),
+            trace_entries: vec![crate::TraceEntry {
+                sequence: 0,
+                timestamp: Timestamp::from_micros(42_000),
+                kind: crate::TraceEntryKind::Artifact(crate::TraceArtifactRecord {
+                    kind: "runtime_mode".to_string(),
+                    path: None,
+                    message: Some("headless".to_string()),
+                }),
+            }],
+            stats: crate::SessionStats::default(),
+        };
+
+        let player = ReplayPlayer::new(export, ReplayConfig::testing());
+        assert_eq!(player.duration().as_micros(), 42_000);
     }
 
     #[test]

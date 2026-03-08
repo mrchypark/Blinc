@@ -37,6 +37,33 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+fn debug_signal_value_summary(value: &(dyn Any + Send)) -> Option<String> {
+    macro_rules! summarize_copy {
+        ($($ty:ty),* $(,)?) => {
+            $(
+                if let Some(inner) = value.downcast_ref::<$ty>() {
+                    return Some(inner.to_string());
+                }
+            )*
+        };
+    }
+
+    summarize_copy!(
+        bool, char, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64
+    );
+
+    if let Some(inner) = value.downcast_ref::<String>() {
+        let truncated = if inner.chars().count() > 96 {
+            format!("{}...", inner.chars().take(96).collect::<String>())
+        } else {
+            inner.clone()
+        };
+        return Some(format!("{truncated:?}"));
+    }
+
+    None
+}
+
 new_key_type! {
     /// Unique identifier for a signal
     pub struct SignalId;
@@ -201,6 +228,29 @@ impl ReactiveGraph {
             tracking: RefCell::new(None),
             global_version: Cell::new(0),
         }
+    }
+
+    /// Clear all signals, derived values, and effects.
+    pub fn clear(&mut self) {
+        self.signals.clear();
+        self.derived.clear();
+        self.effects.clear();
+        self.pending_effects.borrow_mut().clear();
+        self.batch_depth.set(0);
+        *self.tracking.borrow_mut() = None;
+        self.global_version.set(0);
+    }
+
+    /// Return a best-effort debug summary for a signal value.
+    pub fn debug_signal_summary(&self, signal_id: SignalId) -> Option<String> {
+        self.signals
+            .get(signal_id)
+            .and_then(|node| debug_signal_value_summary(&*node.value))
+    }
+
+    /// Check whether a signal is still present in the graph.
+    pub fn has_signal(&self, signal_id: SignalId) -> bool {
+        self.signals.contains_key(signal_id)
     }
 
     // =========================================================================

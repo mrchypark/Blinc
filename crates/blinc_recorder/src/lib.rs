@@ -31,12 +31,14 @@ pub mod replay;
 pub mod server;
 pub mod session;
 pub mod testing;
+pub mod trace;
 
 pub use capture::{
-    ChangeCategory, CustomEvent, ElementDiff, ElementSnapshot, FocusChangeEvent, HoverEvent, Key,
-    KeyEvent, Modifiers, MouseButton, MouseEvent, MouseMoveEvent, Point, PropertyChange,
-    RecordedEvent, RecordingClock, Rect, ScrollEvent, TextInputEvent, Timestamp, TimestampedEvent,
-    TreeDiff, TreeSnapshot, VisualProps, WindowResizeEvent,
+    ChangeCategory, CustomEvent, ElementDiff, ElementSemanticInfo, ElementSnapshot,
+    FocusChangeEvent, HoverEvent, Key, KeyEvent, Modifiers, MouseButton, MouseEvent,
+    MouseMoveEvent, Point, PropertyChange, RecordedEvent, RecordingClock, Rect, ScrollEvent,
+    TextInputEvent, Timestamp, TimestampedEvent, TreeDiff, TreeSnapshot, ViewModelStateEntry,
+    VisualProps, WindowResizeEvent,
 };
 pub use replay::{
     EventSimulator, FrameUpdate, ReplayConfig, ReplayPlayer, ReplayState, SimulatedInput,
@@ -53,6 +55,10 @@ pub use session::{
 pub use testing::{
     compare_frames, CapturedFrame, FrameSequence, HeadlessConfig, HeadlessContext,
     RegressionResult, ScreenshotExporter, TestConfig, TestRunner,
+};
+pub use trace::{
+    TraceArtifactRecord, TraceAssertionRecord, TraceCommandRecord, TraceEntry, TraceEntryKind,
+    TraceLocatorResolution,
 };
 
 use parking_lot::RwLock;

@@ -15,8 +15,10 @@ Visual debugger application for Blinc UI recordings.
 
 - **Element Tree**: Hierarchical view of recorded element trees with selection
 - **UI Preview**: Snapshot preview with cursor/bounds/zoom controls
-- **Inspector Panel**: Selected element properties and bounds
-- **Event Timeline**: Play/pause/step/seek/speed controls for recorded sessions
+- **Inspector Panel**: Selected element properties, locator context, and assertion context
+- **Command Panel**: Recorded automation command stream
+- **Evidence Panel**: Assertions and trace artifacts
+- **Event Timeline**: Play/pause/step/seek/speed controls for recorded sessions and trace markers
 - **Server Import**: Load recording export from a running debug server (`--connect`)
 
 ## Installation
@@ -120,12 +122,20 @@ The debugger reads JSON files created by `blinc_recorder`:
   },
   "events": [...],
   "snapshots": [...],
+  "trace_entries": [...],
   "stats": {
     "total_events": 123,
     "total_snapshots": 45
   }
 }
 ```
+
+`trace_entries` carry command, locator, assertion, and artifact metadata emitted by `blinc_app` automation runs. This lets the debugger correlate:
+
+- the command that was issued
+- which element or locator it resolved to
+- which assertion failed
+- which runtime mode or exported artifact was involved
 
 ## License
 

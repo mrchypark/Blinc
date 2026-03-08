@@ -1,5 +1,6 @@
 //! Scenario runner that executes headless diagnostics goals.
 
+use crate::frame_utils::wait_frames_for_duration;
 use crate::headless_assert::{
     evaluate_assert_exists, evaluate_assert_text_contains, AssertionResult, DiagnosticsSnapshot,
 };
@@ -55,26 +56,56 @@ pub fn run_scenario(input: &str) -> Result<RunOutcome> {
 }
 
 /// Execute scenario JSON with a custom snapshot probe.
-pub fn run_scenario_with_probe<F>(
+pub fn run_scenario_with_probe<F, S>(
     input: &str,
     runtime_cfg: HeadlessRunConfig,
     mut probe: F,
 ) -> Result<RunOutcome>
 where
-    F: FnMut(&ProbeContext) -> DiagnosticsSnapshot,
+    F: FnMut(&ProbeContext) -> S,
+    S: Into<DiagnosticsSnapshot>,
 {
     let scenario = HeadlessScenario::from_json(input)?;
     run_loaded_scenario_with_probe(&scenario, runtime_cfg, &mut probe)
 }
 
 /// Execute a pre-loaded scenario with a custom snapshot probe.
-pub fn run_loaded_scenario_with_probe<F>(
+pub fn run_loaded_scenario_with_probe<F, S>(
     scenario: &HeadlessScenario,
     runtime_cfg: HeadlessRunConfig,
     probe: &mut F,
 ) -> Result<RunOutcome>
 where
-    F: FnMut(&ProbeContext) -> DiagnosticsSnapshot,
+    F: FnMut(&ProbeContext) -> S,
+    S: Into<DiagnosticsSnapshot>,
+{
+    let mut owned_probe = |ctx| probe(&ctx);
+    run_loaded_scenario_with_owned_probe(scenario, runtime_cfg, &mut owned_probe)
+}
+
+/// Execute scenario JSON with a custom snapshot probe that consumes ProbeContext by value.
+pub fn run_scenario_with_owned_probe<F, S>(
+    input: &str,
+    runtime_cfg: HeadlessRunConfig,
+    mut probe: F,
+) -> Result<RunOutcome>
+where
+    F: FnMut(ProbeContext) -> S,
+    S: Into<DiagnosticsSnapshot>,
+{
+    let scenario = HeadlessScenario::from_json(input)?;
+    run_loaded_scenario_with_owned_probe(&scenario, runtime_cfg, &mut probe)
+}
+
+/// Execute a pre-loaded scenario with a custom snapshot probe that consumes ProbeContext by value.
+pub fn run_loaded_scenario_with_owned_probe<F, S>(
+    scenario: &HeadlessScenario,
+    runtime_cfg: HeadlessRunConfig,
+    probe: &mut F,
+) -> Result<RunOutcome>
+where
+    F: FnMut(ProbeContext) -> S,
+    S: Into<DiagnosticsSnapshot>,
 {
     let mut elapsed_frames: u64 = 0;
     let mut elapsed_ms: u64 = 0;
@@ -84,7 +115,7 @@ where
     for (step_index, step) in scenario.steps.iter().enumerate() {
         match step {
             ScenarioStep::Wait { ms } => {
-                let frames = wait_frames(*ms, runtime_cfg.tick_ms);
+                let frames = wait_frames_for_duration(*ms, runtime_cfg.tick_ms);
                 let mut remaining_ms = *ms;
                 run_sampled_frames(
                     runtime_cfg,
@@ -115,7 +146,71 @@ where
                     || runtime_cfg.tick_ms,
                 )?;
             }
-            ScenarioStep::AssertExists { id } => {
+            ScenarioStep::Click { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "click",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::Fill { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "fill",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::Press { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "press",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::Scroll { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "scroll",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::Snapshot { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "snapshot",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::ExportTrace { .. } => {
+                let report = HeadlessReport::failed_action_step(
+                    "export_trace",
+                    step_index,
+                    elapsed_frames,
+                    elapsed_ms,
+                );
+                return Ok(RunOutcome::Failed { report });
+            }
+            ScenarioStep::AssertExists { target } => {
+                let Some(id) = target.id.as_deref() else {
+                    let report = HeadlessReport::failed(
+                        "unsupported_semantic_locator",
+                        step_index,
+                        "legacy probe assertions require an id-based locator".to_string(),
+                        elapsed_frames,
+                        elapsed_ms,
+                    );
+                    return Ok(RunOutcome::Failed { report });
+                };
                 let snapshot = ensure_snapshot(
                     &mut latest_snapshot,
                     probe,
@@ -138,7 +233,17 @@ where
                     return Ok(RunOutcome::Failed { report });
                 }
             }
-            ScenarioStep::AssertTextContains { id, value } => {
+            ScenarioStep::AssertTextContains { target, value } => {
+                let Some(id) = target.id.as_deref() else {
+                    let report = HeadlessReport::failed(
+                        "unsupported_semantic_locator",
+                        step_index,
+                        "legacy probe assertions require an id-based locator".to_string(),
+                        elapsed_frames,
+                        elapsed_ms,
+                    );
+                    return Ok(RunOutcome::Failed { report });
+                };
                 let snapshot = ensure_snapshot(
                     &mut latest_snapshot,
                     probe,
@@ -169,18 +274,19 @@ where
     })
 }
 
-fn ensure_snapshot<'a, F>(
+fn ensure_snapshot<'a, F, S>(
     latest_snapshot: &'a mut Option<DiagnosticsSnapshot>,
     probe: &mut F,
     probe_ctx: ProbeContext,
 ) -> &'a DiagnosticsSnapshot
 where
-    F: FnMut(&ProbeContext) -> DiagnosticsSnapshot,
+    F: FnMut(ProbeContext) -> S,
+    S: Into<DiagnosticsSnapshot>,
 {
-    latest_snapshot.get_or_insert_with(|| probe(&probe_ctx))
+    latest_snapshot.get_or_insert_with(|| probe(probe_ctx).into())
 }
 
-fn run_sampled_frames<F, A>(
+fn run_sampled_frames<F, S, A>(
     runtime_cfg: HeadlessRunConfig,
     frames: u32,
     probe_every: u32,
@@ -192,15 +298,19 @@ fn run_sampled_frames<F, A>(
     mut advance_ms: A,
 ) -> Result<()>
 where
-    F: FnMut(&ProbeContext) -> DiagnosticsSnapshot,
+    F: FnMut(ProbeContext) -> S,
+    S: Into<DiagnosticsSnapshot>,
     A: FnMut() -> u64,
 {
     if frames == 0 {
-        *latest_snapshot = Some(probe(&ProbeContext {
-            elapsed_frames: *elapsed_frames,
-            elapsed_ms: *elapsed_ms,
-            step_index,
-        }));
+        *latest_snapshot = Some(
+            probe(ProbeContext {
+                elapsed_frames: *elapsed_frames,
+                elapsed_ms: *elapsed_ms,
+                step_index,
+            })
+            .into(),
+        );
         return Ok(());
     }
 
@@ -213,22 +323,16 @@ where
         sampled_frames = sampled_frames.saturating_add(1);
 
         if sampled_frames % probe_every == 0 || sampled_frames == frames {
-            *latest_snapshot = Some(probe(&ProbeContext {
-                elapsed_frames: *elapsed_frames,
-                elapsed_ms: *elapsed_ms,
-                step_index,
-            }));
+            *latest_snapshot = Some(
+                probe(ProbeContext {
+                    elapsed_frames: *elapsed_frames,
+                    elapsed_ms: *elapsed_ms,
+                    step_index,
+                })
+                .into(),
+            );
         }
     })?;
 
     Ok(())
-}
-
-fn wait_frames(wait_ms: u64, tick_ms: u64) -> u32 {
-    if wait_ms == 0 {
-        return 0;
-    }
-    let tick = tick_ms.max(1);
-    let frames = wait_ms.saturating_add(tick.saturating_sub(1)) / tick;
-    frames.min(u32::MAX as u64) as u32
 }

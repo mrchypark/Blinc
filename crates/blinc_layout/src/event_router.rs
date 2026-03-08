@@ -33,7 +33,9 @@
 //! router.on_mouse_up(&tree, 100.0, 200.0, MouseButton::Left);
 //! ```
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use blinc_core::events::event_types;
 
@@ -281,6 +283,33 @@ impl EventRouter {
     /// Clear the event callback
     pub fn clear_event_callback(&mut self) {
         self.event_callback = None;
+    }
+
+    /// Execute an operation while collecting events emitted through the router's
+    /// callback path, restoring any previous callback afterwards.
+    pub fn collect_events<R>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> R,
+    ) -> (Vec<(LayoutNodeId, u32)>, R) {
+        let previous_callback = self.event_callback.take();
+        let collected = Rc::new(RefCell::new(Vec::new()));
+        self.set_event_callback({
+            let collected = Rc::clone(&collected);
+            move |node, event_type| {
+                collected.borrow_mut().push((node, event_type));
+            }
+        });
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
+        self.event_callback = previous_callback;
+        let collected = match Rc::try_unwrap(collected) {
+            Ok(collected) => collected.into_inner(),
+            Err(collected) => std::mem::take(&mut *collected.borrow_mut()),
+        };
+        match result {
+            Ok(result) => (collected, result),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     /// Get the currently focused element
@@ -1911,6 +1940,32 @@ mod tests {
             let captured = events.borrow();
             assert!(captured.contains(&event_types::WINDOW_FOCUS));
         }
+    }
+
+    #[test]
+    fn collect_events_restores_previous_callback_after_panic() {
+        let ui = div().w(400.0).h(300.0).child(div().w(100.0).h(100.0));
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(400.0, 300.0);
+
+        let events: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+        let events_clone = Rc::clone(&events);
+
+        let mut router = EventRouter::new();
+        router.set_event_callback(move |_node, event| {
+            events_clone.borrow_mut().push(event);
+        });
+
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = router.collect_events(|_| panic!("boom"));
+        }));
+        assert!(panic_result.is_err());
+        assert!(router.event_callback.is_some());
+
+        let node = router.hit_test(&tree, 50.0, 50.0).unwrap().node;
+        router.emit_event(node, event_types::FOCUS);
+
+        assert_eq!(events.borrow().as_slice(), &[event_types::FOCUS]);
     }
 
     #[test]

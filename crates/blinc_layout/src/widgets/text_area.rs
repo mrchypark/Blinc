@@ -2670,6 +2670,9 @@ impl ElementBuilder for TextArea {
                             } else {
                                 Some(state.placeholder.clone())
                             })
+                            .with_description(
+                                (!state.placeholder.is_empty()).then(|| state.placeholder.clone()),
+                            )
                             .with_value(Some(state.value_with_composition()))
                             .with_focusable(true)
                             .with_focused(state.visual.is_focused())

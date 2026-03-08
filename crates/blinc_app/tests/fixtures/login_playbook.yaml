@@ -1,0 +1,23 @@
+initial_state: idle
+states:
+  - filling
+  - submitted
+transitions:
+  - name: enter_email
+    from: idle
+    event: fill
+    to: filling
+    steps:
+      - type: fill
+        id: login.email
+        value: person@example.com
+  - name: submit_form
+    from: filling
+    event: submit
+    to: submitted
+    steps:
+      - type: click
+        id: login.submit
+      - type: assert_text_contains
+        id: login.status
+        value: Signed in
