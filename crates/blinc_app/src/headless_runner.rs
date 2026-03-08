@@ -338,7 +338,7 @@ where
 
 fn wait_frames(wait_ms: u64, tick_ms: u64) -> u32 {
     if wait_ms == 0 {
-        return 0;
+        return 1;
     }
     let tick = tick_ms.max(1);
     let frames = wait_ms / tick + u64::from(wait_ms % tick != 0);
@@ -359,5 +359,11 @@ mod tests {
         assert_eq!(wait_frames(u64::MAX, 2), u32::MAX);
         assert_eq!(wait_frames(u64::MAX, 16), u32::MAX);
         assert_eq!(wait_frames(u64::MAX, u64::from(u32::MAX) + 3), u32::MAX);
+    }
+
+    #[test]
+    fn wait_frames_advances_one_frame_for_zero_duration_waits() {
+        assert_eq!(wait_frames(0, 16), 1);
+        assert_eq!(wait_frames(0, 0), 1);
     }
 }
