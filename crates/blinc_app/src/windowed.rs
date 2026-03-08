@@ -907,9 +907,6 @@ impl WindowedContext {
 
         let global = BlincContextState::get();
         global.set_viewport_size(logical_width, logical_height);
-        global.set_element_registry(
-            Arc::clone(&self.element_registry) as blinc_core::AnyElementRegistry
-        );
     }
 
     /// Update context from window (preserving event router, dirty flag, and reactive graph)
@@ -2110,7 +2107,8 @@ impl WindowedContext {
 #[cfg(test)]
 mod windowed_context_tests {
     use super::WindowedContext;
-    use std::sync::{Mutex, OnceLock};
+    use blinc_core::BlincContextState;
+    use std::sync::{Arc, Mutex, OnceLock};
 
     fn test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2141,6 +2139,22 @@ mod windowed_context_tests {
         assert_eq!(ctx.height, 768.0);
         assert_eq!(ctx.physical_width(), 1024.0);
         assert_eq!(ctx.physical_height(), 768.0);
+    }
+
+    #[test]
+    fn headless_context_resize_keeps_existing_global_registry() {
+        let _guard = test_lock().lock().unwrap();
+        let mut ctx = WindowedContext::new_headless(640.0, 360.0);
+        let before = BlincContextState::get()
+            .element_registry_any()
+            .expect("headless context installs a global element registry");
+
+        ctx.set_headless_size(1024.0, 768.0);
+
+        let after = BlincContextState::get()
+            .element_registry_any()
+            .expect("headless resize preserves a global element registry");
+        assert!(Arc::ptr_eq(&before, &after));
     }
 }
 
