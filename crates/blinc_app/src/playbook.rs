@@ -55,7 +55,9 @@ pub struct CompiledTransition {
 
 impl Playbook {
     pub fn from_yaml(input: &str) -> Result<Self> {
-        Ok(serde_yaml::from_str(input)?)
+        let playbook: Self = serde_yaml::from_str(input)?;
+        playbook.validate()?;
+        Ok(playbook)
     }
 
     pub fn from_path(path: &Path) -> Result<Self> {
@@ -65,21 +67,68 @@ impl Playbook {
             .with_context(|| format!("failed to parse playbook {}", path.display()))
     }
 
-    pub fn compile(&self) -> Result<CompiledPlaybook> {
+    pub fn validate(&self) -> Result<()> {
         let initial_state = self.initial_state.trim();
         if initial_state.is_empty() {
             bail!("playbook initial_state cannot be empty");
         }
 
+        for state in &self.states {
+            if state.trim().is_empty() {
+                bail!("playbook states cannot contain empty names");
+            }
+        }
+
+        for selector in &self.execution {
+            if selector.trim().is_empty() {
+                bail!("playbook execution steps cannot be empty");
+            }
+        }
+
+        for transition in &self.transitions {
+            if transition
+                .name
+                .as_deref()
+                .is_some_and(|name| name.trim().is_empty())
+            {
+                bail!(
+                    "transition {} cannot have an empty name",
+                    transition_name(transition)
+                );
+            }
+            if transition.from.trim().is_empty() {
+                bail!(
+                    "transition {} cannot have an empty from state",
+                    transition_name(transition)
+                );
+            }
+            if transition.event.trim().is_empty() {
+                bail!(
+                    "transition {} cannot have an empty event",
+                    transition_name(transition)
+                );
+            }
+            if transition.to.trim().is_empty() {
+                bail!(
+                    "transition {} cannot have an empty to state",
+                    transition_name(transition)
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn compile(&self) -> Result<CompiledPlaybook> {
+        self.validate()?;
+
+        let initial_state = self.initial_state.trim();
         let explicit_states = if self.states.is_empty() {
             None
         } else {
             let mut known = BTreeSet::new();
             known.insert(initial_state.to_string());
             for state in &self.states {
-                if state.trim().is_empty() {
-                    bail!("playbook states cannot contain empty names");
-                }
                 known.insert(state.clone());
             }
             Some(known)
@@ -376,7 +425,10 @@ where
 fn transition_name(transition: &PlaybookTransition) -> String {
     transition
         .name
-        .clone()
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
         .unwrap_or_else(|| format!("{}:{}", transition.from, transition.event))
 }
 
@@ -392,4 +444,45 @@ fn event_name(event_ids: &HashMap<String, EventId>, event_id: EventId) -> String
         .iter()
         .find_map(|(name, id): (&String, &EventId)| (*id == event_id).then(|| name.clone()))
         .unwrap_or_else(|| format!("event_{event_id}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Playbook;
+
+    #[test]
+    fn from_yaml_rejects_empty_initial_state() {
+        let err = Playbook::from_yaml(
+            r#"
+initial_state: "   "
+transitions: []
+"#,
+        )
+        .expect_err("empty initial state should fail parsing validation");
+
+        assert!(
+            err.to_string().contains("initial_state cannot be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_yaml_rejects_blank_transition_names() {
+        let err = Playbook::from_yaml(
+            r#"
+initial_state: idle
+transitions:
+  - name: "   "
+    from: idle
+    event: submit
+    to: done
+"#,
+        )
+        .expect_err("blank transition names should fail validation");
+
+        assert!(
+            err.to_string().contains("cannot have an empty name"),
+            "unexpected error: {err}"
+        );
+    }
 }

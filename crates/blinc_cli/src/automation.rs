@@ -240,6 +240,7 @@ fn playbook_svg(playbook: &Playbook) -> Result<String> {
         };
 
         if transition.from == transition.to {
+            let transition_label = transition_label(transition);
             let loop_top = from_y - 42.0;
             let loop_right = from_x + node_width + 18.0;
             edges.push_str(&format!(
@@ -255,7 +256,7 @@ fn playbook_svg(playbook: &Playbook) -> Result<String> {
                 r##"<text x="{x:.1}" y="{y:.1}" fill="#cbd5e1" font-family="Menlo, Monaco, monospace" font-size="12" text-anchor="middle">{label}</text>"##,
                 x = from_cx,
                 y = loop_top - 10.0,
-                label = escape_xml(&transition.event)
+                label = escape_xml(transition_label)
             ));
             continue;
         }
@@ -272,6 +273,7 @@ fn playbook_svg(playbook: &Playbook) -> Result<String> {
         };
         let label_x = (start.0 + end.0) * 0.5;
         let label_y = (start.1 + end.1) * 0.5 - 12.0;
+        let transition_label = transition_label(transition);
         edges.push_str(&format!(
             r##"<line x1="{x1:.1}" y1="{y1:.1}" x2="{x2:.1}" y2="{y2:.1}" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#arrowhead)"/>"##,
             x1 = start.0,
@@ -283,7 +285,7 @@ fn playbook_svg(playbook: &Playbook) -> Result<String> {
             r##"<text x="{x:.1}" y="{y:.1}" fill="#cbd5e1" font-family="Menlo, Monaco, monospace" font-size="12" text-anchor="middle">{label}</text>"##,
             x = label_x,
             y = label_y,
-            label = escape_xml(&transition.event)
+            label = escape_xml(transition_label)
         ));
     }
 
@@ -332,6 +334,15 @@ fn playbook_svg(playbook: &Playbook) -> Result<String> {
         labels = labels,
         nodes = nodes
     ))
+}
+
+fn transition_label(transition: &blinc_app::PlaybookTransition) -> &str {
+    transition
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&transition.event)
 }
 
 fn escape_xml(input: &str) -> String {
@@ -457,6 +468,7 @@ initial_state: idle
 states: [submitted]
 transitions:
   - from: idle
+    name: Submit Button
     event: submit
     to: submitted
 "#,
@@ -468,7 +480,7 @@ transitions:
         assert!(svg.contains("Blinc Playbook Diagram"));
         assert!(svg.contains("idle"));
         assert!(svg.contains("submitted"));
-        assert!(svg.contains("submit"));
+        assert!(svg.contains("Submit Button"));
         assert!(svg.contains("marker-end=\"url(#arrowhead)\""));
     }
 
