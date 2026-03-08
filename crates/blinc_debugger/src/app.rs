@@ -1312,6 +1312,7 @@ mod tests {
         );
 
         RecordingExport {
+            schema_version: blinc_recorder::session::RECORDING_EXPORT_VERSION,
             config: RecordingConfig::minimal(),
             events: vec![TimestampedEvent {
                 timestamp: Timestamp::from_micros(20),

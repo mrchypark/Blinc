@@ -466,6 +466,7 @@ mod tests {
         ];
 
         RecordingExport {
+            schema_version: crate::session::RECORDING_EXPORT_VERSION,
             config: RecordingConfig::minimal(),
             events,
             snapshots: Vec::new(),
@@ -477,6 +478,7 @@ mod tests {
     #[test]
     fn replay_duration_uses_trace_entries_when_no_events_or_snapshots_exist() {
         let export = RecordingExport {
+            schema_version: crate::session::RECORDING_EXPORT_VERSION,
             config: crate::RecordingConfig::minimal(),
             events: Vec::new(),
             snapshots: Vec::new(),

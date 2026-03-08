@@ -94,6 +94,18 @@ fn dispatch_router_events(
     dispatched
 }
 
+fn focus_node_via_router(
+    tree: &mut RenderTree,
+    router: &mut EventRouter,
+    node_id: LayoutNodeId,
+) -> bool {
+    let ancestors = ancestor_chain_for(tree, node_id);
+    let (events, _) = router.collect_events(|router| {
+        router.set_focus_with_ancestors(Some(node_id), ancestors);
+    });
+    dispatch_router_events(tree, router, events)
+}
+
 fn ancestor_chain_for(tree: &RenderTree, node_id: LayoutNodeId) -> Vec<LayoutNodeId> {
     let mut ancestors = tree.element_registry().ancestors(node_id);
     ancestors.reverse();
@@ -171,8 +183,7 @@ pub fn dispatch_programmatic_event_to_node(
             dispatch_pointer_events(tree, router, leave_events, mouse.0, mouse.1)
         }
         ProgrammaticElementEvent::KeyDown { key, modifiers } => {
-            let ancestors = ancestor_chain_for(tree, node_id);
-            router.set_focus_with_ancestors(Some(node_id), ancestors);
+            let _ = focus_node_via_router(tree, router, node_id);
             let (shift, ctrl, alt, meta) = modifier_flags(modifiers);
             if let Some((_focused, event_type)) =
                 router.on_key_down_with_modifiers(key, shift, ctrl, alt, meta)
@@ -184,8 +195,7 @@ pub fn dispatch_programmatic_event_to_node(
             }
         }
         ProgrammaticElementEvent::KeyUp { key, modifiers } => {
-            let ancestors = ancestor_chain_for(tree, node_id);
-            router.set_focus_with_ancestors(Some(node_id), ancestors);
+            let _ = focus_node_via_router(tree, router, node_id);
             let (shift, ctrl, alt, meta) = modifier_flags(modifiers);
             if let Some((_focused, event_type)) =
                 router.on_key_up_with_modifiers(key, shift, ctrl, alt, meta)
@@ -197,8 +207,7 @@ pub fn dispatch_programmatic_event_to_node(
             }
         }
         ProgrammaticElementEvent::TextInput { text, modifiers } => {
-            let ancestors = ancestor_chain_for(tree, node_id);
-            router.set_focus_with_ancestors(Some(node_id), ancestors);
+            let _ = focus_node_via_router(tree, router, node_id);
             let (shift, ctrl, alt, meta) = modifier_flags(modifiers);
             if router.on_text_input(text).is_some() {
                 tree.broadcast_text_input_event(text, shift, ctrl, alt, meta);
@@ -215,18 +224,17 @@ pub fn dispatch_programmatic_event_to_node(
             let hover_events = router.on_mouse_move(tree, mouse_x, mouse_y);
             let _ = dispatch_pointer_events(tree, router, hover_events, mouse_x, mouse_y);
             let ancestors = ancestor_chain_for(tree, node_id);
-            let mut chain = vec![node_id];
-            chain.extend(ancestors.iter().rev().copied().filter(|id| *id != node_id));
-            if chain
-                .iter()
-                .copied()
-                .any(|candidate| tree.scroll_node_by(candidate, dx, dy))
-            {
-                return true;
-            }
             let (remaining_x, remaining_y) =
                 tree.dispatch_scroll_chain(node_id, &ancestors, mouse_x, mouse_y, dx, dy);
-            (remaining_x - dx).abs() > f32::EPSILON || (remaining_y - dy).abs() > f32::EPSILON
+            if (remaining_x - dx).abs() > f32::EPSILON || (remaining_y - dy).abs() > f32::EPSILON {
+                return true;
+            }
+            let mut chain = vec![node_id];
+            chain.extend(ancestors.iter().rev().copied().filter(|id| *id != node_id));
+            chain
+                .iter()
+                .copied()
+                .any(|candidate| tree.scroll_node_by(candidate, remaining_x, remaining_y))
         }
         ProgrammaticElementEvent::Custom(event_type) => {
             let Some(bounds) = tree.get_absolute_bounds(node_id) else {
@@ -1018,6 +1026,78 @@ mod tests {
         router.set_focus(None);
         sync_context_focus_from_runtime(&tree, &router);
         assert_eq!(BlincContextState::get().focused_element(), None);
+    }
+
+    #[test]
+    fn programmatic_key_dispatches_focus_handlers_before_key_events() {
+        let _guard = selector_test_guard();
+
+        let focus_hits = Arc::new(AtomicUsize::new(0));
+        let focus_hits_for_handler = Arc::clone(&focus_hits);
+        let key_hits = Arc::new(AtomicUsize::new(0));
+        let key_hits_for_handler = Arc::clone(&key_hits);
+
+        let ui = div().child(
+            div()
+                .id("field")
+                .w(120.0)
+                .h(32.0)
+                .on_focus(move |_| {
+                    focus_hits_for_handler.fetch_add(1, Ordering::SeqCst);
+                })
+                .on_key_down(move |_| {
+                    key_hits_for_handler.fetch_add(1, Ordering::SeqCst);
+                })
+                .child(text("Field")),
+        );
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 120.0);
+        let mut router = EventRouter::new();
+        let field = tree.query_by_id("field").expect("field should exist");
+
+        assert!(dispatch_programmatic_event_to_node(
+            &mut tree,
+            &mut router,
+            field,
+            ProgrammaticElementEvent::KeyDown {
+                key: 13,
+                modifiers: 0,
+            },
+        ));
+        assert_eq!(focus_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(key_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn programmatic_scroll_dispatches_scroll_handlers_for_scrollable_targets() {
+        let _guard = selector_test_guard();
+
+        let scroll_hits = Arc::new(AtomicUsize::new(0));
+        let scroll_hits_for_handler = Arc::clone(&scroll_hits);
+
+        let ui = div()
+            .id("scroll.host")
+            .w(160.0)
+            .h(80.0)
+            .overflow_y_scroll()
+            .on_scroll(move |_| {
+                scroll_hits_for_handler.fetch_add(1, Ordering::SeqCst);
+            })
+            .child(div().h(320.0).child(text("Scrollable content")));
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(200.0, 120.0);
+        let mut router = EventRouter::new();
+        let host = tree
+            .query_by_id("scroll.host")
+            .expect("scroll host should exist");
+
+        assert!(dispatch_programmatic_event_to_node(
+            &mut tree,
+            &mut router,
+            host,
+            ProgrammaticElementEvent::Scroll { dx: 0.0, dy: -40.0 },
+        ));
+        assert_eq!(scroll_hits.load(Ordering::SeqCst), 1);
     }
 
     #[test]

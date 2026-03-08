@@ -1389,7 +1389,10 @@ fn failed_run_writes_machine_readable_report() {
 
 fn automation_test_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    LOCK.lock().unwrap_or_else(|poisoned| {
+        eprintln!("automation test lock was poisoned; recovering serialized access");
+        poisoned.into_inner()
+    })
 }
 
 fn ensure_automation_theme() {

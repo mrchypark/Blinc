@@ -33,7 +33,9 @@
 //! router.on_mouse_up(&tree, 100.0, 200.0, MouseButton::Left);
 //! ```
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use blinc_core::events::event_types;
 
@@ -290,19 +292,19 @@ impl EventRouter {
         operation: impl FnOnce(&mut Self) -> R,
     ) -> (Vec<(LayoutNodeId, u32)>, R) {
         let previous_callback = self.event_callback.take();
-        let mut collected = Vec::new();
+        let collected = Rc::new(RefCell::new(Vec::new()));
         self.set_event_callback({
-            let collected_ptr = &mut collected as *mut Vec<(LayoutNodeId, u32)>;
+            let collected = Rc::clone(&collected);
             move |node, event_type| {
-                // SAFETY: the callback is only active during this function call.
-                unsafe {
-                    (*collected_ptr).push((node, event_type));
-                }
+                collected.borrow_mut().push((node, event_type));
             }
         });
 
         let result = operation(self);
         self.event_callback = previous_callback;
+        let collected = Rc::into_inner(collected)
+            .expect("event collection callback should be dropped before returning")
+            .into_inner();
         (collected, result)
     }
 

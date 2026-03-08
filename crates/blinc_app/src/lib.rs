@@ -190,10 +190,15 @@ pub use headless_runner::{
 };
 pub use headless_runtime::{HeadlessContext, HeadlessRunConfig, HeadlessRuntime};
 pub use headless_scenario::{HeadlessScenario, ScenarioStep};
-pub use playbook::{
-    run_desktop_harness_playbook, run_headless_playbook, CompiledPlaybook, CompiledTransition,
-    Playbook, PlaybookTransition,
-};
+#[cfg(any(
+    feature = "windowed",
+    all(feature = "android", target_os = "android"),
+    all(feature = "ios", target_os = "ios"),
+    all(feature = "fuchsia", target_os = "fuchsia"),
+    all(feature = "harmony", target_env = "ohos")
+))]
+pub use playbook::{run_desktop_harness_playbook, run_headless_playbook};
+pub use playbook::{CompiledPlaybook, CompiledTransition, Playbook, PlaybookTransition};
 pub use text_measurer::{init_text_measurer, init_text_measurer_with_registry, FontTextMeasurer};
 
 // Re-export layout API for convenience
@@ -230,10 +235,15 @@ pub mod prelude {
     };
     pub use crate::headless_runtime::{HeadlessContext, HeadlessRunConfig, HeadlessRuntime};
     pub use crate::headless_scenario::{HeadlessScenario, ScenarioStep};
-    pub use crate::playbook::{
-        run_desktop_harness_playbook, run_headless_playbook, CompiledPlaybook, CompiledTransition,
-        Playbook, PlaybookTransition,
-    };
+    #[cfg(any(
+        feature = "windowed",
+        all(feature = "android", target_os = "android"),
+        all(feature = "ios", target_os = "ios"),
+        all(feature = "fuchsia", target_os = "fuchsia"),
+        all(feature = "harmony", target_env = "ohos")
+    ))]
+    pub use crate::playbook::{run_desktop_harness_playbook, run_headless_playbook};
+    pub use crate::playbook::{CompiledPlaybook, CompiledTransition, Playbook, PlaybookTransition};
     pub use crate::text_measurer::{init_text_measurer, init_text_measurer_with_registry};
 
     // Layout builders

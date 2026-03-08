@@ -1634,9 +1634,8 @@ fn parse_automation_args() -> Result<ParsedAutomationArgs> {{
                 report = Some(arg["--report=".len()..].to_string());
             }}
             _ if arg.starts_with("--") => {{
-                return Err(BlincError::Other(format!(
-                    "unknown automation flag {{arg}}"
-                )));
+                // Allow app-specific flags or cargo-injected options to coexist
+                // with automation mode selection in generated projects.
             }}
             _ => {{}}
         }}
@@ -3435,7 +3434,7 @@ transitions:
     }
 
     #[test]
-    fn generated_rust_template_rejects_unknown_automation_flag() {
+    fn generated_rust_template_ignores_unknown_non_automation_flags() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time must be after epoch")
@@ -3445,6 +3444,8 @@ transitions:
 
         create_rust_project(&root, "DemoApp", "com.example")
             .expect("rust project template should be generated");
+        fs::write(root.join("scenario.json"), r#"{"steps":[]}"#)
+            .expect("scenario fixture should be written");
 
         let output = Command::new("cargo")
             .arg("run")
@@ -3457,20 +3458,19 @@ transitions:
             .arg("desktop")
             .arg("--")
             .arg("--headless")
-            .arg("--playbok")
+            .arg("--scenario")
+            .arg(root.join("scenario.json"))
+            .arg("--app-flag")
             .env("CARGO_TARGET_DIR", &target_dir)
             .current_dir(&root)
             .output()
-            .expect("generated project should reject unknown automation flags");
+            .expect("generated project should ignore non-automation flags");
 
         assert!(
-            !output.status.success(),
-            "generated app should fail when automation flags are unknown"
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("unknown automation flag --playbok"),
-            "expected unknown automation flag in stderr: {stderr}"
+            output.status.success(),
+            "generated app should ignore unknown non-automation flags: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
 
         let _ = fs::remove_dir_all(&root);

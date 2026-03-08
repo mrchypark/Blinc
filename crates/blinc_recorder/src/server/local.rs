@@ -681,6 +681,7 @@ mod tests {
         use crate::{RecordedEvent, RecordingConfig, Timestamp, TimestampedEvent};
 
         let export = RecordingExport {
+            schema_version: crate::session::RECORDING_EXPORT_VERSION,
             config: RecordingConfig::minimal(),
             events: vec![TimestampedEvent::new(
                 Timestamp::from_micros(1),

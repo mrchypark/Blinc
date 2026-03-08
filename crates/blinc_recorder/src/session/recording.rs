@@ -48,6 +48,8 @@ pub struct RecordingSession {
     stats: SessionStats,
 }
 
+pub const RECORDING_EXPORT_VERSION: u32 = 1;
+
 /// Statistics for a recording session.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SessionStats {
@@ -312,6 +314,7 @@ impl RecordingSession {
     /// Export all recorded data.
     pub fn export(&self) -> RecordingExport {
         RecordingExport {
+            schema_version: RECORDING_EXPORT_VERSION,
             config: self.config.clone(),
             events: self.events.iter().cloned().collect(),
             snapshots: self.snapshots.iter().cloned().collect(),
@@ -324,12 +327,18 @@ impl RecordingSession {
 /// Exported recording data for serialization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordingExport {
+    #[serde(default = "default_recording_export_version")]
+    pub schema_version: u32,
     pub config: RecordingConfig,
     pub events: Vec<TimestampedEvent>,
     pub snapshots: Vec<TreeSnapshot>,
     #[serde(default)]
     pub trace_entries: Vec<TraceEntry>,
     pub stats: SessionStats,
+}
+
+const fn default_recording_export_version() -> u32 {
+    RECORDING_EXPORT_VERSION
 }
 
 /// Thread-safe wrapper around RecordingSession.
@@ -506,6 +515,7 @@ mod tests {
         let decoded: RecordingExport =
             serde_json::from_str(&payload).expect("recording export should deserialize");
 
+        assert_eq!(decoded.schema_version, RECORDING_EXPORT_VERSION);
         assert_eq!(decoded.trace_entries.len(), 3);
         assert!(matches!(
             decoded.trace_entries[0].kind,
@@ -519,6 +529,23 @@ mod tests {
             decoded.trace_entries[2].kind,
             TraceEntryKind::Artifact(_)
         ));
+    }
+
+    #[test]
+    fn recording_export_defaults_schema_version_for_legacy_payloads() {
+        let payload = serde_json::json!({
+            "config": RecordingConfig::minimal(),
+            "events": [],
+            "snapshots": [],
+            "trace_entries": [],
+            "stats": SessionStats::default(),
+        })
+        .to_string();
+
+        let decoded: RecordingExport =
+            serde_json::from_str(&payload).expect("legacy payload should deserialize");
+
+        assert_eq!(decoded.schema_version, RECORDING_EXPORT_VERSION);
     }
 
     #[test]

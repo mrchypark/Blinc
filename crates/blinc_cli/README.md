@@ -15,6 +15,10 @@ Command-line interface for the Blinc UI framework.
 
 `blinc automation run` is the end-user entrypoint for the agent-debugging workflow.
 
+Current repository-backed limitation:
+- `blinc new --rust` generates path dependencies into a Blinc checkout.
+- Use it from a source checkout, or set `BLINC_PATH` to a local Blinc workspace root before scaffolding.
+
 Validated flows:
 
 - run a headless scenario against a generated app

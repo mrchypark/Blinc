@@ -16,6 +16,10 @@ If you are running from source instead of an installed CLI, replace `blinc ...` 
 cargo run -p blinc_cli -- ...
 ```
 
+Rust project scaffolding still depends on a local Blinc checkout. If you are using an installed
+`blinc` binary, run these steps from a Blinc source tree or export `BLINC_PATH=/path/to/Blinc`
+before `blinc new --rust ...`.
+
 If you are running the debugger from source, replace `blinc-debugger ...` with:
 
 ```bash

@@ -7,10 +7,32 @@ use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use crate::automation_session::{run_desktop_harness_scenario, run_headless_scenario};
 use crate::headless_runtime::HeadlessRunConfig;
 use crate::headless_scenario::{HeadlessScenario, ScenarioStep};
+
+#[cfg(any(
+    feature = "windowed",
+    all(feature = "android", target_os = "android"),
+    all(feature = "ios", target_os = "ios"),
+    all(feature = "fuchsia", target_os = "fuchsia"),
+    all(feature = "harmony", target_env = "ohos")
+))]
+use crate::automation_session::{run_desktop_harness_scenario, run_headless_scenario};
+#[cfg(any(
+    feature = "windowed",
+    all(feature = "android", target_os = "android"),
+    all(feature = "ios", target_os = "ios"),
+    all(feature = "fuchsia", target_os = "fuchsia"),
+    all(feature = "harmony", target_env = "ohos")
+))]
 use crate::windowed::WindowedContext;
+#[cfg(any(
+    feature = "windowed",
+    all(feature = "android", target_os = "android"),
+    all(feature = "ios", target_os = "ios"),
+    all(feature = "fuchsia", target_os = "fuchsia"),
+    all(feature = "harmony", target_env = "ohos")
+))]
 use crate::AutomationRun;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -376,6 +398,13 @@ impl CompiledPlaybook {
     }
 }
 
+#[cfg(any(
+    feature = "windowed",
+    all(feature = "android", target_os = "android"),
+    all(feature = "ios", target_os = "ios"),
+    all(feature = "fuchsia", target_os = "fuchsia"),
+    all(feature = "harmony", target_env = "ohos")
+))]
 pub fn run_headless_playbook<F, E>(
     runtime_cfg: HeadlessRunConfig,
     playbook: &Playbook,
@@ -388,6 +417,13 @@ where
     run_playbook_with_mode(runtime_cfg, playbook, ui_builder, run_headless_scenario)
 }
 
+#[cfg(any(
+    feature = "windowed",
+    all(feature = "android", target_os = "android"),
+    all(feature = "ios", target_os = "ios"),
+    all(feature = "fuchsia", target_os = "fuchsia"),
+    all(feature = "harmony", target_env = "ohos")
+))]
 pub fn run_desktop_harness_playbook<F, E>(
     runtime_cfg: HeadlessRunConfig,
     playbook: &Playbook,
@@ -405,6 +441,13 @@ where
     )
 }
 
+#[cfg(any(
+    feature = "windowed",
+    all(feature = "android", target_os = "android"),
+    all(feature = "ios", target_os = "ios"),
+    all(feature = "fuchsia", target_os = "fuchsia"),
+    all(feature = "harmony", target_env = "ohos")
+))]
 fn run_playbook_with_mode<F, E, R>(
     runtime_cfg: HeadlessRunConfig,
     playbook: &Playbook,

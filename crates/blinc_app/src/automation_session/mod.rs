@@ -103,9 +103,10 @@ where
     ) -> Self {
         static AUTOMATION_SESSION_LOCK: Mutex<()> = Mutex::new(());
 
-        let session_guard = AUTOMATION_SESSION_LOCK
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let session_guard = AUTOMATION_SESSION_LOCK.lock().unwrap_or_else(|err| {
+            tracing::warn!("automation session lock was poisoned; recovering exclusive access");
+            err.into_inner()
+        });
         blinc_layout::widgets::blur_all_text_inputs();
         let previous_context_bindings = BlincContextState::try_get().map(snapshot_context_bindings);
         let previous_recorder = get_recorder();
