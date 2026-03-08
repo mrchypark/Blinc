@@ -36,6 +36,27 @@ fn find_blinc_workspace_from(start: &Path) -> Option<String> {
     })
 }
 
+fn toml_basic_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn dependency_path_literal(root: &Path, relative: &str) -> String {
+    toml_basic_string(&root.join(relative).to_string_lossy())
+}
+
 /// Create a new Blinc project with full workspace structure
 pub fn create_project(path: &Path, name: &str, template: &str, org: &str) -> Result<()> {
     validate_org_name(org)?;
@@ -1367,6 +1388,16 @@ pub fn create_rust_project(path: &Path, name: &str, org: &str) -> Result<()> {
             .or_else(|| find_blinc_workspace_from(Path::new(env!("CARGO_MANIFEST_DIR"))))
             .unwrap_or_else(|| "../../..".to_string())
     });
+    let blinc_root = Path::new(&blinc_path);
+    let blinc_app_path = dependency_path_literal(blinc_root, "crates/blinc_app");
+    let blinc_core_path = dependency_path_literal(blinc_root, "crates/blinc_core");
+    let blinc_layout_path = dependency_path_literal(blinc_root, "crates/blinc_layout");
+    let blinc_platform_android_path =
+        dependency_path_literal(blinc_root, "extensions/blinc_platform_android");
+    let blinc_platform_ios_path =
+        dependency_path_literal(blinc_root, "extensions/blinc_platform_ios");
+    let blinc_platform_desktop_path =
+        dependency_path_literal(blinc_root, "extensions/blinc_platform_desktop");
 
     // Create directory structure
     fs::create_dir_all(path.join("src"))?;
@@ -1397,23 +1428,23 @@ path = "src/main.rs"
 required-features = ["desktop"]
 
 [dependencies]
-blinc_app = {{ path = "{blinc_path}/crates/blinc_app" }}
-blinc_core = {{ path = "{blinc_path}/crates/blinc_core" }}
-blinc_layout = {{ path = "{blinc_path}/crates/blinc_layout" }}
+blinc_app = {{ path = {blinc_app_path} }}
+blinc_core = {{ path = {blinc_core_path} }}
+blinc_layout = {{ path = {blinc_layout_path} }}
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
 [target.'cfg(target_os = "android")'.dependencies]
-blinc_platform_android = {{ path = "{blinc_path}/extensions/blinc_platform_android" }}
+blinc_platform_android = {{ path = {blinc_platform_android_path} }}
 android-activity = {{ version = "0.6", features = ["native-activity"] }}
 log = "0.4"
 android_logger = "0.14"
 
 [target.'cfg(target_os = "ios")'.dependencies]
-blinc_platform_ios = {{ path = "{blinc_path}/extensions/blinc_platform_ios" }}
+blinc_platform_ios = {{ path = {blinc_platform_ios_path} }}
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
-blinc_platform_desktop = {{ path = "{blinc_path}/extensions/blinc_platform_desktop" }}
+blinc_platform_desktop = {{ path = {blinc_platform_desktop_path} }}
 
 [features]
 default = ["desktop"]
@@ -3050,6 +3081,20 @@ mod tests {
     }
 
     #[test]
+    fn dependency_path_literal_escapes_windows_style_roots_for_toml() {
+        let cargo_toml_path = dependency_path_literal(Path::new(r#"D:\a\Blinc\Blinc"#), "crates/blinc_app");
+        assert!(
+            cargo_toml_path.starts_with(r#""D:\\a\\Blinc\\Blinc"#),
+            "dependency path should escape windows-style roots: {cargo_toml_path}"
+        );
+        assert!(
+            cargo_toml_path.ends_with(r#"crates/blinc_app""#)
+                || cargo_toml_path.ends_with(r#"crates\\blinc_app""#),
+            "dependency path should preserve joined suffix inside TOML string: {cargo_toml_path}"
+        );
+    }
+
+    #[test]
     fn rust_template_includes_mobile_native_bridge_scaffold() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3138,7 +3183,6 @@ mod tests {
 
         let status = Command::new("cargo")
             .arg("check")
-            .arg("--offline")
             .arg("--manifest-path")
             .arg(root.join("Cargo.toml"))
             .arg("--bin")
@@ -3184,7 +3228,6 @@ mod tests {
         let report_path = root.join("report.json");
         let status = Command::new("cargo")
             .arg("run")
-            .arg("--offline")
             .arg("--manifest-path")
             .arg(root.join("Cargo.toml"))
             .arg("--bin")
@@ -3254,7 +3297,6 @@ transitions:
         let report_path = root.join("playbook-report.json");
         let status = Command::new("cargo")
             .arg("run")
-            .arg("--offline")
             .arg("--manifest-path")
             .arg(root.join("Cargo.toml"))
             .arg("--bin")
@@ -3322,7 +3364,6 @@ transitions:
         let report_rel = Path::new("reports/playbook-report.json");
         let status = Command::new("cargo")
             .arg("run")
-            .arg("--offline")
             .arg("--manifest-path")
             .arg(root.join("Cargo.toml"))
             .arg("--bin")
@@ -3387,7 +3428,6 @@ transitions:
         let report_rel = Path::new("reports/desktop-report.json");
         let status = Command::new("cargo")
             .arg("run")
-            .arg("--offline")
             .arg("--manifest-path")
             .arg(root.join("Cargo.toml"))
             .arg("--bin")
@@ -3471,7 +3511,6 @@ transitions:
 
         let output = Command::new("cargo")
             .arg("run")
-            .arg("--offline")
             .arg("--manifest-path")
             .arg(root.join("Cargo.toml"))
             .arg("--bin")
@@ -3512,7 +3551,6 @@ transitions:
 
         let output = Command::new("cargo")
             .arg("run")
-            .arg("--offline")
             .arg("--manifest-path")
             .arg(root.join("Cargo.toml"))
             .arg("--bin")
@@ -3556,7 +3594,6 @@ transitions:
 
         let output = Command::new("cargo")
             .arg("run")
-            .arg("--offline")
             .arg("--manifest-path")
             .arg(root.join("Cargo.toml"))
             .arg("--bin")
