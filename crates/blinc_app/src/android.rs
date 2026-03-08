@@ -46,7 +46,7 @@ use blinc_platform_android::AndroidAssetLoader;
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
 use crate::windowed::{
-    shared_runtime_scheduler, RefDirtyFlag, SharedAnimationScheduler, SharedElementRegistry,
+    prepare_runtime_scheduler, RefDirtyFlag, SharedAnimationScheduler, SharedElementRegistry,
     SharedReactiveGraph, SharedReadyCallbacks, WindowedContext,
 };
 
@@ -252,7 +252,7 @@ impl AndroidApp {
         // Animation scheduler - single-threaded for mobile efficiency
         // Unlike desktop, we tick animations on main thread to avoid mutex contention
         // and high CPU usage from background thread + main thread fighting
-        let animations: SharedAnimationScheduler = shared_runtime_scheduler();
+        let animations: SharedAnimationScheduler = prepare_runtime_scheduler(None, false);
 
         // Set global scheduler handle
         {

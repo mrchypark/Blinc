@@ -49,7 +49,7 @@ use blinc_platform_ios::{Gesture, GestureDetector, IOSAssetLoader, IOSWakeProxy,
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
 use crate::windowed::{
-    shared_runtime_scheduler, RefDirtyFlag, SharedAnimationScheduler, SharedElementRegistry,
+    prepare_runtime_scheduler, RefDirtyFlag, SharedAnimationScheduler, SharedElementRegistry,
     SharedReactiveGraph, SharedReadyCallbacks, WindowedContext,
 };
 
@@ -197,16 +197,11 @@ impl IOSApp {
         }
 
         // Animation scheduler with wake proxy
-        let animations: SharedAnimationScheduler = shared_runtime_scheduler();
-
         // Set up wake proxy for iOS
         let wake_proxy = IOSWakeProxy::new();
-        let wake_proxy_clone = wake_proxy.clone();
-        {
-            let mut scheduler = animations.lock().unwrap();
-            scheduler.set_wake_callback(move || wake_proxy_clone.wake());
-            scheduler.start_background();
-        }
+        let wake_callback: blinc_animation::WakeCallback = Arc::new(move || wake_proxy.wake());
+        let animations: SharedAnimationScheduler =
+            prepare_runtime_scheduler(Some(wake_callback), true);
 
         // Set global scheduler handle
         {

@@ -28,6 +28,7 @@ use std::sync::{
     Arc, Mutex, OnceLock,
 };
 
+use blinc_animation::scheduler::WakeCallback;
 use blinc_animation::{
     AnimatedTimeline, AnimatedValue, AnimationContext, AnimationScheduler, SchedulerHandle,
     SharedAnimatedTimeline, SharedAnimatedValue, SpringConfig,
@@ -582,6 +583,24 @@ pub(crate) fn shared_runtime_scheduler() -> SharedAnimationScheduler {
         .clone()
 }
 
+pub(crate) fn prepare_runtime_scheduler(
+    wake_callback: Option<WakeCallback>,
+    run_background: bool,
+) -> SharedAnimationScheduler {
+    let scheduler = shared_runtime_scheduler();
+    {
+        let mut guard = scheduler.lock().unwrap();
+        guard.reset_runtime_state();
+        if let Some(callback) = wake_callback {
+            guard.set_wake_callback_arc(callback);
+        }
+        if run_background {
+            guard.start_background();
+        }
+    }
+    scheduler
+}
+
 fn headless_context_init_lock() -> &'static Mutex<()> {
     static HEADLESS_CONTEXT_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     HEADLESS_CONTEXT_INIT_LOCK.get_or_init(|| Mutex::new(()))
@@ -639,6 +658,48 @@ pub struct WindowedContext {
 }
 
 impl WindowedContext {
+    fn ensure_global_context_state() -> (
+        &'static BlincContextState,
+        SharedReactiveGraph,
+        SharedHookState,
+        RefDirtyFlag,
+    ) {
+        if !BlincContextState::is_initialized() {
+            let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
+            let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
+            let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
+            let stateful_callback: StatefulCallback = Arc::new(|signal_ids| {
+                blinc_layout::check_stateful_deps(signal_ids);
+            });
+            BlincContextState::init_with_callback(
+                reactive,
+                hooks,
+                ref_dirty_flag,
+                stateful_callback,
+            );
+        }
+
+        let global = BlincContextState::get();
+        (
+            global,
+            global.active_reactive(),
+            global.active_hooks(),
+            global.active_dirty_flag(),
+        )
+    }
+
+    fn ensure_element_registry(global: &'static BlincContextState) -> SharedElementRegistry {
+        if let Some(existing) = global.element_registry::<blinc_layout::selector::ElementRegistry>()
+        {
+            existing
+        } else {
+            let registry: SharedElementRegistry =
+                Arc::new(blinc_layout::selector::ElementRegistry::new());
+            global.set_element_registry(Arc::clone(&registry) as blinc_core::AnyElementRegistry);
+            registry
+        }
+    }
+
     /// Create a deterministic headless context for offscreen rendering and screenshot tests.
     ///
     /// Unlike the internal runtime constructor, this convenience API initializes the
@@ -649,35 +710,8 @@ impl WindowedContext {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let animations = shared_runtime_scheduler();
-        if !BlincContextState::is_initialized() {
-            let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
-            let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
-            let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
-            let stateful_callback: StatefulCallback = Arc::new(|signal_ids| {
-                blinc_layout::check_stateful_deps(signal_ids);
-            });
-            BlincContextState::init_with_callback(
-                Arc::clone(&reactive),
-                Arc::clone(&hooks),
-                Arc::clone(&ref_dirty_flag),
-                stateful_callback,
-            );
-        }
-
-        let global = BlincContextState::get();
-        let reactive = global.active_reactive();
-        let hooks = global.active_hooks();
-        let ref_dirty_flag = global.active_dirty_flag();
-        let element_registry: SharedElementRegistry = if let Some(existing) =
-            global.element_registry::<blinc_layout::selector::ElementRegistry>()
-        {
-            existing
-        } else {
-            let registry: SharedElementRegistry =
-                Arc::new(blinc_layout::selector::ElementRegistry::new());
-            global.set_element_registry(Arc::clone(&registry) as blinc_core::AnyElementRegistry);
-            registry
-        };
+        let (global, reactive, hooks, ref_dirty_flag) = Self::ensure_global_context_state();
+        let element_registry = Self::ensure_element_registry(global);
         let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
 
         let ctx = Self::new_headless_runtime(
@@ -2114,7 +2148,8 @@ impl WindowedContext {
 
 #[cfg(test)]
 mod windowed_context_tests {
-    use super::WindowedContext;
+    use super::{prepare_runtime_scheduler, shared_runtime_scheduler, WindowedContext};
+    use blinc_animation::scheduler::WakeCallback;
     use blinc_core::BlincContextState;
     use std::sync::{Arc, Mutex, OnceLock};
 
@@ -2175,6 +2210,27 @@ mod windowed_context_tests {
             first.element_registry(),
             second.element_registry()
         ));
+    }
+
+    #[test]
+    fn prepare_runtime_scheduler_resets_shared_state_between_runs() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let scheduler = shared_runtime_scheduler();
+        {
+            let mut guard = scheduler.lock().unwrap();
+            guard.add_tick_callback(|_| {});
+            let wake_callback: WakeCallback = Arc::new(|| {});
+            guard.set_wake_callback_arc(wake_callback);
+            guard.start_background();
+        }
+
+        let prepared = prepare_runtime_scheduler(None, false);
+
+        assert!(Arc::ptr_eq(&scheduler, &prepared));
+        let guard = prepared.lock().unwrap();
+        assert_eq!(guard.tick_callback_count(), 0);
+        assert!(!guard.is_background_running());
+        assert!(!guard.is_continuous_redraw());
     }
 }
 
@@ -2472,13 +2528,8 @@ impl WindowedApp {
 
         // Shared animation scheduler for spring/keyframe animations
         // Runs on background thread so animations continue even when window loses focus
-        let animations = shared_runtime_scheduler();
-        {
-            let mut scheduler = animations.lock().unwrap();
-            // Set up wake callback so animation thread can wake the event loop
-            scheduler.set_wake_callback(move || wake_proxy.wake());
-            scheduler.start_background();
-        }
+        let wake_callback: WakeCallback = Arc::new(move || wake_proxy.wake());
+        let animations = prepare_runtime_scheduler(Some(wake_callback), true);
 
         // Set global scheduler handle for StateContext and component access
         {
