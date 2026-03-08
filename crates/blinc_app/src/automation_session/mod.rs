@@ -1,88 +1,46 @@
-use std::error::Error;
-use std::fmt::{Display, Formatter};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::sync::{atomic::Ordering, Arc, Mutex};
 
 use anyhow::{bail, Result};
 use blinc_animation::AnimationScheduler;
-use blinc_core::context_state::{
-    AnyElementRegistry, BoundsCallback, ContextBindingOverride, ContextResourceOverride,
-    FocusCallback, HookState, ProgrammaticEventCallback, QueryCallback, ScrollCallback,
-    SharedHookState, SharedReactiveGraph,
-};
-use blinc_core::reactive::{ReactiveGraph, SignalId};
-use blinc_core::{BlincContextState, DirtyFlag, MotionAnimationState};
+use blinc_core::context_state::{ContextBindingOverride, ContextResourceOverride};
+use blinc_core::{BlincContextState, MotionAnimationState};
 use blinc_core::{ProgrammaticElementEvent, ScrollIntoViewOptions};
 use blinc_layout::recorder_bridge::{capture_tree_snapshot, to_tree_snapshot};
 use blinc_layout::selector::SharedElementRegistry;
 use blinc_layout::selector::{
     dispatch_programmatic_event_to_node, drain_programmatic_runtime_requests,
     resolve_semantic_locator, sync_context_focus_from_runtime, sync_focus_node_to_runtime,
-    sync_focus_to_runtime, SemanticLocator,
+    sync_focus_to_runtime,
 };
 use blinc_layout::widgets::overlay::OverlayManagerExt;
 use blinc_layout::{CssAnimationStore, RenderState, SharedMotionStates, UpdateResult};
-use blinc_platform::AccessibilityRole;
 use blinc_recorder::{
     get_recorder, install_recorder, uninstall_recorder, RecordingConfig, RecordingExport,
     SharedRecordingSession, TraceArtifactRecord, TraceAssertionRecord, TraceCommandRecord,
-    TraceEntry, TraceEntryKind, TraceLocatorResolution, TreeSnapshot,
+    TraceEntryKind, TraceLocatorResolution, TreeSnapshot,
 };
 
-use crate::headless_report::HeadlessReport;
 use crate::headless_runtime::HeadlessRunConfig;
-use crate::headless_runtime::HeadlessRuntime;
-use crate::headless_scenario::{HeadlessScenario, ScenarioStep, ScenarioTarget};
 use crate::windowed::{
     RefDirtyFlag, SharedAnimationScheduler, SharedReadyCallbacks, WindowedContext,
 };
+
+mod context;
+mod runner;
+mod types;
+
+use context::{
+    configure_context_callbacks, shared_state_for_automation, snapshot_context_bindings,
+};
+pub use runner::{run_desktop_harness_scenario, run_headless_scenario};
+use types::{parse_key, select_all_modifiers};
+pub use types::{AutomationFailure, AutomationLocator, AutomationRun, AutomationRuntimeMode};
 
 type AutomationResult<T> = std::result::Result<T, AutomationFailure>;
 type PendingProgrammaticEvents = Arc<Mutex<Vec<(String, ProgrammaticElementEvent)>>>;
 type PendingFocusChanges = Arc<Mutex<Vec<Option<String>>>>;
 type PendingScrollRequests = Arc<Mutex<Vec<(String, ScrollIntoViewOptions)>>>;
 type AutomationSessionGuard = std::sync::MutexGuard<'static, ()>;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AutomationLocator {
-    Id(String),
-    Semantic(SemanticLocator),
-}
-
-impl AutomationLocator {
-    pub fn id(id: impl Into<String>) -> Self {
-        Self::Id(id.into())
-    }
-
-    pub fn semantic(locator: SemanticLocator) -> Self {
-        Self::Semantic(locator)
-    }
-
-    pub fn describe(&self) -> String {
-        match self {
-            AutomationLocator::Id(id) => format!("id={id:?}"),
-            AutomationLocator::Semantic(locator) => locator.describe(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AutomationFailure {
-    pub code: String,
-    pub message: String,
-    pub target: Option<String>,
-    pub trace_sequence: Option<u64>,
-}
-
-impl Display for AutomationFailure {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
-    }
-}
-
-impl Error for AutomationFailure {}
 
 #[derive(Clone, Debug)]
 struct ResolvedTarget {
@@ -115,29 +73,6 @@ where
     previous_resource_override: Option<ContextResourceOverride>,
     restore_resource_override: bool,
     previous_recorder: Option<Arc<SharedRecordingSession>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct AutomationRun {
-    pub report: HeadlessReport,
-    pub export: RecordingExport,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AutomationRuntimeMode {
-    Headless,
-    DesktopHarness,
-}
-
-#[derive(Clone)]
-struct ContextBindingsSnapshot {
-    query_callback: Option<QueryCallback>,
-    bounds_callback: Option<BoundsCallback>,
-    focus_callback: Option<FocusCallback>,
-    scroll_callback: Option<ScrollCallback>,
-    programmatic_event_callback: Option<ProgrammaticEventCallback>,
-    element_registry: Option<AnyElementRegistry>,
-    focused_element: Option<String>,
 }
 
 impl<F, E> AutomationSession<F, E>
@@ -1315,6 +1250,10 @@ where
             trace_sequence,
         }
     }
+
+    fn stop_recording(&self) {
+        self.recording.stop();
+    }
 }
 
 impl<F, E> Drop for AutomationSession<F, E>
@@ -1352,254 +1291,6 @@ fn redacted_trace_value(value: &str) -> String {
     } else {
         format!("value=<redacted:{len} chars>")
     }
-}
-
-pub fn run_headless_scenario<F, E>(
-    runtime_cfg: HeadlessRunConfig,
-    scenario: &HeadlessScenario,
-    ui_builder: F,
-) -> Result<AutomationRun>
-where
-    F: FnMut(&mut WindowedContext) -> E,
-    E: blinc_layout::ElementBuilder + 'static,
-{
-    run_scenario_with_mode(
-        AutomationRuntimeMode::Headless,
-        runtime_cfg,
-        scenario,
-        ui_builder,
-    )
-}
-
-pub fn run_desktop_harness_scenario<F, E>(
-    runtime_cfg: HeadlessRunConfig,
-    scenario: &HeadlessScenario,
-    ui_builder: F,
-) -> Result<AutomationRun>
-where
-    F: FnMut(&mut WindowedContext) -> E,
-    E: blinc_layout::ElementBuilder + 'static,
-{
-    run_scenario_with_mode(
-        AutomationRuntimeMode::DesktopHarness,
-        runtime_cfg,
-        scenario,
-        ui_builder,
-    )
-}
-
-fn run_scenario_with_mode<F, E>(
-    runtime_mode: AutomationRuntimeMode,
-    runtime_cfg: HeadlessRunConfig,
-    scenario: &HeadlessScenario,
-    ui_builder: F,
-) -> Result<AutomationRun>
-where
-    F: FnMut(&mut WindowedContext) -> E,
-    E: blinc_layout::ElementBuilder + 'static,
-{
-    let mut session = match runtime_mode {
-        AutomationRuntimeMode::Headless => AutomationSession::new_headless(runtime_cfg, ui_builder),
-        AutomationRuntimeMode::DesktopHarness => {
-            AutomationSession::new_desktop_harness(runtime_cfg, ui_builder)
-        }
-    };
-    let mut elapsed_frames: u64 = 0;
-    let mut elapsed_ms: u64 = 0;
-
-    for (step_index, step) in scenario.steps.iter().enumerate() {
-        let result = match step {
-            ScenarioStep::Wait { ms } => {
-                let frames = wait_frames(*ms, runtime_cfg.tick_ms);
-                session.tick_frames(frames)?;
-                elapsed_frames += frames as u64;
-                elapsed_ms += ms;
-                Ok(())
-            }
-            ScenarioStep::Tick { frames } => {
-                session.tick_frames(*frames)?;
-                elapsed_frames += *frames as u64;
-                elapsed_ms += runtime_cfg.tick_ms.saturating_mul(*frames as u64);
-                Ok(())
-            }
-            ScenarioStep::Click { target, x, y } => match (x, y, target.is_empty()) {
-                (Some(x), Some(y), true) => session.click_at(*x, *y),
-                (None, None, _) => session.click(automation_locator_from_target(target)?),
-                _ => Err(AutomationFailure {
-                    code: "invalid_locator".to_string(),
-                    message: "coordinate click steps require both x and y without locator fields"
-                        .to_string(),
-                    target: None,
-                    trace_sequence: None,
-                }),
-            },
-            ScenarioStep::Fill { target, value } => {
-                session.fill(automation_locator_from_target(target)?, value)
-            }
-            ScenarioStep::Press { key } => session.press(key),
-            ScenarioStep::Scroll { target, dx, dy } => {
-                let locator = if target.id.is_some() || target.has_semantic_fields() {
-                    Some(automation_locator_from_target(target)?)
-                } else {
-                    None
-                };
-                session.scroll(locator, *dx, *dy)
-            }
-            ScenarioStep::Snapshot { path } => {
-                if let Some(path) = path.as_deref() {
-                    session.write_snapshot_to_path(std::path::Path::new(path))?;
-                }
-                Ok(())
-            }
-            ScenarioStep::ExportTrace { path } => {
-                if let Some(path) = path.as_deref() {
-                    session.write_trace_to_path(std::path::Path::new(path))?;
-                }
-                Ok(())
-            }
-            ScenarioStep::AssertExists { target } => {
-                session.assert_exists(automation_locator_from_target(target)?)
-            }
-            ScenarioStep::AssertTextContains { target, value } => {
-                session.assert_text_contains(automation_locator_from_target(target)?, value)
-            }
-        };
-
-        if let Err(failure) = result {
-            session.recording.stop();
-            return Ok(AutomationRun {
-                report: HeadlessReport::failed(
-                    &failure.code,
-                    step_index,
-                    failure.message,
-                    elapsed_frames,
-                    elapsed_ms,
-                ),
-                export: session.export_recording(),
-            });
-        }
-    }
-
-    session.recording.stop();
-    Ok(AutomationRun {
-        report: HeadlessReport::passed(elapsed_frames, elapsed_ms),
-        export: session.export_recording(),
-    })
-}
-
-fn shared_state_for_automation(
-    _runtime_mode: AutomationRuntimeMode,
-) -> (
-    SharedReactiveGraph,
-    SharedHookState,
-    RefDirtyFlag,
-    Option<ContextResourceOverride>,
-    bool,
-) {
-    let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
-    let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
-    let dirty: DirtyFlag = Arc::new(AtomicBool::new(false));
-
-    let ctx = if let Some(ctx) = BlincContextState::try_get() {
-        ctx
-    } else {
-        let base_reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
-        let base_hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
-        let base_dirty: DirtyFlag = Arc::new(AtomicBool::new(false));
-        let stateful_callback: Arc<dyn Fn(&[SignalId]) + Send + Sync> = Arc::new(|signal_ids| {
-            blinc_layout::check_stateful_deps(signal_ids);
-        });
-        BlincContextState::init_with_callback(
-            base_reactive,
-            base_hooks,
-            base_dirty,
-            stateful_callback,
-        );
-        BlincContextState::get()
-    };
-
-    let previous_override = ctx.set_resource_override(ContextResourceOverride::new(
-        Arc::clone(&reactive),
-        Arc::clone(&hooks),
-        Arc::clone(&dirty),
-    ));
-    (reactive, hooks, dirty, previous_override, true)
-}
-
-fn snapshot_context_bindings(ctx: &BlincContextState) -> ContextBindingsSnapshot {
-    ContextBindingsSnapshot {
-        query_callback: ctx.query_callback(),
-        bounds_callback: ctx.bounds_callback(),
-        focus_callback: ctx.focus_callback(),
-        scroll_callback: ctx.scroll_callback(),
-        programmatic_event_callback: ctx.programmatic_event_callback(),
-        element_registry: ctx.element_registry_any(),
-        focused_element: ctx.focused_element(),
-    }
-}
-
-fn configure_context_callbacks(
-    runtime_mode: AutomationRuntimeMode,
-    element_registry: &SharedElementRegistry,
-    pending_focus_changes: &PendingFocusChanges,
-    pending_scroll_requests: &PendingScrollRequests,
-    pending_programmatic_events: &PendingProgrammaticEvents,
-    previous_bindings: Option<&ContextBindingsSnapshot>,
-) {
-    let query_registry = Arc::clone(element_registry);
-    let query_callback: blinc_core::QueryCallback =
-        Arc::new(move |id| query_registry.get(id).map(|node_id| node_id.to_raw()));
-    BlincContextState::get().set_query_callback(query_callback);
-
-    let bounds_registry = Arc::clone(element_registry);
-    let bounds_callback: blinc_core::BoundsCallback =
-        Arc::new(move |id| bounds_registry.get_bounds(id));
-    BlincContextState::get().set_bounds_callback(bounds_callback);
-
-    let focus_queue = Arc::clone(pending_focus_changes);
-    let chained_focus = previous_bindings.and_then(|bindings| {
-        matches!(runtime_mode, AutomationRuntimeMode::DesktopHarness)
-            .then(|| bindings.focus_callback.clone())
-            .flatten()
-    });
-    BlincContextState::get().set_focus_callback(Arc::new(move |id| {
-        if let Ok(mut pending) = focus_queue.lock() {
-            pending.push(id.map(str::to_string));
-        }
-        if let Some(callback) = chained_focus.as_ref() {
-            callback(id);
-        }
-    }));
-    let scroll_queue = Arc::clone(pending_scroll_requests);
-    let chained_scroll = previous_bindings.and_then(|bindings| {
-        matches!(runtime_mode, AutomationRuntimeMode::DesktopHarness)
-            .then(|| bindings.scroll_callback.clone())
-            .flatten()
-    });
-    BlincContextState::get().set_scroll_callback(Arc::new(move |id, options| {
-        if let Ok(mut pending) = scroll_queue.lock() {
-            pending.push((id.to_string(), options));
-        }
-        if let Some(callback) = chained_scroll.as_ref() {
-            callback(id, options);
-        }
-    }));
-    let event_queue = Arc::clone(pending_programmatic_events);
-    let chained_programmatic = previous_bindings.and_then(|bindings| {
-        matches!(runtime_mode, AutomationRuntimeMode::DesktopHarness)
-            .then(|| bindings.programmatic_event_callback.clone())
-            .flatten()
-    });
-    BlincContextState::get().set_programmatic_event_callback(Arc::new(move |id, event| {
-        if let Ok(mut pending) = event_queue.lock() {
-            pending.push((id.to_string(), event.clone()));
-        }
-        if let Some(callback) = chained_programmatic.as_ref() {
-            callback(id, event);
-        }
-    }));
-    BlincContextState::get()
-        .set_element_registry(Arc::clone(element_registry) as blinc_core::AnyElementRegistry);
 }
 
 fn subtree_text(
@@ -1642,150 +1333,6 @@ fn point_in_overlay_bounds(bounds: &[(f32, f32, f32, f32)], x: f32, y: f32) -> b
     bounds
         .iter()
         .any(|&(bx, by, width, height)| x >= bx && x < bx + width && y >= by && y < by + height)
-}
-
-struct ParsedKey {
-    key_code: u32,
-    modifiers: u8,
-    text: Option<char>,
-}
-
-fn parse_key(input: &str) -> Option<ParsedKey> {
-    let normalized = input.trim();
-    match normalized {
-        "Enter" => Some(ParsedKey {
-            key_code: 13,
-            modifiers: 0,
-            text: None,
-        }),
-        "Tab" => Some(ParsedKey {
-            key_code: 9,
-            modifiers: 0,
-            text: None,
-        }),
-        "Escape" => Some(ParsedKey {
-            key_code: 27,
-            modifiers: 0,
-            text: None,
-        }),
-        "Backspace" => Some(ParsedKey {
-            key_code: 8,
-            modifiers: 0,
-            text: None,
-        }),
-        "Delete" => Some(ParsedKey {
-            key_code: 127,
-            modifiers: 0,
-            text: None,
-        }),
-        "ArrowLeft" => Some(ParsedKey {
-            key_code: 37,
-            modifiers: 0,
-            text: None,
-        }),
-        "ArrowRight" => Some(ParsedKey {
-            key_code: 39,
-            modifiers: 0,
-            text: None,
-        }),
-        "ArrowUp" => Some(ParsedKey {
-            key_code: 38,
-            modifiers: 0,
-            text: None,
-        }),
-        "ArrowDown" => Some(ParsedKey {
-            key_code: 40,
-            modifiers: 0,
-            text: None,
-        }),
-        _ if normalized.chars().count() == 1 => Some(ParsedKey {
-            key_code: normalized.chars().next()? as u32,
-            modifiers: 0,
-            text: normalized.chars().next(),
-        }),
-        _ => None,
-    }
-}
-
-fn parse_accessibility_role(input: &str) -> Option<AccessibilityRole> {
-    match input.trim().to_ascii_lowercase().as_str() {
-        "window" => Some(AccessibilityRole::Window),
-        "group" => Some(AccessibilityRole::Group),
-        "label" => Some(AccessibilityRole::Label),
-        "button" => Some(AccessibilityRole::Button),
-        "checkbox" => Some(AccessibilityRole::Checkbox),
-        "text_input" | "textinput" | "textbox" => Some(AccessibilityRole::TextInput),
-        "text_area" | "textarea" => Some(AccessibilityRole::TextArea),
-        "image" => Some(AccessibilityRole::Image),
-        _ => None,
-    }
-}
-
-fn automation_locator_from_target(target: &ScenarioTarget) -> AutomationResult<AutomationLocator> {
-    if let Some(id) = target.id.as_ref() {
-        return Ok(AutomationLocator::id(id.clone()));
-    }
-
-    if !target.has_semantic_fields() {
-        return Err(AutomationFailure {
-            code: "invalid_locator".to_string(),
-            message: "scenario step requires id or semantic locator fields".to_string(),
-            target: None,
-            trace_sequence: None,
-        });
-    }
-
-    let semantic = &target.semantic;
-    let mut locator = if let Some(role) = semantic.role.as_deref() {
-        let Some(role) = parse_accessibility_role(role) else {
-            return Err(AutomationFailure {
-                code: "invalid_locator".to_string(),
-                message: format!("unsupported accessibility role {role:?}"),
-                target: None,
-                trace_sequence: None,
-            });
-        };
-        SemanticLocator::role(role)
-    } else {
-        SemanticLocator::default()
-    };
-
-    if let Some(text) = semantic.text.as_deref() {
-        locator = locator.with_text(text);
-    }
-    if let Some(label) = semantic.label.as_deref() {
-        locator = locator.with_label(label);
-    }
-    if let Some(placeholder) = semantic.placeholder.as_deref() {
-        locator = locator.with_placeholder(placeholder);
-    }
-    if let Some(tag) = semantic.tag.as_deref() {
-        locator = locator.with_tag(tag);
-    }
-    if let Some(within) = semantic.within.as_deref() {
-        locator = locator.within(within);
-    }
-    if let Some(nth) = semantic.nth {
-        locator = locator.nth(nth);
-    }
-
-    Ok(AutomationLocator::semantic(locator))
-}
-
-fn select_all_modifiers() -> u8 {
-    if cfg!(target_os = "macos") {
-        0b1000
-    } else {
-        0b0010
-    }
-}
-
-fn wait_frames(ms: u64, tick_ms: u64) -> u32 {
-    if ms == 0 {
-        return 1;
-    }
-    let frames = (ms + tick_ms.saturating_sub(1)) / tick_ms.max(1);
-    frames.max(1) as u32
 }
 
 fn frame_delta_ms(current_time: u64, last_frame_time_ms: u64) -> f32 {
