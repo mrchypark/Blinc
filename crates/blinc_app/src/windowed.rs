@@ -98,6 +98,135 @@ fn sync_platform_ime_state() {
     });
 }
 
+fn keyboard_text_chars(event: &blinc_platform::KeyboardEvent) -> Vec<char> {
+    if let Some(text) = event.text.as_deref() {
+        return visible_text_chars(text);
+    }
+
+    let mods = &event.modifiers;
+    let fallback = letter_key_char(&event.key).map_or_else(
+        || match &event.key {
+            Key::Char(c) => Some(*c),
+            Key::Space => Some(' '),
+            Key::Num0 => Some(if mods.shift { ')' } else { '0' }),
+            Key::Num1 => Some(if mods.shift { '!' } else { '1' }),
+            Key::Num2 => Some(if mods.shift { '@' } else { '2' }),
+            Key::Num3 => Some(if mods.shift { '#' } else { '3' }),
+            Key::Num4 => Some(if mods.shift { '$' } else { '4' }),
+            Key::Num5 => Some(if mods.shift { '%' } else { '5' }),
+            Key::Num6 => Some(if mods.shift { '^' } else { '6' }),
+            Key::Num7 => Some(if mods.shift { '&' } else { '7' }),
+            Key::Num8 => Some(if mods.shift { '*' } else { '8' }),
+            Key::Num9 => Some(if mods.shift { '(' } else { '9' }),
+            Key::Minus => Some(if mods.shift { '_' } else { '-' }),
+            Key::Equals => Some(if mods.shift { '+' } else { '=' }),
+            Key::LeftBracket => Some(if mods.shift { '{' } else { '[' }),
+            Key::RightBracket => Some(if mods.shift { '}' } else { ']' }),
+            Key::Backslash => Some(if mods.shift { '|' } else { '\\' }),
+            Key::Semicolon => Some(if mods.shift { ':' } else { ';' }),
+            Key::Quote => Some(if mods.shift { '"' } else { '\'' }),
+            Key::Comma => Some(if mods.shift { '<' } else { ',' }),
+            Key::Period => Some(if mods.shift { '>' } else { '.' }),
+            Key::Slash => Some(if mods.shift { '?' } else { '/' }),
+            Key::Grave => Some(if mods.shift { '~' } else { '`' }),
+            _ => None,
+        },
+        |base| {
+            Some(if mods.shift {
+                base.to_ascii_uppercase()
+            } else {
+                base
+            })
+        },
+    );
+
+    fallback.into_iter().collect()
+}
+
+fn visible_text_chars(text: &str) -> Vec<char> {
+    text.chars().filter(|ch| !ch.is_control()).collect()
+}
+
+fn should_skip_composition_commit(
+    keyboard_committed_text: Option<&[char]>,
+    composition_text: &str,
+) -> bool {
+    let composition_chars = visible_text_chars(composition_text);
+    !composition_chars.is_empty()
+        && keyboard_committed_text.is_some_and(|chars| chars == composition_chars.as_slice())
+}
+
+fn track_keyboard_committed_text(
+    tracked_text: &mut Option<Vec<char>>,
+    event: &blinc_platform::KeyboardEvent,
+) {
+    if event.state != KeyState::Pressed {
+        return;
+    }
+
+    let mods = &event.modifiers;
+    if mods.ctrl || mods.meta {
+        *tracked_text = None;
+        return;
+    }
+
+    *tracked_text = event
+        .text
+        .as_deref()
+        .map(visible_text_chars)
+        .filter(|chars| !chars.is_empty());
+}
+
+fn take_composition_commit_text(
+    tracked_text: &mut Option<Vec<char>>,
+    composition_text: &str,
+) -> Vec<char> {
+    let composition_chars = visible_text_chars(composition_text);
+    let should_skip = !composition_chars.is_empty()
+        && tracked_text
+            .as_deref()
+            .is_some_and(|chars| chars == composition_chars.as_slice());
+    *tracked_text = None;
+
+    if should_skip {
+        Vec::new()
+    } else {
+        composition_chars
+    }
+}
+
+fn letter_key_char(key: &Key) -> Option<char> {
+    match key {
+        Key::A => Some('a'),
+        Key::B => Some('b'),
+        Key::C => Some('c'),
+        Key::D => Some('d'),
+        Key::E => Some('e'),
+        Key::F => Some('f'),
+        Key::G => Some('g'),
+        Key::H => Some('h'),
+        Key::I => Some('i'),
+        Key::J => Some('j'),
+        Key::K => Some('k'),
+        Key::L => Some('l'),
+        Key::M => Some('m'),
+        Key::N => Some('n'),
+        Key::O => Some('o'),
+        Key::P => Some('p'),
+        Key::Q => Some('q'),
+        Key::R => Some('r'),
+        Key::S => Some('s'),
+        Key::T => Some('t'),
+        Key::U => Some('u'),
+        Key::V => Some('v'),
+        Key::W => Some('w'),
+        Key::X => Some('x'),
+        Key::Y => Some('y'),
+        Key::Z => Some('z'),
+        _ => None,
+    }
+}
+
 #[cfg(any(
     target_os = "macos",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -709,7 +838,7 @@ impl WindowedContext {
         let _init_guard = headless_context_init_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let animations = shared_runtime_scheduler();
+        let animations = prepare_runtime_scheduler(None, false);
         let (global, reactive, hooks, ref_dirty_flag) = Self::ensure_global_context_state();
         let element_registry = Self::ensure_element_registry(global);
         let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
@@ -2232,6 +2361,27 @@ mod windowed_context_tests {
         assert!(!guard.is_background_running());
         assert!(!guard.is_continuous_redraw());
     }
+
+    #[test]
+    fn new_headless_resets_shared_scheduler_state() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let scheduler = shared_runtime_scheduler();
+        {
+            let mut guard = scheduler.lock().unwrap();
+            guard.add_tick_callback(|_| {});
+            let wake_callback: WakeCallback = Arc::new(|| {});
+            guard.set_wake_callback_arc(wake_callback);
+            guard.start_background();
+        }
+
+        let ctx = WindowedContext::new_headless(640.0, 360.0);
+
+        assert!(Arc::ptr_eq(&scheduler, &ctx.animations));
+        let guard = scheduler.lock().unwrap();
+        assert_eq!(guard.tick_callback_count(), 0);
+        assert!(!guard.is_background_running());
+        assert!(!guard.is_continuous_redraw());
+    }
 }
 
 // =============================================================================
@@ -2474,6 +2624,9 @@ impl WindowedApp {
         let mut needs_rebuild = true;
         // Track if we need to relayout (e.g., after resize even if tree unchanged)
         let mut needs_relayout = false;
+        // Track committed keyboard text across platform input events so a following
+        // IME commit event can suppress duplicate TEXT_INPUT dispatch.
+        let mut keyboard_committed_text: Option<Vec<char>> = None;
         // Shared dirty flag for element refs
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
         // Shared reactive graph for signal-based state management
@@ -3100,60 +3253,7 @@ impl WindowedApp {
                                 },
                                 InputEvent::Keyboard(kb_event) => {
                                     let mods = &kb_event.modifiers;
-
-                                    // Extract character from key if applicable
-                                    let key_char = match &kb_event.key {
-                                        Key::Char(c) => Some(*c),
-                                        Key::Space => Some(' '),
-                                        Key::A => Some(if mods.shift { 'A' } else { 'a' }),
-                                        Key::B => Some(if mods.shift { 'B' } else { 'b' }),
-                                        Key::C => Some(if mods.shift { 'C' } else { 'c' }),
-                                        Key::D => Some(if mods.shift { 'D' } else { 'd' }),
-                                        Key::E => Some(if mods.shift { 'E' } else { 'e' }),
-                                        Key::F => Some(if mods.shift { 'F' } else { 'f' }),
-                                        Key::G => Some(if mods.shift { 'G' } else { 'g' }),
-                                        Key::H => Some(if mods.shift { 'H' } else { 'h' }),
-                                        Key::I => Some(if mods.shift { 'I' } else { 'i' }),
-                                        Key::J => Some(if mods.shift { 'J' } else { 'j' }),
-                                        Key::K => Some(if mods.shift { 'K' } else { 'k' }),
-                                        Key::L => Some(if mods.shift { 'L' } else { 'l' }),
-                                        Key::M => Some(if mods.shift { 'M' } else { 'm' }),
-                                        Key::N => Some(if mods.shift { 'N' } else { 'n' }),
-                                        Key::O => Some(if mods.shift { 'O' } else { 'o' }),
-                                        Key::P => Some(if mods.shift { 'P' } else { 'p' }),
-                                        Key::Q => Some(if mods.shift { 'Q' } else { 'q' }),
-                                        Key::R => Some(if mods.shift { 'R' } else { 'r' }),
-                                        Key::S => Some(if mods.shift { 'S' } else { 's' }),
-                                        Key::T => Some(if mods.shift { 'T' } else { 't' }),
-                                        Key::U => Some(if mods.shift { 'U' } else { 'u' }),
-                                        Key::V => Some(if mods.shift { 'V' } else { 'v' }),
-                                        Key::W => Some(if mods.shift { 'W' } else { 'w' }),
-                                        Key::X => Some(if mods.shift { 'X' } else { 'x' }),
-                                        Key::Y => Some(if mods.shift { 'Y' } else { 'y' }),
-                                        Key::Z => Some(if mods.shift { 'Z' } else { 'z' }),
-                                        Key::Num0 => Some(if mods.shift { ')' } else { '0' }),
-                                        Key::Num1 => Some(if mods.shift { '!' } else { '1' }),
-                                        Key::Num2 => Some(if mods.shift { '@' } else { '2' }),
-                                        Key::Num3 => Some(if mods.shift { '#' } else { '3' }),
-                                        Key::Num4 => Some(if mods.shift { '$' } else { '4' }),
-                                        Key::Num5 => Some(if mods.shift { '%' } else { '5' }),
-                                        Key::Num6 => Some(if mods.shift { '^' } else { '6' }),
-                                        Key::Num7 => Some(if mods.shift { '&' } else { '7' }),
-                                        Key::Num8 => Some(if mods.shift { '*' } else { '8' }),
-                                        Key::Num9 => Some(if mods.shift { '(' } else { '9' }),
-                                        Key::Minus => Some(if mods.shift { '_' } else { '-' }),
-                                        Key::Equals => Some(if mods.shift { '+' } else { '=' }),
-                                        Key::LeftBracket => Some(if mods.shift { '{' } else { '[' }),
-                                        Key::RightBracket => Some(if mods.shift { '}' } else { ']' }),
-                                        Key::Backslash => Some(if mods.shift { '|' } else { '\\' }),
-                                        Key::Semicolon => Some(if mods.shift { ':' } else { ';' }),
-                                        Key::Quote => Some(if mods.shift { '"' } else { '\'' }),
-                                        Key::Comma => Some(if mods.shift { '<' } else { ',' }),
-                                        Key::Period => Some(if mods.shift { '>' } else { '.' }),
-                                        Key::Slash => Some(if mods.shift { '?' } else { '/' }),
-                                        Key::Grave => Some(if mods.shift { '~' } else { '`' }),
-                                        _ => None,
-                                    };
+                                    let text_chars = keyboard_text_chars(&kb_event);
 
                                     // Key code for special key handling (backspace, arrows, etc)
                                     let key_code = match &kb_event.key {
@@ -3193,9 +3293,12 @@ impl WindowedApp {
 
                                             // For character-producing keys, dispatch TEXT_INPUT
                                             // We use broadcast dispatch so any focused text input can receive it
-                                            if let Some(c) = key_char {
-                                                // Don't send text input if ctrl/cmd is held (shortcuts)
-                                                if !mods.ctrl && !mods.meta {
+                                            if !mods.ctrl && !mods.meta {
+                                                track_keyboard_committed_text(
+                                                    &mut keyboard_committed_text,
+                                                    &kb_event,
+                                                );
+                                                for c in text_chars {
                                                     keyboard_events.push(PendingEvent {
                                                         event_type: blinc_core::events::event_types::TEXT_INPUT,
                                                         key_char: Some(c),
@@ -3321,6 +3424,7 @@ impl WindowedApp {
                                     scroll_ended = true;
                                 }
                                 InputEvent::CompositionStarted => {
+                                    keyboard_committed_text = None;
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
                                 }
                                 InputEvent::CompositionUpdated(update) => {
@@ -3330,7 +3434,10 @@ impl WindowedApp {
                                 }
                                 InputEvent::CompositionCommitted(text) => {
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
-                                    for c in text.chars().filter(|c| !c.is_control()) {
+                                    for c in take_composition_commit_text(
+                                        &mut keyboard_committed_text,
+                                        &text,
+                                    ) {
                                         keyboard_events.push(PendingEvent {
                                             event_type: blinc_core::events::event_types::TEXT_INPUT,
                                             key_char: Some(c),
@@ -3339,6 +3446,7 @@ impl WindowedApp {
                                     }
                                 }
                                 InputEvent::CompositionCancelled => {
+                                    keyboard_committed_text = None;
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
                                 }
                                 InputEvent::FocusTraversal(intent) => {
@@ -4552,6 +4660,7 @@ where
 mod tests {
     use super::*;
     use blinc_core::BlincContextState;
+    use blinc_platform::{Key, KeyState, KeyboardEvent, Modifiers};
     use blinc_recorder::{
         install_recorder, uninstall_recorder, RecordingConfig, SharedRecordingSession,
     };
@@ -4643,5 +4752,112 @@ mod tests {
         assert!(export.snapshots[0].elements.contains_key("status"));
 
         uninstall_recorder();
+    }
+
+    #[test]
+    fn keyboard_text_chars_prefers_committed_text() {
+        let event = KeyboardEvent {
+            key: Key::Unknown,
+            text: Some("초".to_string()),
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        assert_eq!(keyboard_text_chars(&event), vec!['초']);
+    }
+
+    #[test]
+    fn keyboard_text_chars_filters_control_characters() {
+        let event = KeyboardEvent {
+            key: Key::Enter,
+            text: Some("\r".to_string()),
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        assert!(keyboard_text_chars(&event).is_empty());
+    }
+
+    #[test]
+    fn keyboard_text_chars_falls_back_to_shifted_letters() {
+        let event = KeyboardEvent {
+            key: Key::A,
+            text: None,
+            state: KeyState::Pressed,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        };
+
+        assert_eq!(keyboard_text_chars(&event), vec!['A']);
+    }
+
+    #[test]
+    fn keyboard_text_chars_falls_back_to_symbols() {
+        let event = KeyboardEvent {
+            key: Key::Slash,
+            text: None,
+            state: KeyState::Pressed,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        };
+
+        assert_eq!(keyboard_text_chars(&event), vec!['?']);
+    }
+
+    #[test]
+    fn composition_commit_is_skipped_when_keyboard_event_already_carried_same_text() {
+        let keyboard_chars = vec!['한', '글'];
+
+        assert!(should_skip_composition_commit(
+            Some(keyboard_chars.as_slice()),
+            "한글"
+        ));
+    }
+
+    #[test]
+    fn composition_commit_is_not_skipped_when_text_differs() {
+        let keyboard_chars = vec!['한', '글'];
+
+        assert!(!should_skip_composition_commit(
+            Some(keyboard_chars.as_slice()),
+            "초성"
+        ));
+    }
+
+    #[test]
+    fn tracked_keyboard_text_skips_matching_later_composition_commit() {
+        let mut tracked = None;
+        let event = KeyboardEvent {
+            key: Key::Unknown,
+            text: Some("한글".to_string()),
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        track_keyboard_committed_text(&mut tracked, &event);
+
+        assert!(take_composition_commit_text(&mut tracked, "한글").is_empty());
+    }
+
+    #[test]
+    fn tracked_keyboard_text_does_not_skip_different_later_composition_commit() {
+        let mut tracked = None;
+        let event = KeyboardEvent {
+            key: Key::Unknown,
+            text: Some("한글".to_string()),
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        track_keyboard_committed_text(&mut tracked, &event);
+
+        assert_eq!(
+            take_composition_commit_text(&mut tracked, "초성"),
+            vec!['초', '성']
+        );
     }
 }

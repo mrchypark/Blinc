@@ -5,7 +5,8 @@ use blinc_platform::{
     KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
 };
 use winit::event::{
-    ElementState, Ime as WinitIme, MouseButton as WinitMouseButton, Touch, TouchPhase,
+    ElementState, Ime as WinitIme, KeyEvent as WinitKeyEvent, MouseButton as WinitMouseButton,
+    Touch, TouchPhase,
 };
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 
@@ -147,9 +148,28 @@ pub fn convert_keyboard_event(
     state: ElementState,
     modifiers: ModifiersState,
 ) -> InputEvent {
+    keyboard_input_event(key, None, convert_key_state(state), modifiers)
+}
+
+/// Convert a full winit key event so committed text can be preserved.
+pub fn convert_key_event(event: &WinitKeyEvent, modifiers: ModifiersState) -> InputEvent {
+    keyboard_input_event(
+        &event.logical_key,
+        event.text.as_deref(),
+        convert_key_state(event.state),
+        modifiers,
+    )
+}
+
+fn keyboard_input_event(
+    key: &WinitKey,
+    text: Option<&str>,
+    state: KeyState,
+    modifiers: ModifiersState,
+) -> InputEvent {
     let is_shortcut_tab = modifiers.control_key() || modifiers.alt_key() || modifiers.super_key();
 
-    if state == ElementState::Pressed
+    if state == KeyState::Pressed
         && !is_shortcut_tab
         && matches!(key, WinitKey::Named(NamedKey::Tab))
     {
@@ -163,7 +183,8 @@ pub fn convert_keyboard_event(
 
     InputEvent::Keyboard(KeyboardEvent {
         key: convert_key(key),
-        state: convert_key_state(state),
+        text: text.map(str::to_string),
+        state,
         modifiers: convert_modifiers(modifiers),
     })
 }
@@ -263,4 +284,42 @@ pub fn scroll_end_event() -> InputEvent {
 /// `scale` is a ratio delta per update (1.0 = no change).
 pub fn pinch_event(scale: f32) -> InputEvent {
     InputEvent::Pinch { scale }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keyboard_input_event;
+    use blinc_platform::{InputEvent, Key, KeyState};
+    use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
+
+    #[test]
+    fn convert_keyboard_event_preserves_committed_text() {
+        let input = keyboard_input_event(
+            &WinitKey::Character("a".into()),
+            Some("a"),
+            KeyState::Pressed,
+            ModifiersState::empty(),
+        );
+
+        match input {
+            InputEvent::Keyboard(kb) => {
+                assert_eq!(kb.key, Key::A);
+                assert_eq!(kb.text.as_deref(), Some("a"));
+                assert_eq!(kb.state, KeyState::Pressed);
+            }
+            other => panic!("expected keyboard input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_keyboard_event_keeps_tab_focus_traversal_behavior() {
+        let input = keyboard_input_event(
+            &WinitKey::Named(NamedKey::Tab),
+            None,
+            KeyState::Pressed,
+            ModifiersState::empty(),
+        );
+
+        assert!(matches!(input, InputEvent::FocusTraversal(_)));
+    }
 }
