@@ -248,6 +248,13 @@ impl BlincHandle {
     }
 }
 
+// SAFETY: Android surfaces are represented here as opaque native window pointers.
+// The pointer is never dereferenced directly in Rust and all handle access is
+// synchronized through the registry's `Mutex`, so moving `BlincHandle` between
+// threads does not create additional aliasing beyond the JNI bridge contract.
+#[cfg(target_os = "android")]
+unsafe impl Send for BlincHandle {}
+
 #[cfg(target_os = "android")]
 fn next_handle_id() -> i64 {
     static NEXT_HANDLE_ID: AtomicI64 = AtomicI64::new(1);
@@ -268,6 +275,28 @@ fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexG
         Err(poisoned) => {
             warn!("Recovering from poisoned mutex: {}", label);
             poisoned.into_inner()
+        }
+    }
+}
+
+fn take_owned_from_arc_mutex<T>(
+    arc: std::sync::Arc<std::sync::Mutex<T>>,
+    label: &str,
+) -> Option<T> {
+    match std::sync::Arc::try_unwrap(arc) {
+        Ok(mutex) => match mutex.into_inner() {
+            Ok(value) => Some(value),
+            Err(poisoned) => {
+                tracing::warn!("Recovering from poisoned mutex during {}", label);
+                Some(poisoned.into_inner())
+            }
+        },
+        Err(_) => {
+            tracing::error!(
+                "Refusing to destroy {} while other references are still alive",
+                label
+            );
+            None
         }
     }
 }
@@ -295,22 +324,7 @@ fn destroy_handle(handle: jlong) -> Option<BlincHandle> {
         registry.remove(&id)?
     };
 
-    match Arc::try_unwrap(arc) {
-        Ok(mutex) => match mutex.into_inner() {
-            Ok(handle) => Some(handle),
-            Err(poisoned) => {
-                warn!("Recovering from poisoned BlincHandle during destroy");
-                Some(poisoned.into_inner())
-            }
-        },
-        Err(arc) => {
-            let mut guard = lock_or_recover(&arc, "android blinc handle");
-            Some(std::mem::replace(
-                &mut *guard,
-                BlincHandle::new(0, 0, 1.0, std::ptr::null_mut()),
-            ))
-        }
-    }
+    take_owned_from_arc_mutex(arc, "android blinc handle")
 }
 
 /// Initialize Blinc renderer with an Android Surface
@@ -623,7 +637,10 @@ pub fn jni_bridge_placeholder() {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlincRuntimeState, TouchPhase, MAX_QUEUED_TOUCH_EVENTS};
+    use super::{
+        take_owned_from_arc_mutex, BlincRuntimeState, TouchPhase, MAX_QUEUED_TOUCH_EVENTS,
+    };
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn runtime_starts_dirty_and_focused() {
@@ -689,5 +706,23 @@ mod tests {
         let events = runtime.take_touch_events();
         assert_eq!(events.len(), MAX_QUEUED_TOUCH_EVENTS);
         assert_eq!(events.first().unwrap().phase, TouchPhase::Move);
+    }
+
+    #[test]
+    fn take_owned_from_arc_mutex_returns_value_when_unique() {
+        let value = take_owned_from_arc_mutex(Arc::new(Mutex::new(String::from("owned"))), "test");
+
+        assert_eq!(value.as_deref(), Some("owned"));
+    }
+
+    #[test]
+    fn take_owned_from_arc_mutex_refuses_when_referenced_elsewhere() {
+        let value = Arc::new(Mutex::new(String::from("shared")));
+        let shared = Arc::clone(&value);
+
+        let taken = take_owned_from_arc_mutex(value, "test");
+
+        assert!(taken.is_none());
+        assert_eq!(*shared.lock().unwrap(), "shared");
     }
 }

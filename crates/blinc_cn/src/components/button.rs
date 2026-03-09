@@ -405,7 +405,7 @@ impl Button {
 
                 let pad_x = btn_size.padding_x(theme);
                 let pad_y = btn_size.padding_y(theme);
-                let content_gap = theme.components().container.header_gap;
+                let content_gap = theme.components().compact.cluster_gap_md;
                 let mut content = div()
                     .flex_row()
                     .items_center()
