@@ -55,14 +55,12 @@ pub use window::IOSWindow;
 #[cfg(target_os = "ios")]
 pub use app::ios_main;
 
-use blinc_platform::PlatformError;
-
 // Convenience constructor for non-iOS builds
 #[cfg(not(target_os = "ios"))]
 impl IOSPlatform {
     /// Create a placeholder platform (for cross-compilation checks)
-    pub fn with_placeholder() -> Result<Self, PlatformError> {
-        Err(PlatformError::Unsupported(
+    pub fn with_placeholder() -> Result<Self, blinc_platform::PlatformError> {
+        Err(blinc_platform::PlatformError::Unsupported(
             "iOS platform only available on iOS".to_string(),
         ))
     }

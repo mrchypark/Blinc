@@ -502,9 +502,10 @@ fn show_dropdown_menu(
     let text_secondary = theme.color(ColorToken::TextSecondary);
     let text_tertiary = theme.color(ColorToken::TextTertiary);
     let surface_elevated = theme.color(ColorToken::SurfaceElevated);
-    let radius = theme.radius(RadiusToken::Md);
-    let font_size = 14.0;
-    let padding = 12.0;
+    let components = theme.components();
+    let radius = components.overlay.radius;
+    let font_size = components.typography.body_md;
+    let padding = components.overlay.item_padding_x;
 
     let items = items.to_vec();
 
@@ -566,9 +567,10 @@ fn show_submenu(
     let text_secondary = theme.color(ColorToken::TextSecondary);
     let text_tertiary = theme.color(ColorToken::TextTertiary);
     let surface_elevated = theme.color(ColorToken::SurfaceElevated);
-    let radius = theme.radius(RadiusToken::Md);
-    let font_size = 14.0;
-    let padding = 12.0;
+    let components = theme.components();
+    let radius = components.overlay.radius;
+    let font_size = components.typography.body_md;
+    let padding = components.overlay.item_padding_x;
 
     let items = items.to_vec();
 

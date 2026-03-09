@@ -92,19 +92,20 @@ pub enum InputSize {
 
 impl InputSize {
     fn height(&self, theme: &ThemeState) -> f32 {
-        // Use spacing tokens for consistent sizing
+        let tokens = theme.components();
         match self {
-            InputSize::Small => theme.spacing_value(SpacingToken::Space8), // 32px
-            InputSize::Medium => theme.spacing_value(SpacingToken::Space10), // 40px
-            InputSize::Large => theme.spacing_value(SpacingToken::Space12), // 48px
+            InputSize::Small => tokens.control.height_sm,
+            InputSize::Medium => tokens.control.height_md,
+            InputSize::Large => tokens.control.height_lg,
         }
     }
 
-    fn font_size(&self, typography: &TypographyTokens) -> f32 {
+    fn font_size(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            InputSize::Small => typography.text_xs,   // 12px
-            InputSize::Medium => typography.text_sm,  // 14px
-            InputSize::Large => typography.text_base, // 16px
+            InputSize::Small => tokens.typography.body_sm,
+            InputSize::Medium => tokens.typography.body_md,
+            InputSize::Large => tokens.typography.body_lg,
         }
     }
 }
@@ -129,7 +130,6 @@ impl Input {
     /// Create from a full configuration
     fn with_config(config: InputConfig) -> Self {
         let theme = ThemeState::get();
-        let typography = theme.typography();
 
         // Sync visual error state to underlying data's is_valid field
         if config.error_state {
@@ -139,7 +139,7 @@ impl Input {
         }
 
         // Build the text input element
-        let text_input = Self::build_text_input(&config, theme, &typography);
+        let text_input = Self::build_text_input(&config, theme);
 
         // Determine the size-specific class
         let size_class = match config.size {
@@ -193,24 +193,20 @@ impl Input {
         container = container.child(text_input);
 
         // Error or description
+        let helper_size = theme.components().typography.helper;
         if let Some(ref error_text) = config.error {
             let error_color = theme.color(ColorToken::Error);
-            container =
-                container.child(text(error_text).size(typography.text_xs).color(error_color));
+            container = container.child(text(error_text).size(helper_size).color(error_color));
         } else if let Some(ref desc_text) = config.description {
             let desc_color = theme.color(ColorToken::TextTertiary);
-            container = container.child(text(desc_text).size(typography.text_xs).color(desc_color));
+            container = container.child(text(desc_text).size(helper_size).color(desc_color));
         }
 
         Self { inner: container }
     }
 
     /// Build the text input element from config
-    fn build_text_input(
-        config: &InputConfig,
-        theme: &ThemeState,
-        typography: &TypographyTokens,
-    ) -> TextInput {
+    fn build_text_input(config: &InputConfig, theme: &ThemeState) -> TextInput {
         // Get default theme colors for fallbacks
         let default_border = theme.color(ColorToken::Border);
         let default_border_hover = theme.color(ColorToken::BorderHover);
@@ -226,11 +222,11 @@ impl Input {
 
         let radius = config
             .corner_radius
-            .unwrap_or_else(|| theme.radius(RadiusToken::Md));
+            .unwrap_or_else(|| theme.components().control.radius_md);
 
         let mut input = blinc_layout::widgets::text_input::text_input(&config.data)
             .h(config.size.height(theme))
-            .text_size(config.size.font_size(typography))
+            .text_size(config.size.font_size(theme))
             .rounded(radius)
             .input_type(config.input_type)
             .disabled(config.disabled)
@@ -688,20 +684,19 @@ mod tests {
     fn test_input_size_values() {
         init_theme();
         let theme = ThemeState::get();
-        let typography = TypographyTokens::default();
 
         // Sizes use spacing tokens
         assert!(InputSize::Small.height(theme) > 0.0);
         assert!(InputSize::Medium.height(theme) > InputSize::Small.height(theme));
         assert!(InputSize::Large.height(theme) > InputSize::Medium.height(theme));
 
-        // Font sizes use typography tokens
-        assert_eq!(InputSize::Small.font_size(&typography), typography.text_xs);
-        assert_eq!(InputSize::Medium.font_size(&typography), typography.text_sm);
+        let tokens = theme.components();
+        assert_eq!(InputSize::Small.font_size(theme), tokens.typography.body_sm);
         assert_eq!(
-            InputSize::Large.font_size(&typography),
-            typography.text_base
+            InputSize::Medium.font_size(theme),
+            tokens.typography.body_md
         );
+        assert_eq!(InputSize::Large.font_size(theme), tokens.typography.body_lg);
     }
 
     #[test]

@@ -33,11 +33,12 @@ pub enum LabelSize {
 }
 
 impl LabelSize {
-    fn font_size(&self, typography: &TypographyTokens) -> f32 {
+    fn font_size(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            LabelSize::Small => typography.text_xs,
-            LabelSize::Medium => typography.text_sm,
-            LabelSize::Large => typography.text_base,
+            LabelSize::Small => tokens.typography.label_sm,
+            LabelSize::Medium => tokens.typography.label_md,
+            LabelSize::Large => tokens.typography.label_lg,
         }
     }
 }
@@ -57,7 +58,6 @@ impl Label {
     /// Create from a full configuration
     fn with_config(config: LabelConfig) -> Self {
         let theme = ThemeState::get();
-        let typography = theme.typography();
 
         let text_color = if config.disabled {
             theme.color(ColorToken::TextTertiary)
@@ -65,7 +65,7 @@ impl Label {
             theme.color(ColorToken::TextPrimary)
         };
 
-        let font_size = config.size.font_size(&typography);
+        let font_size = config.size.font_size(theme);
 
         let disabled_class = if config.disabled {
             "cn-label--disabled"
@@ -234,16 +234,24 @@ pub fn label(text: impl Into<String>) -> LabelBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blinc_theme::TypographyTokens;
 
     #[test]
     fn test_label_size_values() {
-        let typography = TypographyTokens::default();
-        assert_eq!(LabelSize::Small.font_size(&typography), typography.text_xs);
-        assert_eq!(LabelSize::Medium.font_size(&typography), typography.text_sm);
+        if ThemeState::try_get().is_none() {
+            ThemeState::init_default();
+        }
+        let theme = ThemeState::get();
         assert_eq!(
-            LabelSize::Large.font_size(&typography),
-            typography.text_base
+            LabelSize::Small.font_size(theme),
+            theme.components().typography.label_sm
+        );
+        assert_eq!(
+            LabelSize::Medium.font_size(theme),
+            theme.components().typography.label_md
+        );
+        assert_eq!(
+            LabelSize::Large.font_size(theme),
+            theme.components().typography.label_lg
         );
     }
 

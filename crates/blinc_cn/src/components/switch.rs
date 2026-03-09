@@ -117,7 +117,7 @@ impl Switch {
         let track_width = config.size.track_width();
         let track_height = config.size.track_height();
         let thumb_size = config.size.thumb_size();
-        let padding = 2.0; // Padding from track edge
+        let padding = theme.components().compact.switch_inset;
         let thumb_travel = track_width - thumb_size - (padding * 2.0);
         let radius = track_height / 2.0; // Fully rounded track
 
@@ -305,7 +305,9 @@ struct SwitchConfig {
 impl SwitchConfig {
     fn new(on_state: State<bool>) -> Self {
         let size = SwitchSize::default();
-        let padding = 2.0;
+        let padding = ThemeState::try_get()
+            .map(|theme| theme.components().compact.switch_inset)
+            .unwrap_or(2.0);
         let thumb_travel = size.track_width() - size.thumb_size() - (padding * 2.0);
         let is_on = on_state.get();
         let initial_x = if is_on { thumb_travel } else { 0.0 };
@@ -508,7 +510,10 @@ mod tests {
     #[test]
     fn test_thumb_travel() {
         let size = SwitchSize::Medium;
-        let padding = 2.0;
+        if ThemeState::try_get().is_none() {
+            ThemeState::init_default();
+        }
+        let padding = ThemeState::get().components().compact.switch_inset;
         let travel = size.track_width() - size.thumb_size() - (padding * 2.0);
         // Travel should be: 44 - 20 - 4 = 20
         assert_eq!(travel, 20.0);

@@ -43,9 +43,7 @@ use blinc_layout::element::{CursorStyle, RenderProps};
 use blinc_layout::prelude::*;
 use blinc_layout::stateful::{stateful_with_key, ButtonState};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
-use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
-
-use crate::ButtonVariant;
+use blinc_theme::{ColorToken, SpacingToken, ThemeState};
 
 use super::label::{label, LabelSize};
 use blinc_layout::InstanceKey;
@@ -64,29 +62,40 @@ pub enum SelectSize {
 
 impl SelectSize {
     /// Get the height for this size
-    fn height(&self) -> f32 {
+    fn height(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            SelectSize::Small => 32.0,
-            SelectSize::Medium => 40.0,
-            SelectSize::Large => 48.0,
+            SelectSize::Small => tokens.control.height_sm,
+            SelectSize::Medium => tokens.control.height_md,
+            SelectSize::Large => tokens.control.height_lg,
         }
     }
 
     /// Get the font size for this size
-    fn font_size(&self) -> f32 {
+    fn font_size(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            SelectSize::Small => 13.0,
-            SelectSize::Medium => 14.0,
-            SelectSize::Large => 16.0,
+            SelectSize::Small => tokens.typography.body_sm,
+            SelectSize::Medium => tokens.typography.body_md,
+            SelectSize::Large => tokens.typography.body_lg,
         }
     }
 
-    /// Get the padding for this size
-    fn padding(&self) -> f32 {
+    fn padding_x(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            SelectSize::Small => 8.0,
-            SelectSize::Medium => 12.0,
-            SelectSize::Large => 16.0,
+            SelectSize::Small => tokens.control.padding_x_sm,
+            SelectSize::Medium => tokens.control.padding_x_md,
+            SelectSize::Large => tokens.control.padding_x_lg,
+        }
+    }
+
+    fn padding_y(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
+        match self {
+            SelectSize::Small => tokens.control.padding_y_sm,
+            SelectSize::Medium => tokens.control.padding_y_md,
+            SelectSize::Large => tokens.control.padding_y_lg,
         }
     }
 }
@@ -161,15 +170,19 @@ impl Select {
     /// Create from a full configuration
     fn from_config(instance_key: &str, config: SelectConfig) -> Self {
         let theme = ThemeState::get();
-        let height = config.size.height();
-        let font_size = config.size.font_size();
-        let padding = config.size.padding();
-        let radius = theme.radius(RadiusToken::Md);
+        let height = config.size.height(theme);
+        let font_size = config.size.font_size(theme);
+        let padding_x = config.size.padding_x(theme);
+        let padding_y = config.size.padding_y(theme);
+        let radius = theme.components().control.radius_md;
 
         // Colors
-        let bg = theme.color(ColorToken::Surface);
+        let input_bg = theme.color(ColorToken::InputBg);
+        let input_bg_hover = theme.color(ColorToken::InputBgHover);
+        let input_bg_focus = theme.color(ColorToken::InputBgFocus);
         let border = theme.color(ColorToken::Border);
         let border_hover = theme.color(ColorToken::BorderHover);
+        let border_focus = theme.color(ColorToken::BorderFocus);
         let text_color = theme.color(ColorToken::TextPrimary);
         let text_tertiary = theme.color(ColorToken::TextTertiary);
         let surface_elevated = theme.color(ColorToken::SurfaceElevated);
@@ -195,7 +208,6 @@ impl Select {
         // Chevron SVG (down arrow)
         let chevron_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>"#;
 
-        let btn_variant = ButtonVariant::Outline;
         let select_btn_key = format!("{}_btn", instance_key);
         let instance_key_owned = instance_key.to_string();
         // Unique element ID for click-outside detection
@@ -223,7 +235,15 @@ impl Select {
                     click_outside::unregister_click_outside(&wrapper_id_for_state);
                 }
 
-                let bg = btn_variant.background(theme, state);
+                let bg = if disabled {
+                    input_bg
+                } else if is_open {
+                    input_bg_focus
+                } else if matches!(state, ButtonState::Hovered | ButtonState::Pressed) {
+                    input_bg_hover
+                } else {
+                    input_bg
+                };
                 let current_val = value_state_for_display.get();
                 let selected_option = options_for_display
                     .iter()
@@ -235,7 +255,13 @@ impl Select {
                 } else {
                     text_color
                 };
-                let bdr = if is_open { border_hover } else { border };
+                let bdr = if is_open {
+                    border_focus
+                } else if matches!(state, ButtonState::Hovered | ButtonState::Pressed) {
+                    border_hover
+                } else {
+                    border
+                };
 
                 let display_content: Div = if let Some(opt) = selected_option {
                     if let Some(ref content_fn) = opt.content {
@@ -278,7 +304,8 @@ impl Select {
                     .items_center()
                     .justify_between()
                     .h(height)
-                    .p_px(padding)
+                    .padding_x_px(padding_x)
+                    .padding_y_px(padding_y)
                     .bg(bg)
                     .border(1.0, bdr)
                     .rounded(radius)
@@ -317,9 +344,9 @@ impl Select {
                         dropdown_width,
                         height,
                         font_size,
-                        padding,
+                        padding_x,
                         radius,
-                        bg,
+                        input_bg,
                         border,
                         text_color,
                         text_tertiary,
@@ -577,7 +604,7 @@ fn build_dropdown_content(
     width: f32,
     trigger_height: f32,
     font_size: f32,
-    padding: f32,
+    padding_x: f32,
     radius: f32,
     bg: blinc_core::Color,
     border: blinc_core::Color,
@@ -595,7 +622,7 @@ fn build_dropdown_content(
         .bg(bg)
         .border(1.0, border)
         .rounded(radius)
-        .shadow_lg()
+        .shadow_md()
         .overflow_clip()
         .h_fit()
         // Absolutely positioned below the trigger, rendered in foreground pass
@@ -678,16 +705,35 @@ mod tests {
 
     #[test]
     fn test_select_sizes() {
-        assert_eq!(SelectSize::Small.height(), 32.0);
-        assert_eq!(SelectSize::Medium.height(), 40.0);
-        assert_eq!(SelectSize::Large.height(), 48.0);
+        if ThemeState::try_get().is_none() {
+            ThemeState::init_default();
+        }
+        let theme = ThemeState::get();
+        let tokens = theme.components();
+        assert_eq!(SelectSize::Small.height(theme), tokens.control.height_sm);
+        assert_eq!(SelectSize::Medium.height(theme), tokens.control.height_md);
+        assert_eq!(SelectSize::Large.height(theme), tokens.control.height_lg);
     }
 
     #[test]
     fn test_select_font_sizes() {
-        assert_eq!(SelectSize::Small.font_size(), 13.0);
-        assert_eq!(SelectSize::Medium.font_size(), 14.0);
-        assert_eq!(SelectSize::Large.font_size(), 16.0);
+        if ThemeState::try_get().is_none() {
+            ThemeState::init_default();
+        }
+        let theme = ThemeState::get();
+        let tokens = theme.components();
+        assert_eq!(
+            SelectSize::Small.font_size(theme),
+            tokens.typography.body_sm
+        );
+        assert_eq!(
+            SelectSize::Medium.font_size(theme),
+            tokens.typography.body_md
+        );
+        assert_eq!(
+            SelectSize::Large.font_size(theme),
+            tokens.typography.body_lg
+        );
     }
 
     #[test]

@@ -169,52 +169,57 @@ impl ButtonSize {
     }
 
     /// Get height
-    fn height(&self) -> f32 {
+    fn height(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            ButtonSize::Small => 32.0,
-            ButtonSize::Medium => 40.0,
-            ButtonSize::Large => 44.0,
-            ButtonSize::Icon => 40.0,
+            ButtonSize::Small => tokens.control.height_sm,
+            ButtonSize::Medium => tokens.control.height_md,
+            ButtonSize::Large => tokens.control.height_lg,
+            ButtonSize::Icon => tokens.control.height_md,
         }
     }
 
     /// Get horizontal padding (raw pixels)
-    fn padding_x(&self) -> f32 {
+    fn padding_x(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            ButtonSize::Small => 12.0,
-            ButtonSize::Medium => 16.0,
-            ButtonSize::Large => 24.0,
-            ButtonSize::Icon => 8.0,
+            ButtonSize::Small => tokens.control.padding_x_sm,
+            ButtonSize::Medium => tokens.control.padding_x_md,
+            ButtonSize::Large => tokens.control.padding_x_lg,
+            ButtonSize::Icon => tokens.control.padding_y_md,
         }
     }
 
     /// Get vertical padding (raw pixels)
-    fn padding_y(&self) -> f32 {
+    fn padding_y(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            ButtonSize::Small => 4.0,
-            ButtonSize::Medium => 8.0,
-            ButtonSize::Large => 12.0,
-            ButtonSize::Icon => 8.0,
+            ButtonSize::Small => tokens.control.padding_y_sm,
+            ButtonSize::Medium => tokens.control.padding_y_md,
+            ButtonSize::Large => tokens.control.padding_y_lg,
+            ButtonSize::Icon => tokens.control.padding_y_md,
         }
     }
 
     /// Get font size for text/icon sizing
-    fn font_size(&self) -> f32 {
+    fn font_size(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            ButtonSize::Small => 13.0,
-            ButtonSize::Medium => 14.0,
-            ButtonSize::Large => 16.0,
-            ButtonSize::Icon => 14.0,
+            ButtonSize::Small => tokens.typography.action_sm,
+            ButtonSize::Medium => tokens.typography.action_md,
+            ButtonSize::Large => tokens.typography.action_lg,
+            ButtonSize::Icon => tokens.typography.action_md,
         }
     }
 
     /// Get default border radius (inline fallback — CSS overrides this)
-    fn border_radius(&self) -> f32 {
+    fn border_radius(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            ButtonSize::Small => 4.0,
-            ButtonSize::Medium => 6.0,
-            ButtonSize::Large => 8.0,
-            ButtonSize::Icon => 6.0,
+            ButtonSize::Small => tokens.control.radius_sm,
+            ButtonSize::Medium => tokens.control.radius_md,
+            ButtonSize::Large => tokens.control.radius_lg,
+            ButtonSize::Icon => tokens.control.radius_md,
         }
     }
 }
@@ -309,7 +314,7 @@ impl Button {
     /// Build from a config with the instance key
     fn from_config(instance_key: &str, config: ButtonConfig) -> Self {
         let theme = ThemeState::get();
-        let font_size = config.btn_size.font_size();
+        let font_size = config.btn_size.font_size(theme);
         let variant = config.variant;
         let disabled = config.disabled;
 
@@ -349,7 +354,7 @@ impl Button {
             .bg_color(bg)
             .hover_color(hover_bg)
             .pressed_color(pressed_bg)
-            .rounded(config.btn_size.border_radius())
+            .rounded(config.btn_size.border_radius(theme))
             .items_center()
             .justify_center()
             // CSS classes for user overrides
@@ -360,8 +365,11 @@ impl Button {
         // Icon-only: explicit square dimensions so items_center/justify_center
         // can center the icon. With-label: shrink-wrap to content.
         if is_icon_only {
-            let pad = config.btn_size.padding_y();
-            let dim = resolved_icon_size + pad * 2.0;
+            let pad = config.btn_size.padding_y(theme);
+            let dim = config
+                .btn_size
+                .height(theme)
+                .max(resolved_icon_size + pad * 2.0);
             btn = btn.w(dim).h(dim);
         } else {
             btn = btn.w_fit();
@@ -393,13 +401,14 @@ impl Button {
                     .pointer_events_none()
                     .no_cursor();
 
-                let pad_x = btn_size.padding_x();
-                let pad_y = btn_size.padding_y();
+                let pad_x = btn_size.padding_x(theme);
+                let pad_y = btn_size.padding_y(theme);
+                let content_gap = theme.components().container.header_gap;
                 let mut content = div()
                     .flex_row()
                     .items_center()
                     .justify_center()
-                    .gap_px(6.0)
+                    .gap_px(content_gap)
                     .padding_x_px(pad_x)
                     .padding_y_px(pad_y)
                     .pointer_events_none();

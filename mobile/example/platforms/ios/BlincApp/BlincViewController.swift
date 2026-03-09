@@ -42,24 +42,49 @@ class BlincViewController: UIViewController {
     private var sensorDebugBodyLabel: UILabel?
     private var sensorDebugTimer: Timer?
     private var sensorPollBatch: UInt64 = 0
+    private var shouldShowSensorDebugOverlay: Bool {
+        ProcessInfo.processInfo.environment["BLINC_SENSOR_DEBUG_OVERLAY"] == "1"
+    }
+
+    private var chromeBackgroundColor: UIColor {
+        if traitCollection.userInterfaceStyle == .dark {
+            return UIColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1.0)
+        }
+        return UIColor(red: 0.95, green: 0.97, blue: 1.0, alpha: 1.0)
+    }
 
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        applyChromeBackground()
 
         // Create Metal view
         metalView = BlincMetalView(frame: view.bounds)
-        metalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        metalView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(metalView)
+        NSLayoutConstraint.activate([
+            metalView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            metalView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            metalView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            metalView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+        ])
+        view.layoutIfNeeded()
 
         // Initialize Blinc context
         initializeBlinc()
 
         // Set up display link
         setupDisplayLink()
-        setupSensorDebugOverlay()
-        refreshSensorDebugOverlay()
+        if shouldShowSensorDebugOverlay {
+            setupSensorDebugOverlay()
+            refreshSensorDebugOverlay()
+        }
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        applyChromeBackground()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -70,7 +95,9 @@ class BlincViewController: UIViewController {
         if let ctx = renderContext {
             blinc_set_focused(ctx, true)
         }
-        startSensorDebugTimer()
+        if shouldShowSensorDebugOverlay {
+            startSensorDebugTimer()
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -81,7 +108,9 @@ class BlincViewController: UIViewController {
         if let ctx = renderContext {
             blinc_set_focused(ctx, false)
         }
-        stopSensorDebugTimer()
+        if shouldShowSensorDebugOverlay {
+            stopSensorDebugTimer()
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -89,8 +118,8 @@ class BlincViewController: UIViewController {
 
         // Update Blinc with new size
         let scale = UIScreen.main.scale
-        let width = UInt32(view.bounds.width * scale)
-        let height = UInt32(view.bounds.height * scale)
+        let width = UInt32(metalView.bounds.width * scale)
+        let height = UInt32(metalView.bounds.height * scale)
 
         if let ctx = renderContext {
             blinc_update_size(ctx, width, height, Double(scale))
@@ -105,7 +134,9 @@ class BlincViewController: UIViewController {
         // Stop display link
         displayLink?.invalidate()
         displayLink = nil
-        stopSensorDebugTimer()
+        if shouldShowSensorDebugOverlay {
+            stopSensorDebugTimer()
+        }
 
         // Clean up Blinc resources
         if let gpu = gpuRenderer {
@@ -120,8 +151,8 @@ class BlincViewController: UIViewController {
 
     private func initializeBlinc() {
         let scale = UIScreen.main.scale
-        let width = UInt32(view.bounds.width * scale)
-        let height = UInt32(view.bounds.height * scale)
+        let width = UInt32(metalView.bounds.width * scale)
+        let height = UInt32(metalView.bounds.height * scale)
 
         os_log(.info, log: log, "Starting initialization %dx%d @ %.1fx", width, height, scale)
 
@@ -155,6 +186,11 @@ class BlincViewController: UIViewController {
         loadBundledFonts(gpu: gpu)
 
         os_log(.info, log: log, "Blinc fully initialized: %dx%d @ %.1fx", width, height, scale)
+    }
+
+    private func applyChromeBackground() {
+        view.backgroundColor = chromeBackgroundColor
+        metalView?.backgroundColor = chromeBackgroundColor
     }
 
     /// Load bundled fonts from the app bundle
@@ -438,9 +474,10 @@ class BlincViewController: UIViewController {
 
         for touch in touches {
             let point = touch.location(in: view)
+            let metalPoint = touch.location(in: metalView)
             let touchId = getTouchId(for: touch)
             os_log(.info, log: log, "touchesBegan: calling blinc_handle_touch at (%.1f, %.1f)", point.x, point.y)
-            blinc_handle_touch(ctx, touchId, Float(point.x), Float(point.y), 0) // 0 = began
+            blinc_handle_touch(ctx, touchId, Float(metalPoint.x), Float(metalPoint.y), 0) // 0 = began
         }
     }
 
@@ -448,7 +485,7 @@ class BlincViewController: UIViewController {
         guard let ctx = renderContext else { return }
 
         for touch in touches {
-            let point = touch.location(in: view)
+            let point = touch.location(in: metalView)
             let touchId = getTouchId(for: touch)
             blinc_handle_touch(ctx, touchId, Float(point.x), Float(point.y), 1) // 1 = moved
         }
@@ -463,7 +500,7 @@ class BlincViewController: UIViewController {
         }
 
         for touch in touches {
-            let point = touch.location(in: view)
+            let point = touch.location(in: metalView)
             let touchId = getTouchId(for: touch)
             os_log(.info, log: log, "touchesEnded: calling blinc_handle_touch at (%.1f, %.1f)", point.x, point.y)
             blinc_handle_touch(ctx, touchId, Float(point.x), Float(point.y), 2) // 2 = ended
@@ -475,7 +512,7 @@ class BlincViewController: UIViewController {
         guard let ctx = renderContext else { return }
 
         for touch in touches {
-            let point = touch.location(in: view)
+            let point = touch.location(in: metalView)
             let touchId = getTouchId(for: touch)
             blinc_handle_touch(ctx, touchId, Float(point.x), Float(point.y), 3) // 3 = cancelled
             removeTouchId(for: touch)

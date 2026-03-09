@@ -110,6 +110,10 @@ impl Sidebar {
         let text_secondary = theme.color(ColorToken::TextSecondary);
         let text_tertiary = theme.color(ColorToken::TextTertiary);
         let primary = theme.color(ColorToken::Primary);
+        let item_gap = theme.spacing().space_2;
+        let item_px = theme.spacing().space_3;
+        let item_py = theme.spacing().space_2;
+        let section_pad_y = theme.spacing().space_1_5;
 
         let key = builder.key.get().to_string();
         let sections = builder.sections.clone();
@@ -177,9 +181,9 @@ impl Sidebar {
                                     .w_fit()
                                     .flex_row()
                                     .items_center()
-                                    .gap(3.0)
-                                    .px(3.0)
-                                    .py(2.0)
+                                    .gap(item_gap)
+                                    .px(item_px)
+                                    .py(item_py)
                                     .bg(bg)
                                     .cursor(CursorStyle::Pointer)
                                     .animate_bounds(
@@ -215,7 +219,7 @@ impl Sidebar {
                     .h_full()
                     .w_fit()
                     .overflow_clip() // Critical for animation clipping
-                    .py(2.0)
+                    .py(section_pad_y)
                     .animate_bounds(
                         VisualAnimationConfig::all()
                             .with_key(&layout_anim_key)
@@ -247,7 +251,7 @@ impl Sidebar {
                                     .snappy(),
                             )
                             .when(!is_collapsed, |d| {
-                                d.px(3.0).py(2.0).child(
+                                d.px(item_px).py(item_py).child(
                                     text(title.to_uppercase())
                                         .size(11.0)
                                         .color(text_tertiary)
@@ -313,9 +317,9 @@ impl Sidebar {
                                     .h_fit()
                                     .flex_row()
                                     .items_center()
-                                    .gap(3.0)
-                                    .px(3.0)
-                                    .py(2.0)
+                                    .gap(item_gap)
+                                    .px(item_px)
+                                    .py(item_py)
                                     .bg(bg)
                                     .cursor(CursorStyle::Pointer)
                                     .overflow_clip()

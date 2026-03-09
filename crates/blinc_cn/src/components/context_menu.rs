@@ -338,11 +338,10 @@ impl ContextMenuBuilder {
         let text_secondary = theme.color(ColorToken::TextSecondary);
         let text_tertiary = theme.color(ColorToken::TextTertiary);
         let surface_elevated = theme.color(ColorToken::SurfaceElevated);
-        let radius = theme.radius(RadiusToken::Md);
-
-        // Use same sizing as Select dropdown for consistency
-        let font_size = 14.0; // Medium size font
-        let padding = 12.0; // Medium size padding
+        let components = theme.components();
+        let radius = components.overlay.radius;
+        let font_size = components.typography.body_md;
+        let padding = components.overlay.item_padding_x;
 
         let items = self.items;
         let width = self.min_width;
@@ -496,9 +495,10 @@ fn show_context_submenu(
     let text_secondary = theme.color(ColorToken::TextSecondary);
     let text_tertiary = theme.color(ColorToken::TextTertiary);
     let surface_elevated = theme.color(ColorToken::SurfaceElevated);
-    let radius = theme.radius(RadiusToken::Md);
-    let font_size = 14.0;
-    let padding = 12.0;
+    let components = theme.components();
+    let radius = components.overlay.radius;
+    let font_size = components.typography.body_md;
+    let padding = components.overlay.item_padding_x;
 
     let items = items.to_vec();
 

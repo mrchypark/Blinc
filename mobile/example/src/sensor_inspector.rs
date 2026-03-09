@@ -4,6 +4,7 @@ use blinc_core::native_bridge::native_call;
 use blinc_core::reactive::State;
 use blinc_platform::sensors::native_bridge::NativeBridgeBackend;
 use blinc_platform::sensors::{SensorClient, SensorConfig, SensorFrame, SensorKind};
+use crate::ExampleTheme;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -267,6 +268,7 @@ fn sensor_toggle_button(
     snapshot: State<SensorPanelData>,
     live_enabled: State<bool>,
     pending_start: State<bool>,
+    theme: ExampleTheme,
 ) -> impl ElementBuilder {
     let client = sensor_client();
     let live_state = live_enabled.clone();
@@ -276,13 +278,13 @@ fn sensor_toggle_button(
         .on_state(move |ctx| {
             let is_live = live_state.get();
             let bg = match (ctx.state(), is_live) {
-                (ButtonState::Idle, false) => Color::rgba(0.3, 0.3, 0.4, 1.0),
-                (ButtonState::Hovered, false) => Color::rgba(0.4, 0.4, 0.5, 1.0),
-                (ButtonState::Pressed, false) => Color::rgba(0.2, 0.2, 0.3, 1.0),
-                (ButtonState::Idle, true) => Color::rgba(0.18, 0.38, 0.26, 1.0),
-                (ButtonState::Hovered, true) => Color::rgba(0.22, 0.46, 0.31, 1.0),
-                (ButtonState::Pressed, true) => Color::rgba(0.12, 0.28, 0.19, 1.0),
-                (ButtonState::Disabled, _) => Color::rgba(0.2, 0.2, 0.2, 0.5),
+                (ButtonState::Idle, false) => theme.sensor_idle,
+                (ButtonState::Hovered, false) => theme.sensor_hovered,
+                (ButtonState::Pressed, false) => theme.sensor_pressed,
+                (ButtonState::Idle, true) => theme.sensor_active_idle,
+                (ButtonState::Hovered, true) => theme.sensor_active_hovered,
+                (ButtonState::Pressed, true) => theme.sensor_active_pressed,
+                (ButtonState::Disabled, _) => theme.button_disabled,
             };
 
             div()
@@ -297,7 +299,7 @@ fn sensor_toggle_button(
                     text(if is_live { "Sensors ON" } else { "Sensors OFF" })
                         .size(16.0)
                         .weight(FontWeight::SemiBold)
-                        .color(Color::WHITE),
+                        .color(theme.text_primary),
                 )
         })
         .on_click(move |_| {
@@ -361,7 +363,11 @@ fn sensor_toggle_button(
         })
 }
 
-pub fn sensor_section(ctx: &WindowedContext, section_card: fn(&str) -> Div) -> Div {
+pub fn sensor_section(
+    ctx: &WindowedContext,
+    section_card: fn(&str, ExampleTheme) -> Div,
+    theme: ExampleTheme,
+) -> Div {
     let snapshot = ctx.use_state_keyed("sensor_snapshot", SensorPanelData::default);
     let live_enabled = ctx.use_state_keyed("sensor_live_enabled", || false);
     let pending_start = ctx.use_state_keyed("sensor_pending_start", || false);
@@ -433,18 +439,19 @@ pub fn sensor_section(ctx: &WindowedContext, section_card: fn(&str) -> Div) -> D
 
     let detail_snapshot = snapshot.clone();
 
-    section_card("Sensor Inspector")
+    section_card("Sensor Inspector", theme)
         .id("sensor-section")
         .child(
             text("Turn ON to stream continuously. OFF freezes the last snapshot.")
                 .size(14.0)
-                .color(Color::rgba(0.6, 0.6, 0.7, 1.0))
+                .color(theme.text_muted)
                 .align(TextAlign::Center),
         )
         .child(sensor_toggle_button(
             snapshot.clone(),
             live_enabled.clone(),
             pending_start.clone(),
+            theme,
         ))
         .child(
             div()
@@ -453,14 +460,14 @@ pub fn sensor_section(ctx: &WindowedContext, section_card: fn(&str) -> Div) -> D
                 .gap(4.0)
                 .py(8.0)
                 .px(10.0)
-                .bg(Color::rgba(0.18, 0.18, 0.23, 1.0))
+                .bg(theme.panel_bg)
                 .rounded(12.0)
                 .items_start()
                 .child(
                     text("Live Sensor Snapshot")
                         .size(14.0)
                         .weight(FontWeight::SemiBold)
-                        .color(Color::WHITE),
+                        .color(theme.text_primary),
                 )
                 .child(
                     stateful::<NoState>()
@@ -475,62 +482,62 @@ pub fn sensor_section(ctx: &WindowedContext, section_card: fn(&str) -> Div) -> D
                                 .child(
                                     text(data.status_line.clone())
                                         .size(12.0)
-                                        .color(Color::rgba(0.85, 0.9, 1.0, 1.0)),
+                                        .color(theme.text_secondary),
                                 )
                                 .child(
                                     text(data.permission_line.clone())
                                         .size(11.0)
-                                        .color(Color::rgba(0.75, 0.82, 0.9, 1.0)),
+                                        .color(theme.text_secondary),
                                 )
                                 .child(
                                     text(data.supported_line.clone())
                                         .size(11.0)
-                                        .color(Color::rgba(0.75, 0.82, 0.9, 1.0)),
+                                        .color(theme.text_secondary),
                                 )
                                 .child(
                                     text(data.kinds_line.clone())
                                         .size(11.0)
-                                        .color(Color::rgba(0.75, 0.82, 0.9, 1.0)),
+                                        .color(theme.text_secondary),
                                 )
                                 .child(
                                     text(data.sample_line.clone())
                                         .size(11.0)
-                                        .color(Color::rgba(0.75, 0.82, 0.9, 1.0)),
+                                        .color(theme.text_secondary),
                                 )
                                 .child(
                                     text(data.accel_line.clone())
                                         .size(10.5)
-                                        .color(Color::rgba(0.70, 0.80, 0.88, 1.0)),
+                                        .color(theme.text_muted),
                                 )
                                 .child(
                                     text(data.gyro_line.clone())
                                         .size(10.5)
-                                        .color(Color::rgba(0.70, 0.80, 0.88, 1.0)),
+                                        .color(theme.text_muted),
                                 )
                                 .child(
                                     text(data.magnet_line.clone())
                                         .size(10.5)
-                                        .color(Color::rgba(0.70, 0.80, 0.88, 1.0)),
+                                        .color(theme.text_muted),
                                 )
                                 .child(
                                     text(data.barometer_line.clone())
                                         .size(10.5)
-                                        .color(Color::rgba(0.70, 0.80, 0.88, 1.0)),
+                                        .color(theme.text_muted),
                                 )
                                 .child(
                                     text(data.step_line.clone())
                                         .size(10.5)
-                                        .color(Color::rgba(0.70, 0.80, 0.88, 1.0)),
+                                        .color(theme.text_muted),
                                 )
                                 .child(
                                     text(data.activity_line.clone())
                                         .size(10.5)
-                                        .color(Color::rgba(0.70, 0.80, 0.88, 1.0)),
+                                        .color(theme.text_muted),
                                 )
                                 .child(
                                     text(data.note_line.clone())
                                         .size(11.0)
-                                        .color(Color::rgba(0.5, 0.8, 0.6, 1.0)),
+                                        .color(theme.accent),
                                 )
                         }),
                 ),

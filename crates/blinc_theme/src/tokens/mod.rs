@@ -11,6 +11,7 @@
 
 mod animation;
 mod color;
+mod component;
 mod opacity;
 mod radius;
 mod shadow;
@@ -19,6 +20,7 @@ mod typography;
 
 pub use animation::*;
 pub use color::*;
+pub use component::*;
 pub use opacity::*;
 pub use radius::*;
 pub use shadow::*;

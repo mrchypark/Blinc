@@ -194,7 +194,7 @@ impl BuiltAvatar {
             // Fallback initials
             let bg = config
                 .fallback_bg
-                .unwrap_or_else(|| theme.color(ColorToken::Surface));
+                .unwrap_or_else(|| theme.color(ColorToken::AccentSubtle));
             let fg = config
                 .fallback_color
                 .unwrap_or_else(|| theme.color(ColorToken::TextPrimary));
@@ -210,10 +210,10 @@ impl BuiltAvatar {
             // Empty fallback - show placeholder
             let bg = config
                 .fallback_bg
-                .unwrap_or_else(|| theme.color(ColorToken::Surface));
+                .unwrap_or_else(|| theme.color(ColorToken::SurfaceElevated));
             let fg = config
                 .fallback_color
-                .unwrap_or_else(|| theme.color(ColorToken::TextTertiary));
+                .unwrap_or_else(|| theme.color(ColorToken::TextSecondary));
 
             // Default user icon placeholder
             let placeholder = text("?")
@@ -230,6 +230,7 @@ impl BuiltAvatar {
             .class("cn-avatar")
             .w(size_px)
             .h(size_px)
+            .border(1.0, theme.color(ColorToken::Border))
             .rounded(radius)
             .overflow_clip()
             .flex_row()

@@ -9,10 +9,74 @@ use blinc_platform::{Platform, PlatformError};
 #[cfg(target_os = "ios")]
 use objc2_foundation::MainThreadMarker;
 #[cfg(target_os = "ios")]
-use objc2_ui_kit::UIScreen;
+use objc2_ui_kit::{UIApplication, UIScreen, UIUserInterfaceStyle, UIWindow};
 
 #[cfg(target_os = "ios")]
 use tracing::info;
+
+fn resolve_dark_mode(value: Option<bool>) -> bool {
+    value.unwrap_or(false)
+}
+
+fn resolve_safe_area_insets(value: Option<(f32, f32, f32, f32)>) -> (f32, f32, f32, f32) {
+    value.unwrap_or((0.0, 0.0, 0.0, 0.0))
+}
+
+#[cfg(target_os = "ios")]
+#[allow(deprecated)]
+fn active_window() -> Option<objc2::rc::Retained<UIWindow>> {
+    let mtm = MainThreadMarker::new()?;
+    let application = UIApplication::sharedApplication(mtm);
+
+    application
+        .keyWindow()
+        .or_else(|| application.windows().firstObject())
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn current_window() -> Option<IOSWindow> {
+    let window = active_window()?;
+    let scale_factor = window.screen().scale() as f64;
+    let bounds = window.bounds();
+    let width = (bounds.size.width * scale_factor).round() as u32;
+    let height = (bounds.size.height * scale_factor).round() as u32;
+    Some(IOSWindow::new(window, scale_factor, width, height))
+}
+
+#[cfg(target_os = "ios")]
+fn query_dark_mode() -> Option<bool> {
+    let window = active_window()?;
+    let scene = window.windowScene()?;
+    let traits = scene.traitCollection();
+    let style = unsafe { traits.userInterfaceStyle() };
+    Some(style == UIUserInterfaceStyle::Dark)
+}
+
+#[cfg(target_os = "ios")]
+fn query_safe_area_insets() -> Option<(f32, f32, f32, f32)> {
+    let window = active_window()?;
+
+    if let Some(controller) = window.rootViewController() {
+        controller.loadViewIfNeeded();
+        if let Some(view) = controller.view() {
+            let insets = view.safeAreaInsets();
+            return Some((
+                insets.top as f32,
+                insets.left as f32,
+                insets.bottom as f32,
+                insets.right as f32,
+            ));
+        }
+    }
+
+    let insets = window.safeAreaInsets();
+    Some((
+        insets.top as f32,
+        insets.left as f32,
+        insets.bottom as f32,
+        insets.right as f32,
+    ))
+}
 
 /// iOS platform implementation
 pub struct IOSPlatform {
@@ -26,6 +90,7 @@ pub struct IOSPlatform {
 #[cfg(target_os = "ios")]
 impl IOSPlatform {
     /// Get the main screen's scale factor
+    #[allow(deprecated)]
     fn get_screen_scale() -> f64 {
         // On iOS, UIScreen::mainScreen() requires MainThreadMarker
         // We assume this is called from the main thread
@@ -120,15 +185,13 @@ pub fn get_display_scale() -> f64 {
 /// Check if the system is in dark mode
 #[cfg(target_os = "ios")]
 pub fn is_dark_mode() -> bool {
-    // TODO: Implement proper dark mode detection using UITraitCollection
-    // For now, default to light mode
-    false
+    resolve_dark_mode(query_dark_mode())
 }
 
 /// Placeholder for non-iOS builds
 #[cfg(not(target_os = "ios"))]
 pub fn is_dark_mode() -> bool {
-    false
+    resolve_dark_mode(None)
 }
 
 /// Get the safe area insets for the main screen
@@ -136,16 +199,13 @@ pub fn is_dark_mode() -> bool {
 /// Returns (top, left, bottom, right) insets in logical points.
 #[cfg(target_os = "ios")]
 pub fn get_safe_area_insets() -> (f32, f32, f32, f32) {
-    // Get key window's safe area insets
-    // This accounts for notch, home indicator, etc.
-    // Note: In a real implementation, you'd get this from the UIWindow
-    (0.0, 0.0, 0.0, 0.0)
+    resolve_safe_area_insets(query_safe_area_insets())
 }
 
 /// Placeholder for non-iOS builds
 #[cfg(not(target_os = "ios"))]
 pub fn get_safe_area_insets() -> (f32, f32, f32, f32) {
-    (0.0, 0.0, 0.0, 0.0)
+    resolve_safe_area_insets(None)
 }
 
 /// iOS system font paths
@@ -175,4 +235,33 @@ pub fn system_font_paths() -> &'static [&'static str] {
         "/System/Library/Fonts/CoreAddition/Verdana.ttf",
         "/System/Library/Fonts/CoreAddition/TimesNewRomanPS.ttf",
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_dark_mode, resolve_safe_area_insets};
+
+    #[test]
+    fn dark_mode_defaults_to_light_when_unavailable() {
+        assert!(!resolve_dark_mode(None));
+    }
+
+    #[test]
+    fn dark_mode_preserves_detected_value() {
+        assert!(resolve_dark_mode(Some(true)));
+        assert!(!resolve_dark_mode(Some(false)));
+    }
+
+    #[test]
+    fn safe_area_defaults_to_zeroes_when_unavailable() {
+        assert_eq!(resolve_safe_area_insets(None), (0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn safe_area_preserves_detected_insets() {
+        assert_eq!(
+            resolve_safe_area_insets(Some((10.0, 4.0, 34.0, 4.0))),
+            (10.0, 4.0, 34.0, 4.0)
+        );
+    }
 }
