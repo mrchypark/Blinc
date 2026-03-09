@@ -50,8 +50,8 @@ use blinc_platform_ios::{Gesture, GestureDetector, IOSAssetLoader, IOSWakeProxy,
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
 use crate::windowed::{
-    prepare_runtime_scheduler, RefDirtyFlag, SharedAnimationScheduler, SharedElementRegistry,
-    SharedReactiveGraph, SharedReadyCallbacks, WindowedContext,
+    prepare_runtime_scheduler, sync_platform_ime_state, RefDirtyFlag, SharedAnimationScheduler,
+    SharedElementRegistry, SharedReactiveGraph, SharedReadyCallbacks, WindowedContext,
 };
 
 /// iOS application runner
@@ -492,6 +492,7 @@ impl IOSRenderContext {
             tree.update_flip_bounds();
             tree.start_all_css_animations();
             self.render_tree = Some(tree);
+            sync_platform_ime_state();
         } else if let Some(ref mut tree) = self.render_tree {
             // Full rebuild
             tree.clear_dirty();
@@ -504,6 +505,7 @@ impl IOSRenderContext {
             tree.compute_layout(self.windowed_ctx.width, self.windowed_ctx.height);
             tree.update_flip_bounds();
             tree.start_all_css_animations();
+            sync_platform_ime_state();
         }
 
         // Tick and apply CSS animations/transitions synchronously with rendering

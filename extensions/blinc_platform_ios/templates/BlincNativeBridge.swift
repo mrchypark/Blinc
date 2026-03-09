@@ -26,8 +26,17 @@ import AVFoundation
 import CoreBluetooth
 import CoreLocation
 import CoreMotion
+import Photos
+import UserNotifications
 
 public final class BlincNativeBridge {
+    private struct PermissionCapabilityState {
+        let status: String
+        let canRequest: Bool
+        let requiresSettingsRedirect: Bool
+        let supported: Bool
+    }
+
 
     public static let shared = BlincNativeBridge()
 
@@ -35,6 +44,8 @@ public final class BlincNativeBridge {
     private var handlers: [String: [String: ([Any]) throws -> Any?]] = [:]
     private let sensorCollector = IOSSensorCollector()
     private let bleCollector = IOSBleCollector()
+    private let notificationCapabilityLock = NSLock()
+    private var cachedNotificationCapability: PermissionCapabilityState?
 
     private init() {}
 
@@ -155,7 +166,19 @@ public final class BlincNativeBridge {
 
         register(namespace: "haptics", name: "impact") { args in
             if #available(iOS 10.0, *) {
-                let style: Int = args.first as? Int ?? 1
+                let style: Int
+                if let styleString = args.first as? String {
+                    switch styleString.lowercased() {
+                    case "light":
+                        style = 0
+                    case "heavy":
+                        style = 2
+                    default:
+                        style = 1
+                    }
+                } else {
+                    style = args.first as? Int ?? 1
+                }
                 let feedbackStyle: UIImpactFeedbackGenerator.FeedbackStyle
                 switch style {
                 case 0: feedbackStyle = .light
@@ -270,58 +293,96 @@ public final class BlincNativeBridge {
         // =====================================================================
 
         register(namespace: "permissions", name: "has_location") { _ in
-            self.sensorCollector.hasLocationPermission()
+            self.permissionCapabilityPayload(self.locationPermissionCapability(always: false))
         }
         register(namespace: "permissions", name: "has_location_always") { _ in
-            self.sensorCollector.hasLocationAlwaysPermission()
+            self.permissionCapabilityPayload(self.locationPermissionCapability(always: true))
         }
         register(namespace: "permissions", name: "has_motion") { _ in
-            self.sensorCollector.hasMotionPermission()
+            self.permissionCapabilityPayload(self.motionPermissionCapability())
         }
         register(namespace: "permissions", name: "has_camera") { _ in
-            false
+            self.permissionCapabilityPayload(self.cameraPermissionCapability())
         }
         register(namespace: "permissions", name: "has_microphone") { _ in
-            self.hasMicrophonePermission()
+            self.permissionCapabilityPayload(self.microphonePermissionCapability())
         }
         register(namespace: "permissions", name: "has_photos") { _ in
-            false
+            self.permissionCapabilityPayload(self.photosPermissionCapability())
         }
         register(namespace: "permissions", name: "has_notifications") { _ in
-            false
+            self.permissionCapabilityPayload(self.notificationsPermissionCapability())
         }
         register(namespace: "permissions", name: "has_bluetooth_scan") { _ in
-            self.bleCollector.hasBluetoothPermission()
+            self.permissionCapabilityPayload(self.bluetoothPermissionCapability())
         }
         register(namespace: "permissions", name: "has_bluetooth_connect") { _ in
-            self.bleCollector.hasBluetoothPermission()
+            self.permissionCapabilityPayload(self.bluetoothPermissionCapability())
         }
         register(namespace: "permissions", name: "request_location_when_in_use") { _ in
-            self.sensorCollector.requestLocationPermissionWhenInUse()
+            let previous = self.locationPermissionCapability(always: false)
+            _ = self.sensorCollector.requestLocationPermissionWhenInUse()
+            let current = self.locationPermissionCapability(always: false)
+            return self.permissionRequestPayload(previous: previous, current: current)
         }
         register(namespace: "permissions", name: "request_location_always") { _ in
-            self.sensorCollector.requestLocationPermissionAlways()
+            let previous = self.locationPermissionCapability(always: true)
+            _ = self.sensorCollector.requestLocationPermissionAlways()
+            let current = self.locationPermissionCapability(always: true)
+            return self.permissionRequestPayload(previous: previous, current: current)
         }
         register(namespace: "permissions", name: "request_motion") { _ in
-            self.sensorCollector.requestMotionPermission()
+            let previous = self.motionPermissionCapability()
+            _ = self.sensorCollector.requestMotionPermission()
+            let current = self.motionPermissionCapability()
+            return self.permissionRequestPayload(previous: previous, current: current)
         }
         register(namespace: "permissions", name: "request_camera") { _ in
-            false
+            let previous = self.cameraPermissionCapability()
+            guard self.requestCameraPermission() != nil else {
+                return self.permissionRequestTimedOutPayload(previous: previous)
+            }
+            let current = self.cameraPermissionCapability()
+            return self.permissionRequestPayload(previous: previous, current: current)
         }
         register(namespace: "permissions", name: "request_microphone") { _ in
-            self.requestMicrophonePermission()
+            let previous = self.microphonePermissionCapability()
+            guard self.requestMicrophonePermission() != nil else {
+                return self.permissionRequestTimedOutPayload(previous: previous)
+            }
+            let current = self.microphonePermissionCapability()
+            return self.permissionRequestPayload(previous: previous, current: current)
         }
         register(namespace: "permissions", name: "request_photos") { _ in
-            false
+            let previous = self.photosPermissionCapability()
+            guard self.requestPhotosPermission() != nil else {
+                return self.permissionRequestTimedOutPayload(previous: previous)
+            }
+            let current = self.photosPermissionCapability()
+            return self.permissionRequestPayload(previous: previous, current: current)
         }
         register(namespace: "permissions", name: "request_notifications") { _ in
-            false
+            let previous = self.notificationsPermissionCapability()
+            guard self.requestNotificationsPermission() != nil else {
+                return self.permissionRequestTimedOutPayload(previous: previous)
+            }
+            let current = self.notificationsPermissionCapability()
+            return self.permissionRequestPayload(previous: previous, current: current)
         }
         register(namespace: "permissions", name: "request_bluetooth_scan") { _ in
-            self.bleCollector.requestBluetoothPermission()
+            let previous = self.bluetoothPermissionCapability()
+            _ = self.bleCollector.requestBluetoothPermission()
+            let current = self.bluetoothPermissionCapability()
+            return self.permissionRequestPayload(previous: previous, current: current)
         }
         register(namespace: "permissions", name: "request_bluetooth_connect") { _ in
-            self.bleCollector.requestBluetoothPermission()
+            let previous = self.bluetoothPermissionCapability()
+            _ = self.bleCollector.requestBluetoothPermission()
+            let current = self.bluetoothPermissionCapability()
+            return self.permissionRequestPayload(previous: previous, current: current)
+        }
+        register(namespace: "permissions", name: "open_settings") { _ in
+            self.openApplicationSettings()
         }
 
         // =====================================================================
@@ -399,22 +460,60 @@ public final class BlincNativeBridge {
         return permission == .granted
     }
 
-    private func requestMicrophonePermission() -> Bool {
+    private func hasCameraPermission() -> Bool {
+        AVCaptureDevice.authorizationStatus(for: .video) == .authorized
+    }
+
+    private func requestCameraPermission() -> Bool? {
+        if hasCameraPermission() {
+            return true
+        }
+        return waitForAsyncPermissionDecision { resolve in
+            AVCaptureDevice.requestAccess(for: .video) { allowed in
+                resolve(allowed)
+            }
+        }
+    }
+
+    private func requestMicrophonePermission() -> Bool? {
         if hasMicrophonePermission() {
             return true
         }
-        if Thread.isMainThread {
-            AVAudioSession.sharedInstance().requestRecordPermission { _ in }
-            return hasMicrophonePermission()
+        return waitForAsyncPermissionDecision { resolve in
+            AVAudioSession.sharedInstance().requestRecordPermission { allowed in
+                resolve(allowed)
+            }
         }
-        let semaphore = DispatchSemaphore(value: 0)
-        var granted = false
-        AVAudioSession.sharedInstance().requestRecordPermission { allowed in
-            granted = allowed
-            semaphore.signal()
+    }
+
+    private func requestPhotosPermission() -> Bool? {
+        let currentCapability = photosPermissionCapability()
+        if currentCapability.status == "granted" || currentCapability.status == "limited" {
+            return true
         }
-        _ = semaphore.wait(timeout: .now() + 2.0)
-        return granted
+        return waitForAsyncPermissionDecision { resolve in
+            if #available(iOS 14.0, *) {
+                PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+                    resolve(status == .authorized || status == .limited)
+                }
+            } else {
+                PHPhotoLibrary.requestAuthorization { status in
+                    resolve(status == .authorized)
+                }
+            }
+        }
+    }
+
+    private func requestNotificationsPermission() -> Bool? {
+        let capability = notificationsPermissionCapability()
+        if capability.status == "granted" || capability.status == "provisional" {
+            return true
+        }
+        return waitForAsyncPermissionDecision { resolve in
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { allowed, _ in
+                resolve(allowed)
+            }
+        }
     }
 
     // MARK: - Helper Functions
@@ -447,6 +546,10 @@ public final class BlincNativeBridge {
             result["value"] = string
         case let data as Data:
             result["value"] = data.base64EncodedString()
+        case let dictionary as [String: Any]:
+            result["value"] = dictionary
+        case let array as [Any]:
+            result["value"] = array
         default:
             result["value"] = String(describing: value)
         }
@@ -470,6 +573,298 @@ public final class BlincNativeBridge {
             return json
         }
         return "{\"success\":false,\"errorType\":\"\(type)\",\"errorMessage\":\"\(message)\"}"
+    }
+
+    private func openApplicationSettings() -> Bool {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else {
+            return false
+        }
+        if Thread.isMainThread {
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            return true
+        }
+        DispatchQueue.main.async {
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+        }
+        return true
+    }
+
+    private func permissionCapabilityPayload(_ capability: PermissionCapabilityState) -> [String: Any] {
+        [
+            "status": capability.status,
+            "canRequest": capability.canRequest,
+            "requiresSettingsRedirect": capability.requiresSettingsRedirect,
+            "supported": capability.supported,
+        ]
+    }
+
+    private func permissionRequestPayload(
+        previous: PermissionCapabilityState,
+        current: PermissionCapabilityState
+    ) -> [String: Any] {
+        let effectiveCurrent: PermissionCapabilityState
+        if current.status == previous.status && previous.canRequest {
+            effectiveCurrent = previous
+        } else {
+            effectiveCurrent = current
+        }
+        return [
+            "status": effectiveCurrent.status,
+            "previousStatus": previous.status,
+            "canRequestAgain": effectiveCurrent.canRequest,
+            "requiresSettingsRedirect": effectiveCurrent.requiresSettingsRedirect,
+        ]
+    }
+
+    private func permissionRequestTimedOutPayload(previous: PermissionCapabilityState) -> [String: Any] {
+        return [
+            "status": "pending",
+            "previousStatus": previous.status,
+            "canRequestAgain": previous.canRequest,
+            "requiresSettingsRedirect": false,
+            "deferred": true,
+        ]
+    }
+
+    private func waitForAsyncPermissionDecision(
+        timeout: TimeInterval = 30.0,
+        work: @escaping (@escaping (Bool) -> Void) -> Void
+    ) -> Bool? {
+        let lock = NSLock()
+        var result: Bool?
+        let semaphore = DispatchSemaphore(value: 0)
+
+        let resolve: (Bool) -> Void = { value in
+            lock.lock()
+            result = value
+            lock.unlock()
+            semaphore.signal()
+        }
+
+        if Thread.isMainThread {
+            work(resolve)
+            lock.lock()
+            let current = result
+            lock.unlock()
+            return current
+        } else {
+            DispatchQueue.main.async {
+                work(resolve)
+            }
+            _ = semaphore.wait(timeout: .now() + timeout)
+            lock.lock()
+            let current = result
+            lock.unlock()
+            if let current {
+                return current
+            }
+        }
+
+        return nil
+    }
+
+    private func waitForNotificationPermissionCapability(timeout: TimeInterval = 2.0) -> PermissionCapabilityState {
+        if Thread.isMainThread {
+            if let cached = currentCachedNotificationCapability() {
+                return cached
+            }
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                self.storeNotificationCapability(
+                    self.notificationPermissionCapability(settings.authorizationStatus)
+                )
+            }
+            return pendingNotificationCapability()
+        }
+
+        let lock = NSLock()
+        var capability: PermissionCapabilityState?
+        let semaphore = DispatchSemaphore(value: 0)
+
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            let resolved = self.notificationPermissionCapability(settings.authorizationStatus)
+            self.storeNotificationCapability(resolved)
+            lock.lock()
+            capability = resolved
+            lock.unlock()
+            semaphore.signal()
+        }
+
+        _ = semaphore.wait(timeout: .now() + timeout)
+        lock.lock()
+        let current = capability
+        lock.unlock()
+        if let current {
+            return current
+        }
+
+        return unknownNotificationCapability()
+    }
+
+    private func currentCachedNotificationCapability() -> PermissionCapabilityState? {
+        notificationCapabilityLock.lock()
+        defer { notificationCapabilityLock.unlock() }
+        return cachedNotificationCapability
+    }
+
+    private func storeNotificationCapability(_ capability: PermissionCapabilityState) {
+        notificationCapabilityLock.lock()
+        cachedNotificationCapability = capability
+        notificationCapabilityLock.unlock()
+    }
+
+    private func unknownNotificationCapability() -> PermissionCapabilityState {
+        PermissionCapabilityState(
+            status: "unknown",
+            canRequest: false,
+            requiresSettingsRedirect: false,
+            supported: true
+        )
+    }
+
+    private func pendingNotificationCapability() -> PermissionCapabilityState {
+        PermissionCapabilityState(
+            status: "pending",
+            canRequest: false,
+            requiresSettingsRedirect: false,
+            supported: true
+        )
+    }
+
+    private func locationPermissionCapability(always: Bool) -> PermissionCapabilityState {
+        switch self.sensorCollector.locationAuthorizationStatusValue() {
+        case .authorizedAlways:
+            return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        case .authorizedWhenInUse:
+            if always {
+                return PermissionCapabilityState(status: "denied", canRequest: true, requiresSettingsRedirect: false, supported: true)
+            }
+            return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        case .denied:
+            return PermissionCapabilityState(status: "denied", canRequest: false, requiresSettingsRedirect: true, supported: true)
+        case .restricted:
+            return PermissionCapabilityState(status: "restricted", canRequest: false, requiresSettingsRedirect: true, supported: true)
+        case .notDetermined:
+            return PermissionCapabilityState(status: "not_determined", canRequest: true, requiresSettingsRedirect: false, supported: true)
+        @unknown default:
+            return PermissionCapabilityState(status: "unknown", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        }
+    }
+
+    private func motionPermissionCapability() -> PermissionCapabilityState {
+        if #available(iOS 11.0, *) {
+            let activity = CMMotionActivityManager.authorizationStatus()
+            let pedometer = CMPedometer.authorizationStatus()
+            if activity == .authorized || pedometer == .authorized {
+                return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
+            }
+            if activity == .restricted || pedometer == .restricted {
+                return PermissionCapabilityState(status: "restricted", canRequest: false, requiresSettingsRedirect: true, supported: true)
+            }
+            if activity == .denied || pedometer == .denied {
+                return PermissionCapabilityState(status: "denied", canRequest: false, requiresSettingsRedirect: true, supported: true)
+            }
+            return PermissionCapabilityState(status: "not_determined", canRequest: true, requiresSettingsRedirect: false, supported: true)
+        }
+        return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
+    }
+
+    private func microphonePermissionCapability() -> PermissionCapabilityState {
+        switch AVAudioSession.sharedInstance().recordPermission {
+        case .granted:
+            return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        case .denied:
+            return PermissionCapabilityState(status: "denied", canRequest: false, requiresSettingsRedirect: true, supported: true)
+        case .undetermined:
+            return PermissionCapabilityState(status: "not_determined", canRequest: true, requiresSettingsRedirect: false, supported: true)
+        @unknown default:
+            return PermissionCapabilityState(status: "unknown", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        }
+    }
+
+    private func cameraPermissionCapability() -> PermissionCapabilityState {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        case .denied:
+            return PermissionCapabilityState(status: "denied", canRequest: false, requiresSettingsRedirect: true, supported: true)
+        case .restricted:
+            return PermissionCapabilityState(status: "restricted", canRequest: false, requiresSettingsRedirect: true, supported: true)
+        case .notDetermined:
+            return PermissionCapabilityState(status: "not_determined", canRequest: true, requiresSettingsRedirect: false, supported: true)
+        @unknown default:
+            return PermissionCapabilityState(status: "unknown", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        }
+    }
+
+    private func photosPermissionCapability() -> PermissionCapabilityState {
+        if #available(iOS 14.0, *) {
+            switch PHPhotoLibrary.authorizationStatus(for: .readWrite) {
+            case .authorized:
+                return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
+            case .limited:
+                return PermissionCapabilityState(status: "limited", canRequest: false, requiresSettingsRedirect: false, supported: true)
+            case .denied:
+                return PermissionCapabilityState(status: "denied", canRequest: false, requiresSettingsRedirect: true, supported: true)
+            case .restricted:
+                return PermissionCapabilityState(status: "restricted", canRequest: false, requiresSettingsRedirect: true, supported: true)
+            case .notDetermined:
+                return PermissionCapabilityState(status: "not_determined", canRequest: true, requiresSettingsRedirect: false, supported: true)
+            @unknown default:
+                return PermissionCapabilityState(status: "unknown", canRequest: false, requiresSettingsRedirect: false, supported: true)
+            }
+        }
+
+        switch PHPhotoLibrary.authorizationStatus() {
+        case .authorized:
+            return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        case .denied:
+            return PermissionCapabilityState(status: "denied", canRequest: false, requiresSettingsRedirect: true, supported: true)
+        case .restricted:
+            return PermissionCapabilityState(status: "restricted", canRequest: false, requiresSettingsRedirect: true, supported: true)
+        case .notDetermined:
+            return PermissionCapabilityState(status: "not_determined", canRequest: true, requiresSettingsRedirect: false, supported: true)
+        case .limited:
+            return PermissionCapabilityState(status: "limited", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        @unknown default:
+            return PermissionCapabilityState(status: "unknown", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        }
+    }
+
+    private func notificationsPermissionCapability() -> PermissionCapabilityState {
+        waitForNotificationPermissionCapability()
+    }
+
+    private func notificationPermissionCapability(_ status: UNAuthorizationStatus) -> PermissionCapabilityState {
+        switch status {
+        case .authorized:
+            return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        case .provisional, .ephemeral:
+            return PermissionCapabilityState(status: "provisional", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        case .denied:
+            return PermissionCapabilityState(status: "denied", canRequest: false, requiresSettingsRedirect: true, supported: true)
+        case .notDetermined:
+            return PermissionCapabilityState(status: "not_determined", canRequest: true, requiresSettingsRedirect: false, supported: true)
+        @unknown default:
+            return PermissionCapabilityState(status: "unknown", canRequest: false, requiresSettingsRedirect: false, supported: true)
+        }
+    }
+
+    private func bluetoothPermissionCapability() -> PermissionCapabilityState {
+        if #available(iOS 13.0, *) {
+            switch CBManager.authorization {
+            case .allowedAlways:
+                return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
+            case .denied:
+                return PermissionCapabilityState(status: "denied", canRequest: false, requiresSettingsRedirect: true, supported: true)
+            case .restricted:
+                return PermissionCapabilityState(status: "restricted", canRequest: false, requiresSettingsRedirect: true, supported: true)
+            case .notDetermined:
+                return PermissionCapabilityState(status: "not_determined", canRequest: true, requiresSettingsRedirect: false, supported: true)
+            @unknown default:
+                return PermissionCapabilityState(status: "unknown", canRequest: false, requiresSettingsRedirect: false, supported: true)
+            }
+        }
+        return PermissionCapabilityState(status: "granted", canRequest: false, requiresSettingsRedirect: false, supported: true)
     }
 }
 
@@ -668,12 +1063,12 @@ private final class IOSSensorCollector: NSObject, CLLocationManagerDelegate {
     }
 
     func hasLocationPermission() -> Bool {
-        let status = locationAuthorizationStatus()
+        let status = locationAuthorizationStatusValue()
         return status == .authorizedAlways || status == .authorizedWhenInUse
     }
 
     func hasLocationAlwaysPermission() -> Bool {
-        return locationAuthorizationStatus() == .authorizedAlways
+        return locationAuthorizationStatusValue() == .authorizedAlways
     }
 
     func hasMotionPermission() -> Bool {
@@ -1112,7 +1507,7 @@ private final class IOSSensorCollector: NSObject, CLLocationManagerDelegate {
         return max(parsed, minValue)
     }
 
-    private func locationAuthorizationStatus() -> CLAuthorizationStatus {
+    func locationAuthorizationStatusValue() -> CLAuthorizationStatus {
         if #available(iOS 14.0, *) {
             return locationManager.authorizationStatus
         }

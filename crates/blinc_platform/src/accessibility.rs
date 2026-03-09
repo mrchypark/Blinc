@@ -1,5 +1,7 @@
 //! Shared accessibility semantics contracts.
 
+use std::sync::{Mutex, OnceLock};
+
 /// Stable identifier for a semantic node.
 pub type AccessibilityNodeId = u64;
 
@@ -157,5 +159,71 @@ impl AccessibilityActionRequest {
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = Some(value.into());
         self
+    }
+}
+
+/// Last known accessibility sync status for the active runtime.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum AccessibilitySyncStatus {
+    #[default]
+    NotSynced,
+    Synced,
+    SnapshotOnly(String),
+    Unsupported(String),
+}
+
+fn runtime_snapshot_store() -> &'static Mutex<Option<AccessibilityTreeSnapshot>> {
+    static STORE: OnceLock<Mutex<Option<AccessibilityTreeSnapshot>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(None))
+}
+
+fn runtime_status_store() -> &'static Mutex<AccessibilitySyncStatus> {
+    static STORE: OnceLock<Mutex<AccessibilitySyncStatus>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(AccessibilitySyncStatus::NotSynced))
+}
+
+pub fn update_platform_accessibility_snapshot(snapshot: AccessibilityTreeSnapshot) {
+    if let Ok(mut current) = runtime_snapshot_store().lock() {
+        *current = Some(snapshot);
+    }
+    if let Ok(mut status) = runtime_status_store().lock() {
+        *status = AccessibilitySyncStatus::Synced;
+    }
+}
+
+pub fn mark_accessibility_unsupported(reason: impl Into<String>) {
+    let reason = reason.into();
+    if let Ok(mut status) = runtime_status_store().lock() {
+        *status = match &*status {
+            AccessibilitySyncStatus::Synced | AccessibilitySyncStatus::SnapshotOnly(_) => {
+                AccessibilitySyncStatus::SnapshotOnly(reason)
+            }
+            AccessibilitySyncStatus::NotSynced | AccessibilitySyncStatus::Unsupported(_) => {
+                AccessibilitySyncStatus::Unsupported(reason)
+            }
+        };
+    }
+}
+
+pub fn current_platform_accessibility_snapshot() -> Option<AccessibilityTreeSnapshot> {
+    runtime_snapshot_store()
+        .lock()
+        .map(|snapshot| snapshot.clone())
+        .unwrap_or(None)
+}
+
+pub fn current_accessibility_sync_status() -> AccessibilitySyncStatus {
+    runtime_status_store()
+        .lock()
+        .map(|status| status.clone())
+        .unwrap_or(AccessibilitySyncStatus::NotSynced)
+}
+
+pub fn reset_accessibility_runtime_state() {
+    if let Ok(mut snapshot) = runtime_snapshot_store().lock() {
+        *snapshot = None;
+    }
+    if let Ok(mut status) = runtime_status_store().lock() {
+        *status = AccessibilitySyncStatus::NotSynced;
     }
 }

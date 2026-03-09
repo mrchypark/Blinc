@@ -1,21 +1,27 @@
 //! Fuchsia Hello World Example
 //!
-//! A simple Blinc application for Fuchsia OS demonstrating
-//! basic UI rendering with touch interactions.
+//! A deferred example for the planned Fuchsia target.
+//!
+//! The code is kept as a reference scaffold. The in-tree Fuchsia runtime is
+//! currently unsupported and `FuchsiaApp::run` returns an explicit error.
 //!
 //! # Building
+//!
+//! This example is documentation-only while the in-tree Fuchsia runtime remains
+//! unsupported.
 //!
 //! ```bash
 //! # Add Fuchsia target
 //! rustup target add x86_64-unknown-fuchsia
 //!
-//! # Build for Fuchsia
+//! # Optional: compile the example artifact for external experiments
 //! cargo build --example fuchsia_hello --target x86_64-unknown-fuchsia --features fuchsia
 //! ```
 //!
-//! # Running in Fuchsia Emulator
+//! # Runtime status
 //!
-//! See docs/fuchsia/SETUP.md for emulator setup instructions.
+//! Running this example through `FuchsiaApp::run` is not supported by the
+//! current in-tree runtime.
 
 #[cfg(target_os = "fuchsia")]
 use blinc_app::fuchsia::FuchsiaApp;
@@ -104,7 +110,7 @@ fn main() {
                     .color([0.5, 0.5, 0.6, 1.0]),
             )
     })
-    .expect("Failed to run Fuchsia app");
+    .expect("Fuchsia runtime is currently unsupported in-tree");
 }
 
 #[cfg(not(target_os = "fuchsia"))]

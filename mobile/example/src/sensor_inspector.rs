@@ -2,6 +2,7 @@ use blinc_app::prelude::*;
 use blinc_app::windowed::WindowedContext;
 use blinc_core::native_bridge::native_call;
 use blinc_core::reactive::State;
+use blinc_platform::permissions::{self, PermissionCapability, PermissionKind, PermissionStatus};
 use blinc_platform::sensors::native_bridge::NativeBridgeBackend;
 use blinc_platform::sensors::{SensorClient, SensorConfig, SensorFrame, SensorKind};
 use std::collections::BTreeMap;
@@ -30,7 +31,7 @@ impl Default for SensorPanelData {
     fn default() -> Self {
         Self {
             status_line: "running=false  session=-  buffered=0".to_string(),
-            permission_line: "permission: location=false  motion=false".to_string(),
+            permission_line: "permission: location=unknown  motion=unknown".to_string(),
             supported_line: "supported: []".to_string(),
             kinds_line: "kinds: []".to_string(),
             sample_line: "sample: turn ON to stream frames".to_string(),
@@ -76,15 +77,44 @@ fn sensor_config() -> SensorConfig {
     }
 }
 
-fn sensor_permission_state() -> (bool, bool) {
-    let has_location = native_call::<bool, _>("permissions", "has_location", ()).unwrap_or(false);
-    let has_motion = native_call::<bool, _>("permissions", "has_motion", ()).unwrap_or(false);
-    (has_location, has_motion)
+fn permission_status_label(capability: &PermissionCapability) -> &'static str {
+    match capability.status {
+        PermissionStatus::Granted => "granted",
+        PermissionStatus::Denied => "denied",
+        PermissionStatus::PermanentlyDenied => "permanently_denied",
+        PermissionStatus::Restricted => "restricted",
+        PermissionStatus::Limited => "limited",
+        PermissionStatus::NotDetermined => "not_determined",
+        PermissionStatus::Provisional => "provisional",
+        PermissionStatus::Pending => "pending",
+        PermissionStatus::Unknown => "unknown",
+    }
+}
+
+fn sensor_permission_state() -> (PermissionCapability, PermissionCapability) {
+    let fallback = PermissionCapability {
+        status: PermissionStatus::Unknown,
+        can_request: false,
+        requires_settings_redirect: false,
+        supported: false,
+    };
+    let location = permissions::capability(PermissionKind::LocationWhenInUse).unwrap_or_else(|_| fallback.clone());
+    let motion = permissions::capability(PermissionKind::Motion).unwrap_or(fallback);
+    (location, motion)
 }
 
 fn prepare_sensor_streaming(client: &SensorClient<NativeBridgeBackend>) -> std::result::Result<(), String> {
-    let _ = native_call::<bool, _>("permissions", "request_location_when_in_use", ());
-    let _ = native_call::<bool, _>("permissions", "request_motion", ());
+    let location = permissions::request(PermissionKind::LocationWhenInUse)
+        .map_err(|err| format!("location permission request failed: {}", err))?;
+    let motion = permissions::request(PermissionKind::Motion)
+        .map_err(|err| format!("motion permission request failed: {}", err))?;
+
+    if location.requires_settings_redirect || motion.requires_settings_redirect {
+        let _ = permissions::open_settings();
+        return Err(
+            "permission requires Settings access; opened app settings".to_string(),
+        );
+    }
 
     client
         .configure(&sensor_config())
@@ -144,10 +174,11 @@ fn summarize_frames(frames: &[SensorFrame]) -> (BTreeMap<SensorKind, usize>, BTr
 fn fetch_sensor_panel_data(client: &SensorClient<NativeBridgeBackend>) -> SensorPanelData {
     let mut data = SensorPanelData::default();
 
-    let (has_location, has_motion) = sensor_permission_state();
+    let (location, motion) = sensor_permission_state();
     data.permission_line = format!(
         "permission: location={}  motion={}",
-        has_location, has_motion
+        permission_status_label(&location),
+        permission_status_label(&motion)
     );
 
     let status = match client.status() {
@@ -329,14 +360,15 @@ fn sensor_toggle_button(
                 return;
             }
 
-            let (has_location, has_motion) = sensor_permission_state();
-            if !(has_location && has_motion) {
+            let (location, motion) = sensor_permission_state();
+            if !(location.status == PermissionStatus::Granted && motion.status == PermissionStatus::Granted) {
                 live_enabled.set(true);
                 pending_start.set(true);
                 let mut data = fetch_sensor_panel_data(&client);
                 data.note_line = format!(
                     "waiting permissions: location={} motion={} (grant prompt, then auto-start)",
-                    has_location, has_motion
+                    permission_status_label(&location),
+                    permission_status_label(&motion)
                 );
                 snapshot.set(data);
                 return;
@@ -396,8 +428,8 @@ pub fn sensor_section(ctx: &WindowedContext, section_card: fn(&str) -> Div) -> D
                         return;
                     }
 
-                    let (has_location, has_motion) = sensor_permission_state();
-                    if has_location && has_motion {
+                    let (location, motion) = sensor_permission_state();
+                    if location.status == PermissionStatus::Granted && motion.status == PermissionStatus::Granted {
                         match start_sensor_streaming(&client) {
                             Ok(()) => {
                                 pending_start.set(false);
@@ -419,7 +451,8 @@ pub fn sensor_section(ctx: &WindowedContext, section_card: fn(&str) -> Div) -> D
                     let mut data = fetch_sensor_panel_data(&client);
                     data.note_line = format!(
                         "waiting permissions: location={} motion={} (grant prompt, then auto-start)",
-                        has_location, has_motion
+                        permission_status_label(&location),
+                        permission_status_label(&motion)
                     );
                     snapshot.set(data);
                     return;

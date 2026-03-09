@@ -494,9 +494,10 @@ mod tests {
         let requested = ImeState {
             enabled: true,
             cursor_area: Some(ImeCursorArea::new(12.0, 24.0, 80.0, 30.0)),
+            request: None,
         };
 
-        sync_ime_window_state(&window, &mut applied, requested);
+        sync_ime_window_state(&window, &mut applied, requested.clone());
 
         assert_eq!(*window.allowed.lock().expect("allowed lock"), vec![true]);
         assert_eq!(
@@ -512,6 +513,7 @@ mod tests {
         let mut applied = ImeState {
             enabled: true,
             cursor_area: Some(ImeCursorArea::new(12.0, 24.0, 80.0, 30.0)),
+            request: None,
         };
 
         sync_ime_window_state(
@@ -520,6 +522,7 @@ mod tests {
             ImeState {
                 enabled: true,
                 cursor_area: None,
+                request: None,
             },
         );
 
@@ -536,6 +539,7 @@ mod tests {
             ImeState {
                 enabled: true,
                 cursor_area: None,
+                request: None,
             }
         );
     }
@@ -546,6 +550,7 @@ mod tests {
         let mut applied = ImeState {
             enabled: true,
             cursor_area: Some(ImeCursorArea::new(12.0, 24.0, 80.0, 30.0)),
+            request: None,
         };
 
         sync_ime_window_state(
@@ -554,6 +559,7 @@ mod tests {
             ImeState {
                 enabled: false,
                 cursor_area: None,
+                request: None,
             },
         );
         sync_ime_window_state(
@@ -562,6 +568,7 @@ mod tests {
             ImeState {
                 enabled: true,
                 cursor_area: None,
+                request: None,
             },
         );
 
@@ -578,6 +585,7 @@ mod tests {
             ImeState {
                 enabled: true,
                 cursor_area: None,
+                request: None,
             }
         );
     }

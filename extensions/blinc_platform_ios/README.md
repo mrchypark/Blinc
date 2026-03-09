@@ -7,6 +7,9 @@
 
 iOS platform implementation for Blinc UI.
 
+For the repo-wide native support contract, see
+[`docs/native-readiness.md`](../../docs/native-readiness.md).
+
 ## Overview
 
 `blinc_platform_ios` provides UIKit integration, Metal rendering, and touch input handling for iOS and iPadOS applications.
@@ -16,13 +19,23 @@ iOS platform implementation for Blinc UI.
 - iOS 14.0+
 - iPadOS 14.0+
 
+## Current Support Tier
+
+- Tier 1: partial
+- Tier 2: partial
+- Tier 3: deferred
+
+This crate currently exposes UIKit integration, rendering hooks, touch handling,
+and environment snapshot helpers. It does not yet guarantee full mobile IME,
+accessibility parity, or complete production packaging flows.
+
 ## Features
 
 - **UIKit Integration**: Native iOS view hierarchy
 - **Metal Rendering**: Hardware-accelerated graphics
 - **Touch Input**: Full multi-touch support
-- **iOS Lifecycle**: Proper app state handling
-- **Safe Area**: Automatic safe area inset handling
+- **iOS Lifecycle**: Partial runtime lifecycle wiring
+- **Safe Area**: Environment snapshot helpers for current window metrics/insets
 
 ## Quick Start
 
@@ -31,15 +44,13 @@ use blinc_platform_ios::ios_main;
 
 #[no_mangle]
 pub extern "C" fn main() {
-    ios_main(|ctx| {
-        // Build your UI
-        div()
-            .w_full()
-            .h_full()
-            .child(text("Hello iOS!"))
-    });
+    // Initializes the Rust side of the iOS platform integration.
+    ios_main();
 }
 ```
+
+Today, UI construction and lifecycle wiring are still coordinated from the host
+UIKit/Xcode application rather than a closure-based Rust entrypoint.
 
 ## Project Setup
 
@@ -94,42 +105,23 @@ fn handle_touch(event: TouchEvent) {
 }
 ```
 
-## Safe Area
+## Safe Area Snapshot
 
 ```rust
-// Get safe area insets
-let insets = ctx.safe_area_insets();
+use blinc_platform_ios::get_safe_area_insets;
 
-// Build UI respecting safe area
-div()
-    .pt(insets.top)
-    .pb(insets.bottom)
-    .pl(insets.left)
-    .pr(insets.right)
-    .child(/* content */)
+let insets = get_safe_area_insets();
+
+// Returns (top, left, bottom, right)
+let (top, left, bottom, right) = insets;
 ```
 
-## Lifecycle
+## Lifecycle Hooks
 
 ```rust
-ios_main(|ctx| {
-    // App became active
-    ctx.on_did_become_active(|| {
-        // Resume animations, etc.
-    });
-
-    // App will resign active
-    ctx.on_will_resign_active(|| {
-        // Pause animations, save state
-    });
-
-    // App entered background
-    ctx.on_did_enter_background(|| {
-        // Save data
-    });
-
-    build_ui()
-});
+// Lifecycle callbacks are currently managed by the host UIKit application.
+// Use ios_main() for Rust-side initialization, then forward lifecycle events
+// from AppDelegate / SceneDelegate into your app-specific integration layer.
 ```
 
 ## Building
