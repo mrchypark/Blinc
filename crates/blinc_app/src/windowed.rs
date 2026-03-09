@@ -98,6 +98,68 @@ fn sync_platform_ime_state() {
     });
 }
 
+fn keyboard_text_chars(event: &blinc_platform::KeyboardEvent) -> Vec<char> {
+    if let Some(text) = event.text.as_deref() {
+        return text.chars().filter(|ch| !ch.is_control()).collect();
+    }
+
+    let mods = &event.modifiers;
+    let fallback = match &event.key {
+        Key::Char(c) => Some(*c),
+        Key::Space => Some(' '),
+        Key::A => Some(if mods.shift { 'A' } else { 'a' }),
+        Key::B => Some(if mods.shift { 'B' } else { 'b' }),
+        Key::C => Some(if mods.shift { 'C' } else { 'c' }),
+        Key::D => Some(if mods.shift { 'D' } else { 'd' }),
+        Key::E => Some(if mods.shift { 'E' } else { 'e' }),
+        Key::F => Some(if mods.shift { 'F' } else { 'f' }),
+        Key::G => Some(if mods.shift { 'G' } else { 'g' }),
+        Key::H => Some(if mods.shift { 'H' } else { 'h' }),
+        Key::I => Some(if mods.shift { 'I' } else { 'i' }),
+        Key::J => Some(if mods.shift { 'J' } else { 'j' }),
+        Key::K => Some(if mods.shift { 'K' } else { 'k' }),
+        Key::L => Some(if mods.shift { 'L' } else { 'l' }),
+        Key::M => Some(if mods.shift { 'M' } else { 'm' }),
+        Key::N => Some(if mods.shift { 'N' } else { 'n' }),
+        Key::O => Some(if mods.shift { 'O' } else { 'o' }),
+        Key::P => Some(if mods.shift { 'P' } else { 'p' }),
+        Key::Q => Some(if mods.shift { 'Q' } else { 'q' }),
+        Key::R => Some(if mods.shift { 'R' } else { 'r' }),
+        Key::S => Some(if mods.shift { 'S' } else { 's' }),
+        Key::T => Some(if mods.shift { 'T' } else { 't' }),
+        Key::U => Some(if mods.shift { 'U' } else { 'u' }),
+        Key::V => Some(if mods.shift { 'V' } else { 'v' }),
+        Key::W => Some(if mods.shift { 'W' } else { 'w' }),
+        Key::X => Some(if mods.shift { 'X' } else { 'x' }),
+        Key::Y => Some(if mods.shift { 'Y' } else { 'y' }),
+        Key::Z => Some(if mods.shift { 'Z' } else { 'z' }),
+        Key::Num0 => Some(if mods.shift { ')' } else { '0' }),
+        Key::Num1 => Some(if mods.shift { '!' } else { '1' }),
+        Key::Num2 => Some(if mods.shift { '@' } else { '2' }),
+        Key::Num3 => Some(if mods.shift { '#' } else { '3' }),
+        Key::Num4 => Some(if mods.shift { '$' } else { '4' }),
+        Key::Num5 => Some(if mods.shift { '%' } else { '5' }),
+        Key::Num6 => Some(if mods.shift { '^' } else { '6' }),
+        Key::Num7 => Some(if mods.shift { '&' } else { '7' }),
+        Key::Num8 => Some(if mods.shift { '*' } else { '8' }),
+        Key::Num9 => Some(if mods.shift { '(' } else { '9' }),
+        Key::Minus => Some(if mods.shift { '_' } else { '-' }),
+        Key::Equals => Some(if mods.shift { '+' } else { '=' }),
+        Key::LeftBracket => Some(if mods.shift { '{' } else { '[' }),
+        Key::RightBracket => Some(if mods.shift { '}' } else { ']' }),
+        Key::Backslash => Some(if mods.shift { '|' } else { '\\' }),
+        Key::Semicolon => Some(if mods.shift { ':' } else { ';' }),
+        Key::Quote => Some(if mods.shift { '"' } else { '\'' }),
+        Key::Comma => Some(if mods.shift { '<' } else { ',' }),
+        Key::Period => Some(if mods.shift { '>' } else { '.' }),
+        Key::Slash => Some(if mods.shift { '?' } else { '/' }),
+        Key::Grave => Some(if mods.shift { '~' } else { '`' }),
+        _ => None,
+    };
+
+    fallback.into_iter().collect()
+}
+
 #[cfg(any(
     target_os = "macos",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -3100,60 +3162,7 @@ impl WindowedApp {
                                 },
                                 InputEvent::Keyboard(kb_event) => {
                                     let mods = &kb_event.modifiers;
-
-                                    // Extract character from key if applicable
-                                    let key_char = match &kb_event.key {
-                                        Key::Char(c) => Some(*c),
-                                        Key::Space => Some(' '),
-                                        Key::A => Some(if mods.shift { 'A' } else { 'a' }),
-                                        Key::B => Some(if mods.shift { 'B' } else { 'b' }),
-                                        Key::C => Some(if mods.shift { 'C' } else { 'c' }),
-                                        Key::D => Some(if mods.shift { 'D' } else { 'd' }),
-                                        Key::E => Some(if mods.shift { 'E' } else { 'e' }),
-                                        Key::F => Some(if mods.shift { 'F' } else { 'f' }),
-                                        Key::G => Some(if mods.shift { 'G' } else { 'g' }),
-                                        Key::H => Some(if mods.shift { 'H' } else { 'h' }),
-                                        Key::I => Some(if mods.shift { 'I' } else { 'i' }),
-                                        Key::J => Some(if mods.shift { 'J' } else { 'j' }),
-                                        Key::K => Some(if mods.shift { 'K' } else { 'k' }),
-                                        Key::L => Some(if mods.shift { 'L' } else { 'l' }),
-                                        Key::M => Some(if mods.shift { 'M' } else { 'm' }),
-                                        Key::N => Some(if mods.shift { 'N' } else { 'n' }),
-                                        Key::O => Some(if mods.shift { 'O' } else { 'o' }),
-                                        Key::P => Some(if mods.shift { 'P' } else { 'p' }),
-                                        Key::Q => Some(if mods.shift { 'Q' } else { 'q' }),
-                                        Key::R => Some(if mods.shift { 'R' } else { 'r' }),
-                                        Key::S => Some(if mods.shift { 'S' } else { 's' }),
-                                        Key::T => Some(if mods.shift { 'T' } else { 't' }),
-                                        Key::U => Some(if mods.shift { 'U' } else { 'u' }),
-                                        Key::V => Some(if mods.shift { 'V' } else { 'v' }),
-                                        Key::W => Some(if mods.shift { 'W' } else { 'w' }),
-                                        Key::X => Some(if mods.shift { 'X' } else { 'x' }),
-                                        Key::Y => Some(if mods.shift { 'Y' } else { 'y' }),
-                                        Key::Z => Some(if mods.shift { 'Z' } else { 'z' }),
-                                        Key::Num0 => Some(if mods.shift { ')' } else { '0' }),
-                                        Key::Num1 => Some(if mods.shift { '!' } else { '1' }),
-                                        Key::Num2 => Some(if mods.shift { '@' } else { '2' }),
-                                        Key::Num3 => Some(if mods.shift { '#' } else { '3' }),
-                                        Key::Num4 => Some(if mods.shift { '$' } else { '4' }),
-                                        Key::Num5 => Some(if mods.shift { '%' } else { '5' }),
-                                        Key::Num6 => Some(if mods.shift { '^' } else { '6' }),
-                                        Key::Num7 => Some(if mods.shift { '&' } else { '7' }),
-                                        Key::Num8 => Some(if mods.shift { '*' } else { '8' }),
-                                        Key::Num9 => Some(if mods.shift { '(' } else { '9' }),
-                                        Key::Minus => Some(if mods.shift { '_' } else { '-' }),
-                                        Key::Equals => Some(if mods.shift { '+' } else { '=' }),
-                                        Key::LeftBracket => Some(if mods.shift { '{' } else { '[' }),
-                                        Key::RightBracket => Some(if mods.shift { '}' } else { ']' }),
-                                        Key::Backslash => Some(if mods.shift { '|' } else { '\\' }),
-                                        Key::Semicolon => Some(if mods.shift { ':' } else { ';' }),
-                                        Key::Quote => Some(if mods.shift { '"' } else { '\'' }),
-                                        Key::Comma => Some(if mods.shift { '<' } else { ',' }),
-                                        Key::Period => Some(if mods.shift { '>' } else { '.' }),
-                                        Key::Slash => Some(if mods.shift { '?' } else { '/' }),
-                                        Key::Grave => Some(if mods.shift { '~' } else { '`' }),
-                                        _ => None,
-                                    };
+                                    let text_chars = keyboard_text_chars(&kb_event);
 
                                     // Key code for special key handling (backspace, arrows, etc)
                                     let key_code = match &kb_event.key {
@@ -3193,9 +3202,8 @@ impl WindowedApp {
 
                                             // For character-producing keys, dispatch TEXT_INPUT
                                             // We use broadcast dispatch so any focused text input can receive it
-                                            if let Some(c) = key_char {
-                                                // Don't send text input if ctrl/cmd is held (shortcuts)
-                                                if !mods.ctrl && !mods.meta {
+                                            if !mods.ctrl && !mods.meta {
+                                                for c in text_chars {
                                                     keyboard_events.push(PendingEvent {
                                                         event_type: blinc_core::events::event_types::TEXT_INPUT,
                                                         key_char: Some(c),
@@ -4552,6 +4560,7 @@ where
 mod tests {
     use super::*;
     use blinc_core::BlincContextState;
+    use blinc_platform::{Key, KeyState, KeyboardEvent, Modifiers};
     use blinc_recorder::{
         install_recorder, uninstall_recorder, RecordingConfig, SharedRecordingSession,
     };
@@ -4643,5 +4652,29 @@ mod tests {
         assert!(export.snapshots[0].elements.contains_key("status"));
 
         uninstall_recorder();
+    }
+
+    #[test]
+    fn keyboard_text_chars_prefers_committed_text() {
+        let event = KeyboardEvent {
+            key: Key::Unknown,
+            text: Some("초".to_string()),
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        assert_eq!(keyboard_text_chars(&event), vec!['초']);
+    }
+
+    #[test]
+    fn keyboard_text_chars_filters_control_characters() {
+        let event = KeyboardEvent {
+            key: Key::Enter,
+            text: Some("\r".to_string()),
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        assert!(keyboard_text_chars(&event).is_empty());
     }
 }

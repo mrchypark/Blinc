@@ -300,8 +300,7 @@ where
             }
 
             WinitWindowEvent::KeyboardInput { event, .. } => {
-                let input_event =
-                    input::convert_keyboard_event(&event.logical_key, event.state, self.modifiers);
+                let input_event = input::convert_key_event(&event, self.modifiers);
                 self.handle_event(Event::Input(input_event));
                 // Request immediate redraw so text input changes render instantly
                 if let Some(ref window) = self.window {
