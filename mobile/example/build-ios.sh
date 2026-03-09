@@ -11,6 +11,7 @@ PROJECT_NAME="BlincApp"
 BUNDLE_ID="com.blinc.example"
 LIB_NAME="libexample.a"
 PROJECT_PATH="$SCRIPT_DIR/platforms/ios/${PROJECT_NAME}.xcodeproj"
+PROJECT_LIB_ROOT="$SCRIPT_DIR/platforms/ios/libs"
 SCHEME_NAME="${BLINC_IOS_SCHEME:-$PROJECT_NAME}"
 ARTIFACT_ROOT="$SCRIPT_DIR/artifacts/ios"
 ARCHIVE_PATH_DEFAULT="$ARTIFACT_ROOT/archive/${PROJECT_NAME}.xcarchive"
@@ -98,6 +99,8 @@ build_rust_libraries() {
 
     mkdir -p "$LIBS_DIR/device"
     mkdir -p "$LIBS_DIR/simulator"
+    mkdir -p "$PROJECT_LIB_ROOT/device"
+    mkdir -p "$PROJECT_LIB_ROOT/simulator"
 
     echo "Copying libraries..."
     cp "target/$TARGET_ARM64/$TARGET_DIR/$LIB_NAME" "$LIBS_DIR/device/"
@@ -110,6 +113,10 @@ build_rust_libraries() {
         "$LIBS_DIR/simulator/$LIB_NAME.x86_64" \
         -output "$LIBS_DIR/simulator/$LIB_NAME"
     rm -f "$LIBS_DIR/simulator/$LIB_NAME.arm64" "$LIBS_DIR/simulator/$LIB_NAME.x86_64"
+
+    # Keep the Xcode project link paths populated for archive/export commands.
+    cp "$LIBS_DIR/device/$LIB_NAME" "$PROJECT_LIB_ROOT/device/$LIB_NAME"
+    cp "$LIBS_DIR/simulator/$LIB_NAME" "$PROJECT_LIB_ROOT/simulator/$LIB_NAME"
 
     echo ""
     echo "Libraries are at:"

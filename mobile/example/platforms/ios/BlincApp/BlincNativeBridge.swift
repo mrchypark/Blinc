@@ -596,7 +596,7 @@ public final class BlincNativeBridge {
         } else {
             effectiveCurrent = current
         }
-        [
+        return [
             "status": effectiveCurrent.status,
             "previousStatus": previous.status,
             "canRequestAgain": effectiveCurrent.canRequest,
@@ -605,7 +605,7 @@ public final class BlincNativeBridge {
     }
 
     private func permissionRequestTimedOutPayload(previous: PermissionCapabilityState) -> [String: Any] {
-        [
+        return [
             "status": "pending",
             "previousStatus": previous.status,
             "canRequestAgain": previous.canRequest,
@@ -616,7 +616,7 @@ public final class BlincNativeBridge {
 
     private func waitForAsyncPermissionDecision(
         timeout: TimeInterval = 30.0,
-        work: (@escaping (Bool) -> Void) -> Void
+        work: @escaping (@escaping (Bool) -> Void) -> Void
     ) -> Bool? {
         let lock = NSLock()
         var result: Bool?
@@ -631,6 +631,10 @@ public final class BlincNativeBridge {
 
         if Thread.isMainThread {
             work(resolve)
+            lock.lock()
+            let current = result
+            lock.unlock()
+            return current
         } else {
             DispatchQueue.main.async {
                 work(resolve)

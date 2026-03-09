@@ -62,13 +62,16 @@ case "$MODE" in
         RUST_FLAGS=""
         OUTPUT_PATH="platforms/android/app/build/outputs/apk/debug/app-debug.apk"
         ARTIFACT_DIR="$ARTIFACT_ROOT/debug-apk"
+        ARTIFACT_NAME="app-debug.apk"
         INSTALL_ON_DEVICE=1
         ;;
     release)
         GRADLE_TASK="assembleRelease"
         RUST_FLAGS="--release"
         OUTPUT_PATH="platforms/android/app/build/outputs/apk/release/app-release.apk"
+        FALLBACK_OUTPUT_PATH="platforms/android/app/build/outputs/apk/release/app-release-unsigned.apk"
         ARTIFACT_DIR="$ARTIFACT_ROOT/release-apk"
+        ARTIFACT_NAME="app-release.apk"
         INSTALL_ON_DEVICE=0
         ;;
     bundle-release)
@@ -76,6 +79,7 @@ case "$MODE" in
         RUST_FLAGS="--release"
         OUTPUT_PATH="platforms/android/app/build/outputs/bundle/release/app-release.aab"
         ARTIFACT_DIR="$ARTIFACT_ROOT/release-bundle"
+        ARTIFACT_NAME="app-release.aab"
         INSTALL_ON_DEVICE=0
         ;;
     -h|--help|help)
@@ -121,14 +125,18 @@ cd platforms/android
 ./gradlew "${GRADLE_TASK}"
 cd "$SCRIPT_DIR"
 
+if [ ! -f "$OUTPUT_PATH" ] && [ -n "${FALLBACK_OUTPUT_PATH:-}" ] && [ -f "$FALLBACK_OUTPUT_PATH" ]; then
+    OUTPUT_PATH="$FALLBACK_OUTPUT_PATH"
+fi
+
 if [ ! -f "$OUTPUT_PATH" ]; then
     echo "Expected Android artifact was not produced: $OUTPUT_PATH" >&2
     exit 1
 fi
 
-cp "$OUTPUT_PATH" "$ARTIFACT_DIR/"
+cp "$OUTPUT_PATH" "$ARTIFACT_DIR/$ARTIFACT_NAME"
 echo "Exported Android artifact:"
-echo "  $ARTIFACT_DIR/$(basename "$OUTPUT_PATH")"
+echo "  $ARTIFACT_DIR/$ARTIFACT_NAME"
 
 # Step 3: Install APK (debug only)
 if [ "$INSTALL_ON_DEVICE" -eq 1 ]; then
