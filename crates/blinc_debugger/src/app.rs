@@ -1,5 +1,4 @@
 //! Main application module for the debugger.
-
 use crate::panels::{
     CommandPanel, EvidencePanel, InspectorPanel, PreviewConfig, PreviewPanel, TimelinePanel,
     TimelinePanelState, TreePanel, TreePanelState,
@@ -16,15 +15,18 @@ use blinc_recorder::{
     RecordedEvent, RecordingExport, Timestamp, TimestampedEvent, TraceEntry, TraceEntryKind,
     TreeSnapshot,
 };
+use socket2::{Domain, SockAddr, Socket, Type};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_NETWORK_PAYLOAD_BYTES: usize = 100 * 1024 * 1024;
 const MAX_EXPORT_STREAM_PAYLOAD_BYTES: usize = MAX_NETWORK_PAYLOAD_BYTES;
 const MAX_SERVER_MESSAGES_TO_PARSE: usize = 32;
+// Fixed from the manual one-shot latency benchmark in recorder integration tests.
+const ONE_SHOT_EXPORT_TIMEOUT: Duration = Duration::from_millis(350);
 
 /// Application state
 #[derive(Default)]
@@ -703,20 +705,17 @@ fn write_len_prefixed<W: Write>(writer: &mut W, payload: &[u8]) -> Result<()> {
 fn request_export_from_server(addr: &str) -> Result<RecordingExport> {
     #[cfg(unix)]
     {
-        match resolve_connect_target(addr)
+        return match resolve_connect_target(addr)
             .with_context(|| format!("invalid --connect target: {addr}"))?
         {
-            ConnectTarget::Unix(socket) => {
-                return request_export_over_unix_socket(&socket)
-                    .with_context(|| format!("failed to connect to unix socket {socket}"));
-            }
-            ConnectTarget::Tcp(target) => {
-                return request_export_over_tcp(&target)
-                    .with_context(|| format!("failed to connect to tcp server {target}"));
-            }
-        }
+            ConnectTarget::Unix(socket) => request_export_over_unix_socket(&socket)
+                .with_context(|| format!("failed to connect to unix socket {socket}")),
+            ConnectTarget::Tcp(target) => request_export_over_tcp(&target)
+                .with_context(|| format!("failed to connect to tcp server {target}")),
+        };
     }
 
+    #[cfg(not(unix))]
     request_export_over_tcp(addr).with_context(|| format!("failed to connect to tcp server {addr}"))
 }
 
@@ -825,45 +824,100 @@ fn is_valid_default_socket_name(name: &str) -> bool {
 
 #[cfg(unix)]
 fn request_export_over_unix_socket(socket: &str) -> Result<RecordingExport> {
-    use std::os::unix::net::UnixStream;
-
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    request_export_over_stream(&mut stream)
+    let deadline = OneShotDeadline::start(one_shot_export_timeout());
+    let address = SockAddr::unix(socket)
+        .context("connect stage failed while building unix socket address")?;
+    let stream = Socket::new(Domain::UNIX, Type::STREAM, None)
+        .context("connect stage failed while creating unix socket")?;
+    stream
+        .connect_timeout(&address, deadline.remaining_timeout("connect stage")?)
+        .context("connect stage failed while connecting to unix socket")?;
+    request_export_over_stream_with_deadline(stream, &deadline)
 }
 
 fn request_export_over_tcp(addr: &str) -> Result<RecordingExport> {
-    let mut stream = std::net::TcpStream::connect(addr)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    request_export_over_stream(&mut stream)
+    use std::net::ToSocketAddrs;
+
+    let deadline = OneShotDeadline::start(one_shot_export_timeout());
+    deadline.remaining_timeout("connect stage")?;
+    let targets = addr
+        .to_socket_addrs()
+        .with_context(|| format!("connect stage failed while resolving tcp target {addr}"))?
+        .collect::<Vec<_>>();
+
+    if targets.is_empty() {
+        bail!("connect stage failed because tcp target {addr} resolved to no addresses");
+    }
+
+    let mut last_error = None;
+    for target in targets {
+        let stream =
+            Socket::new(Domain::for_address(target), Type::STREAM, None).with_context(|| {
+                format!("connect stage failed while creating tcp socket for {target}")
+            })?;
+        match stream.connect_timeout(
+            &SockAddr::from(target),
+            deadline.remaining_timeout("connect stage")?,
+        ) {
+            Ok(()) => return request_export_over_stream_with_deadline(stream, &deadline),
+            Err(err) => last_error = Some((target, err)),
+        }
+    }
+
+    let (target, err) = last_error.expect("tcp targets should produce at least one connect error");
+    Err(err).with_context(|| format!("connect stage failed while connecting to {target}"))
 }
 
-fn request_export_over_stream<S: Read + Write>(stream: &mut S) -> Result<RecordingExport> {
+fn one_shot_export_timeout() -> Duration {
+    ONE_SHOT_EXPORT_TIMEOUT
+}
+
+fn request_export_over_stream<S: TimeoutStream>(stream: S) -> Result<RecordingExport> {
+    request_export_over_stream_with_timeout(stream, one_shot_export_timeout())
+}
+
+fn request_export_over_stream_with_timeout<S: TimeoutStream>(
+    stream: S,
+    timeout: Duration,
+) -> Result<RecordingExport> {
+    let deadline = OneShotDeadline::start(timeout);
+    request_export_over_stream_with_deadline(stream, &deadline)
+}
+
+fn request_export_over_stream_with_deadline<S: TimeoutStream>(
+    mut stream: S,
+    deadline: &OneShotDeadline,
+) -> Result<RecordingExport> {
     let mut total_payload_bytes = 0usize;
 
-    let hello_payload = read_len_prefixed(stream)?;
+    let hello_payload = read_len_prefixed_with_deadline(&mut stream, deadline, "hello stage")
+        .context("hello stage failed while waiting for handshake")?;
     add_payload_budget(&mut total_payload_bytes, hello_payload.len())?;
-    let hello: serde_json::Value = serde_json::from_slice(&hello_payload)?;
+    let hello: serde_json::Value = serde_json::from_slice(&hello_payload)
+        .context("hello stage failed while parsing payload")?;
     if hello.get("type").and_then(|v| v.as_str()) != Some("hello") {
-        bail!("unexpected first server message: {hello}");
+        bail!("hello stage expected first server message to be hello, got: {hello}");
     }
 
     let request = serde_json::json!({ "type": "request_export" });
-    let bytes = serde_json::to_vec(&request)?;
-    write_len_prefixed(stream, &bytes)?;
+    let bytes = serde_json::to_vec(&request)
+        .context("request_export stage failed while serializing command")?;
+    write_len_prefixed_with_deadline(&mut stream, deadline, "request_export stage", &bytes)
+        .context("request_export stage failed while writing command")?;
+    flush_with_deadline(&mut stream, deadline, "request_export stage")
+        .context("request_export stage failed while flushing command")?;
 
     for _ in 0..MAX_SERVER_MESSAGES_TO_PARSE {
-        let payload = read_len_prefixed(stream)?;
+        let payload = read_len_prefixed_with_deadline(&mut stream, deadline, "export stage")
+            .context("export stage failed while waiting for response")?;
         add_payload_budget(&mut total_payload_bytes, payload.len())?;
-        let value: serde_json::Value = serde_json::from_slice(&payload)?;
+        let value: serde_json::Value = serde_json::from_slice(&payload)
+            .context("export stage failed while parsing response")?;
         match value.get("type").and_then(|v| v.as_str()) {
             Some("export") => {
-                let export_value = value
-                    .get("export")
-                    .cloned()
-                    .ok_or_else(|| anyhow!("missing export field in server response"))?;
+                let export_value = value.get("export").cloned().ok_or_else(|| {
+                    anyhow!("export stage missing export field in server response")
+                })?;
                 return serde_json::from_value(export_value).map_err(Into::into);
             }
             Some("error") => {
@@ -871,13 +925,106 @@ fn request_export_over_stream<S: Read + Write>(stream: &mut S) -> Result<Recordi
                     .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown server error");
-                bail!("server error: {message}");
+                bail!("export stage server error: {message}");
             }
             _ => continue,
         }
     }
 
     bail!("did not receive export payload from server")
+}
+
+fn read_len_prefixed_with_deadline<S: TimeoutStream>(
+    stream: &mut S,
+    deadline: &OneShotDeadline,
+    stage: &'static str,
+) -> Result<Vec<u8>> {
+    let remaining = deadline.remaining_timeout(stage)?;
+    stream
+        .set_read_timeout(Some(remaining))
+        .with_context(|| format!("{stage} failed while configuring read timeout"))?;
+    let payload = read_len_prefixed(stream)?;
+    deadline.remaining_timeout(stage)?;
+    Ok(payload)
+}
+
+fn write_len_prefixed_with_deadline<S: TimeoutStream>(
+    stream: &mut S,
+    deadline: &OneShotDeadline,
+    stage: &'static str,
+    payload: &[u8],
+) -> Result<()> {
+    let remaining = deadline.remaining_timeout(stage)?;
+    stream
+        .set_write_timeout(Some(remaining))
+        .with_context(|| format!("{stage} failed while configuring write timeout"))?;
+    write_len_prefixed(stream, payload)?;
+    deadline.remaining_timeout(stage)?;
+    Ok(())
+}
+
+fn flush_with_deadline<S: TimeoutStream>(
+    stream: &mut S,
+    deadline: &OneShotDeadline,
+    stage: &'static str,
+) -> Result<()> {
+    let remaining = deadline.remaining_timeout(stage)?;
+    stream
+        .set_write_timeout(Some(remaining))
+        .with_context(|| format!("{stage} failed while configuring write timeout"))?;
+    stream.flush()?;
+    deadline.remaining_timeout(stage)?;
+    Ok(())
+}
+
+trait TimeoutStream: Read + Write {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()>;
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()>;
+}
+
+impl<T: TimeoutStream + ?Sized> TimeoutStream for &mut T {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        (**self).set_read_timeout(timeout)
+    }
+
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        (**self).set_write_timeout(timeout)
+    }
+}
+
+impl TimeoutStream for Socket {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        Socket::set_read_timeout(self, timeout)
+    }
+
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        Socket::set_write_timeout(self, timeout)
+    }
+}
+
+struct OneShotDeadline {
+    started_at: Instant,
+    total_timeout: Duration,
+}
+
+impl OneShotDeadline {
+    fn start(total_timeout: Duration) -> Self {
+        Self {
+            started_at: Instant::now(),
+            total_timeout,
+        }
+    }
+
+    fn remaining_timeout(&self, stage: &'static str) -> Result<Duration> {
+        let elapsed = self.started_at.elapsed();
+        if elapsed >= self.total_timeout {
+            bail!(
+                "{stage} exceeded one-shot timeout budget of {}ms",
+                self.total_timeout.as_millis()
+            );
+        }
+        Ok(self.total_timeout - elapsed)
+    }
 }
 
 fn add_payload_budget(total_payload_bytes: &mut usize, payload_len: usize) -> Result<()> {

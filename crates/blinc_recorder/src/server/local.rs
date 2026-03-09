@@ -9,8 +9,13 @@ use serde_json::json;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+
+const ACCEPT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+const CLIENT_IDLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+const CLIENT_WRITE_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Configuration for the debug server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -173,12 +178,30 @@ impl DebugServer {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
         let socket_path_clone = socket_path.clone();
+        let (ready_tx, ready_rx) = mpsc::channel();
 
         let thread = thread::spawn(move || {
-            if let Err(e) = self.run_server(&socket_path_clone, shutdown_clone) {
+            if let Err(e) = self.run_server(&socket_path_clone, shutdown_clone, ready_tx) {
                 tracing::error!("Debug server error: {}", e);
             }
         });
+
+        match ready_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                shutdown.store(true, Ordering::SeqCst);
+                let _ = thread.join();
+                return Err(e);
+            }
+            Err(_) => {
+                shutdown.store(true, Ordering::SeqCst);
+                let _ = thread.join();
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "debug server failed before signaling readiness",
+                ));
+            }
+        }
 
         Ok(ServerHandle {
             shutdown,
@@ -188,14 +211,34 @@ impl DebugServer {
     }
 
     #[cfg(unix)]
-    fn run_server(&self, socket_path: &PathBuf, shutdown: Arc<AtomicBool>) -> io::Result<()> {
+    fn run_server(
+        &self,
+        socket_path: &PathBuf,
+        shutdown: Arc<AtomicBool>,
+        ready_tx: mpsc::Sender<io::Result<()>>,
+    ) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::UnixListener;
         use std::time::Duration;
 
-        let listener = UnixListener::bind(socket_path)?;
-        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
-        listener.set_nonblocking(true)?;
+        let listener = match UnixListener::bind(socket_path) {
+            Ok(listener) => listener,
+            Err(e) => {
+                let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
+                return Err(e);
+            }
+        };
+        if let Err(e) =
+            std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
+        {
+            let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
+            return Err(e);
+        }
+        if let Err(e) = listener.set_nonblocking(true) {
+            let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
+            return Err(e);
+        }
+        let _ = ready_tx.send(Ok(()));
 
         tracing::info!("Debug server listening on {}", socket_path.display());
 
@@ -219,7 +262,7 @@ impl DebugServer {
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     // No pending connection, sleep briefly
-                    thread::sleep(Duration::from_millis(100));
+                    thread::sleep(ACCEPT_POLL_INTERVAL);
                 }
                 Err(e) => {
                     tracing::error!("Accept error: {}", e);
@@ -232,14 +275,35 @@ impl DebugServer {
     }
 
     #[cfg(windows)]
-    fn run_server(&self, _socket_path: &PathBuf, shutdown: Arc<AtomicBool>) -> io::Result<()> {
+    fn run_server(
+        &self,
+        _socket_path: &PathBuf,
+        shutdown: Arc<AtomicBool>,
+        ready_tx: mpsc::Sender<io::Result<()>>,
+    ) -> io::Result<()> {
         use std::net::TcpListener;
         use std::time::Duration;
 
         // Fallback to TCP on Windows (TODO: implement named pipes)
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let local_addr = listener.local_addr()?;
-        listener.set_nonblocking(true)?;
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(e) => {
+                let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
+                return Err(e);
+            }
+        };
+        let local_addr = match listener.local_addr() {
+            Ok(addr) => addr,
+            Err(e) => {
+                let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
+                return Err(e);
+            }
+        };
+        if let Err(e) = listener.set_nonblocking(true) {
+            let _ = ready_tx.send(Err(io::Error::new(e.kind(), e.to_string())));
+            return Err(e);
+        }
+        let _ = ready_tx.send(Ok(()));
 
         tracing::info!("Debug server listening on {} (TCP fallback)", local_addr);
 
@@ -261,7 +325,7 @@ impl DebugServer {
                     });
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(100));
+                    thread::sleep(ACCEPT_POLL_INTERVAL);
                 }
                 Err(e) => {
                     tracing::error!("Accept error: {}", e);
@@ -491,6 +555,58 @@ fn handle_command(cmd: ClientCommand, session: &Arc<SharedRecordingSession>) -> 
     }
 }
 
+fn write_server_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + CLIENT_WRITE_RETRY_TIMEOUT;
+    let mut written = 0usize;
+
+    while written < payload.len() {
+        match writer.write(&payload[written..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write full server frame",
+                ));
+            }
+            Ok(n) => written += n,
+            Err(ref e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!("timed out writing server frame after {} bytes", written),
+                    ));
+                }
+                thread::sleep(CLIENT_IDLE_POLL_INTERVAL);
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+
+    loop {
+        match writer.flush() {
+            Ok(()) => return Ok(()),
+            Err(ref e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(e.kind(), "timed out flushing server frame"));
+                }
+                thread::sleep(CLIENT_IDLE_POLL_INTERVAL);
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 #[cfg(unix)]
 fn handle_client(
     mut stream: std::os::unix::net::UnixStream,
@@ -507,7 +623,8 @@ fn handle_client(
         app_name,
         protocol_version: 1,
     };
-    stream.write_all(&hello.to_bytes())?;
+    let hello_bytes = hello.to_bytes();
+    write_server_frame(&mut stream, &hello_bytes)?;
 
     // Track last state to avoid sending redundant updates
     let mut last_recording = session.is_recording();
@@ -529,13 +646,15 @@ fn handle_client(
                     match decode_next_stream_command(&mut pending) {
                         StreamCommand::Ready(cmd) => {
                             let response = handle_command(cmd, &session);
-                            stream.write_all(&response.to_bytes())?;
+                            let response_bytes = response.to_bytes();
+                            write_server_frame(&mut stream, &response_bytes)?;
                         }
                         StreamCommand::Invalid => {
                             let error = ServerMessage::Error {
                                 message: "invalid command frame".to_string(),
                             };
-                            stream.write_all(&error.to_bytes())?;
+                            let error_bytes = error.to_bytes();
+                            write_server_frame(&mut stream, &error_bytes)?;
                         }
                         StreamCommand::Incomplete => break,
                     }
@@ -557,12 +676,13 @@ fn handle_client(
                 is_recording,
                 is_paused,
             };
-            stream.write_all(&state.to_bytes())?;
+            let state_bytes = state.to_bytes();
+            write_server_frame(&mut stream, &state_bytes)?;
             last_recording = is_recording;
             last_paused = is_paused;
         }
 
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(CLIENT_IDLE_POLL_INTERVAL);
     }
 }
 
@@ -581,7 +701,8 @@ fn handle_client_tcp(
         app_name,
         protocol_version: 1,
     };
-    stream.write_all(&hello.to_bytes())?;
+    let hello_bytes = hello.to_bytes();
+    write_server_frame(&mut stream, &hello_bytes)?;
 
     // Track last state to avoid sending redundant updates
     let mut last_recording = session.is_recording();
@@ -598,13 +719,15 @@ fn handle_client_tcp(
                     match decode_next_stream_command(&mut pending) {
                         StreamCommand::Ready(cmd) => {
                             let response = handle_command(cmd, &session);
-                            stream.write_all(&response.to_bytes())?;
+                            let response_bytes = response.to_bytes();
+                            write_server_frame(&mut stream, &response_bytes)?;
                         }
                         StreamCommand::Invalid => {
                             let error = ServerMessage::Error {
                                 message: "invalid command frame".to_string(),
                             };
-                            stream.write_all(&error.to_bytes())?;
+                            let error_bytes = error.to_bytes();
+                            write_server_frame(&mut stream, &error_bytes)?;
                         }
                         StreamCommand::Incomplete => break,
                     }
@@ -622,12 +745,13 @@ fn handle_client_tcp(
                 is_recording,
                 is_paused,
             };
-            stream.write_all(&state.to_bytes())?;
+            let state_bytes = state.to_bytes();
+            write_server_frame(&mut stream, &state_bytes)?;
             last_recording = is_recording;
             last_paused = is_paused;
         }
 
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(CLIENT_IDLE_POLL_INTERVAL);
     }
 }
 
@@ -651,6 +775,7 @@ pub fn start_local_server_named(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
 
     #[test]
     fn test_socket_path_unix() {
@@ -836,5 +961,62 @@ mod tests {
         assert!(result.is_err(), "non-socket path should be rejected");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    struct FlakyWriter {
+        writes: VecDeque<io::Result<usize>>,
+        flushes: VecDeque<io::Result<()>>,
+        data: Vec<u8>,
+    }
+
+    impl FlakyWriter {
+        fn new(
+            writes: impl IntoIterator<Item = io::Result<usize>>,
+            flushes: impl IntoIterator<Item = io::Result<()>>,
+        ) -> Self {
+            Self {
+                writes: writes.into_iter().collect(),
+                flushes: flushes.into_iter().collect(),
+                data: Vec::new(),
+            }
+        }
+    }
+
+    impl Write for FlakyWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            match self.writes.pop_front().unwrap_or(Ok(buf.len()))? {
+                len if len <= buf.len() => {
+                    self.data.extend_from_slice(&buf[..len]);
+                    Ok(len)
+                }
+                len => panic!("scripted write length {len} exceeded input {}", buf.len()),
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes.pop_front().unwrap_or(Ok(()))
+        }
+    }
+
+    #[test]
+    fn write_server_frame_retries_would_block_until_payload_is_complete() {
+        let payload = b"abcdefghijklmnopqrstuvwxyz";
+        let mut writer = FlakyWriter::new(
+            [
+                Ok(8),
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "buffer full")),
+                Ok(10),
+                Ok(payload.len() - 18),
+            ],
+            [
+                Err(io::Error::new(io::ErrorKind::TimedOut, "flush timeout")),
+                Ok(()),
+            ],
+        );
+
+        write_server_frame(&mut writer, payload)
+            .expect("frame write should recover from temporary backpressure");
+
+        assert_eq!(writer.data, payload);
     }
 }
