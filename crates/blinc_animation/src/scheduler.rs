@@ -757,9 +757,6 @@ impl SchedulerHandle {
     pub fn register_spring(&self, spring: Spring) -> Option<SpringId> {
         self.inner.upgrade().map(|inner| {
             let mut guard = inner.lock().unwrap();
-            // Reset last_frame to now to prevent huge dt on first tick
-            // This ensures new springs start animating smoothly from their current frame
-            guard.last_frame = std::time::Instant::now();
             guard.springs.insert(spring)
         })
     }
@@ -1819,6 +1816,33 @@ mod tests {
         // Value should have moved
         let value = scheduler.get_spring_value(id).unwrap();
         assert!(value > 0.0);
+    }
+
+    #[test]
+    fn test_registering_spring_does_not_reset_global_delta() {
+        let scheduler = AnimationScheduler::new();
+
+        let first_id = scheduler.add_spring(Spring::new(SpringConfig::stiff(), 0.0));
+        scheduler.set_spring_target(first_id, 100.0);
+
+        {
+            let mut inner = scheduler.inner.lock().unwrap();
+            inner.last_frame = Instant::now() - Duration::from_millis(50);
+        }
+
+        let handle = scheduler.handle();
+        let second_id = handle
+            .register_spring(Spring::new(SpringConfig::stiff(), 0.0))
+            .expect("scheduler should still be alive");
+        handle.set_spring_target(second_id, 100.0);
+
+        scheduler.tick();
+
+        let first_value = scheduler.get_spring_value(first_id).unwrap();
+        assert!(
+            first_value > 5.0,
+            "expected existing springs to receive the accumulated dt, got {first_value}"
+        );
     }
 
     #[test]
