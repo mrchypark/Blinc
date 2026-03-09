@@ -104,60 +104,75 @@ fn keyboard_text_chars(event: &blinc_platform::KeyboardEvent) -> Vec<char> {
     }
 
     let mods = &event.modifiers;
-    let fallback = match &event.key {
-        Key::Char(c) => Some(*c),
-        Key::Space => Some(' '),
-        Key::A => Some(if mods.shift { 'A' } else { 'a' }),
-        Key::B => Some(if mods.shift { 'B' } else { 'b' }),
-        Key::C => Some(if mods.shift { 'C' } else { 'c' }),
-        Key::D => Some(if mods.shift { 'D' } else { 'd' }),
-        Key::E => Some(if mods.shift { 'E' } else { 'e' }),
-        Key::F => Some(if mods.shift { 'F' } else { 'f' }),
-        Key::G => Some(if mods.shift { 'G' } else { 'g' }),
-        Key::H => Some(if mods.shift { 'H' } else { 'h' }),
-        Key::I => Some(if mods.shift { 'I' } else { 'i' }),
-        Key::J => Some(if mods.shift { 'J' } else { 'j' }),
-        Key::K => Some(if mods.shift { 'K' } else { 'k' }),
-        Key::L => Some(if mods.shift { 'L' } else { 'l' }),
-        Key::M => Some(if mods.shift { 'M' } else { 'm' }),
-        Key::N => Some(if mods.shift { 'N' } else { 'n' }),
-        Key::O => Some(if mods.shift { 'O' } else { 'o' }),
-        Key::P => Some(if mods.shift { 'P' } else { 'p' }),
-        Key::Q => Some(if mods.shift { 'Q' } else { 'q' }),
-        Key::R => Some(if mods.shift { 'R' } else { 'r' }),
-        Key::S => Some(if mods.shift { 'S' } else { 's' }),
-        Key::T => Some(if mods.shift { 'T' } else { 't' }),
-        Key::U => Some(if mods.shift { 'U' } else { 'u' }),
-        Key::V => Some(if mods.shift { 'V' } else { 'v' }),
-        Key::W => Some(if mods.shift { 'W' } else { 'w' }),
-        Key::X => Some(if mods.shift { 'X' } else { 'x' }),
-        Key::Y => Some(if mods.shift { 'Y' } else { 'y' }),
-        Key::Z => Some(if mods.shift { 'Z' } else { 'z' }),
-        Key::Num0 => Some(if mods.shift { ')' } else { '0' }),
-        Key::Num1 => Some(if mods.shift { '!' } else { '1' }),
-        Key::Num2 => Some(if mods.shift { '@' } else { '2' }),
-        Key::Num3 => Some(if mods.shift { '#' } else { '3' }),
-        Key::Num4 => Some(if mods.shift { '$' } else { '4' }),
-        Key::Num5 => Some(if mods.shift { '%' } else { '5' }),
-        Key::Num6 => Some(if mods.shift { '^' } else { '6' }),
-        Key::Num7 => Some(if mods.shift { '&' } else { '7' }),
-        Key::Num8 => Some(if mods.shift { '*' } else { '8' }),
-        Key::Num9 => Some(if mods.shift { '(' } else { '9' }),
-        Key::Minus => Some(if mods.shift { '_' } else { '-' }),
-        Key::Equals => Some(if mods.shift { '+' } else { '=' }),
-        Key::LeftBracket => Some(if mods.shift { '{' } else { '[' }),
-        Key::RightBracket => Some(if mods.shift { '}' } else { ']' }),
-        Key::Backslash => Some(if mods.shift { '|' } else { '\\' }),
-        Key::Semicolon => Some(if mods.shift { ':' } else { ';' }),
-        Key::Quote => Some(if mods.shift { '"' } else { '\'' }),
-        Key::Comma => Some(if mods.shift { '<' } else { ',' }),
-        Key::Period => Some(if mods.shift { '>' } else { '.' }),
-        Key::Slash => Some(if mods.shift { '?' } else { '/' }),
-        Key::Grave => Some(if mods.shift { '~' } else { '`' }),
-        _ => None,
-    };
+    let fallback = letter_key_char(&event.key).map_or_else(
+        || match &event.key {
+            Key::Char(c) => Some(*c),
+            Key::Space => Some(' '),
+            Key::Num0 => Some(if mods.shift { ')' } else { '0' }),
+            Key::Num1 => Some(if mods.shift { '!' } else { '1' }),
+            Key::Num2 => Some(if mods.shift { '@' } else { '2' }),
+            Key::Num3 => Some(if mods.shift { '#' } else { '3' }),
+            Key::Num4 => Some(if mods.shift { '$' } else { '4' }),
+            Key::Num5 => Some(if mods.shift { '%' } else { '5' }),
+            Key::Num6 => Some(if mods.shift { '^' } else { '6' }),
+            Key::Num7 => Some(if mods.shift { '&' } else { '7' }),
+            Key::Num8 => Some(if mods.shift { '*' } else { '8' }),
+            Key::Num9 => Some(if mods.shift { '(' } else { '9' }),
+            Key::Minus => Some(if mods.shift { '_' } else { '-' }),
+            Key::Equals => Some(if mods.shift { '+' } else { '=' }),
+            Key::LeftBracket => Some(if mods.shift { '{' } else { '[' }),
+            Key::RightBracket => Some(if mods.shift { '}' } else { ']' }),
+            Key::Backslash => Some(if mods.shift { '|' } else { '\\' }),
+            Key::Semicolon => Some(if mods.shift { ':' } else { ';' }),
+            Key::Quote => Some(if mods.shift { '"' } else { '\'' }),
+            Key::Comma => Some(if mods.shift { '<' } else { ',' }),
+            Key::Period => Some(if mods.shift { '>' } else { '.' }),
+            Key::Slash => Some(if mods.shift { '?' } else { '/' }),
+            Key::Grave => Some(if mods.shift { '~' } else { '`' }),
+            _ => None,
+        },
+        |base| {
+            Some(if mods.shift {
+                base.to_ascii_uppercase()
+            } else {
+                base
+            })
+        },
+    );
 
     fallback.into_iter().collect()
+}
+
+fn letter_key_char(key: &Key) -> Option<char> {
+    match key {
+        Key::A => Some('a'),
+        Key::B => Some('b'),
+        Key::C => Some('c'),
+        Key::D => Some('d'),
+        Key::E => Some('e'),
+        Key::F => Some('f'),
+        Key::G => Some('g'),
+        Key::H => Some('h'),
+        Key::I => Some('i'),
+        Key::J => Some('j'),
+        Key::K => Some('k'),
+        Key::L => Some('l'),
+        Key::M => Some('m'),
+        Key::N => Some('n'),
+        Key::O => Some('o'),
+        Key::P => Some('p'),
+        Key::Q => Some('q'),
+        Key::R => Some('r'),
+        Key::S => Some('s'),
+        Key::T => Some('t'),
+        Key::U => Some('u'),
+        Key::V => Some('v'),
+        Key::W => Some('w'),
+        Key::X => Some('x'),
+        Key::Y => Some('y'),
+        Key::Z => Some('z'),
+        _ => None,
+    }
 }
 
 #[cfg(any(
@@ -4676,5 +4691,35 @@ mod tests {
         };
 
         assert!(keyboard_text_chars(&event).is_empty());
+    }
+
+    #[test]
+    fn keyboard_text_chars_falls_back_to_shifted_letters() {
+        let event = KeyboardEvent {
+            key: Key::A,
+            text: None,
+            state: KeyState::Pressed,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        };
+
+        assert_eq!(keyboard_text_chars(&event), vec!['A']);
+    }
+
+    #[test]
+    fn keyboard_text_chars_falls_back_to_symbols() {
+        let event = KeyboardEvent {
+            key: Key::Slash,
+            text: None,
+            state: KeyState::Pressed,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        };
+
+        assert_eq!(keyboard_text_chars(&event), vec!['?']);
     }
 }
