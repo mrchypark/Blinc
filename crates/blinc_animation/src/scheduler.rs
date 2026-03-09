@@ -202,6 +202,16 @@ impl AnimationScheduler {
         self.wake_callback = Some(Arc::new(callback));
     }
 
+    /// Set the wake callback from an existing shared callback value.
+    pub fn set_wake_callback_arc(&mut self, callback: WakeCallback) {
+        self.wake_callback = Some(callback);
+    }
+
+    /// Remove any previously configured wake callback.
+    pub fn clear_wake_callback(&mut self) {
+        self.wake_callback = None;
+    }
+
     /// Start the scheduler on a background thread
     ///
     /// This ensures animations continue even when the window loses focus.
@@ -325,6 +335,25 @@ impl AnimationScheduler {
             let _ = handle.join();
         }
         self.stop_flag.store(false, Ordering::Relaxed);
+    }
+
+    /// Reset scheduler state before reusing it for a new runtime session.
+    ///
+    /// This stops any existing background loop, clears registered animations and
+    /// tick callbacks, and drops wake/redraw state so a later runtime can bind a
+    /// fresh event loop callback without inheriting stale session state.
+    pub fn reset_runtime_state(&mut self) {
+        self.stop_background();
+        self.clear_wake_callback();
+        self.needs_redraw.store(false, Ordering::Release);
+        self.continuous_redraw.store(false, Ordering::Release);
+
+        let mut inner = self.inner.lock().unwrap();
+        inner.springs.clear();
+        inner.keyframes.clear();
+        inner.timelines.clear();
+        inner.tick_callbacks.clear();
+        inner.last_frame = Instant::now();
     }
 
     /// Check if the background thread is running

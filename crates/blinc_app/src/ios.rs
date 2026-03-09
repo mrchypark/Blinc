@@ -32,7 +32,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
-use blinc_animation::AnimationScheduler;
+use blinc_animation::scheduler::WakeCallback;
 use blinc_core::context_state::{BlincContextState, HookState, SharedHookState};
 use blinc_core::reactive::{ReactiveGraph, SignalId};
 use blinc_layout::event_router::MouseButton;
@@ -50,8 +50,8 @@ use blinc_platform_ios::{Gesture, GestureDetector, IOSAssetLoader, IOSWakeProxy,
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
 use crate::windowed::{
-    RefDirtyFlag, SharedAnimationScheduler, SharedElementRegistry, SharedReactiveGraph,
-    SharedReadyCallbacks, WindowedContext,
+    prepare_runtime_scheduler, RefDirtyFlag, SharedAnimationScheduler, SharedElementRegistry,
+    SharedReactiveGraph, SharedReadyCallbacks, WindowedContext,
 };
 
 /// iOS application runner
@@ -198,20 +198,19 @@ impl IOSApp {
         }
 
         // Animation scheduler with wake proxy
-        let mut scheduler = AnimationScheduler::new();
-
         // Set up wake proxy for iOS
         let wake_proxy = IOSWakeProxy::new();
-        let wake_proxy_clone = wake_proxy.clone();
-        scheduler.set_wake_callback(move || wake_proxy_clone.wake());
-
-        scheduler.start_background();
-        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(scheduler));
+        let wake_proxy_for_callback = wake_proxy.clone();
+        let wake_callback: WakeCallback = Arc::new(move || wake_proxy_for_callback.wake());
+        let animations: SharedAnimationScheduler =
+            prepare_runtime_scheduler(Some(wake_callback), true);
 
         // Set global scheduler handle
         {
             let scheduler_handle = animations.lock().unwrap().handle();
-            blinc_animation::set_global_scheduler(scheduler_handle);
+            if !blinc_animation::is_scheduler_initialized() {
+                blinc_animation::set_global_scheduler(scheduler_handle);
+            }
         }
 
         // Element registry for query API

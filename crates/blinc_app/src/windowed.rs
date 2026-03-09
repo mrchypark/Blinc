@@ -25,16 +25,17 @@
 use std::hash::Hash;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 
+use blinc_animation::scheduler::WakeCallback;
 use blinc_animation::{
     AnimatedTimeline, AnimatedValue, AnimationContext, AnimationScheduler, SchedulerHandle,
     SharedAnimatedTimeline, SharedAnimatedValue, SpringConfig,
 };
 use blinc_core::context_state::{
     BlincContextState, ContextBindingOverride, ContextResourceOverride, HookState, SharedHookState,
-    StateKey,
+    StateKey, StatefulCallback,
 };
 use blinc_core::reactive::{Derived, ReactiveGraph, Signal, SignalId, State, StatefulDepsCallback};
 use blinc_layout::overlay_state::{get_overlay_manager, OverlayContext};
@@ -575,6 +576,36 @@ pub type ReadyCallback = Box<dyn FnOnce() + Send + Sync>;
 /// Shared storage for ready callbacks
 pub type SharedReadyCallbacks = Arc<Mutex<Vec<ReadyCallback>>>;
 
+pub(crate) fn shared_runtime_scheduler() -> SharedAnimationScheduler {
+    static RUNTIME_SCHEDULER: OnceLock<SharedAnimationScheduler> = OnceLock::new();
+    RUNTIME_SCHEDULER
+        .get_or_init(|| Arc::new(Mutex::new(AnimationScheduler::new())))
+        .clone()
+}
+
+pub(crate) fn prepare_runtime_scheduler(
+    wake_callback: Option<WakeCallback>,
+    run_background: bool,
+) -> SharedAnimationScheduler {
+    let scheduler = shared_runtime_scheduler();
+    {
+        let mut guard = scheduler.lock().unwrap();
+        guard.reset_runtime_state();
+        if let Some(callback) = wake_callback {
+            guard.set_wake_callback_arc(callback);
+        }
+        if run_background {
+            guard.start_background();
+        }
+    }
+    scheduler
+}
+
+fn headless_context_init_lock() -> &'static Mutex<()> {
+    static HEADLESS_CONTEXT_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    HEADLESS_CONTEXT_INIT_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// Context passed to the UI builder function
 pub struct WindowedContext {
     /// Current window width in logical pixels (for UI layout)
@@ -627,6 +658,83 @@ pub struct WindowedContext {
 }
 
 impl WindowedContext {
+    fn ensure_global_context_state() -> (
+        &'static BlincContextState,
+        SharedReactiveGraph,
+        SharedHookState,
+        RefDirtyFlag,
+    ) {
+        if !BlincContextState::is_initialized() {
+            let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
+            let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
+            let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
+            let stateful_callback: StatefulCallback = Arc::new(|signal_ids| {
+                blinc_layout::check_stateful_deps(signal_ids);
+            });
+            BlincContextState::init_with_callback(
+                reactive,
+                hooks,
+                ref_dirty_flag,
+                stateful_callback,
+            );
+        }
+
+        let global = BlincContextState::get();
+        (
+            global,
+            global.active_reactive(),
+            global.active_hooks(),
+            global.active_dirty_flag(),
+        )
+    }
+
+    fn ensure_element_registry(global: &'static BlincContextState) -> SharedElementRegistry {
+        if let Some(existing) = global.element_registry::<blinc_layout::selector::ElementRegistry>()
+        {
+            existing
+        } else {
+            let registry: SharedElementRegistry =
+                Arc::new(blinc_layout::selector::ElementRegistry::new());
+            global.set_element_registry(Arc::clone(&registry) as blinc_core::AnyElementRegistry);
+            registry
+        }
+    }
+
+    /// Create a deterministic headless context for offscreen rendering and screenshot tests.
+    ///
+    /// Unlike the internal runtime constructor, this convenience API initializes the
+    /// shared animation/context globals when they are not yet available so tests can
+    /// build a `WindowedContext` without recreating the full windowed runtime setup.
+    pub fn new_headless(logical_width: f32, logical_height: f32) -> Self {
+        let _init_guard = headless_context_init_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let animations = shared_runtime_scheduler();
+        let (global, reactive, hooks, ref_dirty_flag) = Self::ensure_global_context_state();
+        let element_registry = Self::ensure_element_registry(global);
+        let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
+
+        let ctx = Self::new_headless_runtime(
+            logical_width,
+            logical_height,
+            animations,
+            ref_dirty_flag,
+            reactive,
+            hooks,
+            element_registry,
+            ready_callbacks,
+        );
+
+        if !blinc_animation::is_scheduler_initialized() {
+            let scheduler_handle = ctx.animations.lock().unwrap().handle();
+            blinc_animation::set_global_scheduler(scheduler_handle);
+        }
+
+        global.set_viewport_size(logical_width, logical_height);
+
+        ctx
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn from_window<W: Window>(
         window: &W,
@@ -799,7 +907,7 @@ impl WindowedContext {
     }
 
     /// Create a deterministic windowless context for headless automation/testing.
-    pub(crate) fn new_headless(
+    pub(crate) fn new_headless_runtime(
         logical_width: f32,
         logical_height: f32,
         animations: SharedAnimationScheduler,
@@ -830,6 +938,17 @@ impl WindowedContext {
             stylesheet: None,
             css_sources: Vec::new(),
         }
+    }
+
+    /// Update the logical and physical size for a headless context.
+    pub fn set_headless_size(&mut self, logical_width: f32, logical_height: f32) {
+        self.width = logical_width;
+        self.height = logical_height;
+        self.physical_width = logical_width;
+        self.physical_height = logical_height;
+
+        let global = BlincContextState::get();
+        global.set_viewport_size(logical_width, logical_height);
     }
 
     /// Update context from window (preserving event router, dirty flag, and reactive graph)
@@ -2027,6 +2146,94 @@ impl WindowedContext {
     }
 }
 
+#[cfg(test)]
+mod windowed_context_tests {
+    use super::{prepare_runtime_scheduler, shared_runtime_scheduler, WindowedContext};
+    use blinc_animation::scheduler::WakeCallback;
+    use blinc_core::BlincContextState;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    fn test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn headless_context_initializes_expected_defaults() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = WindowedContext::new_headless(640.0, 360.0);
+
+        assert_eq!(ctx.width, 640.0);
+        assert_eq!(ctx.height, 360.0);
+        assert_eq!(ctx.physical_width(), 640.0);
+        assert_eq!(ctx.physical_height(), 360.0);
+        assert_eq!(ctx.scale_factor, 1.0);
+        assert!(ctx.focused);
+    }
+
+    #[test]
+    fn headless_context_resize_updates_logical_and_physical_size() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut ctx = WindowedContext::new_headless(640.0, 360.0);
+
+        ctx.set_headless_size(1024.0, 768.0);
+
+        assert_eq!(ctx.width, 1024.0);
+        assert_eq!(ctx.height, 768.0);
+        assert_eq!(ctx.physical_width(), 1024.0);
+        assert_eq!(ctx.physical_height(), 768.0);
+    }
+
+    #[test]
+    fn headless_context_resize_keeps_existing_global_registry() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let mut ctx = WindowedContext::new_headless(640.0, 360.0);
+        let before = BlincContextState::get()
+            .element_registry_any()
+            .expect("headless context installs a global element registry");
+
+        ctx.set_headless_size(1024.0, 768.0);
+
+        let after = BlincContextState::get()
+            .element_registry_any()
+            .expect("headless resize preserves a global element registry");
+        assert!(Arc::ptr_eq(&before, &after));
+    }
+
+    #[test]
+    fn repeated_headless_context_reuses_existing_global_registry() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let first = WindowedContext::new_headless(640.0, 360.0);
+        let second = WindowedContext::new_headless(800.0, 600.0);
+
+        assert!(Arc::ptr_eq(
+            first.element_registry(),
+            second.element_registry()
+        ));
+    }
+
+    #[test]
+    fn prepare_runtime_scheduler_resets_shared_state_between_runs() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let scheduler = shared_runtime_scheduler();
+        {
+            let mut guard = scheduler.lock().unwrap();
+            guard.add_tick_callback(|_| {});
+            let wake_callback: WakeCallback = Arc::new(|| {});
+            guard.set_wake_callback_arc(wake_callback);
+            guard.start_background();
+        }
+
+        let prepared = prepare_runtime_scheduler(None, false);
+
+        assert!(Arc::ptr_eq(&scheduler, &prepared));
+        let guard = prepared.lock().unwrap();
+        assert_eq!(guard.tick_callback_count(), 0);
+        assert!(!guard.is_background_running());
+        assert!(!guard.is_continuous_redraw());
+    }
+}
+
 // =============================================================================
 // BlincContext Implementation
 // =============================================================================
@@ -2321,16 +2528,15 @@ impl WindowedApp {
 
         // Shared animation scheduler for spring/keyframe animations
         // Runs on background thread so animations continue even when window loses focus
-        let mut scheduler = AnimationScheduler::new();
-        // Set up wake callback so animation thread can wake the event loop
-        scheduler.set_wake_callback(move || wake_proxy.wake());
-        scheduler.start_background();
-        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(scheduler));
+        let wake_callback: WakeCallback = Arc::new(move || wake_proxy.wake());
+        let animations = prepare_runtime_scheduler(Some(wake_callback), true);
 
         // Set global scheduler handle for StateContext and component access
         {
             let scheduler_handle = animations.lock().unwrap().handle();
-            blinc_animation::set_global_scheduler(scheduler_handle);
+            if !blinc_animation::is_scheduler_initialized() {
+                blinc_animation::set_global_scheduler(scheduler_handle);
+            }
         }
 
         // Shared CSS animation/transition store
