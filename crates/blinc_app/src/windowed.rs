@@ -799,7 +799,7 @@ impl WindowedContext {
         let _init_guard = headless_context_init_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let animations = shared_runtime_scheduler();
+        let animations = prepare_runtime_scheduler(None, false);
         let (global, reactive, hooks, ref_dirty_flag) = Self::ensure_global_context_state();
         let element_registry = Self::ensure_element_registry(global);
         let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
@@ -2318,6 +2318,27 @@ mod windowed_context_tests {
 
         assert!(Arc::ptr_eq(&scheduler, &prepared));
         let guard = prepared.lock().unwrap();
+        assert_eq!(guard.tick_callback_count(), 0);
+        assert!(!guard.is_background_running());
+        assert!(!guard.is_continuous_redraw());
+    }
+
+    #[test]
+    fn new_headless_resets_shared_scheduler_state() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let scheduler = shared_runtime_scheduler();
+        {
+            let mut guard = scheduler.lock().unwrap();
+            guard.add_tick_callback(|_| {});
+            let wake_callback: WakeCallback = Arc::new(|| {});
+            guard.set_wake_callback_arc(wake_callback);
+            guard.start_background();
+        }
+
+        let ctx = WindowedContext::new_headless(640.0, 360.0);
+
+        assert!(Arc::ptr_eq(&scheduler, &ctx.animations));
+        let guard = scheduler.lock().unwrap();
         assert_eq!(guard.tick_callback_count(), 0);
         assert!(!guard.is_background_running());
         assert!(!guard.is_continuous_redraw());
