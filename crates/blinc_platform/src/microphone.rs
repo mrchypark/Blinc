@@ -1,5 +1,5 @@
 use crate::error::PlatformError;
-use crate::permissions::{self, PermissionKind, PermissionStatus};
+use crate::permissions::{self, PermissionKind, PermissionRequestResult, PermissionStatus};
 
 /// Check current microphone permission status.
 pub fn status() -> Result<PermissionStatus, PlatformError> {
@@ -7,6 +7,6 @@ pub fn status() -> Result<PermissionStatus, PlatformError> {
 }
 
 /// Request microphone permission.
-pub fn request() -> Result<PermissionStatus, PlatformError> {
+pub fn request() -> Result<PermissionRequestResult, PlatformError> {
     permissions::request(PermissionKind::Microphone)
 }

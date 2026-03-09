@@ -4,12 +4,15 @@
 
 use crate::event_loop::IOSEventLoop;
 use crate::window::IOSWindow;
+use blinc_platform::{LifecycleState, PlatformEnvironmentSnapshot};
 use blinc_platform::{Platform, PlatformError};
+#[cfg(target_os = "ios")]
+use blinc_platform::{ViewportInsets, WindowMetrics};
 
 #[cfg(target_os = "ios")]
 use objc2_foundation::MainThreadMarker;
 #[cfg(target_os = "ios")]
-use objc2_ui_kit::{UIApplication, UIScreen, UIUserInterfaceStyle, UIWindow};
+use objc2_ui_kit::{UIApplication, UIApplicationState, UIScreen, UIUserInterfaceStyle, UIWindow};
 
 #[cfg(target_os = "ios")]
 use tracing::info;
@@ -98,6 +101,21 @@ impl IOSPlatform {
         let screen = UIScreen::mainScreen(mtm);
         screen.scale() as f64
     }
+}
+
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+fn lifecycle_state_from_ios_raw(raw: isize) -> LifecycleState {
+    match raw {
+        0 => LifecycleState::Foreground,
+        1 => LifecycleState::Inactive,
+        2 => LifecycleState::Background,
+        _ => LifecycleState::Inactive,
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn lifecycle_state_from_application_state(state: UIApplicationState) -> LifecycleState {
+    lifecycle_state_from_ios_raw(state.0)
 }
 
 impl Platform for IOSPlatform {
@@ -208,6 +226,53 @@ pub fn get_safe_area_insets() -> (f32, f32, f32, f32) {
     resolve_safe_area_insets(None)
 }
 
+/// Capture the active iOS platform environment as a window-scoped snapshot.
+#[cfg(target_os = "ios")]
+pub fn get_environment_snapshot() -> PlatformEnvironmentSnapshot {
+    let mtm = MainThreadMarker::new().expect("Must be called from main thread");
+    let screen = UIScreen::mainScreen(mtm);
+    let scale_factor = screen.scale() as f32;
+    let bounds = screen.bounds();
+    let logical_width = bounds.size.width as f32;
+    let logical_height = bounds.size.height as f32;
+    let physical_width = (logical_width * scale_factor).round() as u32;
+    let physical_height = (logical_height * scale_factor).round() as u32;
+
+    let mut safe_area_insets = ViewportInsets::default();
+    let mut is_dark_mode = false;
+
+    let application = UIApplication::sharedApplication(mtm);
+    let lifecycle_state = lifecycle_state_from_application_state(application.applicationState());
+    if let Some((top, left, bottom, right)) = query_safe_area_insets() {
+        safe_area_insets = ViewportInsets {
+            top,
+            left,
+            bottom,
+            right,
+        };
+    }
+    is_dark_mode = resolve_dark_mode(query_dark_mode());
+
+    PlatformEnvironmentSnapshot {
+        lifecycle_state,
+        metrics: WindowMetrics {
+            logical_width,
+            logical_height,
+            physical_width,
+            physical_height,
+            scale_factor: f64::from(scale_factor),
+        },
+        safe_area_insets,
+        viewport_insets: safe_area_insets,
+        is_dark_mode,
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+pub fn get_environment_snapshot() -> PlatformEnvironmentSnapshot {
+    PlatformEnvironmentSnapshot::default()
+}
+
 /// iOS system font paths
 ///
 /// These are the common font locations on iOS. Note that different iOS versions
@@ -239,7 +304,8 @@ pub fn system_font_paths() -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_dark_mode, resolve_safe_area_insets};
+    use super::{lifecycle_state_from_ios_raw, resolve_dark_mode, resolve_safe_area_insets};
+    use blinc_platform::LifecycleState;
 
     #[test]
     fn dark_mode_defaults_to_light_when_unavailable() {
@@ -263,5 +329,13 @@ mod tests {
             resolve_safe_area_insets(Some((10.0, 4.0, 34.0, 4.0))),
             (10.0, 4.0, 34.0, 4.0)
         );
+    }
+
+    #[test]
+    fn lifecycle_state_mapping_matches_ios_state_values() {
+        assert_eq!(lifecycle_state_from_ios_raw(0), LifecycleState::Foreground);
+        assert_eq!(lifecycle_state_from_ios_raw(1), LifecycleState::Inactive);
+        assert_eq!(lifecycle_state_from_ios_raw(2), LifecycleState::Background);
+        assert_eq!(lifecycle_state_from_ios_raw(99), LifecycleState::Inactive);
     }
 }

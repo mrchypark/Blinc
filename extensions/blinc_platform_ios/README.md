@@ -7,6 +7,9 @@
 
 iOS platform scaffolding for Blinc UI.
 
+For the repo-wide native support contract, see
+[`docs/native-readiness.md`](../../docs/native-readiness.md).
+
 ## Overview
 
 `blinc_platform_ios` provides the current iOS runtime surface for Blinc:
@@ -18,17 +21,32 @@ render-loop scaffolding used by generated templates.
 - iOS 14.0+
 - iPadOS 14.0+
 
+## Current Support Tier
+
+- Tier 1: partial
+- Tier 2: partial
+- Tier 3: deferred
+
+This crate currently exposes UIKit integration, rendering hooks, touch handling,
+and environment snapshot helpers. It does not yet guarantee full mobile IME,
+accessibility parity, or complete production packaging flows.
+
 ## Features
 
 - **UIKit Integration**: Template-friendly app shell
 - **Touch Input**: Touch forwarding into Blinc events
 - **Native Bridge**: Rust-to-Swift interoperability
 - **Template Support**: Bridge registration from generated projects
+- **iOS Lifecycle**: Partial runtime lifecycle wiring
+- **Safe Area**: Environment snapshot helpers for current window metrics/insets
 
 ## Quick Start
 
 Use the generated iOS template and connect your Rust static library through the
 provided bridging header and `BlincNativeBridge`.
+
+Today, UI construction and lifecycle wiring are still coordinated from the host
+UIKit/Xcode application rather than a closure-based Rust entrypoint.
 
 ## Project Setup
 
