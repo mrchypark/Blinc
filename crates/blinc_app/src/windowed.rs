@@ -110,11 +110,7 @@ pub(crate) fn sync_platform_ime_state() {
     } else {
         ImeState::default()
     };
-    blinc_platform::set_ime_state(ImeState {
-        enabled: state.enabled,
-        cursor_area,
-        request: state.request,
-    });
+    blinc_platform::set_ime_state(state);
 }
 
 fn keyboard_text_chars(event: &blinc_platform::KeyboardEvent) -> Vec<char> {

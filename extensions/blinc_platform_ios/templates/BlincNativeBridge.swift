@@ -166,7 +166,19 @@ public final class BlincNativeBridge {
 
         register(namespace: "haptics", name: "impact") { args in
             if #available(iOS 10.0, *) {
-                let style: Int = args.first as? Int ?? 1
+                let style: Int
+                if let styleString = args.first as? String {
+                    switch styleString.lowercased() {
+                    case "light":
+                        style = 0
+                    case "heavy":
+                        style = 2
+                    default:
+                        style = 1
+                    }
+                } else {
+                    style = args.first as? Int ?? 1
+                }
                 let feedbackStyle: UIImpactFeedbackGenerator.FeedbackStyle
                 switch style {
                 case 0: feedbackStyle = .light

@@ -243,7 +243,7 @@ fn app_and_haptics_wrappers_call_native_bridge() {
             .lock()
             .expect("calls lock")
             .push(format!("share_text:{text}"));
-        Ok(NativeValue::Bool(true))
+        Ok(NativeValue::Void)
     });
 
     let calls = CALLS.get_or_init(|| Mutex::new(Vec::new()));
@@ -270,7 +270,7 @@ fn app_and_haptics_wrappers_call_native_bridge() {
     });
 
     assert!(app::open_url("https://example.com").expect("open_url"));
-    assert!(app::share_text("hello world").expect("share_text"));
+    app::share_text("hello world").expect("share_text");
     haptics::selection().expect("selection");
     haptics::impact("medium").expect("impact");
 

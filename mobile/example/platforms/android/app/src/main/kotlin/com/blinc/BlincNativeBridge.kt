@@ -210,7 +210,16 @@ object BlincNativeBridge {
         }
 
         register("haptics", "impact") { args ->
-            val style = args.optInt(0, 1)
+            val style = when {
+                !args.isNull(0) && args.optString(0).isNotEmpty() -> {
+                    when (args.optString(0, "medium").lowercase()) {
+                        "light" -> 0
+                        "heavy" -> 2
+                        else -> 1
+                    }
+                }
+                else -> args.optInt(0, 1)
+            }
             val amplitude = when (style) {
                 0 -> 50   // light
                 2 -> 255  // heavy
