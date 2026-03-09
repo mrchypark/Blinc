@@ -100,7 +100,7 @@ fn sync_platform_ime_state() {
 
 fn keyboard_text_chars(event: &blinc_platform::KeyboardEvent) -> Vec<char> {
     if let Some(text) = event.text.as_deref() {
-        return text.chars().filter(|ch| !ch.is_control()).collect();
+        return visible_text_chars(text);
     }
 
     let mods = &event.modifiers;
@@ -141,6 +141,19 @@ fn keyboard_text_chars(event: &blinc_platform::KeyboardEvent) -> Vec<char> {
     );
 
     fallback.into_iter().collect()
+}
+
+fn visible_text_chars(text: &str) -> Vec<char> {
+    text.chars().filter(|ch| !ch.is_control()).collect()
+}
+
+fn should_skip_composition_commit(
+    keyboard_committed_text: Option<&[char]>,
+    composition_text: &str,
+) -> bool {
+    let composition_chars = visible_text_chars(composition_text);
+    !composition_chars.is_empty()
+        && keyboard_committed_text.is_some_and(|chars| chars == composition_chars.as_slice())
 }
 
 fn letter_key_char(key: &Key) -> Option<char> {
@@ -2970,6 +2983,7 @@ impl WindowedApp {
                             let mut pending_events: Vec<PendingEvent> = Vec::new();
                             // Separate collection for keyboard events (TEXT_INPUT)
                             let mut keyboard_events: Vec<PendingEvent> = Vec::new();
+                            let mut keyboard_committed_text: Option<Vec<char>> = None;
                             // Track if scroll ended (momentum finished)
                             let mut scroll_ended = false;
                             // Track if gesture ended (finger lifted - may still have momentum)
@@ -3218,6 +3232,11 @@ impl WindowedApp {
                                             // For character-producing keys, dispatch TEXT_INPUT
                                             // We use broadcast dispatch so any focused text input can receive it
                                             if !mods.ctrl && !mods.meta {
+                                                keyboard_committed_text = kb_event
+                                                    .text
+                                                    .as_ref()
+                                                    .map(|_| text_chars.clone())
+                                                    .filter(|chars| !chars.is_empty());
                                                 for c in text_chars {
                                                     keyboard_events.push(PendingEvent {
                                                         event_type: blinc_core::events::event_types::TEXT_INPUT,
@@ -3230,6 +3249,8 @@ impl WindowedApp {
                                                         ..Default::default()
                                                     });
                                                 }
+                                            } else {
+                                                keyboard_committed_text = None;
                                             }
 
                                             // For KEY_DOWN events with special keys (backspace, arrows)
@@ -3353,13 +3374,19 @@ impl WindowedApp {
                                 }
                                 InputEvent::CompositionCommitted(text) => {
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
-                                    for c in text.chars().filter(|c| !c.is_control()) {
-                                        keyboard_events.push(PendingEvent {
-                                            event_type: blinc_core::events::event_types::TEXT_INPUT,
-                                            key_char: Some(c),
-                                            ..Default::default()
-                                        });
+                                    if !should_skip_composition_commit(
+                                        keyboard_committed_text.as_deref(),
+                                        &text,
+                                    ) {
+                                        for c in visible_text_chars(&text) {
+                                            keyboard_events.push(PendingEvent {
+                                                event_type: blinc_core::events::event_types::TEXT_INPUT,
+                                                key_char: Some(c),
+                                                ..Default::default()
+                                            });
+                                        }
                                     }
+                                    keyboard_committed_text = None;
                                 }
                                 InputEvent::CompositionCancelled => {
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
@@ -4721,5 +4748,25 @@ mod tests {
         };
 
         assert_eq!(keyboard_text_chars(&event), vec!['?']);
+    }
+
+    #[test]
+    fn composition_commit_is_skipped_when_keyboard_event_already_carried_same_text() {
+        let keyboard_chars = vec!['한', '글'];
+
+        assert!(should_skip_composition_commit(
+            Some(keyboard_chars.as_slice()),
+            "한글"
+        ));
+    }
+
+    #[test]
+    fn composition_commit_is_not_skipped_when_text_differs() {
+        let keyboard_chars = vec!['한', '글'];
+
+        assert!(!should_skip_composition_commit(
+            Some(keyboard_chars.as_slice()),
+            "초성"
+        ));
     }
 }
