@@ -1,4 +1,4 @@
-/// Main application module for the debugger.
+// Main application module for the debugger.
 use crate::panels::{
     CommandPanel, EvidencePanel, InspectorPanel, PreviewConfig, PreviewPanel, TimelinePanel,
     TimelinePanelState, TreePanel, TreePanelState,

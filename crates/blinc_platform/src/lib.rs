@@ -43,11 +43,14 @@
 //! ```
 
 pub mod accessibility;
+pub mod app;
 pub mod assets;
 pub mod ble;
 pub mod clipboard;
+pub mod environment;
 mod error;
 mod event;
+pub mod haptics;
 mod ime;
 mod input;
 pub mod microphone;
@@ -57,9 +60,16 @@ pub mod sensors;
 mod window;
 
 // Re-export all public types
+pub use environment::{
+    LifecycleState, PlatformEnvironmentChanged, PlatformEnvironmentSnapshot, ViewportInsets,
+    WindowMetrics,
+};
 pub use error::{PlatformError, Result};
 pub use event::{ControlFlow, Event, EventLoop, LifecycleEvent, WindowEvent};
-pub use ime::{current_ime_state, set_ime_state, ImeCursorArea, ImeState};
+pub use ime::{
+    current_ime_state, set_ime_state, ImeCursorArea, ImeRequest, ImeState, ImeVisibility,
+    SelectionRange, TextInputSessionId,
+};
 pub use input::{
     FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate, InputEvent, Key, KeyState,
     KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
@@ -69,8 +79,11 @@ pub use window::{Cursor, Window, WindowConfig};
 
 // Re-export commonly used asset types
 pub use accessibility::{
-    AccessibilityAction, AccessibilityActionRequest, AccessibilityBounds, AccessibilityNode,
-    AccessibilityNodeId, AccessibilityRole, AccessibilityTreeSnapshot,
+    current_accessibility_sync_status, current_platform_accessibility_snapshot,
+    mark_accessibility_unsupported, reset_accessibility_runtime_state,
+    update_platform_accessibility_snapshot, AccessibilityAction, AccessibilityActionRequest,
+    AccessibilityBounds, AccessibilityNode, AccessibilityNodeId, AccessibilityRole,
+    AccessibilitySyncStatus, AccessibilityTreeSnapshot,
 };
 pub use assets::{AssetLoader, AssetPath, FilesystemAssetLoader};
 pub use ble::{
@@ -88,9 +101,13 @@ pub use sensors::{
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::accessibility::{
-        AccessibilityAction, AccessibilityActionRequest, AccessibilityBounds, AccessibilityNode,
-        AccessibilityNodeId, AccessibilityRole, AccessibilityTreeSnapshot,
+        current_accessibility_sync_status, current_platform_accessibility_snapshot,
+        mark_accessibility_unsupported, reset_accessibility_runtime_state,
+        update_platform_accessibility_snapshot, AccessibilityAction, AccessibilityActionRequest,
+        AccessibilityBounds, AccessibilityNode, AccessibilityNodeId, AccessibilityRole,
+        AccessibilitySyncStatus, AccessibilityTreeSnapshot,
     };
+    pub use crate::app;
     pub use crate::assets::{
         asset_exists, load_asset, load_asset_string, AssetLoader, AssetPath, FilesystemAssetLoader,
     };
@@ -98,9 +115,17 @@ pub mod prelude {
         BleBackend, BleBatchSummary, BleClient, BleProbeState, BleRuntimeController, BleScanConfig,
         BleScanResult, BleScanStatus,
     };
+    pub use crate::environment::{
+        LifecycleState, PlatformEnvironmentChanged, PlatformEnvironmentSnapshot, ViewportInsets,
+        WindowMetrics,
+    };
     pub use crate::error::{PlatformError, Result};
     pub use crate::event::{ControlFlow, Event, EventLoop, LifecycleEvent, WindowEvent};
-    pub use crate::ime::{current_ime_state, set_ime_state, ImeCursorArea, ImeState};
+    pub use crate::haptics;
+    pub use crate::ime::{
+        current_ime_state, set_ime_state, ImeCursorArea, ImeRequest, ImeState, ImeVisibility,
+        SelectionRange, TextInputSessionId,
+    };
     pub use crate::input::{
         FocusTraversalIntent, ImeCompositionSelection, ImeCompositionUpdate, InputEvent, Key,
         KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
