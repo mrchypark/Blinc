@@ -47,6 +47,7 @@ pub mod ble;
 pub mod clipboard;
 mod error;
 mod event;
+mod ime;
 mod input;
 pub mod microphone;
 pub mod permissions;
@@ -57,6 +58,7 @@ mod window;
 // Re-export all public types
 pub use error::{PlatformError, Result};
 pub use event::{ControlFlow, Event, EventLoop, LifecycleEvent, WindowEvent};
+pub use ime::{current_ime_state, set_ime_state, ImeCursorArea, ImeState};
 pub use input::{
     InputEvent, Key, KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase,
     TouchEvent,
@@ -89,6 +91,7 @@ pub mod prelude {
     };
     pub use crate::error::{PlatformError, Result};
     pub use crate::event::{ControlFlow, Event, EventLoop, LifecycleEvent, WindowEvent};
+    pub use crate::ime::{current_ime_state, set_ime_state, ImeCursorArea, ImeState};
     pub use crate::input::{
         InputEvent, Key, KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase,
         TouchEvent,

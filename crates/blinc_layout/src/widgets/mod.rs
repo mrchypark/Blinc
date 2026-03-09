@@ -61,6 +61,8 @@ pub use text_input::{
     blur_all_text_inputs,
     // Cursor blink timing utilities
     elapsed_ms,
+    focus_text_input,
+    focused_text_widget_ime_area,
     has_focused_text_input,
     request_css_reparse,
     // Rebuild/relayout request functions

@@ -4,7 +4,9 @@ use blinc_platform::{
     InputEvent, Key, KeyState, KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase,
     TouchEvent,
 };
-use winit::event::{ElementState, MouseButton as WinitMouseButton, Touch, TouchPhase};
+use winit::event::{
+    ElementState, KeyEvent as WinitKeyEvent, MouseButton as WinitMouseButton, Touch, TouchPhase,
+};
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 
 /// Convert winit mouse button to blinc MouseButton
@@ -140,14 +142,35 @@ pub fn convert_key(key: &WinitKey) -> Key {
 }
 
 /// Convert winit keyboard event to blinc InputEvent
-pub fn convert_keyboard_event(
+pub fn convert_keyboard_event(event: &WinitKeyEvent, modifiers: ModifiersState) -> InputEvent {
+    keyboard_input_event(
+        &event.logical_key,
+        event.text.as_deref(),
+        event.state,
+        modifiers,
+    )
+}
+
+fn keyboard_input_event(
     key: &WinitKey,
+    text: Option<&str>,
     state: ElementState,
     modifiers: ModifiersState,
 ) -> InputEvent {
     InputEvent::Keyboard(KeyboardEvent {
         key: convert_key(key),
+        text: text.map(str::to_string),
         state: convert_key_state(state),
+        modifiers: convert_modifiers(modifiers),
+    })
+}
+
+/// Create a committed text input event from IME output.
+pub fn commit_text_event(text: String, modifiers: ModifiersState) -> InputEvent {
+    InputEvent::Keyboard(KeyboardEvent {
+        key: Key::Unknown,
+        text: Some(text),
+        state: KeyState::Pressed,
         modifiers: convert_modifiers(modifiers),
     })
 }
@@ -226,4 +249,45 @@ pub fn scroll_end_event() -> InputEvent {
 /// `scale` is a ratio delta per update (1.0 = no change).
 pub fn pinch_event(scale: f32) -> InputEvent {
     InputEvent::Pinch { scale }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{commit_text_event, keyboard_input_event};
+    use blinc_platform::{InputEvent, Key, KeyState};
+    use winit::event::ElementState;
+    use winit::keyboard::{Key as WinitKey, ModifiersState};
+
+    #[test]
+    fn convert_keyboard_event_preserves_committed_text() {
+        let input = keyboard_input_event(
+            &WinitKey::Character("a".into()),
+            Some("a"),
+            ElementState::Pressed,
+            ModifiersState::empty(),
+        );
+
+        match input {
+            InputEvent::Keyboard(kb) => {
+                assert_eq!(kb.key, Key::A);
+                assert_eq!(kb.text.as_deref(), Some("a"));
+                assert_eq!(kb.state, KeyState::Pressed);
+            }
+            other => panic!("expected keyboard input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn commit_text_event_keeps_full_ime_commit_string() {
+        let input = commit_text_event("초".to_string(), ModifiersState::empty());
+
+        match input {
+            InputEvent::Keyboard(kb) => {
+                assert_eq!(kb.key, Key::Unknown);
+                assert_eq!(kb.text.as_deref(), Some("초"));
+                assert_eq!(kb.state, KeyState::Pressed);
+            }
+            other => panic!("expected keyboard input, got {other:?}"),
+        }
+    }
 }

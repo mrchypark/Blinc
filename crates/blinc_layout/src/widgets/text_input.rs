@@ -88,6 +88,48 @@ pub fn has_focused_text_input() -> bool {
     GLOBAL_FOCUS_COUNT.load(Ordering::Relaxed) > 0
 }
 
+fn focused_text_input_is_live() -> bool {
+    let focused = match FOCUSED_TEXT_INPUT.lock() {
+        Ok(focused) => focused,
+        Err(_) => return false,
+    };
+    let weak = match focused.as_ref() {
+        Some(weak) => weak,
+        None => return false,
+    };
+    let data = match weak.upgrade() {
+        Some(data) => data,
+        None => return false,
+    };
+    data.lock()
+        .ok()
+        .map(|guard| guard.visual.is_focused())
+        .unwrap_or(false)
+}
+
+fn focused_text_area_is_live() -> bool {
+    let focused = match FOCUSED_TEXT_AREA.lock() {
+        Ok(focused) => focused,
+        Err(_) => return false,
+    };
+    let weak = match focused.as_ref() {
+        Some(weak) => weak,
+        None => return false,
+    };
+    let data = match weak.upgrade() {
+        Some(data) => data,
+        None => return false,
+    };
+    data.lock()
+        .ok()
+        .map(|guard| guard.visual.is_focused())
+        .unwrap_or(false)
+}
+
+pub fn has_live_focused_text_widget() -> bool {
+    focused_text_input_is_live() || focused_text_area_is_live()
+}
+
 pub fn take_needs_continuous_redraw() -> bool {
     NEEDS_CONTINUOUS_REDRAW.swap(false, Ordering::SeqCst)
 }
@@ -324,6 +366,95 @@ pub fn blur_all_text_inputs() {
             }
         }
     }
+}
+
+/// Programmatically focus a text input.
+///
+/// This mirrors the focus path used by pointer interaction so keyboard-driven
+/// navigation can move focus between inputs without synthesizing a mouse click.
+pub fn focus_text_input(state: &SharedTextInputData) {
+    use crate::stateful::refresh_stateful;
+    use blinc_core::events::event_types;
+
+    let (already_focused, disabled) = state
+        .lock()
+        .ok()
+        .map(|guard| (guard.visual.is_focused(), guard.disabled))
+        .unwrap_or((false, true));
+
+    if disabled {
+        return;
+    }
+
+    if !already_focused {
+        blur_all_text_inputs();
+    }
+
+    let stateful_ref = {
+        let mut data = match state.lock() {
+            Ok(data) => data,
+            Err(_) => return,
+        };
+
+        if !data.visual.is_focused() {
+            data.visual = data
+                .visual
+                .on_event(event_types::FOCUS)
+                .unwrap_or(TextFieldState::Focused);
+            data.focus_time_ms = elapsed_ms();
+            increment_focus_count();
+        }
+
+        if data.masked {
+            data.cursor = data.value.chars().count();
+        }
+        data.selection_start = None;
+        data.reset_cursor_blink();
+        data.sync_global_selection();
+        data.stateful_state.clone()
+    };
+
+    if let Some(ref stateful) = stateful_ref {
+        if let Ok(mut shared) = stateful.lock() {
+            if !shared.state.is_focused() {
+                if let Some(new_state) = shared.state.on_event(event_types::FOCUS) {
+                    shared.state = new_state;
+                } else {
+                    shared.state = TextFieldState::Focused;
+                }
+            }
+            shared.needs_visual_update = true;
+        }
+    }
+
+    set_focused_text_input(state);
+    request_continuous_redraw();
+
+    if let Some(ref stateful) = stateful_ref {
+        refresh_stateful(stateful);
+    }
+}
+
+fn focused_text_input_bounds() -> Option<crate::element::ElementBounds> {
+    let focused = FOCUSED_TEXT_INPUT.lock().ok()?;
+    let weak = focused.as_ref()?;
+    let data = weak.upgrade()?;
+    let guard = data.lock().ok()?;
+    let bounds = guard.layout_bounds_storage.lock().ok()?;
+    *bounds
+}
+
+fn focused_text_area_bounds() -> Option<crate::element::ElementBounds> {
+    let focused = FOCUSED_TEXT_AREA.lock().ok()?;
+    let weak = focused.as_ref()?;
+    let data = weak.upgrade()?;
+    let guard = data.lock().ok()?;
+    let bounds = guard.layout_bounds_storage.lock().ok()?;
+    *bounds
+}
+
+pub fn focused_text_widget_ime_area() -> Option<crate::element::ElementBounds> {
+    focused_text_input_bounds().or_else(focused_text_area_bounds)
 }
 
 /// Get the layout node ID of the currently focused TextInput, if any.
@@ -772,6 +903,10 @@ impl TextInputData {
         }
 
         best_pos
+    }
+
+    pub fn cursor_position_from_pointer_x(&self, x: f32, font_size: f32) -> usize {
+        self.cursor_position_from_x(x, font_size)
     }
 
     /// Ensure the cursor is visible by adjusting horizontal scroll offset.
@@ -1389,7 +1524,7 @@ impl TextInput {
                     // local_x is already in text-relative coordinates - use it directly.
                     // cursor_position_from_x handles scroll offset internally.
                     let text_x = ctx.local_x.max(0.0);
-                    let cursor_pos = d.cursor_position_from_x(text_x, font_size);
+                    let cursor_pos = d.cursor_position_from_pointer_x(text_x, font_size);
                     d.cursor = cursor_pos;
                     d.selection_start = None;
                     d.reset_cursor_blink();
@@ -2054,6 +2189,13 @@ impl ElementBuilder for TextInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::element::ElementBounds;
+    use std::sync::{Mutex, OnceLock};
+
+    fn focus_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_text_input_data_insert() {
@@ -2096,5 +2238,139 @@ mod tests {
         data.cursor = 0;
         data.insert("abc123");
         assert_eq!(data.value, "123");
+    }
+
+    #[test]
+    fn test_focus_text_input_switches_focus_between_inputs() {
+        let _guard = focus_test_lock().lock().unwrap();
+        blur_all_text_inputs();
+
+        let first = text_input_state();
+        let second = text_input_state();
+
+        focus_text_input(&first);
+        assert!(first.lock().unwrap().visual.is_focused());
+        assert!(has_focused_text_input());
+
+        focus_text_input(&second);
+        assert!(!first.lock().unwrap().visual.is_focused());
+        assert!(second.lock().unwrap().visual.is_focused());
+
+        blur_all_text_inputs();
+        assert!(!has_focused_text_input());
+    }
+
+    #[test]
+    fn test_focus_text_input_moves_masked_cursor_to_end() {
+        let _guard = focus_test_lock().lock().unwrap();
+        blur_all_text_inputs();
+
+        let masked = text_input_state();
+        {
+            let mut data = masked.lock().unwrap();
+            data.value = "secret".to_string();
+            data.masked = true;
+            data.cursor = 0;
+        }
+
+        focus_text_input(&masked);
+
+        let data = masked.lock().unwrap();
+        assert!(data.visual.is_focused());
+        assert_eq!(data.cursor, 6);
+        drop(data);
+
+        blur_all_text_inputs();
+    }
+
+    #[test]
+    fn test_focus_text_input_disabled_target_preserves_existing_focus() {
+        let _guard = focus_test_lock().lock().unwrap();
+        blur_all_text_inputs();
+
+        let first = text_input_state();
+        let disabled = text_input_state();
+        disabled.lock().unwrap().disabled = true;
+
+        focus_text_input(&first);
+        focus_text_input(&disabled);
+
+        assert!(first.lock().unwrap().visual.is_focused());
+        assert!(!disabled.lock().unwrap().visual.is_focused());
+
+        blur_all_text_inputs();
+    }
+
+    #[test]
+    fn test_masked_text_input_cursor_position_from_pointer_x_uses_pointer_location() {
+        let mut data = TextInputData::with_value("secret");
+        data.masked = true;
+
+        let near_start = data.cursor_position_from_pointer_x(0.0, 16.0);
+        let far_end = data.cursor_position_from_pointer_x(10_000.0, 16.0);
+
+        assert_eq!(near_start, 0);
+        assert_eq!(far_end, data.value.chars().count());
+    }
+
+    #[test]
+    fn test_focused_text_widget_ime_area_uses_focused_text_input_bounds() {
+        let _guard = focus_test_lock().lock().unwrap();
+        blur_all_text_inputs();
+
+        let input = text_input_state();
+        {
+            let data = input.lock().unwrap();
+            *data.layout_bounds_storage.lock().unwrap() =
+                Some(ElementBounds::new(10.0, 20.0, 120.0, 32.0));
+        }
+
+        focus_text_input(&input);
+
+        let bounds = focused_text_widget_ime_area().expect("ime area");
+        assert_eq!(bounds.x, 10.0);
+        assert_eq!(bounds.y, 20.0);
+        assert_eq!(bounds.width, 120.0);
+        assert_eq!(bounds.height, 32.0);
+
+        blur_all_text_inputs();
+    }
+
+    #[test]
+    fn test_has_live_focused_text_widget_ignores_stale_global_focus_count() {
+        let _guard = focus_test_lock().lock().unwrap();
+
+        let original_input = {
+            let mut focused = FOCUSED_TEXT_INPUT.lock().unwrap();
+            focused.take()
+        };
+        let original_area = {
+            let mut focused = FOCUSED_TEXT_AREA.lock().unwrap();
+            focused.take()
+        };
+        let original_count = GLOBAL_FOCUS_COUNT.load(Ordering::Relaxed);
+
+        let stale_state = text_input_state();
+        let stale_weak = Arc::downgrade(&stale_state);
+        drop(stale_state);
+
+        {
+            let mut focused = FOCUSED_TEXT_INPUT.lock().unwrap();
+            *focused = Some(stale_weak);
+        }
+        GLOBAL_FOCUS_COUNT.store(1, Ordering::Relaxed);
+
+        assert!(has_focused_text_input());
+        assert!(!has_live_focused_text_widget());
+
+        {
+            let mut focused = FOCUSED_TEXT_INPUT.lock().unwrap();
+            *focused = original_input;
+        }
+        {
+            let mut focused = FOCUSED_TEXT_AREA.lock().unwrap();
+            *focused = original_area;
+        }
+        GLOBAL_FOCUS_COUNT.store(original_count, Ordering::Relaxed);
     }
 }

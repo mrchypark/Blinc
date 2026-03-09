@@ -108,6 +108,11 @@ pub enum MouseButton {
 pub struct KeyboardEvent {
     /// The key that was pressed or released
     pub key: Key,
+    /// Text produced by this key event after layout/IME processing.
+    ///
+    /// This is `Some` for committed user-visible text and `None` for
+    /// non-textual keys or in-progress IME composition updates.
+    pub text: Option<String>,
     /// Whether the key was pressed or released
     pub state: KeyState,
     /// Modifier keys held during this event
