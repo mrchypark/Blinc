@@ -4,12 +4,15 @@
 
 use crate::event_loop::IOSEventLoop;
 use crate::window::IOSWindow;
+use blinc_platform::{LifecycleState, PlatformEnvironmentSnapshot};
 use blinc_platform::{Platform, PlatformError};
+#[cfg(target_os = "ios")]
+use blinc_platform::{ViewportInsets, WindowMetrics};
 
 #[cfg(target_os = "ios")]
 use objc2_foundation::MainThreadMarker;
 #[cfg(target_os = "ios")]
-use objc2_ui_kit::UIScreen;
+use objc2_ui_kit::{UIApplication, UIApplicationState, UIScreen, UIUserInterfaceStyle};
 
 #[cfg(target_os = "ios")]
 use tracing::info;
@@ -33,6 +36,21 @@ impl IOSPlatform {
         let screen = UIScreen::mainScreen(mtm);
         screen.scale() as f64
     }
+}
+
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+fn lifecycle_state_from_ios_raw(raw: isize) -> LifecycleState {
+    match raw {
+        0 => LifecycleState::Foreground,
+        1 => LifecycleState::Inactive,
+        2 => LifecycleState::Background,
+        _ => LifecycleState::Inactive,
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn lifecycle_state_from_application_state(state: UIApplicationState) -> LifecycleState {
+    lifecycle_state_from_ios_raw(state.0)
 }
 
 impl Platform for IOSPlatform {
@@ -120,9 +138,7 @@ pub fn get_display_scale() -> f64 {
 /// Check if the system is in dark mode
 #[cfg(target_os = "ios")]
 pub fn is_dark_mode() -> bool {
-    // TODO: Implement proper dark mode detection using UITraitCollection
-    // For now, default to light mode
-    false
+    get_environment_snapshot().is_dark_mode
 }
 
 /// Placeholder for non-iOS builds
@@ -136,16 +152,66 @@ pub fn is_dark_mode() -> bool {
 /// Returns (top, left, bottom, right) insets in logical points.
 #[cfg(target_os = "ios")]
 pub fn get_safe_area_insets() -> (f32, f32, f32, f32) {
-    // Get key window's safe area insets
-    // This accounts for notch, home indicator, etc.
-    // Note: In a real implementation, you'd get this from the UIWindow
-    (0.0, 0.0, 0.0, 0.0)
+    let insets = get_environment_snapshot().safe_area_insets;
+    (insets.top, insets.left, insets.bottom, insets.right)
 }
 
 /// Placeholder for non-iOS builds
 #[cfg(not(target_os = "ios"))]
 pub fn get_safe_area_insets() -> (f32, f32, f32, f32) {
     (0.0, 0.0, 0.0, 0.0)
+}
+
+/// Capture the active iOS platform environment as a window-scoped snapshot.
+#[cfg(target_os = "ios")]
+pub fn get_environment_snapshot() -> PlatformEnvironmentSnapshot {
+    let mtm = MainThreadMarker::new().expect("Must be called from main thread");
+    let screen = UIScreen::mainScreen(mtm);
+    let scale_factor = screen.scale() as f64;
+    let bounds = screen.bounds();
+    let logical_width = bounds.size.width;
+    let logical_height = bounds.size.height;
+    let physical_width = (logical_width * scale_factor as f32).round() as u32;
+    let physical_height = (logical_height * scale_factor as f32).round() as u32;
+
+    let mut safe_area_insets = ViewportInsets::default();
+    let mut is_dark_mode = false;
+
+    let application = UIApplication::sharedApplication(mtm);
+    let lifecycle_state = lifecycle_state_from_application_state(application.applicationState());
+    if let Some(window) = application.keyWindow() {
+        let insets = window.safeAreaInsets();
+        safe_area_insets = ViewportInsets {
+            top: insets.top,
+            left: insets.left,
+            bottom: insets.bottom,
+            right: insets.right,
+        };
+
+        is_dark_mode = matches!(
+            window.traitCollection().userInterfaceStyle(),
+            UIUserInterfaceStyle::Dark
+        );
+    }
+
+    PlatformEnvironmentSnapshot {
+        lifecycle_state,
+        metrics: WindowMetrics {
+            logical_width,
+            logical_height,
+            physical_width,
+            physical_height,
+            scale_factor,
+        },
+        safe_area_insets,
+        viewport_insets: safe_area_insets,
+        is_dark_mode,
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+pub fn get_environment_snapshot() -> PlatformEnvironmentSnapshot {
+    PlatformEnvironmentSnapshot::default()
 }
 
 /// iOS system font paths
@@ -175,4 +241,17 @@ pub fn system_font_paths() -> &'static [&'static str] {
         "/System/Library/Fonts/CoreAddition/Verdana.ttf",
         "/System/Library/Fonts/CoreAddition/TimesNewRomanPS.ttf",
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lifecycle_state_mapping_matches_ios_state_values() {
+        assert_eq!(lifecycle_state_from_ios_raw(0), LifecycleState::Foreground);
+        assert_eq!(lifecycle_state_from_ios_raw(1), LifecycleState::Inactive);
+        assert_eq!(lifecycle_state_from_ios_raw(2), LifecycleState::Background);
+        assert_eq!(lifecycle_state_from_ios_raw(99), LifecycleState::Inactive);
+    }
 }

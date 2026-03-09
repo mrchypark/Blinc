@@ -82,7 +82,7 @@ fn e2e_exit_after() -> bool {
     e2e_is_enabled()
 }
 
-fn sync_platform_ime_state() {
+pub(crate) fn sync_platform_ime_state() {
     let cursor_area = blinc_layout::widgets::focused_text_widget_ime_area().map(|bounds| {
         ImeCursorArea::new(
             bounds.x as f64,
@@ -92,9 +92,28 @@ fn sync_platform_ime_state() {
         )
     });
     let enabled = blinc_layout::widgets::has_live_focused_text_widget();
+    let session_id = blinc_layout::widgets::text_input::focused_text_input_node_id()
+        .or_else(blinc_layout::widgets::text_input::focused_text_area_node_id)
+        .map(|node_id| {
+            blinc_platform::TextInputSessionId::new(format!("node:{}", node_id.to_raw()))
+        });
+    let state = if enabled {
+        let mut request = blinc_platform::ImeRequest::new(
+            session_id
+                .unwrap_or_else(|| blinc_platform::TextInputSessionId::new("focused-text-widget")),
+        )
+        .with_visibility(blinc_platform::ImeVisibility::Visible);
+        if let Some(cursor_area) = cursor_area {
+            request = request.with_cursor_area(cursor_area);
+        }
+        ImeState::default().with_request(Some(request))
+    } else {
+        ImeState::default()
+    };
     blinc_platform::set_ime_state(ImeState {
-        enabled,
+        enabled: state.enabled,
         cursor_area,
+        request: state.request,
     });
 }
 
@@ -234,6 +253,7 @@ fn letter_key_char(key: &Key) -> Option<char> {
 ))]
 fn sync_accessibility_snapshot(tree: &blinc_layout::RenderTree) {
     if let Some(snapshot) = blinc_layout::export_accessibility_snapshot(tree) {
+        blinc_platform::update_platform_accessibility_snapshot(snapshot.clone());
         blinc_platform_desktop::update_accessibility_snapshot(snapshot);
     }
 }
@@ -243,7 +263,14 @@ fn sync_accessibility_snapshot(tree: &blinc_layout::RenderTree) {
     all(target_os = "linux", not(target_env = "ohos")),
     target_os = "windows"
 )))]
-fn sync_accessibility_snapshot(_tree: &blinc_layout::RenderTree) {}
+fn sync_accessibility_snapshot(tree: &blinc_layout::RenderTree) {
+    if let Some(snapshot) = blinc_layout::export_accessibility_snapshot(tree) {
+        blinc_platform::update_platform_accessibility_snapshot(snapshot);
+    }
+    blinc_platform::mark_accessibility_unsupported(
+        "platform accessibility bridge is not wired for this runtime",
+    );
+}
 
 fn maybe_record_tree_snapshot(tree: &blinc_layout::RenderTree, windowed_ctx: &WindowedContext) {
     if !blinc_layout::recorder_bridge::is_recording_snapshots() {

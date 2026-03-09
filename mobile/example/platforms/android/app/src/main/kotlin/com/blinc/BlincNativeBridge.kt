@@ -60,6 +60,13 @@ import java.util.TimeZone
 import java.lang.ref.WeakReference
 
 object BlincNativeBridge {
+    private data class PermissionCapabilityState(
+        val status: String,
+        val canRequest: Boolean,
+        val requiresSettingsRedirect: Boolean,
+        val supported: Boolean = true,
+    )
+
 
     // Handler type: (args: JSONArray) -> Any?
     private val handlers = mutableMapOf<String, MutableMap<String, (JSONArray) -> Any?>>()
@@ -317,58 +324,196 @@ object BlincNativeBridge {
         // =====================================================================
 
         register("permissions", "has_location") {
-            sensorCollector.hasLocationPermission()
+            val granted = sensorCollector.hasLocationPermission()
+            permissionCapabilityPayload(
+                permission = Manifest.permission.ACCESS_FINE_LOCATION,
+                granted = granted,
+            )
         }
         register("permissions", "has_location_always") {
-            sensorCollector.hasLocationAlwaysPermission()
+            val granted = sensorCollector.hasLocationAlwaysPermission()
+            permissionCapabilityPayload(
+                permission = Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+                granted = granted,
+            )
         }
         register("permissions", "has_motion") {
-            sensorCollector.hasMotionPermission()
+            val granted = sensorCollector.hasMotionPermission()
+            permissionCapabilityPayload(
+                permission = Manifest.permission.ACTIVITY_RECOGNITION,
+                granted = granted,
+            )
         }
         register("permissions", "has_camera") {
-            sensorCollector.hasCameraPermission()
+            val granted = sensorCollector.hasCameraPermission()
+            permissionCapabilityPayload(
+                permission = Manifest.permission.CAMERA,
+                granted = granted,
+            )
         }
         register("permissions", "has_microphone") {
-            sensorCollector.hasMicrophonePermission()
+            val granted = sensorCollector.hasMicrophonePermission()
+            permissionCapabilityPayload(
+                permission = Manifest.permission.RECORD_AUDIO,
+                granted = granted,
+            )
         }
         register("permissions", "has_photos") {
-            sensorCollector.hasPhotosPermission()
+            val granted = sensorCollector.hasPhotosPermission()
+            permissionCapabilityPayload(
+                permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    Manifest.permission.READ_MEDIA_IMAGES
+                } else {
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                },
+                granted = granted,
+            )
         }
         register("permissions", "has_notifications") {
-            sensorCollector.hasNotificationsPermission()
+            val granted = sensorCollector.hasNotificationsPermission()
+            permissionCapabilityPayload(
+                permission = Manifest.permission.POST_NOTIFICATIONS,
+                granted = granted,
+            )
         }
         register("permissions", "has_bluetooth_scan") {
-            sensorCollector.hasBluetoothScanPermission()
+            val granted = sensorCollector.hasBluetoothScanPermission()
+            permissionCapabilityPayload(
+                permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    Manifest.permission.BLUETOOTH_SCAN
+                } else {
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                },
+                granted = granted,
+            )
         }
         register("permissions", "has_bluetooth_connect") {
-            sensorCollector.hasBluetoothConnectPermission()
+            val granted = sensorCollector.hasBluetoothConnectPermission()
+            permissionCapabilityPayload(
+                permission = Manifest.permission.BLUETOOTH_CONNECT,
+                granted = granted,
+            )
         }
         register("permissions", "request_location_when_in_use") {
-            sensorCollector.requestLocationPermissionWhenInUse()
+            val previous = permissionCapabilityState(
+                permission = Manifest.permission.ACCESS_FINE_LOCATION,
+                granted = sensorCollector.hasLocationPermission(),
+            )
+            val granted = sensorCollector.requestLocationPermissionWhenInUse()
+            permissionRequestPayload(
+                permission = Manifest.permission.ACCESS_FINE_LOCATION,
+                previous = previous,
+                granted = granted,
+            )
         }
         register("permissions", "request_location_always") {
-            sensorCollector.requestLocationPermissionAlways()
+            val previous = permissionCapabilityState(
+                permission = Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+                granted = sensorCollector.hasLocationAlwaysPermission(),
+            )
+            val granted = sensorCollector.requestLocationPermissionAlways()
+            permissionRequestPayload(
+                permission = Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+                previous = previous,
+                granted = granted,
+            )
         }
         register("permissions", "request_motion") {
-            sensorCollector.requestMotionPermission()
+            val previous = permissionCapabilityState(
+                permission = Manifest.permission.ACTIVITY_RECOGNITION,
+                granted = sensorCollector.hasMotionPermission(),
+            )
+            val granted = sensorCollector.requestMotionPermission()
+            permissionRequestPayload(
+                permission = Manifest.permission.ACTIVITY_RECOGNITION,
+                previous = previous,
+                granted = granted,
+            )
         }
         register("permissions", "request_camera") {
-            sensorCollector.requestCameraPermission()
+            val previous = permissionCapabilityState(
+                permission = Manifest.permission.CAMERA,
+                granted = sensorCollector.hasCameraPermission(),
+            )
+            val granted = sensorCollector.requestCameraPermission()
+            permissionRequestPayload(
+                permission = Manifest.permission.CAMERA,
+                previous = previous,
+                granted = granted,
+            )
         }
         register("permissions", "request_microphone") {
-            sensorCollector.requestMicrophonePermission()
+            val previous = permissionCapabilityState(
+                permission = Manifest.permission.RECORD_AUDIO,
+                granted = sensorCollector.hasMicrophonePermission(),
+            )
+            val granted = sensorCollector.requestMicrophonePermission()
+            permissionRequestPayload(
+                permission = Manifest.permission.RECORD_AUDIO,
+                previous = previous,
+                granted = granted,
+            )
         }
         register("permissions", "request_photos") {
-            sensorCollector.requestPhotosPermission()
+            val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                Manifest.permission.READ_MEDIA_IMAGES
+            } else {
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            }
+            val previous = permissionCapabilityState(
+                permission = permission,
+                granted = sensorCollector.hasPhotosPermission(),
+            )
+            val granted = sensorCollector.requestPhotosPermission()
+            permissionRequestPayload(
+                permission = permission,
+                previous = previous,
+                granted = granted,
+            )
         }
         register("permissions", "request_notifications") {
-            sensorCollector.requestNotificationsPermission()
+            val previous = permissionCapabilityState(
+                permission = Manifest.permission.POST_NOTIFICATIONS,
+                granted = sensorCollector.hasNotificationsPermission(),
+            )
+            val granted = sensorCollector.requestNotificationsPermission()
+            permissionRequestPayload(
+                permission = Manifest.permission.POST_NOTIFICATIONS,
+                previous = previous,
+                granted = granted,
+            )
         }
         register("permissions", "request_bluetooth_scan") {
-            sensorCollector.requestBluetoothScanPermission()
+            val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Manifest.permission.BLUETOOTH_SCAN
+            } else {
+                Manifest.permission.ACCESS_FINE_LOCATION
+            }
+            val previous = permissionCapabilityState(
+                permission = permission,
+                granted = sensorCollector.hasBluetoothScanPermission(),
+            )
+            val granted = sensorCollector.requestBluetoothScanPermission()
+            permissionRequestPayload(
+                permission = permission,
+                previous = previous,
+                granted = granted,
+            )
         }
         register("permissions", "request_bluetooth_connect") {
-            sensorCollector.requestBluetoothConnectPermission()
+            val previous = permissionCapabilityState(
+                permission = Manifest.permission.BLUETOOTH_CONNECT,
+                granted = sensorCollector.hasBluetoothConnectPermission(),
+            )
+            val granted = sensorCollector.requestBluetoothConnectPermission()
+            permissionRequestPayload(
+                permission = Manifest.permission.BLUETOOTH_CONNECT,
+                previous = previous,
+                granted = granted,
+            )
+        }
+        register("permissions", "open_settings") {
+            openApplicationSettings()
         }
 
         // =====================================================================
@@ -451,6 +596,8 @@ object BlincNativeBridge {
             is Long -> obj.put("value", value)
             is Float -> obj.put("value", value)
             is Double -> obj.put("value", value)
+            is JSONObject -> obj.put("value", value)
+            is JSONArray -> obj.put("value", value)
             is ByteArray -> obj.put("value", android.util.Base64.encodeToString(value, android.util.Base64.NO_WRAP))
             else -> obj.put("value", value.toString())
         }
@@ -463,6 +610,111 @@ object BlincNativeBridge {
         obj.put("errorType", type)
         obj.put("errorMessage", message)
         return obj.toString()
+    }
+
+    private fun openApplicationSettings(): Boolean {
+        val activity = foregroundActivityRef?.get() ?: return false
+        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", activity.packageName, null)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        activity.startActivity(intent)
+        return true
+    }
+
+    private fun permissionCapabilityState(
+        permission: String,
+        granted: Boolean,
+        supported: Boolean = true,
+    ): PermissionCapabilityState {
+        if (!supported) {
+            return PermissionCapabilityState(
+                status = "unknown",
+                canRequest = false,
+                requiresSettingsRedirect = false,
+                supported = false,
+            )
+        }
+        if (granted) {
+            return PermissionCapabilityState(
+                status = "granted",
+                canRequest = false,
+                requiresSettingsRedirect = false,
+            )
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return PermissionCapabilityState(
+                status = "granted",
+                canRequest = false,
+                requiresSettingsRedirect = false,
+            )
+        }
+
+        val activity = foregroundActivityRef?.get()
+        val requestedBefore = activity != null && activity.getPreferences(Context.MODE_PRIVATE)
+            .getBoolean("permission_requested:$permission", false)
+        val shouldShowRationale = activity?.shouldShowRequestPermissionRationale(permission) == true
+        return when {
+            requestedBefore && !shouldShowRationale -> PermissionCapabilityState(
+                status = "permanently_denied",
+                canRequest = false,
+                requiresSettingsRedirect = true,
+            )
+            requestedBefore -> PermissionCapabilityState(
+                status = "denied",
+                canRequest = true,
+                requiresSettingsRedirect = false,
+            )
+            else -> PermissionCapabilityState(
+                status = "not_determined",
+                canRequest = true,
+                requiresSettingsRedirect = false,
+            )
+        }
+    }
+
+    private fun permissionCapabilityPayload(
+        permission: String,
+        granted: Boolean,
+        supported: Boolean = true,
+    ): JSONObject {
+        val state = permissionCapabilityState(
+            permission = permission,
+            granted = granted,
+            supported = supported,
+        )
+        return JSONObject()
+            .put("status", state.status)
+            .put("canRequest", state.canRequest)
+            .put("requiresSettingsRedirect", state.requiresSettingsRedirect)
+            .put("supported", state.supported)
+    }
+
+    private fun permissionRequestPayload(
+        permission: String,
+        previous: PermissionCapabilityState,
+        granted: Boolean,
+        supported: Boolean = true,
+    ): JSONObject {
+        val current = when {
+            !supported -> permissionCapabilityState(permission, granted = false, supported = false)
+            granted -> permissionCapabilityState(permission, granted = true, supported = true)
+            previous.canRequest && !previous.requiresSettingsRedirect -> previous
+            else -> permissionCapabilityState(permission, granted = false, supported = true)
+        }
+        return JSONObject()
+            .put("status", current.status)
+            .put("previousStatus", previous.status)
+            .put("canRequestAgain", current.canRequest)
+            .put("requiresSettingsRedirect", current.requiresSettingsRedirect)
+    }
+
+    private fun markPermissionRequested(permission: String) {
+        val activity = foregroundActivityRef?.get() ?: return
+        activity.getPreferences(Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("permission_requested:$permission", true)
+            .apply()
     }
 
     private fun vibrate(context: Context, durationMs: Long) {
@@ -839,6 +1091,7 @@ private class AndroidSensorCollector {
         if (missing.isEmpty()) {
             return true
         }
+        missing.forEach(::markPermissionRequested)
         activity.runOnUiThread {
             activity.requestPermissions(missing.toTypedArray(), REQUEST_CODE_LOCATION_WHEN_IN_USE)
         }
@@ -859,6 +1112,7 @@ private class AndroidSensorCollector {
         if (granted) {
             return true
         }
+        markPermissionRequested(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
         activity.runOnUiThread {
             activity.requestPermissions(
                 arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION),
@@ -875,6 +1129,7 @@ private class AndroidSensorCollector {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             return true
         }
+        markPermissionRequested(Manifest.permission.ACTIVITY_RECOGNITION)
         requestPermissions(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION), REQUEST_CODE_MOTION)
         return false
     }
@@ -886,6 +1141,7 @@ private class AndroidSensorCollector {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             return true
         }
+        markPermissionRequested(Manifest.permission.CAMERA)
         requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CODE_CAMERA)
         return false
     }
@@ -897,6 +1153,7 @@ private class AndroidSensorCollector {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             return true
         }
+        markPermissionRequested(Manifest.permission.RECORD_AUDIO)
         requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_CODE_MICROPHONE)
         return false
     }
@@ -914,6 +1171,7 @@ private class AndroidSensorCollector {
             @Suppress("DEPRECATION")
             arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
+        permissions.forEach(::markPermissionRequested)
         requestPermissions(permissions, REQUEST_CODE_PHOTOS)
         return false
     }
@@ -925,6 +1183,7 @@ private class AndroidSensorCollector {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             return true
         }
+        markPermissionRequested(Manifest.permission.POST_NOTIFICATIONS)
         requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_CODE_NOTIFICATIONS)
         return false
     }
@@ -934,6 +1193,7 @@ private class AndroidSensorCollector {
             return true
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            markPermissionRequested(Manifest.permission.BLUETOOTH_SCAN)
             requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_SCAN), REQUEST_CODE_BLUETOOTH_SCAN)
             return false
         }
@@ -947,6 +1207,7 @@ private class AndroidSensorCollector {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
             return true
         }
+        markPermissionRequested(Manifest.permission.BLUETOOTH_CONNECT)
         requestPermissions(
             arrayOf(Manifest.permission.BLUETOOTH_CONNECT),
             REQUEST_CODE_BLUETOOTH_CONNECT,

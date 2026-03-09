@@ -1,5 +1,4 @@
-use blinc_core::native_bridge::native_call;
-
+use crate::permissions::{self, PermissionKind, PermissionStatus};
 use crate::SensorError;
 
 /// Snapshot of sensor-related permission states.
@@ -29,19 +28,39 @@ pub struct NativeBridgePermissionBackend;
 
 impl SensorPermissionBackend for NativeBridgePermissionBackend {
     fn has_location(&self) -> Result<bool, SensorError> {
-        native_call("permissions", "has_location", ()).map_err(SensorError::from)
+        permissions::is_granted(PermissionKind::LocationWhenInUse).map_err(|err| match err {
+            crate::PlatformError::Bridge(source) => SensorError::Bridge(source),
+            crate::PlatformError::Serialization(source) => SensorError::Serialization(source),
+            other => SensorError::Backend(other.to_string()),
+        })
     }
 
     fn has_motion(&self) -> Result<bool, SensorError> {
-        native_call("permissions", "has_motion", ()).map_err(SensorError::from)
+        permissions::is_granted(PermissionKind::Motion).map_err(|err| match err {
+            crate::PlatformError::Bridge(source) => SensorError::Bridge(source),
+            crate::PlatformError::Serialization(source) => SensorError::Serialization(source),
+            other => SensorError::Backend(other.to_string()),
+        })
     }
 
     fn request_location_when_in_use(&self) -> Result<bool, SensorError> {
-        native_call("permissions", "request_location_when_in_use", ()).map_err(SensorError::from)
+        permissions::request(PermissionKind::LocationWhenInUse)
+            .map(|result| result.status == PermissionStatus::Granted)
+            .map_err(|err| match err {
+                crate::PlatformError::Bridge(source) => SensorError::Bridge(source),
+                crate::PlatformError::Serialization(source) => SensorError::Serialization(source),
+                other => SensorError::Backend(other.to_string()),
+            })
     }
 
     fn request_motion(&self) -> Result<bool, SensorError> {
-        native_call("permissions", "request_motion", ()).map_err(SensorError::from)
+        permissions::request(PermissionKind::Motion)
+            .map(|result| result.status == PermissionStatus::Granted)
+            .map_err(|err| match err {
+                crate::PlatformError::Bridge(source) => SensorError::Bridge(source),
+                crate::PlatformError::Serialization(source) => SensorError::Serialization(source),
+                other => SensorError::Backend(other.to_string()),
+            })
     }
 }
 

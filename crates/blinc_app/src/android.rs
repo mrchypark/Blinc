@@ -46,8 +46,8 @@ use blinc_platform_android::AndroidAssetLoader;
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
 use crate::windowed::{
-    prepare_runtime_scheduler, RefDirtyFlag, SharedAnimationScheduler, SharedElementRegistry,
-    SharedReactiveGraph, SharedReadyCallbacks, WindowedContext,
+    prepare_runtime_scheduler, sync_platform_ime_state, RefDirtyFlag, SharedAnimationScheduler,
+    SharedElementRegistry, SharedReactiveGraph, SharedReadyCallbacks, WindowedContext,
 };
 
 /// Android application runner
@@ -1025,6 +1025,7 @@ impl AndroidApp {
                         tree.start_all_css_animations();
                         tree.clear_dirty(); // Start clean
                         render_tree = Some(tree);
+                        sync_platform_ime_state();
                     } else if let Some(ref mut tree) = render_tree {
                         // Full rebuild
                         *tree = RenderTree::from_element(&element);
@@ -1038,6 +1039,7 @@ impl AndroidApp {
                         tree.start_all_css_animations();
                         // Clear dirty on the NEW tree to prevent immediate re-rebuild
                         tree.clear_dirty();
+                        sync_platform_ime_state();
                     }
                     needs_redraw = true;
                 }

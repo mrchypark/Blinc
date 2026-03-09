@@ -1,6 +1,12 @@
 # example
 
 A Blinc UI application with cross-platform support for desktop, Android, and iOS.
+This is the canonical native reference app for current mobile runtime and bridge work.
+
+See [`docs/native-readiness.md`](/Users/cypark/.codex/worktrees/d483/Blinc/docs/native-readiness.md)
+for the repo-wide support contract and tier definitions.
+See [`docs/mobile-release.md`](/Users/cypark/.codex/worktrees/d483/Blinc/docs/mobile-release.md)
+for the debug-vs-release packaging contract and artifact paths.
 
 ## Quick Start
 
@@ -13,22 +19,40 @@ cargo run --features desktop
 ### Android
 
 ```bash
-# Build + install on connected device/emulator
-./build-android.sh
+# Debug smoke: build + install on connected device/emulator
+./build-android.sh debug
+
+# Release packaging: APK
+./build-android.sh release
+
+# Release packaging: Android App Bundle
+./build-android.sh bundle-release
 ```
 
-The script requests runtime permissions needed for sensors and platform services:
+The debug script grants runtime permissions needed for sensors and platform services:
 `LOCATION`, `ACTIVITY_RECOGNITION`, `MICROPHONE`, and `BLUETOOTH` (Android 12+).
+Release artifacts are exported under `artifacts/android/`.
 
 ### iOS
 
 ```bash
-# Build Rust static libraries for device/simulator
-./build-ios.sh
+# Debug smoke: build Rust static libraries for device/simulator
+./build-ios.sh debug-libs
+
+# Release packaging: Rust static libraries
+./build-ios.sh release-libs
+
+# Release packaging: Xcode archive
+./build-ios.sh archive
+
+# Export a previously-created archive (.ipa export requires export options)
+BLINC_IOS_EXPORT_OPTIONS_PLIST=/abs/path/ExportOptions.plist ./build-ios.sh export-archive
 
 # Open Xcode project and run
 open platforms/ios/BlincApp.xcodeproj
 ```
+
+Release artifacts are exported under `artifacts/ios/`.
 
 ### Verify Mobile Builds
 
@@ -39,6 +63,13 @@ open platforms/ios/BlincApp.xcodeproj
 # Android + iOS end-to-end build verification
 ./test-mobile-builds.sh
 ```
+
+Current support tiers for this example:
+
+- Tier 1: cross-target build, native bridge sync, simulator/device debug runs
+- Tier 2: runtime feature validation for sensors, permissions, clipboard/share/haptics bridge paths
+- Packaging progress: release APK/AAB export, iOS archive/export command contract, artifact path stability
+- Deferred: store submission, notarization, and app-store-specific release automation
 
 ### Verify Runtime Sensors On Device
 
