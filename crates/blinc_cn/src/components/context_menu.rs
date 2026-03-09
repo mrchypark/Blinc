@@ -632,6 +632,8 @@ fn build_submenu_content(
 
                     left_side = left_side.child(
                         text(&item_label)
+                            .class("cn-context-menu-item__label")
+                            .class("cn-truncate")
                             .size(font_size)
                             .color(text_col)
                             .no_cursor().pointer_events_none(),
@@ -640,13 +642,19 @@ fn build_submenu_content(
                     let right_side: Option<Div> = if let Some(ref shortcut) = item_shortcut {
                         Some(div().child(
                             text(shortcut)
+                                .class("cn-menu-shortcut")
                                 .size(font_size - 2.0)
                                 .color(shortcut_color)
                                 .no_cursor(),
                         ))
                     } else if has_submenu {
                         let chevron_right = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
-                        Some(div().child(svg(chevron_right).size(12.0, 12.0).color(text_tertiary)).pointer_events_none())
+                        Some(
+                            div()
+                                .class("cn-decorative")
+                                .child(svg(chevron_right).size(12.0, 12.0).color(text_tertiary))
+                                .pointer_events_none(),
+                        )
                     } else {
                         None
                     };
@@ -856,6 +864,8 @@ fn build_menu_content(
 
                     left_side = left_side.child(
                         text(&item_label)
+                            .class("cn-context-menu-item__label")
+                            .class("cn-truncate")
                             .size(font_size)
                             .color(text_col)
                             .no_cursor(),
@@ -865,13 +875,18 @@ fn build_menu_content(
                     let right_side: Option<Div> = if let Some(ref shortcut) = item_shortcut {
                         Some(div().child(
                             text(shortcut)
+                                .class("cn-menu-shortcut")
                                 .size(font_size - 2.0)
                                 .color(shortcut_color)
                                 .no_cursor(),
                         ))
                     } else if has_submenu {
                         let chevron_right = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
-                        Some(div().child(svg(chevron_right).size(12.0, 12.0).color(text_tertiary)))
+                        Some(
+                            div()
+                                .class("cn-decorative")
+                                .child(svg(chevron_right).size(12.0, 12.0).color(text_tertiary)),
+                        )
                     } else {
                         None
                     };

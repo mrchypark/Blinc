@@ -267,10 +267,14 @@ impl Select {
                     if let Some(ref content_fn) = opt.content {
                         content_fn()
                     } else {
-                        div()
-                            .h_fit()
-                            .overflow_clip()
-                            .child(text(&opt.label).size(font_size).no_cursor().color(text_clr))
+                        div().h_fit().overflow_clip().child(
+                            text(&opt.label)
+                                .class("cn-select-value")
+                                .class("cn-truncate")
+                                .size(font_size)
+                                .no_cursor()
+                                .color(text_clr),
+                        )
                     }
                 } else {
                     let placeholder_text = placeholder_for_display
@@ -278,6 +282,8 @@ impl Select {
                         .unwrap_or_else(|| "Select...".to_string());
                     div().h_fit().overflow_clip().child(
                         text(&placeholder_text)
+                            .class("cn-select-value")
+                            .class("cn-truncate")
                             .size(font_size)
                             .no_cursor()
                             .color(text_clr),
@@ -318,6 +324,7 @@ impl Select {
                         svg(chevron_svg)
                             .size(16.0, 16.0)
                             .tint(text_tertiary)
+                            .class("cn-decorative")
                             .ml(1.0)
                             .flex_shrink_0(),
                     )
@@ -673,6 +680,8 @@ fn build_dropdown_content(
             } else {
                 div().child(
                     text(&opt_label)
+                        .class("cn-select-value")
+                        .class("cn-truncate")
                         .size(font_size)
                         .no_cursor()
                         .color(option_text_color),

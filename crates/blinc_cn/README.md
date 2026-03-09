@@ -13,7 +13,8 @@ Component library for Blinc UI with themed, token-driven components built on top
 It is best used with an explicit bootstrap step so theme tokens and component styles are available
 before the first render.
 The default stylesheet is now driven by semantic component tokens from `blinc_theme`, so presets
-control control sizing, container spacing, overlay chrome, and typography roles more consistently.
+control sizing, container spacing, overlay chrome, typography roles, and newer CSS defaults such as
+`corner-shape`, `backdrop-filter`, truncation, and CSS link decoration more consistently.
 
 ## Installation
 

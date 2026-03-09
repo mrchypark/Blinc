@@ -336,6 +336,8 @@ impl Sidebar {
                                         .child(
                                             div().child(
                                                 text(&item_label)
+                                                    .class("cn-sidebar-item__label")
+                                                    .class("cn-truncate")
                                                     .size(14.0)
                                                     .color(text_col)
                                                     .no_cursor()

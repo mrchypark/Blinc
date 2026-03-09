@@ -143,6 +143,8 @@ impl NavigationMenu {
                                         .cursor(CursorStyle::Pointer)
                                         .child(
                                             text(&label)
+                                                .class("cn-nav-link__label")
+                                                .class("cn-truncate")
                                                 .size(typography.action_md)
                                                 .medium()
                                                 .color(text_color)
@@ -216,13 +218,24 @@ impl NavigationMenu {
                                             .cursor(CursorStyle::Pointer)
                                             .child(
                                                 text(&label)
+                                                    .class("cn-nav-link__label")
+                                                    .class("cn-truncate")
                                                     .size(typography.action_md)
                                                     .medium()
                                                     .color(text_color)
                                                     .no_cursor()
                                                     .pointer_events_none(),
                                             )
-                                            .child(div().pointer_events_none().child(svg(chevron).size(12.0, 12.0).color(text_color)));
+                                            .child(
+                                                div()
+                                                    .class("cn-decorative")
+                                                    .pointer_events_none()
+                                                    .child(
+                                                        svg(chevron)
+                                                            .size(12.0, 12.0)
+                                                            .color(text_color),
+                                                    ),
+                                            );
                                         if is_active {
                                             trigger_div = trigger_div.class("cn-nav-link--active");
                                         }

@@ -1,6 +1,8 @@
 # Component Library Overview
 
-`blinc_cn` is the themed component library for Blinc UI.
+`blinc_cn` is the themed component library for Blinc UI. Its default stylesheet uses the newer CSS
+engine surface directly, including token-driven `corner-shape`, overlay `backdrop-filter`,
+truncation helpers, and CSS text decoration for link-like affordances.
 
 ## Setup
 

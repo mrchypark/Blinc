@@ -547,6 +547,14 @@ impl ThemeState {
         vars.insert("control-radius-sm".into(), px(components.control.radius_sm));
         vars.insert("control-radius-md".into(), px(components.control.radius_md));
         vars.insert("control-radius-lg".into(), px(components.control.radius_lg));
+        vars.insert(
+            "control-corner-shape".into(),
+            components.control.corner_shape_rest.to_string(),
+        );
+        vars.insert(
+            "control-corner-shape-hover".into(),
+            components.control.corner_shape_hover.to_string(),
+        );
         vars.insert("container-radius".into(), px(components.container.radius));
         vars.insert("container-padding".into(), px(components.container.padding));
         vars.insert(
@@ -565,6 +573,10 @@ impl ThemeState {
             "container-section-gap".into(),
             px(components.container.section_gap),
         );
+        vars.insert(
+            "container-corner-shape".into(),
+            components.container.corner_shape.to_string(),
+        );
         vars.insert("overlay-radius".into(), px(components.overlay.radius));
         vars.insert("overlay-px".into(), px(components.overlay.padding_x));
         vars.insert("overlay-py".into(), px(components.overlay.padding_y));
@@ -580,6 +592,10 @@ impl ThemeState {
         vars.insert(
             "overlay-shadow".into(),
             css_shadow(&components.overlay.shadow),
+        );
+        vars.insert(
+            "overlay-corner-shape".into(),
+            components.overlay.corner_shape.to_string(),
         );
         vars.insert("type-action-sm".into(), px(components.typography.action_sm));
         vars.insert("type-action-md".into(), px(components.typography.action_md));

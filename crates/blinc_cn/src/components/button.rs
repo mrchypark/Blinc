@@ -394,6 +394,8 @@ impl Button {
             } else {
                 // With label: use content wrapper for flex_row layout
                 let label_text = text(&label)
+                    .class("cn-button__label")
+                    .class("cn-truncate")
                     .size(font_size)
                     .color(fg)
                     .no_wrap()
@@ -417,13 +419,17 @@ impl Button {
                     let icon_size = custom_icon_size.unwrap_or(font_size + 2.0);
                     let svg_str = blinc_icons::to_svg(icon_str, icon_size);
                     let icon_svg = svg(&svg_str).size(icon_size, icon_size).color(fg);
+                    let icon_box = div()
+                        .class("cn-button__icon")
+                        .class("cn-decorative")
+                        .child(icon_svg);
 
                     match icon_position {
                         IconPosition::Start => {
-                            content = content.child(icon_svg).child(label_text);
+                            content = content.child(icon_box).child(label_text);
                         }
                         IconPosition::End => {
-                            content = content.child(label_text).child(icon_svg);
+                            content = content.child(label_text).child(icon_box);
                         }
                     }
                 } else {

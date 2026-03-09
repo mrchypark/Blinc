@@ -324,6 +324,8 @@ impl Combobox {
 
                 let display_content = div().flex_1().overflow_clip().child(
                     text(&display_text)
+                        .class("cn-combobox-value")
+                        .class("cn-truncate")
                         .size(font_size)
                         .no_cursor()
                         .color(text_clr),
@@ -799,6 +801,8 @@ fn build_dropdown_content(
                         .child(
                             div().child(
                                 text(format!("Use \"{}\"", custom_value))
+                                    .class("cn-combobox-item__label")
+                                    .class("cn-truncate")
                                     .size(font_size)
                                     .no_cursor()
                                     .color(text_color),
@@ -871,6 +875,8 @@ fn build_dropdown_content(
                         } else {
                             div().child(
                                 text(&opt_label)
+                                    .class("cn-combobox-item__label")
+                                    .class("cn-truncate")
                                     .size(font_size)
                                     .no_cursor()
                                     .color(option_text_color),

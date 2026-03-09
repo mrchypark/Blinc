@@ -17,6 +17,8 @@ pub struct ControlTokens {
     pub radius_sm: f32,
     pub radius_md: f32,
     pub radius_lg: f32,
+    pub corner_shape_rest: f32,
+    pub corner_shape_hover: f32,
 }
 
 /// Semantic defaults for cards, dialogs, drawers, and other content containers.
@@ -28,6 +30,7 @@ pub struct ContainerTokens {
     pub header_gap: f32,
     pub footer_gap: f32,
     pub section_gap: f32,
+    pub corner_shape: f32,
 }
 
 /// Semantic defaults for menus, popovers, selects, and other floating overlays.
@@ -40,6 +43,7 @@ pub struct OverlayTokens {
     pub item_padding_y: f32,
     pub gap: f32,
     pub shadow: Shadow,
+    pub corner_shape: f32,
 }
 
 /// Semantic typography roles used by components.
@@ -108,6 +112,8 @@ impl ComponentTokens {
                 radius_sm: radii.radius_sm,
                 radius_md: radii.radius_default,
                 radius_lg: radii.radius_md,
+                corner_shape_rest: 1.2,
+                corner_shape_hover: 2.0,
             },
             container: ContainerTokens {
                 radius: radii.radius_xl,
@@ -116,6 +122,7 @@ impl ComponentTokens {
                 header_gap: spacing.space_1_5,
                 footer_gap: spacing.space_2,
                 section_gap: spacing.space_4,
+                corner_shape: 1.6,
             },
             overlay: OverlayTokens {
                 radius: radii.radius_md,
@@ -125,6 +132,7 @@ impl ComponentTokens {
                 item_padding_y: spacing.space_2,
                 gap: spacing.space_1,
                 shadow: shadows.shadow_md.clone(),
+                corner_shape: 1.8,
             },
             typography: TypographyRoleTokens {
                 action_sm: typography.text_xs + 1.0,
