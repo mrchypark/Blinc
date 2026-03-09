@@ -12,6 +12,7 @@ use crate::spring::{Spring, SpringConfig};
 use crate::timeline::Timeline;
 use blinc_core::AnimationAccess;
 use slotmap::{new_key_type, SlotMap};
+use std::collections::HashSet;
 use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -123,7 +124,7 @@ impl TickCallbackId {
 /// Internal state of the animation scheduler
 struct SchedulerInner {
     springs: SlotMap<SpringId, Spring>,
-    fresh_springs: Vec<SpringId>,
+    fresh_springs: HashSet<SpringId>,
     keyframes: SlotMap<KeyframeId, KeyframeAnimation>,
     timelines: SlotMap<TimelineId, Timeline>,
     tick_callbacks: SlotMap<TickCallbackId, TickCallback>,
@@ -172,7 +173,7 @@ impl AnimationScheduler {
         Self {
             inner: Arc::new(Mutex::new(SchedulerInner {
                 springs: SlotMap::with_key(),
-                fresh_springs: Vec::new(),
+                fresh_springs: HashSet::new(),
                 keyframes: SlotMap::with_key(),
                 timelines: SlotMap::with_key(),
                 tick_callbacks: SlotMap::with_key(),
@@ -511,7 +512,7 @@ impl AnimationScheduler {
     pub fn add_spring(&self, spring: Spring) -> SpringId {
         let mut inner = self.inner.lock().unwrap();
         let id = inner.springs.insert(spring);
-        inner.fresh_springs.push(id);
+        inner.fresh_springs.insert(id);
         id
     }
 
@@ -543,7 +544,9 @@ impl AnimationScheduler {
     }
 
     pub fn remove_spring(&self, id: SpringId) -> Option<Spring> {
-        self.inner.lock().unwrap().springs.remove(id)
+        let mut inner = self.inner.lock().unwrap();
+        inner.fresh_springs.remove(&id);
+        inner.springs.remove(id)
     }
 
     /// Iterate over all springs mutably
@@ -773,7 +776,7 @@ impl SchedulerHandle {
         self.inner.upgrade().map(|inner| {
             let mut guard = inner.lock().unwrap();
             let id = guard.springs.insert(spring);
-            guard.fresh_springs.push(id);
+            guard.fresh_springs.insert(id);
             id
         })
     }
@@ -815,7 +818,9 @@ impl SchedulerHandle {
     /// Remove a spring
     pub fn remove_spring(&self, id: SpringId) {
         if let Some(inner) = self.inner.upgrade() {
-            inner.lock().unwrap().springs.remove(id);
+            let mut inner = inner.lock().unwrap();
+            inner.fresh_springs.remove(&id);
+            inner.springs.remove(id);
         }
     }
 
@@ -1903,6 +1908,37 @@ mod tests {
         assert!(
             value > 0.0,
             "expected newly registered spring to start animating on the next frame, got {value}"
+        );
+    }
+
+    #[test]
+    fn test_remove_spring_clears_fresh_marker() {
+        let scheduler = AnimationScheduler::new();
+        let spring_id = scheduler.add_spring(Spring::new(SpringConfig::stiff(), 0.0));
+
+        scheduler.remove_spring(spring_id);
+
+        let inner = scheduler.inner.lock().unwrap();
+        assert!(
+            !inner.fresh_springs.contains(&spring_id),
+            "expected removing a spring to purge its fresh marker"
+        );
+    }
+
+    #[test]
+    fn test_handle_remove_spring_clears_fresh_marker() {
+        let scheduler = AnimationScheduler::new();
+        let handle = scheduler.handle();
+        let spring_id = handle
+            .register_spring(Spring::new(SpringConfig::stiff(), 0.0))
+            .expect("scheduler should still be alive");
+
+        handle.remove_spring(spring_id);
+
+        let inner = scheduler.inner.lock().unwrap();
+        assert!(
+            !inner.fresh_springs.contains(&spring_id),
+            "expected handle removal to purge the fresh marker"
         );
     }
 
