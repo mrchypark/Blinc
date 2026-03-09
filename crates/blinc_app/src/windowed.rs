@@ -156,6 +156,45 @@ fn should_skip_composition_commit(
         && keyboard_committed_text.is_some_and(|chars| chars == composition_chars.as_slice())
 }
 
+fn track_keyboard_committed_text(
+    tracked_text: &mut Option<Vec<char>>,
+    event: &blinc_platform::KeyboardEvent,
+) {
+    if event.state != KeyState::Pressed {
+        return;
+    }
+
+    let mods = &event.modifiers;
+    if mods.ctrl || mods.meta {
+        *tracked_text = None;
+        return;
+    }
+
+    *tracked_text = event
+        .text
+        .as_deref()
+        .map(visible_text_chars)
+        .filter(|chars| !chars.is_empty());
+}
+
+fn take_composition_commit_text(
+    tracked_text: &mut Option<Vec<char>>,
+    composition_text: &str,
+) -> Vec<char> {
+    let composition_chars = visible_text_chars(composition_text);
+    let should_skip = !composition_chars.is_empty()
+        && tracked_text
+            .as_deref()
+            .is_some_and(|chars| chars == composition_chars.as_slice());
+    *tracked_text = None;
+
+    if should_skip {
+        Vec::new()
+    } else {
+        composition_chars
+    }
+}
+
 fn letter_key_char(key: &Key) -> Option<char> {
     match key {
         Key::A => Some('a'),
@@ -2585,6 +2624,9 @@ impl WindowedApp {
         let mut needs_rebuild = true;
         // Track if we need to relayout (e.g., after resize even if tree unchanged)
         let mut needs_relayout = false;
+        // Track committed keyboard text across platform input events so a following
+        // IME commit event can suppress duplicate TEXT_INPUT dispatch.
+        let mut keyboard_committed_text: Option<Vec<char>> = None;
         // Shared dirty flag for element refs
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
         // Shared reactive graph for signal-based state management
@@ -3004,7 +3046,6 @@ impl WindowedApp {
                             let mut pending_events: Vec<PendingEvent> = Vec::new();
                             // Separate collection for keyboard events (TEXT_INPUT)
                             let mut keyboard_events: Vec<PendingEvent> = Vec::new();
-                            let mut keyboard_committed_text: Option<Vec<char>> = None;
                             // Track if scroll ended (momentum finished)
                             let mut scroll_ended = false;
                             // Track if gesture ended (finger lifted - may still have momentum)
@@ -3253,11 +3294,10 @@ impl WindowedApp {
                                             // For character-producing keys, dispatch TEXT_INPUT
                                             // We use broadcast dispatch so any focused text input can receive it
                                             if !mods.ctrl && !mods.meta {
-                                                keyboard_committed_text = kb_event
-                                                    .text
-                                                    .as_ref()
-                                                    .map(|_| text_chars.clone())
-                                                    .filter(|chars| !chars.is_empty());
+                                                track_keyboard_committed_text(
+                                                    &mut keyboard_committed_text,
+                                                    &kb_event,
+                                                );
                                                 for c in text_chars {
                                                     keyboard_events.push(PendingEvent {
                                                         event_type: blinc_core::events::event_types::TEXT_INPUT,
@@ -3270,8 +3310,6 @@ impl WindowedApp {
                                                         ..Default::default()
                                                     });
                                                 }
-                                            } else {
-                                                keyboard_committed_text = None;
                                             }
 
                                             // For KEY_DOWN events with special keys (backspace, arrows)
@@ -3386,6 +3424,7 @@ impl WindowedApp {
                                     scroll_ended = true;
                                 }
                                 InputEvent::CompositionStarted => {
+                                    keyboard_committed_text = None;
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
                                 }
                                 InputEvent::CompositionUpdated(update) => {
@@ -3395,21 +3434,19 @@ impl WindowedApp {
                                 }
                                 InputEvent::CompositionCommitted(text) => {
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
-                                    if !should_skip_composition_commit(
-                                        keyboard_committed_text.as_deref(),
+                                    for c in take_composition_commit_text(
+                                        &mut keyboard_committed_text,
                                         &text,
                                     ) {
-                                        for c in visible_text_chars(&text) {
-                                            keyboard_events.push(PendingEvent {
-                                                event_type: blinc_core::events::event_types::TEXT_INPUT,
-                                                key_char: Some(c),
-                                                ..Default::default()
-                                            });
-                                        }
+                                        keyboard_events.push(PendingEvent {
+                                            event_type: blinc_core::events::event_types::TEXT_INPUT,
+                                            key_char: Some(c),
+                                            ..Default::default()
+                                        });
                                     }
-                                    keyboard_committed_text = None;
                                 }
                                 InputEvent::CompositionCancelled => {
+                                    keyboard_committed_text = None;
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
                                 }
                                 InputEvent::FocusTraversal(intent) => {
@@ -4789,5 +4826,38 @@ mod tests {
             Some(keyboard_chars.as_slice()),
             "초성"
         ));
+    }
+
+    #[test]
+    fn tracked_keyboard_text_skips_matching_later_composition_commit() {
+        let mut tracked = None;
+        let event = KeyboardEvent {
+            key: Key::Unknown,
+            text: Some("한글".to_string()),
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        track_keyboard_committed_text(&mut tracked, &event);
+
+        assert!(take_composition_commit_text(&mut tracked, "한글").is_empty());
+    }
+
+    #[test]
+    fn tracked_keyboard_text_does_not_skip_different_later_composition_commit() {
+        let mut tracked = None;
+        let event = KeyboardEvent {
+            key: Key::Unknown,
+            text: Some("한글".to_string()),
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        track_keyboard_committed_text(&mut tracked, &event);
+
+        assert_eq!(
+            take_composition_commit_text(&mut tracked, "초성"),
+            vec!['초', '성']
+        );
     }
 }
