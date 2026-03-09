@@ -1,5 +1,4 @@
-//! Preview Panel - Snapshot preview and overlays
-
+/// Preview Panel - Snapshot preview and overlays
 use std::cell::OnceCell;
 use std::sync::Arc;
 
