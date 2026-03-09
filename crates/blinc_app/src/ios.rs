@@ -32,6 +32,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
+use blinc_animation::scheduler::WakeCallback;
 use blinc_core::context_state::{BlincContextState, HookState, SharedHookState};
 use blinc_core::reactive::{ReactiveGraph, SignalId};
 use blinc_layout::event_router::MouseButton;
@@ -199,7 +200,8 @@ impl IOSApp {
         // Animation scheduler with wake proxy
         // Set up wake proxy for iOS
         let wake_proxy = IOSWakeProxy::new();
-        let wake_callback: blinc_animation::WakeCallback = Arc::new(move || wake_proxy.wake());
+        let wake_proxy_for_callback = wake_proxy.clone();
+        let wake_callback: WakeCallback = Arc::new(move || wake_proxy_for_callback.wake());
         let animations: SharedAnimationScheduler =
             prepare_runtime_scheduler(Some(wake_callback), true);
 
