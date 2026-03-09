@@ -1,5 +1,4 @@
-//! Tree Panel - Element tree with selection
-
+/// Tree Panel - Element tree with selection
 use std::cell::OnceCell;
 use std::sync::Arc;
 

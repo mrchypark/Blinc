@@ -1,8 +1,7 @@
-//! Debugger theme using blinc_theme system
-//!
-//! Uses the global ThemeState for colors and spacing,
-//! with debugger-specific extensions for event colors and panel dimensions.
-
+/// Debugger theme using blinc_theme system
+///
+/// Uses the global ThemeState for colors and spacing,
+/// with debugger-specific extensions for event colors and panel dimensions.
 use blinc_core::Color;
 use blinc_theme::{ColorToken, ThemeState};
 

@@ -1,11 +1,10 @@
-//! Debugger panels
-//!
-//! The main UI panels as specified in the implementation plan:
-//! - Tree Panel: Element tree with diff visualization
-//! - Preview Panel: Live/recorded UI preview
-//! - Inspector Panel: Selected element properties
-//! - Timeline Panel: Event timeline with scrubber
-
+/// Debugger panels
+///
+/// The main UI panels as specified in the implementation plan:
+/// - Tree Panel: Element tree with diff visualization
+/// - Preview Panel: Live/recorded UI preview
+/// - Inspector Panel: Selected element properties
+/// - Timeline Panel: Event timeline with scrubber
 pub mod command_panel;
 pub mod evidence_panel;
 pub mod inspector_panel;

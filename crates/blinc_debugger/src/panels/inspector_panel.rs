@@ -1,5 +1,4 @@
-//! Inspector Panel - Selected element properties
-
+/// Inspector Panel - Selected element properties
 use std::cell::OnceCell;
 use std::sync::Arc;
 

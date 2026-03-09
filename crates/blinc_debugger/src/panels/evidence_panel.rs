@@ -1,5 +1,4 @@
-//! Evidence Panel - assertion failures and artifacts
-
+/// Evidence Panel - assertion failures and artifacts
 use std::cell::OnceCell;
 use std::sync::Arc;
 

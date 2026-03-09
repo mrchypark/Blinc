@@ -1,5 +1,4 @@
-//! Timeline Panel - Event timeline with playback controls
-
+/// Timeline Panel - Event timeline with playback controls
 use std::cell::OnceCell;
 use std::sync::Arc;
 

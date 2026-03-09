@@ -12,6 +12,8 @@ use crate::spring::{Spring, SpringConfig};
 use crate::timeline::Timeline;
 use blinc_core::AnimationAccess;
 use slotmap::{new_key_type, SlotMap};
+use std::collections::HashSet;
+use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
@@ -122,6 +124,7 @@ impl TickCallbackId {
 /// Internal state of the animation scheduler
 struct SchedulerInner {
     springs: SlotMap<SpringId, Spring>,
+    fresh_springs: HashSet<SpringId>,
     keyframes: SlotMap<KeyframeId, KeyframeAnimation>,
     timelines: SlotMap<TimelineId, Timeline>,
     tick_callbacks: SlotMap<TickCallbackId, TickCallback>,
@@ -170,6 +173,7 @@ impl AnimationScheduler {
         Self {
             inner: Arc::new(Mutex::new(SchedulerInner {
                 springs: SlotMap::with_key(),
+                fresh_springs: HashSet::new(),
                 keyframes: SlotMap::with_key(),
                 timelines: SlotMap::with_key(),
                 tick_callbacks: SlotMap::with_key(),
@@ -250,9 +254,13 @@ impl AnimationScheduler {
                     let dt = (now - inner.last_frame).as_secs_f32();
                     let dt_ms = dt * 1000.0;
                     inner.last_frame = now;
+                    let fresh_springs = mem::take(&mut inner.fresh_springs);
 
                     // Update all springs
-                    for (_, spring) in inner.springs.iter_mut() {
+                    for (id, spring) in inner.springs.iter_mut() {
+                        if fresh_springs.contains(&id) {
+                            continue;
+                        }
                         spring.step(dt);
                     }
 
@@ -350,6 +358,7 @@ impl AnimationScheduler {
 
         let mut inner = self.inner.lock().unwrap();
         inner.springs.clear();
+        inner.fresh_springs.clear();
         inner.keyframes.clear();
         inner.timelines.clear();
         inner.tick_callbacks.clear();
@@ -419,9 +428,13 @@ impl AnimationScheduler {
         let dt = (now - inner.last_frame).as_secs_f32();
         let dt_ms = dt * 1000.0;
         inner.last_frame = now;
+        let fresh_springs = mem::take(&mut inner.fresh_springs);
 
         // Update all springs
-        for (_, spring) in inner.springs.iter_mut() {
+        for (id, spring) in inner.springs.iter_mut() {
+            if fresh_springs.contains(&id) {
+                continue;
+            }
             spring.step(dt);
         }
 
@@ -497,7 +510,10 @@ impl AnimationScheduler {
     // =========================================================================
 
     pub fn add_spring(&self, spring: Spring) -> SpringId {
-        self.inner.lock().unwrap().springs.insert(spring)
+        let mut inner = self.inner.lock().unwrap();
+        let id = inner.springs.insert(spring);
+        inner.fresh_springs.insert(id);
+        id
     }
 
     pub fn get_spring(&self, id: SpringId) -> Option<Spring> {
@@ -528,7 +544,9 @@ impl AnimationScheduler {
     }
 
     pub fn remove_spring(&self, id: SpringId) -> Option<Spring> {
-        self.inner.lock().unwrap().springs.remove(id)
+        let mut inner = self.inner.lock().unwrap();
+        inner.fresh_springs.remove(&id);
+        inner.springs.remove(id)
     }
 
     /// Iterate over all springs mutably
@@ -757,10 +775,9 @@ impl SchedulerHandle {
     pub fn register_spring(&self, spring: Spring) -> Option<SpringId> {
         self.inner.upgrade().map(|inner| {
             let mut guard = inner.lock().unwrap();
-            // Reset last_frame to now to prevent huge dt on first tick
-            // This ensures new springs start animating smoothly from their current frame
-            guard.last_frame = std::time::Instant::now();
-            guard.springs.insert(spring)
+            let id = guard.springs.insert(spring);
+            guard.fresh_springs.insert(id);
+            id
         })
     }
 
@@ -801,7 +818,9 @@ impl SchedulerHandle {
     /// Remove a spring
     pub fn remove_spring(&self, id: SpringId) {
         if let Some(inner) = self.inner.upgrade() {
-            inner.lock().unwrap().springs.remove(id);
+            let mut inner = inner.lock().unwrap();
+            inner.fresh_springs.remove(&id);
+            inner.springs.remove(id);
         }
     }
 
@@ -1816,9 +1835,111 @@ mod tests {
         // Tick
         assert!(scheduler.tick());
 
+        {
+            let mut inner = scheduler.inner.lock().unwrap();
+            inner.last_frame = Instant::now() - Duration::from_millis(16);
+        }
+        assert!(scheduler.tick());
+
         // Value should have moved
         let value = scheduler.get_spring_value(id).unwrap();
         assert!(value > 0.0);
+    }
+
+    #[test]
+    fn test_registering_spring_does_not_reset_global_delta() {
+        let scheduler = AnimationScheduler::new();
+
+        let first_id = scheduler.add_spring(Spring::new(SpringConfig::stiff(), 0.0));
+        scheduler.set_spring_target(first_id, 100.0);
+
+        {
+            let mut inner = scheduler.inner.lock().unwrap();
+            inner.fresh_springs.clear();
+            inner.last_frame = Instant::now() - Duration::from_millis(50);
+        }
+
+        let handle = scheduler.handle();
+        let second_id = handle
+            .register_spring(Spring::new(SpringConfig::stiff(), 0.0))
+            .expect("scheduler should still be alive");
+        handle.set_spring_target(second_id, 100.0);
+
+        scheduler.tick();
+
+        let first_value = scheduler.get_spring_value(first_id).unwrap();
+        assert!(
+            first_value > 5.0,
+            "expected existing springs to receive the accumulated dt, got {first_value}"
+        );
+    }
+
+    #[test]
+    fn test_newly_registered_spring_does_not_consume_stale_global_delta() {
+        let scheduler = AnimationScheduler::new();
+
+        {
+            let mut inner = scheduler.inner.lock().unwrap();
+            inner.last_frame = Instant::now() - Duration::from_millis(50);
+        }
+
+        let handle = scheduler.handle();
+        let spring_id = handle
+            .register_spring(Spring::new(SpringConfig::stiff(), 0.0))
+            .expect("scheduler should still be alive");
+        handle.set_spring_target(spring_id, 100.0);
+
+        scheduler.tick();
+
+        let value = scheduler.get_spring_value(spring_id).unwrap();
+        assert!(
+            value < 1.0,
+            "expected newly registered spring not to consume stale global dt, got {value}"
+        );
+
+        {
+            let mut inner = scheduler.inner.lock().unwrap();
+            inner.last_frame = Instant::now() - Duration::from_millis(16);
+        }
+
+        scheduler.tick();
+
+        let value = scheduler.get_spring_value(spring_id).unwrap();
+        assert!(
+            value > 0.0,
+            "expected newly registered spring to start animating on the next frame, got {value}"
+        );
+    }
+
+    #[test]
+    fn test_remove_spring_clears_fresh_marker() {
+        let scheduler = AnimationScheduler::new();
+        let spring_id = scheduler.add_spring(Spring::new(SpringConfig::stiff(), 0.0));
+
+        scheduler.remove_spring(spring_id);
+
+        let inner = scheduler.inner.lock().unwrap();
+        assert!(
+            !inner.fresh_springs.contains(&spring_id),
+            "expected removing a spring to purge its fresh marker"
+        );
+    }
+
+    #[test]
+    fn test_handle_remove_spring_clears_fresh_marker() {
+        let scheduler = AnimationScheduler::new();
+        let handle = scheduler.handle();
+        let spring_id = handle
+            .register_spring(Spring::new(SpringConfig::stiff(), 0.0))
+            .expect("scheduler should still be alive");
+
+        handle.remove_spring(spring_id);
+
+        let inner = scheduler.inner.lock().unwrap();
+        assert!(
+            !inner.fresh_springs.contains(&spring_id),
+            "expected handle removal to purge the fresh marker"
+        );
     }
 
     #[test]
@@ -1836,6 +1957,12 @@ mod tests {
         assert!(value.is_animating());
 
         // Tick scheduler
+        scheduler.tick();
+
+        {
+            let mut inner = scheduler.inner.lock().unwrap();
+            inner.last_frame = Instant::now() - Duration::from_millis(16);
+        }
         scheduler.tick();
 
         // Value should have moved

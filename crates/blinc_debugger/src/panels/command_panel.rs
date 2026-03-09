@@ -1,5 +1,4 @@
-//! Command Panel - recorded automation commands
-
+/// Command Panel - recorded automation commands
 use std::cell::OnceCell;
 use std::sync::Arc;
 
