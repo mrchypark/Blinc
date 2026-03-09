@@ -1,7 +1,7 @@
 # Android Platform Setup
 
 For the repo-wide support contract, see
-[`docs/native-readiness.md`](/Users/cypark/.codex/worktrees/d483/Blinc/docs/native-readiness.md).
+[`docs/native-readiness.md`](../../../../../docs/native-readiness.md).
 
 ## Prerequisites
 

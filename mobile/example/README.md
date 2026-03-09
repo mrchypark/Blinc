@@ -3,9 +3,9 @@
 A Blinc UI application with cross-platform support for desktop, Android, and iOS.
 This is the canonical native reference app for current mobile runtime and bridge work.
 
-See [`docs/native-readiness.md`](/Users/cypark/.codex/worktrees/d483/Blinc/docs/native-readiness.md)
+See [`docs/native-readiness.md`](../../docs/native-readiness.md)
 for the repo-wide support contract and tier definitions.
-See [`docs/mobile-release.md`](/Users/cypark/.codex/worktrees/d483/Blinc/docs/mobile-release.md)
+See [`docs/mobile-release.md`](../../docs/mobile-release.md)
 for the debug-vs-release packaging contract and artifact paths.
 
 ## Quick Start

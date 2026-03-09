@@ -1,7 +1,7 @@
 # Mobile Release Packaging
 
 This document defines the current packaging contract for the canonical native
-reference app at `/Users/cypark/.codex/worktrees/d483/Blinc/mobile/example`.
+reference app at [`mobile/example`](../mobile/example/README.md).
 
 ## Build Lanes
 

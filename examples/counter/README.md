@@ -26,11 +26,11 @@ blinc build --target ios --release
 - Tier 2: Android/iOS output depends on generated platform projects
 - Tier 3: release packaging and native feature parity are out of scope here
 
-Use [`mobile/example`](/Users/cypark/.codex/worktrees/d483/Blinc/mobile/example/README.md)
+Use [`mobile/example`](../../mobile/example/README.md)
 as the canonical native reference app for IME, permissions, sensors, and bridge behavior.
 
 Repo-wide native support tiers are defined in
-[`docs/native-readiness.md`](/Users/cypark/.codex/worktrees/d483/Blinc/docs/native-readiness.md).
+[`docs/native-readiness.md`](../../docs/native-readiness.md).
 
 ## Project Structure
 

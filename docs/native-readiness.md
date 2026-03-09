@@ -22,14 +22,14 @@ same contract.
 | HarmonyOS | Deferred | Deferred | Deferred | Not a verification target in the current repo. |
 
 For the concrete mobile packaging contract, artifact paths, and signing inputs,
-see [`docs/mobile-release.md`](/Users/cypark/.codex/worktrees/d483/Blinc/docs/mobile-release.md).
+see [`docs/mobile-release.md`](mobile-release.md).
 
 ## Canonical References
 
-- [`mobile/example`](/Users/cypark/.codex/worktrees/d483/Blinc/mobile/example/README.md): canonical native reference app for current bridge/runtime work
-- [`examples/counter`](/Users/cypark/.codex/worktrees/d483/Blinc/examples/counter/README.md): scaffold example, not the native readiness reference
-- [`toolchain/templates/rust/platforms/android/README.md`](/Users/cypark/.codex/worktrees/d483/Blinc/toolchain/templates/rust/platforms/android/README.md): Android scaffold contract
-- [`toolchain/templates/rust/platforms/fuchsia/README.md`](/Users/cypark/.codex/worktrees/d483/Blinc/toolchain/templates/rust/platforms/fuchsia/README.md): deferred/unsupported Fuchsia scaffolding
+- [`mobile/example`](../mobile/example/README.md): canonical native reference app for current bridge/runtime work
+- [`examples/counter`](../examples/counter/README.md): scaffold example, not the native readiness reference
+- [`toolchain/templates/rust/platforms/android/README.md`](../toolchain/templates/rust/platforms/android/README.md): Android scaffold contract
+- [`toolchain/templates/rust/platforms/fuchsia/README.md`](../toolchain/templates/rust/platforms/fuchsia/README.md): deferred/unsupported Fuchsia scaffolding
 
 ## Rules
 

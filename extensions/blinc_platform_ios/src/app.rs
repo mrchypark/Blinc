@@ -12,7 +12,9 @@ use blinc_platform::{ViewportInsets, WindowMetrics};
 #[cfg(target_os = "ios")]
 use objc2_foundation::MainThreadMarker;
 #[cfg(target_os = "ios")]
-use objc2_ui_kit::{UIApplication, UIApplicationState, UIScreen, UIUserInterfaceStyle};
+use objc2_ui_kit::{
+    UIApplication, UIApplicationState, UIScreen, UITraitEnvironment, UIUserInterfaceStyle,
+};
 
 #[cfg(target_os = "ios")]
 use tracing::info;
@@ -167,12 +169,12 @@ pub fn get_safe_area_insets() -> (f32, f32, f32, f32) {
 pub fn get_environment_snapshot() -> PlatformEnvironmentSnapshot {
     let mtm = MainThreadMarker::new().expect("Must be called from main thread");
     let screen = UIScreen::mainScreen(mtm);
-    let scale_factor = screen.scale() as f64;
+    let scale_factor = screen.scale() as f32;
     let bounds = screen.bounds();
-    let logical_width = bounds.size.width;
-    let logical_height = bounds.size.height;
-    let physical_width = (logical_width * scale_factor as f32).round() as u32;
-    let physical_height = (logical_height * scale_factor as f32).round() as u32;
+    let logical_width = bounds.size.width as f32;
+    let logical_height = bounds.size.height as f32;
+    let physical_width = (logical_width * scale_factor).round() as u32;
+    let physical_height = (logical_height * scale_factor).round() as u32;
 
     let mut safe_area_insets = ViewportInsets::default();
     let mut is_dark_mode = false;
@@ -182,14 +184,14 @@ pub fn get_environment_snapshot() -> PlatformEnvironmentSnapshot {
     if let Some(window) = application.keyWindow() {
         let insets = window.safeAreaInsets();
         safe_area_insets = ViewportInsets {
-            top: insets.top,
-            left: insets.left,
-            bottom: insets.bottom,
-            right: insets.right,
+            top: insets.top as f32,
+            left: insets.left as f32,
+            bottom: insets.bottom as f32,
+            right: insets.right as f32,
         };
 
         is_dark_mode = matches!(
-            window.traitCollection().userInterfaceStyle(),
+            unsafe { window.traitCollection().userInterfaceStyle() },
             UIUserInterfaceStyle::Dark
         );
     }
@@ -201,7 +203,7 @@ pub fn get_environment_snapshot() -> PlatformEnvironmentSnapshot {
             logical_height,
             physical_width,
             physical_height,
-            scale_factor,
+            scale_factor: f64::from(scale_factor),
         },
         safe_area_insets,
         viewport_insets: safe_area_insets,

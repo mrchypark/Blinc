@@ -3,7 +3,7 @@
 This directory contains the deferred Fuchsia template surface for Blinc applications.
 
 For the repo-wide support contract, see
-[`docs/native-readiness.md`](/Users/cypark/.codex/worktrees/d483/Blinc/docs/native-readiness.md).
+[`docs/native-readiness.md`](../../../../../docs/native-readiness.md).
 
 ## Support Status
 

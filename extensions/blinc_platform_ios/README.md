@@ -8,7 +8,7 @@
 iOS platform implementation for Blinc UI.
 
 For the repo-wide native support contract, see
-[`docs/native-readiness.md`](/Users/cypark/.codex/worktrees/d483/Blinc/docs/native-readiness.md).
+[`docs/native-readiness.md`](../../docs/native-readiness.md).
 
 ## Overview
 

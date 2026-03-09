@@ -816,6 +816,14 @@ private class AndroidSensorCollector {
         foregroundActivityRef = if (activity == null) null else WeakReference(activity)
     }
 
+    private fun markPermissionRequested(permission: String) {
+        val activity = foregroundActivityRef?.get() ?: return
+        activity.getPreferences(Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("permission_requested:$permission", true)
+            .apply()
+    }
+
     fun configure(configJson: String): Boolean {
         return runCatching {
             val root = JSONObject(configJson)
@@ -1580,6 +1588,14 @@ private class AndroidBleCollector(
 
     fun setForegroundActivity(activity: Activity?) {
         foregroundActivityRef = if (activity == null) null else WeakReference(activity)
+    }
+
+    private fun markPermissionRequested(permission: String) {
+        val activity = foregroundActivityRef?.get() ?: return
+        activity.getPreferences(Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("permission_requested:$permission", true)
+            .apply()
     }
 
     fun configure(configJson: String): Boolean {
