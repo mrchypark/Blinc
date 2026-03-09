@@ -5,11 +5,13 @@
 > This crate is a component of Blinc, a GPU-accelerated UI framework for Rust.
 > For full documentation and guides, visit the [Blinc documentation](https://project-blinc.github.io/Blinc).
 
-Android platform implementation for Blinc UI.
+Android platform scaffolding for Blinc UI.
 
 ## Overview
 
-`blinc_platform_android` provides native Android integration using the NDK, including activity lifecycle, touch input, and GPU rendering via Vulkan.
+`blinc_platform_android` provides the current Android runtime surface for Blinc:
+NativeActivity entry points, JNI/native bridge helpers, touch forwarding, asset
+loading, and the renderer integration points used by generated templates.
 
 ## Supported Platforms
 
@@ -18,12 +20,11 @@ Android platform implementation for Blinc UI.
 
 ## Features
 
-- **Native Activity**: Full NDK integration
-- **JNI Bridge**: Java interoperability
-- **Touch Input**: Multi-touch support
-- **Vulkan Rendering**: Hardware-accelerated graphics
+- **Native Activity**: Android entry-point helpers
+- **JNI Bridge**: Rust-to-Kotlin interoperability
+- **Touch Input**: Touch forwarding into Blinc events
 - **Asset Loading**: Load from APK resources
-- **Lifecycle**: Proper activity state handling
+- **Template Support**: Kotlin bridge wiring for generated projects
 
 ## Quick Start
 
@@ -45,6 +46,13 @@ pub extern "C" fn ANativeActivity_onCreate(
     });
 }
 ```
+
+## Status
+
+The Android runtime is still under active development. Use it as template-backed
+scaffolding for shared UI experiments and app integration, and verify renderer
+and lifecycle behavior in your target app before treating it as production
+ready.
 
 ## Project Setup
 
@@ -131,34 +139,6 @@ let data = loader.load("images/logo.png")?;
 if loader.exists("config.json") {
     let config = loader.load("config.json")?;
 }
-```
-
-## Lifecycle
-
-```rust
-android_main(activity, |ctx| {
-    ctx.on_start(|| {
-        // Activity started
-    });
-
-    ctx.on_resume(|| {
-        // Activity resumed
-    });
-
-    ctx.on_pause(|| {
-        // Activity paused - save state
-    });
-
-    ctx.on_stop(|| {
-        // Activity stopped
-    });
-
-    ctx.on_destroy(|| {
-        // Cleanup
-    });
-
-    build_ui()
-});
 ```
 
 ## Building

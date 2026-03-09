@@ -146,29 +146,32 @@ pub enum TabsSize {
 
 impl TabsSize {
     /// Get the height for the tab list
-    fn height(&self) -> f32 {
+    fn height(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            TabsSize::Small => 32.0,
-            TabsSize::Medium => 40.0,
-            TabsSize::Large => 48.0,
+            TabsSize::Small => tokens.control.height_sm,
+            TabsSize::Medium => tokens.control.height_md,
+            TabsSize::Large => tokens.control.height_lg,
         }
     }
 
     /// Get the font size
-    fn font_size(&self) -> f32 {
+    fn font_size(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            TabsSize::Small => 13.0,
-            TabsSize::Medium => 14.0,
-            TabsSize::Large => 16.0,
+            TabsSize::Small => tokens.typography.action_sm,
+            TabsSize::Medium => tokens.typography.action_md,
+            TabsSize::Large => tokens.typography.action_lg,
         }
     }
 
     /// Get the horizontal padding
-    fn padding_x(&self) -> f32 {
+    fn padding_x(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            TabsSize::Small => 12.0,
-            TabsSize::Medium => 16.0,
-            TabsSize::Large => 20.0,
+            TabsSize::Small => tokens.control.padding_x_sm,
+            TabsSize::Medium => tokens.control.padding_x_md,
+            TabsSize::Large => tokens.control.padding_x_lg,
         }
     }
 
@@ -584,14 +587,13 @@ impl TabsBuilder {
             }
         }
 
-        // Theme colors - use SecondaryHover for better contrast with text
-        let tab_list_bg = theme.color(ColorToken::SurfaceOverlay);
+        let tab_list_bg = theme.color(ColorToken::SurfaceElevated);
         let _radius = theme.radius(RadiusToken::Md);
         let content_margin = theme.spacing().space_1;
         let size = config.size;
 
         let border = if matches!(theme.scheme(), ColorScheme::Dark) {
-            theme.color(ColorToken::Surface)
+            theme.color(ColorToken::Border)
         } else {
             Color::TRANSPARENT
         };
@@ -616,15 +618,15 @@ impl TabsBuilder {
 
                 let mut buttons = div()
                     .class("cn-tabs-list")
-                    .h(size.height())
+                    .h(size.height(theme))
                     .w_full()
                     .bg(tab_list_bg)
                     .rounded_md()
-                    .padding(Length::Px(6.0))
+                    .padding(Length::Px(theme.components().overlay.gap))
                     .flex_row()
                     .items_center()
                     .border(1.0, border)
-                    .gap(4.0);
+                    .gap_px(theme.components().compact.cluster_gap_sm);
 
                 for tab in tabs_for_buttons.iter() {
                     let is_active = tab.menu_item.value() == active_value;
@@ -792,7 +794,7 @@ fn build_tab_trigger(
     let disabled = menu_item.disabled;
 
     // Calculate inner height (tab list height minus padding)
-    let inner_height = size.height() - 16.0;
+    let inner_height = size.height(theme) - theme.spacing().space_4;
 
     // Clone menu_item data for closure
     let icon_svg = menu_item.icon.clone();
@@ -841,7 +843,7 @@ fn build_tab_trigger(
         if let Some(ref label) = label_text {
             content = content.child(
                 text(label)
-                    .size(size.font_size())
+                    .size(size.font_size(theme))
                     .color(text_color)
                     .weight(if is_active {
                         FontWeight::Medium
@@ -858,7 +860,7 @@ fn build_tab_trigger(
             content = content.child(
                 div()
                     .px(theme.spacing().space_1_5)
-                    .py(1.0)
+                    .py(theme.components().compact.switch_inset)
                     .bg(primary)
                     .rounded(theme.radius(RadiusToken::Full))
                     .child(
@@ -882,9 +884,9 @@ fn build_tab_trigger(
             .class("cn-tabs-trigger")
             .class(trigger_size_class)
             .h(inner_height)
-            .padding_x(Length::Px(size.padding_x()))
+            .padding_x(Length::Px(size.padding_x(theme)))
             .padding_y(Length::Px(
-                size.padding_x() / if size != TabsSize::Small { 2.0 } else { 1.0 },
+                size.padding_x(theme) / if size != TabsSize::Small { 2.0 } else { 1.0 },
             ))
             .flex_row()
             .items_center()
@@ -992,8 +994,13 @@ mod tests {
 
     #[test]
     fn test_tabs_size() {
-        assert_eq!(TabsSize::Small.height(), 32.0);
-        assert_eq!(TabsSize::Medium.height(), 40.0);
-        assert_eq!(TabsSize::Large.height(), 48.0);
+        if ThemeState::try_get().is_none() {
+            ThemeState::init_default();
+        }
+        let theme = ThemeState::get();
+        let tokens = theme.components();
+        assert_eq!(TabsSize::Small.height(theme), tokens.control.height_sm);
+        assert_eq!(TabsSize::Medium.height(theme), tokens.control.height_md);
+        assert_eq!(TabsSize::Large.height(theme), tokens.control.height_lg);
     }
 }

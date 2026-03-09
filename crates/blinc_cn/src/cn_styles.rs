@@ -24,23 +24,50 @@
 /// Each component defines `var(--cn-component-prop, var(--fallback))` for overridability.
 pub const CN_STYLES: &str = r#"
 /* ============================================================================
+   Utilities
+   ============================================================================ */
+
+.cn-truncate {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.cn-decorative {
+    pointer-events: none;
+    cursor: default;
+}
+
+/* ============================================================================
    Button
    ============================================================================ */
 
 /* Button: visual states (hover, active, disabled) handled by Stateful FSM.
    CSS defines border-radius and padding per size. User CSS can override these classes. */
-.cn-button { border-radius: 6px; }
+.cn-button {
+    border-radius: var(--cn-button-radius, var(--control-radius-md));
+    corner-shape: var(--cn-button-corner-shape, var(--control-corner-shape));
+    transition: corner-shape 180ms, box-shadow 180ms;
+}
+.cn-button:hover {
+    corner-shape: var(--cn-button-corner-shape-hover, var(--control-corner-shape-hover));
+}
 .cn-button--primary { }
 .cn-button--secondary { }
 .cn-button--destructive { }
 .cn-button--outline { }
 .cn-button--ghost { }
-.cn-button--link { }
+.cn-button--link {
+    text-decoration: underline;
+    text-decoration-color: var(--primary);
+    text-decoration-thickness: 1.5px;
+}
 .cn-button--disabled { }
-.cn-button--sm { border-radius: 4px; }
-.cn-button--md { border-radius: 6px; }
-.cn-button--lg { border-radius: 8px; }
-.cn-button--icon { border-radius: 6px; }
+.cn-button--sm { border-radius: var(--cn-button-radius-sm, var(--control-radius-sm)); }
+.cn-button--md { border-radius: var(--cn-button-radius-md, var(--control-radius-md)); }
+.cn-button--lg { border-radius: var(--cn-button-radius-lg, var(--control-radius-lg)); }
+.cn-button--icon { border-radius: var(--cn-button-radius-icon, var(--control-radius-md)); }
+.cn-button__label { max-width: 100%; }
 
 /* ============================================================================
    Card
@@ -49,17 +76,19 @@ pub const CN_STYLES: &str = r#"
 .cn-card {
     background: var(--cn-card-bg, var(--surface));
     border: 1px solid var(--cn-card-border, var(--border));
-    border-radius: var(--cn-card-radius, 12px);
-    padding: 24px;
-    gap: 16px;
+    border-radius: var(--cn-card-radius, var(--container-radius));
+    padding: var(--cn-card-padding, var(--container-padding));
+    gap: var(--cn-card-gap, var(--container-section-gap));
+    corner-shape: var(--cn-card-corner-shape, var(--container-corner-shape));
+    transition: corner-shape 180ms, box-shadow 180ms;
 }
 
 .cn-card-header {
-    gap: 6px;
+    gap: var(--cn-card-header-gap, var(--container-header-gap));
 }
 
 .cn-card-footer {
-    gap: 8px;
+    gap: var(--cn-card-footer-gap, var(--container-footer-gap));
 }
 
 /* ============================================================================
@@ -67,9 +96,10 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-badge {
-    border-radius: 9999px;
-    font-size: 12px;
-    padding: 2px 10px;
+    border-radius: var(--cn-badge-radius, var(--compact-badge-radius));
+    font-size: var(--cn-badge-font-size, var(--type-badge));
+    padding: var(--cn-badge-py, var(--compact-badge-py)) var(--cn-badge-px, var(--compact-badge-px));
+    corner-shape: var(--cn-badge-corner-shape, 2);
 }
 .cn-badge--default {
     background: var(--primary);
@@ -104,19 +134,21 @@ pub const CN_STYLES: &str = r#"
 .cn-alert {
     background: var(--cn-alert-bg, var(--surface));
     border: 1px solid var(--cn-alert-border, var(--border));
-    border-radius: 6px;
+    border-radius: var(--cn-alert-radius, var(--container-radius));
     color: var(--text-primary);
-    font-size: 14px;
-    padding: 16px;
+    font-size: var(--cn-alert-font-size, var(--type-body-md));
+    padding: var(--cn-alert-padding, var(--container-padding-compact));
+    corner-shape: var(--cn-alert-corner-shape, var(--container-corner-shape));
 }
 .cn-alert-box {
     background: var(--cn-alert-bg, var(--surface));
     border: 1px solid var(--cn-alert-border, var(--border));
-    border-radius: 6px;
+    border-radius: var(--cn-alert-radius, var(--container-radius));
     color: var(--text-primary);
-    font-size: 14px;
-    padding: 16px;
-    gap: 12px;
+    font-size: var(--cn-alert-font-size, var(--type-body-md));
+    padding: var(--cn-alert-padding, var(--container-padding-compact));
+    gap: var(--cn-alert-gap, var(--overlay-gap));
+    corner-shape: var(--cn-alert-corner-shape, var(--container-corner-shape));
 }
 .cn-alert--success {
     background: var(--success-bg);
@@ -153,7 +185,9 @@ pub const CN_STYLES: &str = r#"
 
 .cn-skeleton {
     background: var(--cn-skeleton-bg, var(--surface-elevated));
-    border-radius: 4px;
+    border-radius: var(--cn-skeleton-radius, var(--control-radius-sm));
+    corner-shape: var(--cn-skeleton-corner-shape, var(--control-corner-shape));
+    mix-blend-mode: overlay;
 }
 
 /* ============================================================================
@@ -163,24 +197,28 @@ pub const CN_STYLES: &str = r#"
 .cn-input {
     background: var(--cn-input-bg, var(--input-bg));
     border: 1px solid var(--cn-input-border, var(--border));
-    border-radius: 6px;
+    border-radius: var(--cn-input-radius, var(--control-radius-md));
     color: var(--text-primary);
+    corner-shape: var(--cn-input-corner-shape, var(--control-corner-shape));
+    transition: border-color 150ms, background 150ms, corner-shape 180ms;
 }
 .cn-input:hover {
     border-color: var(--border-hover);
     background: var(--input-bg-hover);
+    corner-shape: var(--cn-input-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-input:focus {
     border-color: var(--border-focus);
     background: var(--input-bg-focus);
+    corner-shape: var(--cn-input-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-input--error {
     border-color: var(--border-error);
 }
 
-.cn-input--sm { font-size: 12px; }
-.cn-input--md { font-size: 14px; }
-.cn-input--lg { font-size: 16px; }
+.cn-input--sm { font-size: var(--cn-input-font-size-sm, var(--type-body-sm)); }
+.cn-input--md { font-size: var(--cn-input-font-size-md, var(--type-body-md)); }
+.cn-input--lg { font-size: var(--cn-input-font-size-lg, var(--type-body-lg)); }
 
 /* ============================================================================
    Textarea
@@ -189,16 +227,20 @@ pub const CN_STYLES: &str = r#"
 .cn-textarea {
     background: var(--cn-textarea-bg, var(--input-bg));
     border: 1px solid var(--cn-textarea-border, var(--border));
-    border-radius: 6px;
+    border-radius: var(--cn-textarea-radius, var(--control-radius-md));
     color: var(--text-primary);
+    corner-shape: var(--cn-textarea-corner-shape, var(--control-corner-shape));
+    transition: border-color 150ms, background 150ms, corner-shape 180ms;
 }
 .cn-textarea:hover {
     border-color: var(--border-hover);
     background: var(--input-bg-hover);
+    corner-shape: var(--cn-textarea-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-textarea:focus {
     border-color: var(--border-focus);
     background: var(--input-bg-focus);
+    corner-shape: var(--cn-textarea-corner-shape-hover, var(--control-corner-shape-hover));
 }
 
 /* ============================================================================
@@ -219,8 +261,9 @@ pub const CN_STYLES: &str = r#"
 .cn-kbd {
     background: var(--cn-kbd-bg, var(--surface));
     border-color: var(--cn-kbd-border, var(--border));
-    border-radius: 4px;
+    border-radius: var(--cn-kbd-radius, var(--compact-kbd-radius));
     color: var(--text-secondary);
+    corner-shape: var(--cn-kbd-corner-shape, 1.2);
 }
 
 /* ============================================================================
@@ -229,10 +272,11 @@ pub const CN_STYLES: &str = r#"
 
 .cn-checkbox {
     border: 2px solid var(--cn-checkbox-border, var(--border));
-    border-radius: 4px;
+    border-radius: var(--cn-checkbox-radius, var(--control-radius-sm));
     background: var(--cn-checkbox-bg, var(--input-bg));
     cursor: pointer;
     transition: background 150ms, border-color 150ms, transform 100ms;
+    corner-shape: var(--cn-checkbox-corner-shape, var(--control-corner-shape));
 }
 .cn-checkbox:hover {
     border-color: var(--border-hover);
@@ -304,19 +348,22 @@ pub const CN_STYLES: &str = r#"
 
 .cn-tabs-list {
     background: var(--cn-tabs-list-bg, var(--surface-elevated));
-    border-radius: 8px;
-    padding: 4px;
-    gap: 4px;
+    border-radius: var(--cn-tabs-list-radius, var(--container-radius));
+    padding: var(--cn-tabs-list-padding, var(--overlay-gap));
+    gap: var(--cn-tabs-list-gap, var(--overlay-gap));
+    corner-shape: var(--cn-tabs-list-corner-shape, var(--container-corner-shape));
 }
 .cn-tabs-trigger {
-    border-radius: 6px;
+    border-radius: var(--cn-tabs-trigger-radius, var(--control-radius-md));
     cursor: pointer;
     color: var(--text-secondary);
-    transition: background 150ms, color 150ms;
+    corner-shape: var(--cn-tabs-trigger-corner-shape, var(--control-corner-shape));
+    transition: background 150ms, color 150ms, corner-shape 180ms;
 }
 .cn-tabs-trigger:hover {
     color: var(--text-primary);
     background: var(--surface-overlay);
+    corner-shape: var(--cn-tabs-trigger-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-tabs-trigger--active {
     background: var(--cn-tabs-active-bg, var(--background));
@@ -328,45 +375,55 @@ pub const CN_STYLES: &str = r#"
     cursor: not-allowed;
 }
 
-.cn-tabs-trigger--sm { height: 32px; padding: 4px 12px; font-size: 13px; }
-.cn-tabs-trigger--md { height: 40px; padding: 8px 16px; font-size: 14px; }
-.cn-tabs-trigger--lg { height: 48px; padding: 12px 20px; font-size: 16px; }
+.cn-tabs-trigger--sm { height: var(--control-height-sm); padding: var(--control-py-sm) var(--control-px-sm); font-size: var(--type-action-sm); }
+.cn-tabs-trigger--md { height: var(--control-height-md); padding: var(--control-py-md) var(--control-px-md); font-size: var(--type-action-md); }
+.cn-tabs-trigger--lg { height: var(--control-height-lg); padding: var(--control-py-lg) var(--control-px-lg); font-size: var(--type-action-lg); }
 
 /* ============================================================================
    Select
    ============================================================================ */
 
 .cn-select-trigger {
-    background: var(--cn-select-bg, var(--surface));
+    background: var(--cn-select-bg, var(--input-bg));
     border: 1px solid var(--cn-select-border, var(--border));
-    border-radius: 6px;
+    border-radius: var(--cn-select-trigger-radius, var(--control-radius-md));
     cursor: pointer;
     color: var(--text-primary);
-    transition: border-color 150ms;
+    corner-shape: var(--cn-select-trigger-corner-shape, var(--control-corner-shape));
+    transition: border-color 150ms, background 150ms, corner-shape 180ms;
 }
 .cn-select-trigger:hover {
     border-color: var(--border-hover);
+    background: var(--input-bg-hover);
+    corner-shape: var(--cn-select-trigger-corner-shape-hover, var(--control-corner-shape-hover));
 }
 
 .cn-select-content {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--cn-select-content-radius, var(--overlay-radius));
+    padding: var(--cn-select-content-py, var(--overlay-gap));
+    box-shadow: var(--cn-select-shadow, var(--overlay-shadow));
+    corner-shape: var(--cn-select-content-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 
 .cn-select-item {
-    padding: 8px 12px;
+    padding: var(--cn-select-item-py, var(--overlay-item-py)) var(--cn-select-item-px, var(--overlay-item-px));
     cursor: pointer;
     color: var(--text-primary);
-    border-radius: 4px;
-    transition: background 100ms;
+    border-radius: var(--cn-select-item-radius, var(--control-radius-sm));
+    corner-shape: var(--cn-select-item-corner-shape, var(--control-corner-shape));
+    transition: background 100ms, corner-shape 180ms;
 }
 .cn-select-item:hover {
     background: var(--surface-elevated);
+    corner-shape: var(--cn-select-item-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-select-item--selected {
     background: var(--surface-elevated);
 }
+.cn-select-value { max-width: 100%; }
 
 /* ============================================================================
    Slider
@@ -392,7 +449,7 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-progress {
-    background: var(--cn-progress-track, var(--secondary));
+    background: var(--cn-progress-track, var(--accent-subtle));
     border-radius: 9999px;
     overflow: hidden;
 }
@@ -401,21 +458,22 @@ pub const CN_STYLES: &str = r#"
     border-radius: 9999px;
     transition: width 300ms;
 }
-.cn-progress--sm { height: 4px; }
-.cn-progress--md { height: 8px; }
-.cn-progress--lg { height: 12px; }
+.cn-progress--sm { height: var(--cn-progress-height-sm, var(--compact-progress-height-sm)); }
+.cn-progress--md { height: var(--cn-progress-height-md, var(--compact-progress-height-md)); }
+.cn-progress--lg { height: var(--cn-progress-height-lg, var(--compact-progress-height-lg)); }
 
 /* ============================================================================
    Avatar
    ============================================================================ */
 
 .cn-avatar {
-    background: var(--cn-avatar-bg, var(--surface));
+    background: var(--cn-avatar-bg, var(--surface-elevated));
+    border: 1px solid var(--cn-avatar-border, var(--border));
     border-radius: 9999px;
     overflow: hidden;
 }
 .cn-avatar--square {
-    border-radius: 6px;
+    border-radius: var(--cn-avatar-square-radius, var(--control-radius-md));
 }
 
 /* ============================================================================
@@ -433,9 +491,10 @@ pub const CN_STYLES: &str = r#"
 .cn-tooltip {
     background: var(--cn-tooltip-bg, var(--tooltip-bg));
     color: var(--cn-tooltip-text, var(--tooltip-text));
-    border-radius: 4px;
-    font-size: 12px;
-    padding: 6px 12px;
+    border-radius: var(--cn-tooltip-radius, var(--control-radius-sm));
+    font-size: var(--cn-tooltip-font-size, var(--type-helper));
+    padding: var(--cn-tooltip-py, var(--overlay-item-py)) var(--cn-tooltip-px, var(--overlay-item-px));
+    corner-shape: var(--cn-tooltip-corner-shape, var(--control-corner-shape));
 }
 
 /* ============================================================================
@@ -445,9 +504,11 @@ pub const CN_STYLES: &str = r#"
 .cn-dialog {
     background: var(--cn-dialog-bg, var(--surface));
     border: 1px solid var(--cn-dialog-border, var(--border));
-    border-radius: 12px;
-    padding: 24px;
-    gap: 16px;
+    border-radius: var(--cn-dialog-radius, var(--container-radius));
+    padding: var(--cn-dialog-padding, var(--container-padding));
+    gap: var(--cn-dialog-gap, var(--container-section-gap));
+    corner-shape: var(--cn-dialog-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 
 /* ============================================================================
@@ -457,13 +518,15 @@ pub const CN_STYLES: &str = r#"
 .cn-drawer {
     background: var(--cn-drawer-bg, var(--surface));
     border: 1px solid var(--cn-drawer-border, var(--border));
+    corner-shape: var(--cn-drawer-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 .cn-drawer-header {
     border-bottom: 1px solid var(--border);
-    padding: 16px;
+    padding: var(--cn-drawer-header-padding, var(--container-padding-compact));
 }
 .cn-drawer-footer {
-    padding: 16px;
+    padding: var(--cn-drawer-footer-padding, var(--container-padding-compact));
 }
 
 /* ============================================================================
@@ -473,6 +536,8 @@ pub const CN_STYLES: &str = r#"
 .cn-sheet {
     background: var(--cn-sheet-bg, var(--surface));
     border: 1px solid var(--cn-sheet-border, var(--border));
+    corner-shape: var(--cn-sheet-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 
 /* ============================================================================
@@ -482,8 +547,10 @@ pub const CN_STYLES: &str = r#"
 .cn-toast {
     background: var(--cn-toast-bg, var(--surface));
     border: 1px solid var(--cn-toast-border, var(--border));
-    border-radius: 12px;
+    border-radius: var(--cn-toast-radius, var(--container-radius));
     color: var(--text-primary);
+    corner-shape: var(--cn-toast-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 .cn-toast--success {
     border-left: 4px solid var(--success);
@@ -505,13 +572,15 @@ pub const CN_STYLES: &str = r#"
 .cn-accordion {
     background: var(--cn-accordion-bg, var(--surface-elevated));
     border: 1.5px solid var(--cn-accordion-border, var(--border));
-    border-radius: 12px;
+    border-radius: var(--cn-accordion-radius, var(--container-radius));
+    corner-shape: var(--cn-accordion-corner-shape, var(--container-corner-shape));
 }
 .cn-accordion-trigger {
-    padding: 16px 12px;
+    padding: var(--cn-accordion-trigger-py, var(--overlay-item-py)) var(--cn-accordion-trigger-px, var(--overlay-item-px));
     cursor: pointer;
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: var(--cn-accordion-trigger-font-size, var(--type-action-md));
+    text-overflow: ellipsis;
 }
 .cn-accordion-trigger:hover {
     background: var(--surface-overlay);
@@ -527,36 +596,44 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-breadcrumb {
-    gap: 8px;
+    gap: var(--cn-breadcrumb-gap, var(--compact-cluster-gap-md));
     color: var(--text-secondary);
 }
 .cn-breadcrumb-item {
     color: var(--text-secondary);
     cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+    text-decoration-thickness: 1.5px;
 }
 .cn-breadcrumb-item:hover {
     color: var(--text-primary);
+    text-decoration-color: var(--primary);
 }
 .cn-breadcrumb-item--active {
     color: var(--text-primary);
+    text-decoration-color: var(--primary);
 }
+.cn-breadcrumb-label { max-width: 100%; }
 
 /* ============================================================================
    Pagination
    ============================================================================ */
 
 .cn-pagination {
-    gap: 4px;
+    gap: var(--cn-pagination-gap, var(--compact-cluster-gap-sm));
 }
 .cn-pagination-btn {
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--cn-pagination-radius, var(--control-radius-md));
     cursor: pointer;
     color: var(--text-primary);
-    transition: background 150ms;
+    corner-shape: var(--cn-pagination-corner-shape, var(--control-corner-shape));
+    transition: background 150ms, corner-shape 180ms;
 }
 .cn-pagination-btn:hover {
     background: var(--surface-elevated);
+    corner-shape: var(--cn-pagination-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-pagination-btn--active {
     background: var(--primary);
@@ -573,23 +650,29 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-nav-menu {
-    gap: 4px;
+    gap: var(--cn-nav-menu-gap, var(--compact-cluster-gap-sm));
 }
 .cn-nav-link {
-    padding: 8px 12px;
-    border-radius: 6px;
+    padding: var(--cn-nav-link-py, var(--overlay-item-py)) var(--cn-nav-link-px, var(--overlay-item-px));
+    border-radius: var(--cn-nav-link-radius, var(--control-radius-md));
     cursor: pointer;
     color: var(--text-secondary);
-    transition: background 150ms, color 150ms;
+    corner-shape: var(--cn-nav-link-corner-shape, var(--control-corner-shape));
+    transition: background 150ms, color 150ms, corner-shape 180ms;
 }
 .cn-nav-link:hover {
     background: var(--surface-elevated);
     color: var(--text-primary);
+    corner-shape: var(--cn-nav-link-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-nav-link--active {
     background: var(--surface-elevated);
     color: var(--text-primary);
+    text-decoration: underline;
+    text-decoration-color: var(--primary);
+    text-decoration-thickness: 1.5px;
 }
+.cn-nav-link__label { max-width: 100%; }
 
 /* ============================================================================
    Sidebar
@@ -600,20 +683,23 @@ pub const CN_STYLES: &str = r#"
     border-right: 1px solid var(--border);
 }
 .cn-sidebar-item {
-    padding: 8px 12px;
-    border-radius: 6px;
+    padding: var(--cn-sidebar-item-py, var(--overlay-item-py)) var(--cn-sidebar-item-px, var(--overlay-item-px));
+    border-radius: var(--cn-sidebar-item-radius, var(--control-radius-md));
     cursor: pointer;
     color: var(--text-secondary);
-    transition: background 150ms, color 150ms;
+    corner-shape: var(--cn-sidebar-item-corner-shape, var(--control-corner-shape));
+    transition: background 150ms, color 150ms, corner-shape 180ms;
 }
 .cn-sidebar-item:hover {
     background: var(--surface-elevated);
     color: var(--text-primary);
+    corner-shape: var(--cn-sidebar-item-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-sidebar-item--active {
     background: var(--primary);
     color: var(--text-inverse);
 }
+.cn-sidebar-item__label { max-width: 100%; }
 
 /* ============================================================================
    Scroll Area
@@ -630,19 +716,24 @@ pub const CN_STYLES: &str = r#"
 .cn-dropdown-menu {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 4px;
+    border-radius: var(--cn-dropdown-radius, var(--overlay-radius));
+    padding: var(--cn-dropdown-padding, var(--overlay-gap));
+    box-shadow: var(--cn-dropdown-shadow, var(--overlay-shadow));
+    corner-shape: var(--cn-dropdown-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 .cn-dropdown-item {
-    padding: 8px 12px;
-    border-radius: 4px;
+    padding: var(--cn-dropdown-item-py, var(--overlay-item-py)) var(--cn-dropdown-item-px, var(--overlay-item-px));
+    border-radius: var(--cn-dropdown-item-radius, var(--control-radius-sm));
     cursor: pointer;
     color: var(--text-primary);
-    font-size: 14px;
-    transition: background 100ms;
+    font-size: var(--cn-dropdown-font-size, var(--type-body-md));
+    corner-shape: var(--cn-dropdown-item-corner-shape, var(--control-corner-shape));
+    transition: background 100ms, corner-shape 180ms;
 }
 .cn-dropdown-item:hover {
     background: var(--surface-elevated);
+    corner-shape: var(--cn-dropdown-item-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-dropdown-item--disabled {
     opacity: 0.5;
@@ -650,6 +741,12 @@ pub const CN_STYLES: &str = r#"
 }
 .cn-dropdown-item--destructive {
     color: var(--error);
+}
+.cn-dropdown-item__label { max-width: 100%; }
+.cn-menu-shortcut {
+    text-decoration: underline;
+    text-decoration-color: var(--text-tertiary);
+    text-decoration-thickness: 1px;
 }
 
 /* ============================================================================
@@ -659,20 +756,26 @@ pub const CN_STYLES: &str = r#"
 .cn-context-menu {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 4px;
+    border-radius: var(--cn-context-menu-radius, var(--overlay-radius));
+    padding: var(--cn-context-menu-padding, var(--overlay-gap));
+    box-shadow: var(--cn-context-menu-shadow, var(--overlay-shadow));
+    corner-shape: var(--cn-context-menu-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 .cn-context-menu-item {
-    padding: 8px 12px;
-    border-radius: 4px;
+    padding: var(--cn-context-menu-item-py, var(--overlay-item-py)) var(--cn-context-menu-item-px, var(--overlay-item-px));
+    border-radius: var(--cn-context-menu-item-radius, var(--control-radius-sm));
     cursor: pointer;
     color: var(--text-primary);
-    font-size: 14px;
-    transition: background 100ms;
+    font-size: var(--cn-context-menu-font-size, var(--type-body-md));
+    corner-shape: var(--cn-context-menu-item-corner-shape, var(--control-corner-shape));
+    transition: background 100ms, corner-shape 180ms;
 }
 .cn-context-menu-item:hover {
     background: var(--surface-elevated);
+    corner-shape: var(--cn-context-menu-item-corner-shape-hover, var(--control-corner-shape-hover));
 }
+.cn-context-menu-item__label { max-width: 100%; }
 
 /* ============================================================================
    Menubar
@@ -681,21 +784,26 @@ pub const CN_STYLES: &str = r#"
 .cn-menubar {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 4px;
-    gap: 4px;
+    border-radius: var(--cn-menubar-radius, var(--overlay-radius));
+    padding: var(--cn-menubar-padding, var(--overlay-gap));
+    gap: var(--cn-menubar-gap, var(--overlay-gap));
+    corner-shape: var(--cn-menubar-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 .cn-menubar-trigger {
-    padding: 6px 12px;
-    border-radius: 4px;
+    padding: var(--cn-menubar-trigger-py, var(--overlay-item-py)) var(--cn-menubar-trigger-px, var(--overlay-item-px));
+    border-radius: var(--cn-menubar-trigger-radius, var(--control-radius-sm));
     cursor: pointer;
     color: var(--text-primary);
-    font-size: 14px;
-    transition: background 100ms;
+    font-size: var(--cn-menubar-font-size, var(--type-action-md));
+    corner-shape: var(--cn-menubar-trigger-corner-shape, var(--control-corner-shape));
+    transition: background 100ms, corner-shape 180ms;
 }
 .cn-menubar-trigger:hover {
     background: var(--surface-elevated);
+    corner-shape: var(--cn-menubar-trigger-corner-shape-hover, var(--control-corner-shape-hover));
 }
+.cn-menubar-trigger__label { max-width: 100%; }
 
 /* ============================================================================
    Popover
@@ -704,8 +812,11 @@ pub const CN_STYLES: &str = r#"
 .cn-popover-content {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
+    border-radius: var(--cn-popover-radius, var(--overlay-radius));
+    padding: var(--cn-popover-padding, var(--container-padding-compact));
+    box-shadow: var(--cn-popover-shadow, var(--overlay-shadow));
+    corner-shape: var(--cn-popover-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 
 /* ============================================================================
@@ -715,8 +826,11 @@ pub const CN_STYLES: &str = r#"
 .cn-hover-card-content {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
+    border-radius: var(--cn-hover-card-radius, var(--overlay-radius));
+    padding: var(--cn-hover-card-padding, var(--container-padding-compact));
+    box-shadow: var(--cn-hover-card-shadow, var(--overlay-shadow));
+    corner-shape: var(--cn-hover-card-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 
 /* ============================================================================
@@ -724,14 +838,16 @@ pub const CN_STYLES: &str = r#"
    ============================================================================ */
 
 .cn-tree-node {
-    padding: 4px 8px;
-    border-radius: 4px;
+    padding: var(--cn-tree-node-py, var(--overlay-gap)) var(--cn-tree-node-px, var(--control-px-sm));
+    border-radius: var(--cn-tree-node-radius, var(--control-radius-sm));
     cursor: pointer;
     color: var(--text-primary);
-    transition: background 100ms;
+    corner-shape: var(--cn-tree-node-corner-shape, var(--control-corner-shape));
+    transition: background 100ms, corner-shape 180ms;
 }
 .cn-tree-node:hover {
     background: var(--surface-elevated);
+    corner-shape: var(--cn-tree-node-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-tree-node--selected {
     background: var(--primary);
@@ -766,26 +882,37 @@ pub const CN_STYLES: &str = r#"
 .cn-combobox-trigger {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--cn-combobox-trigger-radius, var(--control-radius-md));
     cursor: pointer;
     color: var(--text-primary);
-    transition: border-color 150ms;
+    corner-shape: var(--cn-combobox-trigger-corner-shape, var(--control-corner-shape));
+    transition: border-color 150ms, background 150ms, corner-shape 180ms;
 }
 .cn-combobox-trigger:hover {
     border-color: var(--border-hover);
+    corner-shape: var(--cn-combobox-trigger-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-combobox-content {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--cn-combobox-content-radius, var(--overlay-radius));
+    padding: var(--cn-combobox-content-py, var(--overlay-gap));
+    box-shadow: var(--cn-combobox-shadow, var(--overlay-shadow));
+    corner-shape: var(--cn-combobox-content-corner-shape, var(--overlay-corner-shape));
+    backdrop-filter: glass;
 }
 .cn-combobox-item {
-    padding: 8px 12px;
+    padding: var(--cn-combobox-item-py, var(--overlay-item-py)) var(--cn-combobox-item-px, var(--overlay-item-px));
     cursor: pointer;
     color: var(--text-primary);
-    transition: background 100ms;
+    border-radius: var(--cn-combobox-item-radius, var(--control-radius-sm));
+    corner-shape: var(--cn-combobox-item-corner-shape, var(--control-corner-shape));
+    transition: background 100ms, corner-shape 180ms;
 }
 .cn-combobox-item:hover {
     background: var(--surface-elevated);
+    corner-shape: var(--cn-combobox-item-corner-shape-hover, var(--control-corner-shape-hover));
 }
+.cn-combobox-value { max-width: 100%; }
+.cn-combobox-item__label { max-width: 100%; }
 "#;

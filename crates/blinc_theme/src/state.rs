@@ -71,6 +71,9 @@ pub struct ThemeState {
     /// Current radius tokens
     radii: RwLock<RadiusTokens>,
 
+    /// Current semantic component tokens
+    components: RwLock<ComponentTokens>,
+
     /// Current animation tokens
     animations: RwLock<AnimationTokens>,
 
@@ -100,6 +103,66 @@ pub struct ThemeState {
 }
 
 impl ThemeState {
+    fn effective_spacing_tokens(&self) -> SpacingTokens {
+        let mut spacing = self.spacing.read().unwrap().clone();
+        for (token, value) in self.spacing_overrides.read().unwrap().iter() {
+            match token {
+                SpacingToken::Space0 => spacing.space_0 = *value,
+                SpacingToken::Space0_5 => spacing.space_0_5 = *value,
+                SpacingToken::Space1 => spacing.space_1 = *value,
+                SpacingToken::Space1_5 => spacing.space_1_5 = *value,
+                SpacingToken::Space2 => spacing.space_2 = *value,
+                SpacingToken::Space2_5 => spacing.space_2_5 = *value,
+                SpacingToken::Space3 => spacing.space_3 = *value,
+                SpacingToken::Space3_5 => spacing.space_3_5 = *value,
+                SpacingToken::Space4 => spacing.space_4 = *value,
+                SpacingToken::Space5 => spacing.space_5 = *value,
+                SpacingToken::Space6 => spacing.space_6 = *value,
+                SpacingToken::Space7 => spacing.space_7 = *value,
+                SpacingToken::Space8 => spacing.space_8 = *value,
+                SpacingToken::Space9 => spacing.space_9 = *value,
+                SpacingToken::Space10 => spacing.space_10 = *value,
+                SpacingToken::Space11 => spacing.space_11 = *value,
+                SpacingToken::Space12 => spacing.space_12 = *value,
+                SpacingToken::Space14 => spacing.space_14 = *value,
+                SpacingToken::Space16 => spacing.space_16 = *value,
+                SpacingToken::Space20 => spacing.space_20 = *value,
+                SpacingToken::Space24 => spacing.space_24 = *value,
+                SpacingToken::Space28 => spacing.space_28 = *value,
+                SpacingToken::Space32 => spacing.space_32 = *value,
+            }
+        }
+        spacing
+    }
+
+    fn effective_radius_tokens(&self) -> RadiusTokens {
+        let mut radii = self.radii.read().unwrap().clone();
+        for (token, value) in self.radius_overrides.read().unwrap().iter() {
+            match token {
+                RadiusToken::None => radii.radius_none = *value,
+                RadiusToken::Sm => radii.radius_sm = *value,
+                RadiusToken::Default => radii.radius_default = *value,
+                RadiusToken::Md => radii.radius_md = *value,
+                RadiusToken::Lg => radii.radius_lg = *value,
+                RadiusToken::Xl => radii.radius_xl = *value,
+                RadiusToken::Xxl => radii.radius_2xl = *value,
+                RadiusToken::Xxxl => radii.radius_3xl = *value,
+                RadiusToken::Full => radii.radius_full = *value,
+            }
+        }
+        radii
+    }
+
+    fn recompute_component_tokens(&self) {
+        let spacing = self.effective_spacing_tokens();
+        let radii = self.effective_radius_tokens();
+        let typography = self.typography.read().unwrap().clone();
+        let shadows = self.shadows.read().unwrap().clone();
+
+        *self.components.write().unwrap() =
+            ComponentTokens::from_primitives(&spacing, &radii, &typography, &shadows);
+    }
+
     /// Initialize the global theme state (call once at app startup)
     pub fn init(bundle: ThemeBundle, scheme: ColorScheme) {
         let theme = bundle.for_scheme(scheme);
@@ -113,6 +176,7 @@ impl ThemeState {
             spacing: RwLock::new(theme.spacing().clone()),
             typography: RwLock::new(theme.typography().clone()),
             radii: RwLock::new(theme.radii().clone()),
+            components: RwLock::new(theme.components()),
             animations: RwLock::new(theme.animations().clone()),
             color_overrides: RwLock::new(FxHashMap::default()),
             spacing_overrides: RwLock::new(FxHashMap::default()),
@@ -194,6 +258,7 @@ impl ThemeState {
             *self.spacing.write().unwrap() = theme.spacing().clone();
             *self.typography.write().unwrap() = theme.typography().clone();
             *self.radii.write().unwrap() = theme.radii().clone();
+            *self.components.write().unwrap() = theme.components();
             *self.animations.write().unwrap() = theme.animations().clone();
 
             // Try to animate colors if scheduler handle is available
@@ -364,7 +429,7 @@ impl ThemeState {
             }
         }
 
-        let mut vars = HashMap::with_capacity(44);
+        let mut vars = HashMap::with_capacity(70);
 
         // Use self.color() which checks overrides first
         vars.insert("primary".into(), hex(self.color(ColorToken::Primary)));
@@ -469,7 +534,136 @@ impl ThemeState {
             hex(self.color(ColorToken::TooltipText)),
         );
 
+        let components = self.components();
+        vars.insert("control-height-sm".into(), px(components.control.height_sm));
+        vars.insert("control-height-md".into(), px(components.control.height_md));
+        vars.insert("control-height-lg".into(), px(components.control.height_lg));
+        vars.insert("control-px-sm".into(), px(components.control.padding_x_sm));
+        vars.insert("control-px-md".into(), px(components.control.padding_x_md));
+        vars.insert("control-px-lg".into(), px(components.control.padding_x_lg));
+        vars.insert("control-py-sm".into(), px(components.control.padding_y_sm));
+        vars.insert("control-py-md".into(), px(components.control.padding_y_md));
+        vars.insert("control-py-lg".into(), px(components.control.padding_y_lg));
+        vars.insert("control-radius-sm".into(), px(components.control.radius_sm));
+        vars.insert("control-radius-md".into(), px(components.control.radius_md));
+        vars.insert("control-radius-lg".into(), px(components.control.radius_lg));
+        vars.insert(
+            "control-corner-shape".into(),
+            components.control.corner_shape_rest.to_string(),
+        );
+        vars.insert(
+            "control-corner-shape-hover".into(),
+            components.control.corner_shape_hover.to_string(),
+        );
+        vars.insert("container-radius".into(), px(components.container.radius));
+        vars.insert("container-padding".into(), px(components.container.padding));
+        vars.insert(
+            "container-padding-compact".into(),
+            px(components.container.padding_compact),
+        );
+        vars.insert(
+            "container-header-gap".into(),
+            px(components.container.header_gap),
+        );
+        vars.insert(
+            "container-footer-gap".into(),
+            px(components.container.footer_gap),
+        );
+        vars.insert(
+            "container-section-gap".into(),
+            px(components.container.section_gap),
+        );
+        vars.insert(
+            "container-corner-shape".into(),
+            components.container.corner_shape.to_string(),
+        );
+        vars.insert("overlay-radius".into(), px(components.overlay.radius));
+        vars.insert("overlay-px".into(), px(components.overlay.padding_x));
+        vars.insert("overlay-py".into(), px(components.overlay.padding_y));
+        vars.insert(
+            "overlay-item-px".into(),
+            px(components.overlay.item_padding_x),
+        );
+        vars.insert(
+            "overlay-item-py".into(),
+            px(components.overlay.item_padding_y),
+        );
+        vars.insert("overlay-gap".into(), px(components.overlay.gap));
+        vars.insert(
+            "overlay-shadow".into(),
+            css_shadow(&components.overlay.shadow),
+        );
+        vars.insert(
+            "overlay-corner-shape".into(),
+            components.overlay.corner_shape.to_string(),
+        );
+        vars.insert("type-action-sm".into(), px(components.typography.action_sm));
+        vars.insert("type-action-md".into(), px(components.typography.action_md));
+        vars.insert("type-action-lg".into(), px(components.typography.action_lg));
+        vars.insert("type-body-sm".into(), px(components.typography.body_sm));
+        vars.insert("type-body-md".into(), px(components.typography.body_md));
+        vars.insert("type-body-lg".into(), px(components.typography.body_lg));
+        vars.insert("type-label-sm".into(), px(components.typography.label_sm));
+        vars.insert("type-label-md".into(), px(components.typography.label_md));
+        vars.insert("type-label-lg".into(), px(components.typography.label_lg));
+        vars.insert("type-helper".into(), px(components.typography.helper));
+        vars.insert("type-badge".into(), px(components.typography.badge));
+        vars.insert("type-title".into(), px(components.typography.title));
+        vars.insert(
+            "compact-badge-radius".into(),
+            px(components.compact.badge_radius),
+        );
+        vars.insert(
+            "compact-badge-px".into(),
+            px(components.compact.badge_padding_x),
+        );
+        vars.insert(
+            "compact-badge-py".into(),
+            px(components.compact.badge_padding_y),
+        );
+        vars.insert(
+            "compact-kbd-radius".into(),
+            px(components.compact.kbd_radius),
+        );
+        vars.insert(
+            "compact-kbd-px".into(),
+            px(components.compact.kbd_padding_x),
+        );
+        vars.insert(
+            "compact-kbd-py".into(),
+            px(components.compact.kbd_padding_y),
+        );
+        vars.insert(
+            "compact-cluster-gap-sm".into(),
+            px(components.compact.cluster_gap_sm),
+        );
+        vars.insert(
+            "compact-cluster-gap-md".into(),
+            px(components.compact.cluster_gap_md),
+        );
+        vars.insert(
+            "compact-progress-height-sm".into(),
+            px(components.compact.progress_height_sm),
+        );
+        vars.insert(
+            "compact-progress-height-md".into(),
+            px(components.compact.progress_height_md),
+        );
+        vars.insert(
+            "compact-progress-height-lg".into(),
+            px(components.compact.progress_height_lg),
+        );
+        vars.insert(
+            "compact-switch-inset".into(),
+            px(components.compact.switch_inset),
+        );
+
         vars
+    }
+
+    /// Get semantic component tokens
+    pub fn components(&self) -> ComponentTokens {
+        self.components.read().unwrap().clone()
     }
 
     // ========== Opacity Access ==========
@@ -519,6 +713,7 @@ impl ThemeState {
     /// Set a spacing override (triggers layout)
     pub fn set_spacing_override(&self, token: SpacingToken, value: f32) {
         self.spacing_overrides.write().unwrap().insert(token, value);
+        self.recompute_component_tokens();
         self.needs_layout.store(true, Ordering::SeqCst);
         trigger_redraw();
     }
@@ -526,6 +721,7 @@ impl ThemeState {
     /// Remove a spacing override
     pub fn remove_spacing_override(&self, token: SpacingToken) {
         self.spacing_overrides.write().unwrap().remove(&token);
+        self.recompute_component_tokens();
         self.needs_layout.store(true, Ordering::SeqCst);
         trigger_redraw();
     }
@@ -555,6 +751,15 @@ impl ThemeState {
     /// Set a radius override (triggers repaint - radii don't affect layout)
     pub fn set_radius_override(&self, token: RadiusToken, value: f32) {
         self.radius_overrides.write().unwrap().insert(token, value);
+        self.recompute_component_tokens();
+        self.needs_repaint.store(true, Ordering::SeqCst);
+        trigger_redraw();
+    }
+
+    /// Remove a radius override
+    pub fn remove_radius_override(&self, token: RadiusToken) {
+        self.radius_overrides.write().unwrap().remove(&token);
+        self.recompute_component_tokens();
         self.needs_repaint.store(true, Ordering::SeqCst);
         trigger_redraw();
     }
@@ -603,6 +808,7 @@ impl ThemeState {
         self.spacing_overrides.write().unwrap().clear();
         self.opacity_overrides.write().unwrap().clear();
         self.radius_overrides.write().unwrap().clear();
+        self.recompute_component_tokens();
         self.needs_repaint.store(true, Ordering::SeqCst);
         self.needs_layout.store(true, Ordering::SeqCst);
         trigger_redraw();
@@ -612,4 +818,30 @@ impl ThemeState {
 /// Interpolate between two color token sets
 fn interpolate_color_tokens(from: &ColorTokens, to: &ColorTokens, t: f32) -> ColorTokens {
     ColorTokens::lerp(from, to, t)
+}
+
+fn px(value: f32) -> String {
+    if value.fract() == 0.0 {
+        format!("{value:.0}px")
+    } else {
+        format!("{value:.2}px")
+    }
+}
+
+fn css_shadow(shadow: &Shadow) -> String {
+    if shadow.color.a == 0.0 {
+        return "none".into();
+    }
+
+    format!(
+        "{} {} {} {} rgba({},{},{},{})",
+        px(shadow.offset_x),
+        px(shadow.offset_y),
+        px(shadow.blur),
+        px(shadow.spread),
+        (shadow.color.r * 255.0) as u8,
+        (shadow.color.g * 255.0) as u8,
+        (shadow.color.b * 255.0) as u8,
+        shadow.color.a
+    )
 }

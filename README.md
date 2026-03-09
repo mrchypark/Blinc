@@ -186,7 +186,7 @@ div()
 │  Brush/Color Types    │  Timelines           │  Asset Loading        │
 ├─────────────────────────────────────────────────────────────────────┤
 │     blinc_platform_desktop    │  blinc_platform_android  │   _ios   │
-│     winit + wgpu              │  NDK + Vulkan            │  UIKit   │
+│     winit + wgpu              │  NDK + JNI bridge        │  UIKit   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -514,8 +514,8 @@ Easing::EaseOutBounce    // Bounce effect
 | macOS | Stable | wgpu (Metal) |
 | Windows | Stable | wgpu (DX12/Vulkan) |
 | Linux | Stable | wgpu (Vulkan) |
-| Android | Stable | wgpu (Vulkan), ~530KB |
-| iOS | Stable | wgpu (Metal) |
+| Android | Preview | NDK + JNI bridge |
+| iOS | Preview | UIKit + native bridge |
 | Fuschia | In progress | wgpu (Vulkan/Scenic) |
 | HarmonyOS | In progress | wgpu (Vulkan/OpenGL ES) |
 

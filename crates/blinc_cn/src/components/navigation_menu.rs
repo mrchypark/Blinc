@@ -99,7 +99,14 @@ impl NavigationMenu {
             .deps([active_menu.signal_id()])
             .on_state(move |_ctx| {
                 let current_active = active_menu_for_container.get();
-                let mut nav = div().class("cn-nav-menu").flex_row().items_center().h_fit().gap(1.0);
+                let compact = ThemeState::get().components().compact;
+                let typography = ThemeState::get().components().typography;
+                let mut nav = div()
+                    .class("cn-nav-menu")
+                    .flex_row()
+                    .items_center()
+                    .h_fit()
+                    .gap_px(compact.cluster_gap_sm);
 
                 for (idx, item) in items.iter().enumerate() {
                     let item_key = format!("{}_{}", key_base, idx);
@@ -129,14 +136,16 @@ impl NavigationMenu {
                                         .flex_row()
                                         .items_center()
                                         .h_fit()
-                                        .px(3.0)
-                                        .py(2.0)
+                                        .px(ThemeState::get().components().overlay.item_padding_x)
+                                        .py(ThemeState::get().components().overlay.item_padding_y)
                                         .rounded(radius)
                                         .bg(bg)
                                         .cursor(CursorStyle::Pointer)
                                         .child(
                                             text(&label)
-                                                .size(14.0)
+                                                .class("cn-nav-link__label")
+                                                .class("cn-truncate")
+                                                .size(typography.action_md)
                                                 .medium()
                                                 .color(text_color)
                                                 .no_cursor()
@@ -201,21 +210,32 @@ impl NavigationMenu {
                                             .flex_row()
                                             .items_center()
                                             .h_fit()
-                                            .gap(1.0)
-                                            .px(3.0)
-                                            .py(2.0)
+                                            .gap_px(compact.cluster_gap_sm)
+                                            .px(ThemeState::get().components().overlay.item_padding_x)
+                                            .py(ThemeState::get().components().overlay.item_padding_y)
                                             .rounded(radius)
                                             .bg(bg)
                                             .cursor(CursorStyle::Pointer)
                                             .child(
                                                 text(&label)
-                                                    .size(14.0)
+                                                    .class("cn-nav-link__label")
+                                                    .class("cn-truncate")
+                                                    .size(typography.action_md)
                                                     .medium()
                                                     .color(text_color)
                                                     .no_cursor()
                                                     .pointer_events_none(),
                                             )
-                                            .child(div().pointer_events_none().child(svg(chevron).size(12.0, 12.0).color(text_color)));
+                                            .child(
+                                                div()
+                                                    .class("cn-decorative")
+                                                    .pointer_events_none()
+                                                    .child(
+                                                        svg(chevron)
+                                                            .size(12.0, 12.0)
+                                                            .color(text_color),
+                                                    ),
+                                            );
                                         if is_active {
                                             trigger_div = trigger_div.class("cn-nav-link--active");
                                         }
@@ -591,15 +611,15 @@ impl NavigationLink {
                     .class("cn-nav-link")
                     .flex_col()
                     .w_full()
-                    .gap(1.0)
-                    .px(3.0) // Horizontal padding on item
-                    .py(2.0) // Vertical padding on item
+                    .gap_px(theme.components().compact.cluster_gap_sm)
+                    .px(theme.components().overlay.item_padding_x)
+                    .py(theme.components().overlay.item_padding_y)
                     .rounded(radius)
                     .bg(bg)
                     .cursor(CursorStyle::Pointer)
                     .child(
                         text(&label)
-                            .size(14.0)
+                            .size(theme.components().typography.action_md)
                             .medium()
                             .color(text_primary)
                             .no_cursor()

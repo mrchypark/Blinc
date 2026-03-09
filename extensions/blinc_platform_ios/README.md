@@ -5,14 +5,16 @@
 > This crate is a component of Blinc, a GPU-accelerated UI framework for Rust.
 > For full documentation and guides, visit the [Blinc documentation](https://project-blinc.github.io/Blinc).
 
-iOS platform implementation for Blinc UI.
+iOS platform scaffolding for Blinc UI.
 
 For the repo-wide native support contract, see
 [`docs/native-readiness.md`](../../docs/native-readiness.md).
 
 ## Overview
 
-`blinc_platform_ios` provides UIKit integration, Metal rendering, and touch input handling for iOS and iPadOS applications.
+`blinc_platform_ios` provides the current iOS runtime surface for Blinc:
+UIKit integration points, touch forwarding, native bridge helpers, and the
+render-loop scaffolding used by generated templates.
 
 ## Supported Platforms
 
@@ -31,23 +33,17 @@ accessibility parity, or complete production packaging flows.
 
 ## Features
 
-- **UIKit Integration**: Native iOS view hierarchy
-- **Metal Rendering**: Hardware-accelerated graphics
-- **Touch Input**: Full multi-touch support
+- **UIKit Integration**: Template-friendly app shell
+- **Touch Input**: Touch forwarding into Blinc events
+- **Native Bridge**: Rust-to-Swift interoperability
+- **Template Support**: Bridge registration from generated projects
 - **iOS Lifecycle**: Partial runtime lifecycle wiring
 - **Safe Area**: Environment snapshot helpers for current window metrics/insets
 
 ## Quick Start
 
-```rust
-use blinc_platform_ios::ios_main;
-
-#[no_mangle]
-pub extern "C" fn main() {
-    // Initializes the Rust side of the iOS platform integration.
-    ios_main();
-}
-```
+Use the generated iOS template and connect your Rust static library through the
+provided bridging header and `BlincNativeBridge`.
 
 Today, UI construction and lifecycle wiring are still coordinated from the host
 UIKit/Xcode application rather than a closure-based Rust entrypoint.
@@ -105,24 +101,20 @@ fn handle_touch(event: TouchEvent) {
 }
 ```
 
-## Safe Area Snapshot
+## Status
 
-```rust
-use blinc_platform_ios::get_safe_area_insets;
+The iOS runtime is still under active development. Treat the crate as bridge and
+template scaffolding for shared UI work, and validate lifecycle, safe-area, and
+rendering behavior in your target app before treating it as production ready.
 
-let insets = get_safe_area_insets();
+The current runtime surface now reflects UIKit when available for:
 
-// Returns (top, left, bottom, right)
-let (top, left, bottom, right) = insets;
-```
+- dark-mode detection
+- safe-area inset queries
+- initial lifecycle/frame bridge events from the Rust-side event loop surface
 
-## Lifecycle Hooks
-
-```rust
-// Lifecycle callbacks are currently managed by the host UIKit application.
-// Use ios_main() for Rust-side initialization, then forward lifecycle events
-// from AppDelegate / SceneDelegate into your app-specific integration layer.
-```
+`IOSEventLoop` should still be treated as a UIKit-managed integration point, not
+as a desktop-style blocking owner loop.
 
 ## Building
 

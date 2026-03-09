@@ -456,6 +456,8 @@ impl MenubarBuilder {
                                 .py(1.0)
                                 .child(
                                     text(label)
+                                        .class("cn-menubar-trigger__label")
+                                        .class("cn-truncate")
                                         .size(style_font_size)
                                         .color(text_col)
                                         .no_cursor()
@@ -629,9 +631,10 @@ fn show_menubar_dropdown(
     let text_color = theme.color(ColorToken::TextPrimary);
     let text_secondary = theme.color(ColorToken::TextSecondary);
     let text_tertiary = theme.color(ColorToken::TextTertiary);
-    let radius = theme.radius(RadiusToken::Md);
-    let font_size = 14.0;
-    let padding = 12.0;
+    let components = theme.components();
+    let radius = components.overlay.radius;
+    let font_size = components.typography.action_md;
+    let padding = components.overlay.item_padding_x;
 
     let items = items.to_vec();
     let item_count = items.len();
@@ -701,9 +704,10 @@ fn show_menubar_hover_dropdown(
     let text_color = theme.color(ColorToken::TextPrimary);
     let text_secondary = theme.color(ColorToken::TextSecondary);
     let text_tertiary = theme.color(ColorToken::TextTertiary);
-    let radius = theme.radius(RadiusToken::Md);
-    let font_size = 14.0;
-    let padding = 12.0;
+    let components = theme.components();
+    let radius = components.overlay.radius;
+    let font_size = components.typography.action_md;
+    let padding = components.overlay.item_padding_x;
 
     let items = items.to_vec();
     let item_count = items.len();
@@ -892,6 +896,8 @@ fn build_menubar_hover_dropdown_content(
                     left_side = left_side
                         .child(
                             text(&item_label)
+                                .class("cn-dropdown-item__label")
+                                .class("cn-truncate")
                                 .size(font_size)
                                 .color(text_col)
                                 .no_cursor()
@@ -903,6 +909,7 @@ fn build_menubar_hover_dropdown_content(
                     let right_side: Option<Div> = if let Some(ref shortcut) = item_shortcut {
                         Some(div().child(
                             text(shortcut)
+                                .class("cn-menu-shortcut")
                                 .size(font_size - 2.0)
                                 .color(shortcut_color)
                                 .no_cursor(),
@@ -911,6 +918,7 @@ fn build_menubar_hover_dropdown_content(
                         let chevron_right = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
                         Some(
                             div()
+                                .class("cn-decorative")
                                 .child(svg(chevron_right).size(12.0, 12.0).color(text_tertiary))
                                 .pointer_events_none(),
                         )
@@ -1208,6 +1216,8 @@ fn build_menubar_submenu_content(
 
                     left_side = left_side.child(
                         text(&item_label)
+                            .class("cn-dropdown-item__label")
+                            .class("cn-truncate")
                             .size(font_size)
                             .color(text_col)
                             .no_cursor().pointer_events_none(),
@@ -1216,13 +1226,19 @@ fn build_menubar_submenu_content(
                     let right_side: Option<Div> = if let Some(ref shortcut) = item_shortcut {
                         Some(div().child(
                             text(shortcut)
+                                .class("cn-menu-shortcut")
                                 .size(font_size - 2.0)
                                 .color(shortcut_color)
                                 .no_cursor(),
                         ))
                     } else if has_submenu {
                         let chevron_right = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
-                        Some(div().child(svg(chevron_right).size(12.0, 12.0).color(text_tertiary)).pointer_events_none())
+                        Some(
+                            div()
+                                .class("cn-decorative")
+                                .child(svg(chevron_right).size(12.0, 12.0).color(text_tertiary))
+                                .pointer_events_none(),
+                        )
                     } else {
                         None
                     };
@@ -1420,6 +1436,8 @@ fn build_menubar_dropdown_content(
                     left_side = left_side
                         .child(
                             text(&item_label)
+                                .class("cn-dropdown-item__label")
+                                .class("cn-truncate")
                                 .size(font_size)
                                 .color(text_col)
                                 .no_cursor()
@@ -1431,6 +1449,7 @@ fn build_menubar_dropdown_content(
                     let right_side: Option<Div> = if let Some(ref shortcut) = item_shortcut {
                         Some(div().child(
                             text(shortcut)
+                                .class("cn-menu-shortcut")
                                 .size(font_size - 2.0)
                                 .color(shortcut_color)
                                 .no_cursor(),
@@ -1439,6 +1458,7 @@ fn build_menubar_dropdown_content(
                         let chevron_right = r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
                         Some(
                             div()
+                                .class("cn-decorative")
                                 .child(svg(chevron_right).size(12.0, 12.0).color(text_tertiary))
                                 .pointer_events_none(),
                         )

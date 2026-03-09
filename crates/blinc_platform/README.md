@@ -9,13 +9,16 @@ Platform abstraction layer for Blinc UI.
 
 ## Overview
 
-`blinc_platform` defines the traits and types for cross-platform windowing, input handling, and application lifecycle. Platform-specific implementations are provided by separate crates.
+`blinc_platform` defines the shared traits and data types used by desktop and
+mobile runtimes. Platform-specific implementations are provided by separate
+crates, and mobile support currently exposes bridge-oriented capability helpers
+in addition to the common abstractions.
 
 ## Features
 
 - **Platform Trait**: Unified API for all platforms
-- **Window Management**: Create, configure, and manage windows
-- **Event Loop**: Handle platform events and callbacks
+- **Window Management**: Shared window/config types
+- **Event Loop**: Shared event and callback types
 - **Input Events**: Mouse, keyboard, touch input
 - **Asset Loading**: Platform-agnostic asset access
 - **Platform Services**: Permissions, Clipboard, Microphone permission, BLE scan runtime
@@ -32,6 +35,12 @@ Platform abstraction layer for Blinc UI.
 - `sensors`: migrated typed API previously provided by `blinc_sensors`
 
 ## Traits
+
+## Notes
+
+- Desktop implementations are the most complete consumers of these traits today.
+- Mobile crates also use `blinc_platform` for shared event types and capability
+  wrappers even where a full trait implementation is still evolving.
 
 ### Platform
 

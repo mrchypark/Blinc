@@ -118,7 +118,7 @@ impl Progress {
             .unwrap_or_else(|| theme.color(ColorToken::Primary));
         let track_color = config
             .track_color
-            .unwrap_or_else(|| theme.color(ColorToken::Secondary));
+            .unwrap_or_else(|| theme.color(ColorToken::AccentSubtle));
 
         // Calculate fill width in pixels
         let fill_ratio = config.value / 100.0;

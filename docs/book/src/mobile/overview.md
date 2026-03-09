@@ -1,6 +1,9 @@
 # Mobile Development
 
-Blinc supports building native mobile applications for both Android and iOS platforms. The same Rust UI code runs on mobile with platform-specific rendering backends (Vulkan for Android, Metal for iOS).
+Blinc can share Rust UI code across desktop, Android, and iOS targets. Mobile
+support currently provides generated platform projects, native bridge wiring,
+touch forwarding, and renderer scaffolding, but it should still be treated as a
+preview surface rather than a finished production target.
 
 ## Cross-Platform Architecture
 
@@ -14,24 +17,25 @@ Blinc supports building native mobile applications for both Android and iOS plat
          │                    │                    │
     ┌────▼────┐         ┌─────▼─────┐        ┌────▼────┐
     │ Desktop │         │  Android  │        │   iOS   │
-    │ (wgpu)  │         │ (Vulkan)  │        │ (Metal) │
+    │ (wgpu)  │         │ (NDK)     │        │ (UIKit) │
     └─────────┘         └───────────┘        └─────────┘
 ```
 
 ## Key Features
 
-- **Shared UI Code**: Write your UI once in Rust, deploy everywhere
-- **Native Performance**: GPU-accelerated rendering via Vulkan/Metal
-- **Touch Support**: Full multi-touch gesture handling
+- **Shared UI Code**: Reuse Rust UI trees and state across platforms
+- **Generated Platform Projects**: Android Gradle and iOS Xcode templates
+- **Native Bridge Wiring**: Template projects register common mobile helpers
+- **Touch Support**: Touch input is forwarded into the shared event system
 - **Reactive State**: Same reactive state system as desktop
-- **Animations**: Spring physics and keyframe animations work seamlessly
+- **Animations**: Shared animation/state APIs are available on mobile too
 
 ## Supported Platforms
 
-| Platform | Backend | Min Version  | Status |
+| Platform | Runtime | Min Version  | Status |
 |----------|---------|--------------|--------|
-| Android  | Vulkan  | API 24 (7.0) | Stable |
-| iOS      | Metal   | iOS 15+      | Stable |
+| Android  | NDK + JNI bridge | API 24 (7.0) | Preview |
+| iOS      | UIKit + native bridge | iOS 15+ | Preview |
 
 ## Project Structure
 
@@ -136,3 +140,10 @@ blinc run ios
 - [Android Development](./android.md) - Set up Android toolchain and build
 - [iOS Development](./ios.md) - Set up iOS toolchain and build
 - [CLI Reference](./cli.md) - Full CLI command reference
+
+## Current Scope
+
+- The mobile templates handle project wiring and native bridge registration.
+- Runtime coverage is still uneven across rendering, lifecycle, and platform
+  services, so validate target behavior on-device before treating it as
+  production-ready.

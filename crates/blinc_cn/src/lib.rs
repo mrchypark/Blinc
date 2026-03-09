@@ -48,6 +48,30 @@ pub use components::*;
 
 // Re-export InstanceKey from blinc_layout (the canonical location)
 pub use blinc_layout::InstanceKey;
+use blinc_theme::{ColorScheme, ThemeBundle, ThemeState};
+
+/// Ensure a default platform-aware theme is initialized and return the active theme state.
+pub fn ensure_default_theme() -> &'static ThemeState {
+    ThemeState::try_get().unwrap_or_else(|| {
+        ThemeState::init_default();
+        ThemeState::get()
+    })
+}
+
+/// Ensure a specific theme bundle is initialized and return the active theme state.
+///
+/// If theme state is already initialized, the existing singleton is preserved.
+pub fn ensure_theme(bundle: ThemeBundle, scheme: ColorScheme) -> &'static ThemeState {
+    ThemeState::try_get().unwrap_or_else(|| {
+        ThemeState::init(bundle, scheme);
+        ThemeState::get()
+    })
+}
+
+/// Return the default stylesheet used by `blinc_cn` components.
+pub fn default_styles() -> &'static str {
+    cn_styles::CN_STYLES
+}
 
 /// Convenience module for accessing components with `cn::` prefix
 pub mod cn {
@@ -248,4 +272,20 @@ pub mod prelude {
     pub use blinc_theme::{ColorToken, RadiusToken, ShadowToken, SpacingToken, ThemeState};
     // Re-export icons module for easy access
     pub use blinc_icons::icons;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_styles, ensure_default_theme};
+
+    #[test]
+    fn bootstrap_default_styles_are_exposed() {
+        assert!(default_styles().contains(".cn-button"));
+    }
+
+    #[test]
+    fn bootstrap_ensure_default_theme_initializes_theme_state() {
+        let theme = ensure_default_theme();
+        assert!(theme.color(blinc_theme::ColorToken::Background).a > 0.0);
+    }
 }

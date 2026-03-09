@@ -46,6 +46,16 @@ pub trait Theme: Send + Sync + std::fmt::Debug {
 
     /// Get animation tokens
     fn animations(&self) -> &AnimationTokens;
+
+    /// Get semantic component tokens derived from primitive scales.
+    fn components(&self) -> ComponentTokens {
+        ComponentTokens::from_primitives(
+            self.spacing(),
+            self.radii(),
+            self.typography(),
+            self.shadows(),
+        )
+    }
 }
 
 /// A theme bundle containing both light and dark variants

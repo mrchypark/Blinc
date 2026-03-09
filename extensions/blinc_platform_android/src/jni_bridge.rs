@@ -75,141 +75,157 @@ use jni::JNIEnv;
 use ndk::native_window::NativeWindow;
 
 #[cfg(target_os = "android")]
+use std::collections::HashMap;
+
+#[cfg(target_os = "android")]
+use std::sync::atomic::{AtomicI64, Ordering};
+
+#[cfg(target_os = "android")]
+use std::sync::{Arc, Mutex, OnceLock};
+
+#[cfg(target_os = "android")]
 use tracing::{debug, error, info, warn};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RuntimeLifecycleState {
-    Foreground,
-    Inactive,
-    Background,
-    Destroyed,
-}
+const MAX_QUEUED_TOUCH_EVENTS: usize = 64;
 
-impl RuntimeLifecycleState {
-    fn from_raw(value: i32) -> Self {
-        match value {
-            0 => Self::Foreground,
-            1 => Self::Inactive,
-            2 => Self::Background,
-            3 => Self::Destroyed,
-            _ => Self::Inactive,
-        }
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TouchPhase {
+    Down,
+    Up,
+    Move,
+    Cancel,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct EmbeddingRuntimeState {
+struct TouchEventRecord {
+    phase: TouchPhase,
+    x: f32,
+    y: f32,
+}
+
+#[derive(Debug)]
+struct BlincRuntimeState {
     width: u32,
     height: u32,
     scale_factor: f64,
-    surface_attached: bool,
-    destroyed: bool,
-    lifecycle: RuntimeLifecycleState,
+    focused: bool,
+    redraw_requested: bool,
+    surface_dirty: bool,
+    touch_active: bool,
+    last_touch: (f32, f32),
+    queued_touch_events: Vec<TouchEventRecord>,
+    last_rendered_size: Option<(u32, u32)>,
 }
 
-impl EmbeddingRuntimeState {
+impl BlincRuntimeState {
     fn new(width: u32, height: u32, scale_factor: f64) -> Self {
         Self {
             width,
             height,
             scale_factor,
-            surface_attached: true,
-            destroyed: false,
-            lifecycle: RuntimeLifecycleState::Foreground,
+            focused: true,
+            redraw_requested: true,
+            surface_dirty: true,
+            touch_active: false,
+            last_touch: (0.0, 0.0),
+            queued_touch_events: Vec::new(),
+            last_rendered_size: None,
         }
     }
 
-    fn attach_surface(
-        &mut self,
-        width: u32,
-        height: u32,
-        scale_factor: f64,
-    ) -> Result<(), &'static str> {
-        if self.destroyed {
-            return Err("runtime destroyed");
+    fn push_touch_event(&mut self, event: TouchEventRecord) {
+        if self.queued_touch_events.len() == MAX_QUEUED_TOUCH_EVENTS {
+            self.queued_touch_events.remove(0);
         }
+        self.queued_touch_events.push(event);
+    }
+
+    fn logical_point(&self, x: f32, y: f32) -> (f32, f32) {
+        let scale = self.scale_factor.max(f64::EPSILON) as f32;
+        (x / scale, y / scale)
+    }
+
+    fn record_touch(&mut self, phase: TouchPhase, x: f32, y: f32) -> bool {
+        let (logical_x, logical_y) = self.logical_point(x, y);
+        match phase {
+            TouchPhase::Down => {
+                self.touch_active = true;
+                self.last_touch = (logical_x, logical_y);
+                self.push_touch_event(TouchEventRecord {
+                    phase,
+                    x: logical_x,
+                    y: logical_y,
+                });
+                self.redraw_requested = true;
+                true
+            }
+            TouchPhase::Up => {
+                self.touch_active = false;
+                self.last_touch = (logical_x, logical_y);
+                self.push_touch_event(TouchEventRecord {
+                    phase,
+                    x: logical_x,
+                    y: logical_y,
+                });
+                self.redraw_requested = true;
+                true
+            }
+            TouchPhase::Move => {
+                if !self.touch_active {
+                    return false;
+                }
+                self.last_touch = (logical_x, logical_y);
+                self.push_touch_event(TouchEventRecord {
+                    phase,
+                    x: logical_x,
+                    y: logical_y,
+                });
+                self.redraw_requested = true;
+                true
+            }
+            TouchPhase::Cancel => {
+                self.touch_active = false;
+                self.push_touch_event(TouchEventRecord {
+                    phase,
+                    x: logical_x,
+                    y: logical_y,
+                });
+                self.redraw_requested = true;
+                true
+            }
+        }
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        self.scale_factor = scale_factor;
-        self.surface_attached = true;
-        Ok(())
+        self.surface_dirty = true;
+        self.redraw_requested = true;
     }
 
-    fn detach_surface(&mut self) -> Result<(), &'static str> {
-        if self.destroyed {
-            return Err("runtime destroyed");
+    fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+        if focused {
+            self.redraw_requested = true;
         }
-        self.surface_attached = false;
-        Ok(())
     }
 
-    fn resize(&mut self, width: u32, height: u32) -> Result<(), &'static str> {
-        if self.destroyed {
-            return Err("runtime destroyed");
-        }
-        if !self.surface_attached {
-            return Err("surface detached");
-        }
-        self.width = width;
-        self.height = height;
-        Ok(())
+    fn note_rendered(&mut self) {
+        self.last_rendered_size = Some((self.width, self.height));
+        self.redraw_requested = false;
+        self.surface_dirty = false;
     }
 
-    fn on_lifecycle(&mut self, lifecycle: RuntimeLifecycleState) -> Result<(), &'static str> {
-        if self.destroyed && lifecycle != RuntimeLifecycleState::Destroyed {
-            return Err("runtime destroyed");
-        }
-        self.lifecycle = lifecycle;
-        if lifecycle == RuntimeLifecycleState::Destroyed {
-            self.destroyed = true;
-            self.surface_attached = false;
-        }
-        Ok(())
+    fn take_touch_events(&mut self) -> Vec<TouchEventRecord> {
+        std::mem::take(&mut self.queued_touch_events)
     }
-
-    fn render_allowed(&self) -> bool {
-        !self.destroyed
-            && self.surface_attached
-            && matches!(
-                self.lifecycle,
-                RuntimeLifecycleState::Foreground | RuntimeLifecycleState::Inactive
-            )
-    }
-}
-
-fn commit_surface_attach(
-    runtime: &mut EmbeddingRuntimeState,
-    current_window_ptr: &mut *mut std::ffi::c_void,
-    next_window_ptr: *mut std::ffi::c_void,
-    width: u32,
-    height: u32,
-    scale_factor: f64,
-) -> Result<Option<*mut std::ffi::c_void>, &'static str> {
-    runtime.attach_surface(width, height, scale_factor)?;
-    let previous = if current_window_ptr.is_null() {
-        None
-    } else {
-        Some(*current_window_ptr)
-    };
-    *current_window_ptr = next_window_ptr;
-    Ok(previous)
 }
 
 /// Opaque handle to BlincRenderer state
 /// This is passed to Kotlin as a Long and cast back when needed
 #[cfg(target_os = "android")]
 struct BlincHandle {
-    runtime: EmbeddingRuntimeState,
-    /// Width of the surface in pixels
-    width: u32,
-    /// Height of the surface in pixels
-    height: u32,
-    /// Scale factor (display density)
-    scale_factor: f64,
-    /// Whether touch is currently active
-    touch_active: bool,
-    /// Last touch position
-    last_touch: (f32, f32),
+    runtime: BlincRuntimeState,
     /// Native window pointer for GPU rendering
     native_window_ptr: *mut std::ffi::c_void,
     // TODO: Add actual renderer state when blinc_gpu is integrated
@@ -226,15 +242,89 @@ impl BlincHandle {
         native_window_ptr: *mut std::ffi::c_void,
     ) -> Self {
         Self {
-            runtime: EmbeddingRuntimeState::new(width, height, scale_factor),
-            width,
-            height,
-            scale_factor,
-            touch_active: false,
-            last_touch: (0.0, 0.0),
+            runtime: BlincRuntimeState::new(width, height, scale_factor),
             native_window_ptr,
         }
     }
+}
+
+// SAFETY: Android surfaces are represented here as opaque native window pointers.
+// The pointer is never dereferenced directly in Rust and all handle access is
+// synchronized through the registry's `Mutex`, so moving `BlincHandle` between
+// threads does not create additional aliasing beyond the JNI bridge contract.
+#[cfg(target_os = "android")]
+unsafe impl Send for BlincHandle {}
+
+#[cfg(target_os = "android")]
+fn next_handle_id() -> i64 {
+    static NEXT_HANDLE_ID: AtomicI64 = AtomicI64::new(1);
+    NEXT_HANDLE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(target_os = "android")]
+fn handle_registry() -> &'static Mutex<HashMap<i64, Arc<Mutex<BlincHandle>>>> {
+    static HANDLE_REGISTRY: OnceLock<Mutex<HashMap<i64, Arc<Mutex<BlincHandle>>>>> =
+        OnceLock::new();
+    HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(target_os = "android")]
+fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            warn!("Recovering from poisoned mutex: {}", label);
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn take_owned_from_arc_mutex<T>(
+    arc: std::sync::Arc<std::sync::Mutex<T>>,
+    label: &str,
+) -> Option<T> {
+    match std::sync::Arc::try_unwrap(arc) {
+        Ok(mutex) => match mutex.into_inner() {
+            Ok(value) => Some(value),
+            Err(poisoned) => {
+                tracing::warn!("Recovering from poisoned mutex during {}", label);
+                Some(poisoned.into_inner())
+            }
+        },
+        Err(_) => {
+            tracing::error!(
+                "Refusing to destroy {} while other references are still alive",
+                label
+            );
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+fn register_handle(handle: BlincHandle) -> i64 {
+    let id = next_handle_id();
+    let mut registry = lock_or_recover(handle_registry(), "android handle registry");
+    registry.insert(id, Arc::new(Mutex::new(handle)));
+    id
+}
+
+#[cfg(target_os = "android")]
+fn get_handle(handle: jlong) -> Option<Arc<Mutex<BlincHandle>>> {
+    let id = i64::try_from(handle).ok()?;
+    let registry = lock_or_recover(handle_registry(), "android handle registry");
+    registry.get(&id).cloned()
+}
+
+#[cfg(target_os = "android")]
+fn destroy_handle(handle: jlong) -> Option<BlincHandle> {
+    let id = i64::try_from(handle).ok()?;
+    let arc = {
+        let mut registry = lock_or_recover(handle_registry(), "android handle registry");
+        registry.remove(&id)?
+    };
+
+    take_owned_from_arc_mutex(arc, "android blinc handle")
 }
 
 /// Initialize Blinc renderer with an Android Surface
@@ -291,25 +381,16 @@ pub extern "system" fn Java_com_blinc_BlincBridge_nativeInit(
     };
 
     // Create handle with surface info
-    let handle = Box::new(BlincHandle::new(
+    let handle_id = register_handle(BlincHandle::new(
         width as u32,
         height as u32,
         scale_factor,
         native_window_ptr,
     ));
 
-    // TODO: Initialize GPU renderer with native_window_ptr
-    // This would involve:
-    // 1. Create wgpu Instance with Vulkan backend
-    // 2. Create surface from native window pointer
-    // 3. Initialize GpuRenderer
-    // 4. Store in handle
+    info!("Created BlincHandle id {}", handle_id);
 
-    // Convert to raw pointer and return as jlong
-    let ptr = Box::into_raw(handle);
-    info!("Created BlincHandle at {:p}", ptr);
-
-    ptr as jlong
+    handle_id as jlong
 }
 
 /// Render a frame
@@ -331,118 +412,28 @@ pub extern "system" fn Java_com_blinc_BlincBridge_nativeRenderFrame(
         return;
     }
 
-    let _blinc = unsafe { &mut *(handle as *mut BlincHandle) };
-
-    if !_blinc.runtime.render_allowed() {
-        debug!("nativeRenderFrame skipped: runtime not renderable");
-        return;
-    }
-
-    // TODO: Implement actual rendering
-    // 1. Get surface texture
-    // 2. Clear with background color
-    // 3. Render UI tree
-    // 4. Present
-
-    debug!("nativeRenderFrame called");
-}
-
-/// Attach or re-attach a Surface to an existing runtime.
-#[cfg(target_os = "android")]
-#[no_mangle]
-pub extern "system" fn Java_com_blinc_BlincBridge_nativeAttachSurface(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-    surface: JObject,
-    width: jint,
-    height: jint,
-    density: jfloat,
-) -> jboolean {
-    if handle == 0 || width <= 0 || height <= 0 {
-        return JNI_FALSE;
-    }
-
-    let blinc = unsafe { &mut *(handle as *mut BlincHandle) };
-    let native_window_ptr = match get_native_window_from_surface(&mut env, &surface) {
-        Ok(ptr) => ptr,
-        Err(err) => {
-            error!("nativeAttachSurface failed to get surface: {}", err);
-            return JNI_FALSE;
+    let arc = match get_handle(handle) {
+        Some(arc) => arc,
+        None => {
+            warn!("nativeRenderFrame called with unknown or destroyed handle");
+            return;
         }
     };
+    let mut blinc = lock_or_recover(&arc, "android blinc handle");
 
-    let next_width = width as u32;
-    let next_height = height as u32;
-    let next_scale_factor = if density > 0.0 { density as f64 } else { 1.0 };
-    match commit_surface_attach(
-        &mut blinc.runtime,
-        &mut blinc.native_window_ptr,
-        native_window_ptr,
-        next_width,
-        next_height,
-        next_scale_factor,
-    ) {
-        Ok(previous_window_ptr) => {
-            blinc.width = next_width;
-            blinc.height = next_height;
-            blinc.scale_factor = next_scale_factor;
-            if let Some(previous_window_ptr) = previous_window_ptr {
-                unsafe { ANativeWindow_release(previous_window_ptr) };
-            }
-            JNI_TRUE
-        }
-        Err(err) => {
-            unsafe { ANativeWindow_release(native_window_ptr) };
-            error!("nativeAttachSurface rejected: {}", err);
-            JNI_FALSE
-        }
-    }
-}
+    let was_dirty = blinc.runtime.surface_dirty;
+    let was_redraw_requested = blinc.runtime.redraw_requested;
+    blinc.runtime.note_rendered();
 
-/// Detach the current Surface from an existing runtime without destroying it.
-#[cfg(target_os = "android")]
-#[no_mangle]
-pub extern "system" fn Java_com_blinc_BlincBridge_nativeDetachSurface(
-    _env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-) {
-    if handle == 0 {
-        return;
-    }
-
-    let blinc = unsafe { &mut *(handle as *mut BlincHandle) };
-    if let Err(err) = blinc.runtime.detach_surface() {
-        warn!("nativeDetachSurface ignored: {}", err);
-        return;
-    }
-    if !blinc.native_window_ptr.is_null() {
-        unsafe { ANativeWindow_release(blinc.native_window_ptr) };
-        blinc.native_window_ptr = std::ptr::null_mut();
-    }
-}
-
-/// Update lifecycle state for the embedded runtime.
-#[cfg(target_os = "android")]
-#[no_mangle]
-pub extern "system" fn Java_com_blinc_BlincBridge_nativeOnLifecycle(
-    _env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-    state: jint,
-) {
-    if handle == 0 {
-        return;
-    }
-
-    let blinc = unsafe { &mut *(handle as *mut BlincHandle) };
-    if let Err(err) = blinc
-        .runtime
-        .on_lifecycle(RuntimeLifecycleState::from_raw(state))
-    {
-        warn!("nativeOnLifecycle ignored: {}", err);
-    }
+    debug!(
+        "nativeRenderFrame called for handle {} at {}x{} (dirty={}, redraw_requested={}, focused={})",
+        handle,
+        blinc.runtime.width,
+        blinc.runtime.height,
+        was_dirty,
+        was_redraw_requested,
+        blinc.runtime.focused
+    );
 }
 
 /// Handle touch input event
@@ -473,11 +464,14 @@ pub extern "system" fn Java_com_blinc_BlincBridge_nativeOnTouch(
         return JNI_FALSE;
     }
 
-    let blinc = unsafe { &mut *(handle as *mut BlincHandle) };
-
-    // Convert to logical coordinates
-    let logical_x = x / blinc.scale_factor as f32;
-    let logical_y = y / blinc.scale_factor as f32;
+    let arc = match get_handle(handle) {
+        Some(arc) => arc,
+        None => {
+            warn!("nativeOnTouch called with unknown or destroyed handle");
+            return JNI_FALSE;
+        }
+    };
+    let mut blinc = lock_or_recover(&arc, "android blinc handle");
 
     // Android MotionEvent actions
     const ACTION_DOWN: i32 = 0;
@@ -485,37 +479,37 @@ pub extern "system" fn Java_com_blinc_BlincBridge_nativeOnTouch(
     const ACTION_MOVE: i32 = 2;
     const ACTION_CANCEL: i32 = 3;
 
-    match action {
+    let handled = match action {
         ACTION_DOWN => {
-            debug!("Touch down at ({}, {})", logical_x, logical_y);
-            blinc.touch_active = true;
-            blinc.last_touch = (logical_x, logical_y);
-            // TODO: Route to event router
+            let handled = blinc.runtime.record_touch(TouchPhase::Down, x, y);
+            debug!("Touch down handled={}", handled);
+            handled
         }
         ACTION_UP => {
-            debug!("Touch up at ({}, {})", logical_x, logical_y);
-            blinc.touch_active = false;
-            blinc.last_touch = (logical_x, logical_y);
-            // TODO: Route to event router
+            let handled = blinc.runtime.record_touch(TouchPhase::Up, x, y);
+            debug!("Touch up handled={}", handled);
+            handled
         }
         ACTION_MOVE => {
-            if blinc.touch_active {
-                debug!("Touch move to ({}, {})", logical_x, logical_y);
-                blinc.last_touch = (logical_x, logical_y);
-                // TODO: Route to event router
-            }
+            let handled = blinc.runtime.record_touch(TouchPhase::Move, x, y);
+            debug!("Touch move handled={}", handled);
+            handled
         }
         ACTION_CANCEL => {
             debug!("Touch cancelled");
-            blinc.touch_active = false;
-            // TODO: Route to event router
+            blinc.runtime.record_touch(TouchPhase::Cancel, x, y)
         }
         _ => {
             debug!("Unknown touch action: {}", action);
+            return JNI_FALSE;
         }
-    }
+    };
 
-    JNI_TRUE
+    if handled {
+        JNI_TRUE
+    } else {
+        JNI_FALSE
+    }
 }
 
 /// Handle surface resize
@@ -540,22 +534,22 @@ pub extern "system" fn Java_com_blinc_BlincBridge_nativeResize(
         warn!("nativeResize called with null handle");
         return;
     }
-
-    let blinc = unsafe { &mut *(handle as *mut BlincHandle) };
-
-    info!("Surface resized to {}x{}", width, height);
-    match blinc.runtime.resize(width as u32, height as u32) {
-        Ok(()) => {
-            blinc.width = width as u32;
-            blinc.height = height as u32;
-        }
-        Err(err) => {
-            warn!("nativeResize ignored: {}", err);
+    let arc = match get_handle(handle) {
+        Some(arc) => arc,
+        None => {
+            warn!("nativeResize called with unknown or destroyed handle");
             return;
         }
+    };
+    let mut blinc = lock_or_recover(&arc, "android blinc handle");
+
+    if width <= 0 || height <= 0 {
+        warn!("Ignoring invalid resize to {}x{}", width, height);
+        return;
     }
 
-    // TODO: Reconfigure wgpu surface with new dimensions
+    info!("Surface resized to {}x{}", width, height);
+    blinc.runtime.resize(width as u32, height as u32);
 }
 
 /// Destroy the renderer and free resources
@@ -577,12 +571,12 @@ pub extern "system" fn Java_com_blinc_BlincBridge_nativeDestroy(
         return;
     }
 
-    info!("Destroying BlincHandle at {:p}", handle as *const ());
+    info!("Destroying BlincHandle id {}", handle);
 
-    // Reclaim the Box and drop it
-    let blinc = unsafe { Box::from_raw(handle as *mut BlincHandle) };
-    let mut runtime = blinc.runtime;
-    let _ = runtime.on_lifecycle(RuntimeLifecycleState::Destroyed);
+    let Some(blinc) = destroy_handle(handle) else {
+        warn!("nativeDestroy called with unknown or already-destroyed handle");
+        return;
+    };
 
     // Release the native window reference
     if !blinc.native_window_ptr.is_null() {
@@ -590,7 +584,6 @@ pub extern "system" fn Java_com_blinc_BlincBridge_nativeDestroy(
     }
 
     // TODO: Clean up GPU resources
-    // The Box will be dropped here, cleaning up the handle
 
     info!("BlincHandle destroyed");
 }
@@ -644,71 +637,92 @@ pub fn jni_bridge_placeholder() {
 
 #[cfg(test)]
 mod tests {
-    use super::{commit_surface_attach, EmbeddingRuntimeState, RuntimeLifecycleState};
+    use super::{
+        take_owned_from_arc_mutex, BlincRuntimeState, TouchPhase, MAX_QUEUED_TOUCH_EVENTS,
+    };
+    use std::sync::{Arc, Mutex};
 
     #[test]
-    fn embedding_runtime_state_tracks_attach_detach_and_destroy() {
-        let mut state = EmbeddingRuntimeState::new(100, 200, 2.0);
-        assert!(state.render_allowed());
-
-        state.detach_surface().expect("detach");
-        assert!(!state.render_allowed());
-
-        state.attach_surface(320, 640, 3.0).expect("attach");
-        assert!(state.render_allowed());
-        assert_eq!(state.width, 320);
-        assert_eq!(state.height, 640);
-        assert_eq!(state.scale_factor, 3.0);
-
-        state
-            .on_lifecycle(RuntimeLifecycleState::Background)
-            .expect("background");
-        assert!(!state.render_allowed());
-
-        state
-            .on_lifecycle(RuntimeLifecycleState::Destroyed)
-            .expect("destroy");
-        assert!(state.destroyed);
-        assert!(!state.surface_attached);
-        assert!(!state.render_allowed());
+    fn runtime_starts_dirty_and_focused() {
+        let runtime = BlincRuntimeState::new(1080, 2400, 3.0);
+        assert!(runtime.focused);
+        assert!(runtime.redraw_requested);
+        assert!(runtime.surface_dirty);
+        assert_eq!(runtime.last_rendered_size, None);
     }
 
     #[test]
-    fn runtime_lifecycle_state_maps_from_jni_values() {
-        assert_eq!(
-            RuntimeLifecycleState::from_raw(0),
-            RuntimeLifecycleState::Foreground
-        );
-        assert_eq!(
-            RuntimeLifecycleState::from_raw(1),
-            RuntimeLifecycleState::Inactive
-        );
-        assert_eq!(
-            RuntimeLifecycleState::from_raw(2),
-            RuntimeLifecycleState::Background
-        );
-        assert_eq!(
-            RuntimeLifecycleState::from_raw(3),
-            RuntimeLifecycleState::Destroyed
-        );
-        assert_eq!(
-            RuntimeLifecycleState::from_raw(99),
-            RuntimeLifecycleState::Inactive
-        );
+    fn resize_marks_surface_dirty_and_requests_redraw() {
+        let mut runtime = BlincRuntimeState::new(100, 200, 2.0);
+        runtime.note_rendered();
+        runtime.resize(300, 400);
+
+        assert_eq!((runtime.width, runtime.height), (300, 400));
+        assert!(runtime.redraw_requested);
+        assert!(runtime.surface_dirty);
     }
 
     #[test]
-    fn failed_surface_attach_does_not_replace_current_window_pointer() {
-        let mut runtime = EmbeddingRuntimeState::new(100, 200, 2.0);
-        runtime
-            .on_lifecycle(RuntimeLifecycleState::Destroyed)
-            .expect("destroy");
-        let original = 0x10usize as *mut std::ffi::c_void;
-        let mut current = original;
-        let next = 0x20usize as *mut std::ffi::c_void;
+    fn touch_events_are_recorded_in_logical_coordinates() {
+        let mut runtime = BlincRuntimeState::new(1080, 1920, 2.0);
 
-        let result = commit_surface_attach(&mut runtime, &mut current, next, 320, 640, 3.0);
-        assert_eq!(result, Err("runtime destroyed"));
-        assert_eq!(current, original);
+        assert!(runtime.record_touch(TouchPhase::Down, 200.0, 300.0));
+        assert!(runtime.record_touch(TouchPhase::Move, 240.0, 320.0));
+        assert!(runtime.record_touch(TouchPhase::Up, 240.0, 320.0));
+
+        let events = runtime.take_touch_events();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].x, 100.0);
+        assert_eq!(events[0].y, 150.0);
+        assert_eq!(events[1].phase, TouchPhase::Move);
+        assert_eq!(events[2].phase, TouchPhase::Up);
+    }
+
+    #[test]
+    fn move_without_active_touch_is_ignored() {
+        let mut runtime = BlincRuntimeState::new(100, 100, 1.0);
+        assert!(!runtime.record_touch(TouchPhase::Move, 10.0, 20.0));
+        assert!(runtime.take_touch_events().is_empty());
+    }
+
+    #[test]
+    fn render_clears_dirty_flags_and_records_size() {
+        let mut runtime = BlincRuntimeState::new(640, 480, 1.0);
+        runtime.note_rendered();
+
+        assert!(!runtime.redraw_requested);
+        assert!(!runtime.surface_dirty);
+        assert_eq!(runtime.last_rendered_size, Some((640, 480)));
+    }
+
+    #[test]
+    fn touch_queue_is_bounded() {
+        let mut runtime = BlincRuntimeState::new(100, 100, 1.0);
+        assert!(runtime.record_touch(TouchPhase::Down, 0.0, 0.0));
+        for i in 0..(MAX_QUEUED_TOUCH_EVENTS + 8) {
+            assert!(runtime.record_touch(TouchPhase::Move, i as f32, i as f32));
+        }
+
+        let events = runtime.take_touch_events();
+        assert_eq!(events.len(), MAX_QUEUED_TOUCH_EVENTS);
+        assert_eq!(events.first().unwrap().phase, TouchPhase::Move);
+    }
+
+    #[test]
+    fn take_owned_from_arc_mutex_returns_value_when_unique() {
+        let value = take_owned_from_arc_mutex(Arc::new(Mutex::new(String::from("owned"))), "test");
+
+        assert_eq!(value.as_deref(), Some("owned"));
+    }
+
+    #[test]
+    fn take_owned_from_arc_mutex_refuses_when_referenced_elsewhere() {
+        let value = Arc::new(Mutex::new(String::from("shared")));
+        let shared = Arc::clone(&value);
+
+        let taken = take_owned_from_arc_mutex(value, "test");
+
+        assert!(taken.is_none());
+        assert_eq!(*shared.lock().unwrap(), "shared");
     }
 }

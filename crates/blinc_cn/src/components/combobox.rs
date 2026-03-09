@@ -50,7 +50,7 @@ use blinc_layout::stateful::{stateful_with_key, ButtonState};
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use blinc_layout::widgets::scroll::scroll;
 use blinc_layout::widgets::text_input::SharedTextInputData;
-use blinc_theme::{ColorToken, RadiusToken, SpacingToken, ThemeState};
+use blinc_theme::{ColorToken, SpacingToken, ThemeState};
 
 use super::label::{label, LabelSize};
 use blinc_layout::InstanceKey;
@@ -69,29 +69,41 @@ pub enum ComboboxSize {
 
 impl ComboboxSize {
     /// Get the height for this size
-    fn height(&self) -> f32 {
+    fn height(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            ComboboxSize::Small => 32.0,
-            ComboboxSize::Medium => 40.0,
-            ComboboxSize::Large => 48.0,
+            ComboboxSize::Small => tokens.control.height_sm,
+            ComboboxSize::Medium => tokens.control.height_md,
+            ComboboxSize::Large => tokens.control.height_lg,
         }
     }
 
     /// Get the font size for this size
-    fn font_size(&self) -> f32 {
+    fn font_size(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            ComboboxSize::Small => 13.0,
-            ComboboxSize::Medium => 14.0,
-            ComboboxSize::Large => 16.0,
+            ComboboxSize::Small => tokens.typography.body_sm,
+            ComboboxSize::Medium => tokens.typography.body_md,
+            ComboboxSize::Large => tokens.typography.body_lg,
         }
     }
 
     /// Get the padding for this size
-    fn padding(&self) -> f32 {
+    fn padding_x(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
         match self {
-            ComboboxSize::Small => 8.0,
-            ComboboxSize::Medium => 12.0,
-            ComboboxSize::Large => 16.0,
+            ComboboxSize::Small => tokens.control.padding_x_sm,
+            ComboboxSize::Medium => tokens.control.padding_x_md,
+            ComboboxSize::Large => tokens.control.padding_x_lg,
+        }
+    }
+
+    fn padding_y(&self, theme: &ThemeState) -> f32 {
+        let tokens = theme.components();
+        match self {
+            ComboboxSize::Small => tokens.control.padding_y_sm,
+            ComboboxSize::Medium => tokens.control.padding_y_md,
+            ComboboxSize::Large => tokens.control.padding_y_lg,
         }
     }
 }
@@ -176,10 +188,11 @@ impl Combobox {
     /// Create from a full configuration
     fn from_config(instance_key: &str, config: ComboboxConfig) -> Self {
         let theme = ThemeState::get();
-        let height = config.size.height();
-        let font_size = config.size.font_size();
-        let padding = config.size.padding();
-        let radius = theme.radius(RadiusToken::Sm);
+        let height = config.size.height(theme);
+        let font_size = config.size.font_size(theme);
+        let padding_x = config.size.padding_x(theme);
+        let padding_y = config.size.padding_y(theme);
+        let radius = theme.components().control.radius_md;
 
         // Colors
         let bg = theme.color(ColorToken::Surface);
@@ -311,6 +324,8 @@ impl Combobox {
 
                 let display_content = div().flex_1().overflow_clip().child(
                     text(&display_text)
+                        .class("cn-combobox-value")
+                        .class("cn-truncate")
                         .size(font_size)
                         .no_cursor()
                         .color(text_clr),
@@ -335,7 +350,8 @@ impl Combobox {
                     .w_full()
                     .items_center()
                     .h(height)
-                    .p_px(padding)
+                    .padding_x_px(padding_x)
+                    .padding_y_px(padding_y)
                     .bg(bg)
                     .border(1.0, bdr)
                     .rounded(radius)
@@ -383,7 +399,7 @@ impl Combobox {
                         dropdown_width,
                         height,
                         font_size,
-                        padding,
+                        padding_x,
                         radius,
                         bg,
                         border,
@@ -785,6 +801,8 @@ fn build_dropdown_content(
                         .child(
                             div().child(
                                 text(format!("Use \"{}\"", custom_value))
+                                    .class("cn-combobox-item__label")
+                                    .class("cn-truncate")
                                     .size(font_size)
                                     .no_cursor()
                                     .color(text_color),
@@ -857,6 +875,8 @@ fn build_dropdown_content(
                         } else {
                             div().child(
                                 text(&opt_label)
+                                    .class("cn-combobox-item__label")
+                                    .class("cn-truncate")
                                     .size(font_size)
                                     .no_cursor()
                                     .color(option_text_color),
@@ -904,16 +924,35 @@ mod tests {
 
     #[test]
     fn test_combobox_sizes() {
-        assert_eq!(ComboboxSize::Small.height(), 32.0);
-        assert_eq!(ComboboxSize::Medium.height(), 40.0);
-        assert_eq!(ComboboxSize::Large.height(), 48.0);
+        if ThemeState::try_get().is_none() {
+            ThemeState::init_default();
+        }
+        let theme = ThemeState::get();
+        let tokens = theme.components();
+        assert_eq!(ComboboxSize::Small.height(theme), tokens.control.height_sm);
+        assert_eq!(ComboboxSize::Medium.height(theme), tokens.control.height_md);
+        assert_eq!(ComboboxSize::Large.height(theme), tokens.control.height_lg);
     }
 
     #[test]
     fn test_combobox_font_sizes() {
-        assert_eq!(ComboboxSize::Small.font_size(), 13.0);
-        assert_eq!(ComboboxSize::Medium.font_size(), 14.0);
-        assert_eq!(ComboboxSize::Large.font_size(), 16.0);
+        if ThemeState::try_get().is_none() {
+            ThemeState::init_default();
+        }
+        let theme = ThemeState::get();
+        let tokens = theme.components();
+        assert_eq!(
+            ComboboxSize::Small.font_size(theme),
+            tokens.typography.body_sm
+        );
+        assert_eq!(
+            ComboboxSize::Medium.font_size(theme),
+            tokens.typography.body_md
+        );
+        assert_eq!(
+            ComboboxSize::Large.font_size(theme),
+            tokens.typography.body_lg
+        );
     }
 
     #[test]

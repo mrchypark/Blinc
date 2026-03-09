@@ -72,7 +72,9 @@ platforms/android/
 
 ## Native Bridge
 
-The `BlincNativeBridge` allows Rust to call Kotlin functions:
+The generated template includes `BlincNativeBridge.kt` and wires it from
+`MainActivity` so common platform helpers are available immediately. Rust can
+call Kotlin handlers through that bridge:
 
 ```rust
 // In Rust
@@ -80,7 +82,7 @@ let battery: String = native_call("device", "get_battery_level", ()).unwrap();
 ```
 
 ```kotlin
-// In Kotlin (already registered by default)
+// In Kotlin (already registered by MainActivity)
 BlincNativeBridge.registerString("device", "get_battery_level") {
     // Return battery percentage as string
 }

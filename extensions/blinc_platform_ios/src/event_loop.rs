@@ -6,13 +6,24 @@ use crate::window::IOSWindow;
 use blinc_platform::{ControlFlow, Event, EventLoop, PlatformError};
 
 #[cfg(target_os = "ios")]
+use crate::app::current_window;
+
+#[cfg(target_os = "ios")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "ios")]
 use std::sync::Arc;
 
 #[cfg(target_os = "ios")]
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
+
+#[cfg(any(target_os = "ios", test))]
+fn managed_event_sequence() -> [Event; 2] {
+    [
+        Event::Lifecycle(blinc_platform::LifecycleEvent::Resumed),
+        Event::Frame,
+    ]
+}
 
 /// Wake proxy for iOS event loop
 ///
@@ -97,26 +108,20 @@ impl EventLoop for IOSEventLoop {
     where
         F: FnMut(Event, &Self::Window) -> ControlFlow + 'static,
     {
-        // Note: On iOS, the event loop is managed by UIApplicationMain and RunLoop
-        // This implementation is a placeholder that would need to integrate with
-        // the iOS application lifecycle.
-        //
-        // In practice, iOS apps use:
-        // - UIApplicationDelegate for lifecycle events
-        // - CADisplayLink for frame callbacks
-        // - UIGestureRecognizers for touch events
-        //
-        // The actual integration happens in the IOSApp::run() in blinc_app
+        info!("iOS event loop is UIKit-managed; dispatching initial bridge events");
 
-        info!("iOS event loop started - delegating to UIApplicationMain");
-
-        // On iOS, we don't run a blocking event loop here
-        // Instead, the run loop is managed by UIKit and we receive callbacks
-
-        Err(PlatformError::Unsupported(
-            "iOS event loop is managed by UIKit. Use IOSApp::run() from blinc_app instead."
-                .to_string(),
-        ))
+        // UIKit owns the run loop on iOS. From Rust we can only expose a small
+        // integration surface and hand off control back to the host app.
+        if let Some(window) = current_window() {
+            for event in managed_event_sequence() {
+                if matches!(handler(event, &window), ControlFlow::Exit) {
+                    break;
+                }
+            }
+        } else {
+            warn!("No active UIWindow available for initial iOS bridge events");
+        }
+        Ok(())
     }
 }
 
@@ -151,5 +156,21 @@ impl EventLoop for IOSEventLoop {
         Err(PlatformError::Unsupported(
             "iOS platform only available on iOS".to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::managed_event_sequence;
+    use blinc_platform::{Event, LifecycleEvent};
+
+    #[test]
+    fn managed_event_sequence_starts_with_resume_then_frame() {
+        let events = managed_event_sequence();
+        assert!(matches!(
+            events[0],
+            Event::Lifecycle(LifecycleEvent::Resumed)
+        ));
+        assert!(matches!(events[1], Event::Frame));
     }
 }

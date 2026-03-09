@@ -12,25 +12,114 @@ use ndk::native_window::NativeWindow;
 #[cfg(target_os = "android")]
 use tracing::{debug, info, warn};
 
-/// Android application state
-#[cfg(target_os = "android")]
-pub struct BlincAndroidApp {
-    window: Option<NativeWindow>,
-    running: bool,
+#[derive(Debug, Default)]
+struct AndroidRenderState {
+    has_window: bool,
     focused: bool,
+    running: bool,
+    redraw_requested: bool,
+    last_surface_size: Option<(u32, u32)>,
 }
 
-#[cfg(target_os = "android")]
+impl AndroidRenderState {
+    fn new() -> Self {
+        Self {
+            running: true,
+            ..Self::default()
+        }
+    }
+
+    fn on_window_attached(&mut self, width: u32, height: u32) {
+        self.has_window = true;
+        self.last_surface_size = Some((width, height));
+        self.redraw_requested = true;
+    }
+
+    fn on_window_resized(&mut self, width: u32, height: u32) {
+        self.last_surface_size = Some((width, height));
+        self.redraw_requested = true;
+    }
+
+    fn on_window_detached(&mut self) {
+        self.has_window = false;
+        self.redraw_requested = false;
+    }
+
+    fn on_focus_changed(&mut self, focused: bool) {
+        self.focused = focused;
+        if focused && self.has_window {
+            self.redraw_requested = true;
+        }
+    }
+
+    fn on_resume(&mut self) {
+        if self.focused && self.has_window {
+            self.redraw_requested = true;
+        }
+    }
+
+    fn on_pause(&mut self) {
+        self.focused = false;
+    }
+
+    fn on_destroy(&mut self) {
+        self.running = false;
+        self.redraw_requested = false;
+    }
+
+    fn mark_low_memory(&mut self) {
+        // Low-memory is advisory. Keep any already-queued redraw request intact.
+    }
+
+    fn should_render(&self) -> bool {
+        self.running && self.has_window && self.focused && self.redraw_requested
+    }
+
+    fn mark_rendered(&mut self) {
+        self.redraw_requested = false;
+    }
+}
+
+/// Android application state
+pub struct BlincAndroidApp {
+    #[cfg(target_os = "android")]
+    window: Option<NativeWindow>,
+    render_state: AndroidRenderState,
+}
+
 impl BlincAndroidApp {
     /// Create a new Blinc Android application
     pub fn new() -> Self {
         Self {
+            #[cfg(target_os = "android")]
             window: None,
-            running: true,
-            focused: false,
+            render_state: AndroidRenderState::new(),
         }
     }
 
+    /// Render a frame
+    pub fn render_frame(&mut self) {
+        // TODO: Render using blinc_gpu
+        // 1. Process reactive updates
+        // 2. Update animations
+        // 3. Layout widgets
+        // 4. Paint to GPU
+        self.render_state.mark_rendered();
+    }
+
+    /// Check if app is running
+    pub fn is_running(&self) -> bool {
+        self.render_state.running
+    }
+
+    /// Check if we should render
+    pub fn should_render(&self) -> bool {
+        self.render_state.should_render()
+    }
+}
+
+#[cfg(target_os = "android")]
+impl BlincAndroidApp {
     /// Handle Android events
     pub fn handle_event(&mut self, app: &AndroidApp, event: PollEvent) {
         match event {
@@ -51,6 +140,8 @@ impl BlincAndroidApp {
                     let width = window.width();
                     let height = window.height();
                     info!("Window size: {}x{}", width, height);
+                    self.render_state
+                        .on_window_attached(width as u32, height as u32);
                     self.window = Some(window);
                     self.init_graphics();
                 }
@@ -59,6 +150,7 @@ impl BlincAndroidApp {
             MainEvent::TerminateWindow { .. } => {
                 info!("Native window terminated");
                 self.window = None;
+                self.render_state.on_window_detached();
             }
 
             MainEvent::WindowResized { .. } => {
@@ -66,28 +158,29 @@ impl BlincAndroidApp {
                     let width = window.width();
                     let height = window.height();
                     info!("Window resized: {}x{}", width, height);
-                    // TODO: Handle resize in GPU renderer
+                    self.render_state
+                        .on_window_resized(width as u32, height as u32);
                 }
             }
 
             MainEvent::GainedFocus => {
                 info!("App gained focus");
-                self.focused = true;
+                self.render_state.on_focus_changed(true);
             }
 
             MainEvent::LostFocus => {
                 info!("App lost focus");
-                self.focused = false;
+                self.render_state.on_focus_changed(false);
             }
 
             MainEvent::Pause => {
                 info!("App paused");
-                self.focused = false;
+                self.render_state.on_pause();
             }
 
             MainEvent::Resume { .. } => {
                 info!("App resumed");
-                self.focused = true;
+                self.render_state.on_resume();
             }
 
             MainEvent::Start => {
@@ -100,7 +193,7 @@ impl BlincAndroidApp {
 
             MainEvent::Destroy => {
                 info!("App destroyed");
-                self.running = false;
+                self.render_state.on_destroy();
             }
 
             MainEvent::SaveState { .. } => {
@@ -114,7 +207,7 @@ impl BlincAndroidApp {
 
             MainEvent::LowMemory => {
                 warn!("Low memory warning");
-                // TODO: Release caches
+                self.render_state.mark_low_memory();
             }
 
             MainEvent::ContentRectChanged { .. } => {
@@ -132,25 +225,6 @@ impl BlincAndroidApp {
             // This will use blinc_gpu with Vulkan backend
             info!("Graphics initialization placeholder");
         }
-    }
-
-    /// Render a frame
-    pub fn render_frame(&mut self) {
-        // TODO: Render using blinc_gpu
-        // 1. Process reactive updates
-        // 2. Update animations
-        // 3. Layout widgets
-        // 4. Paint to GPU
-    }
-
-    /// Check if app is running
-    pub fn is_running(&self) -> bool {
-        self.running
-    }
-
-    /// Check if we should render
-    pub fn should_render(&self) -> bool {
-        self.window.is_some() && self.focused
     }
 }
 
@@ -204,11 +278,105 @@ pub fn android_main() {
 
 #[cfg(test)]
 mod tests {
-    use super::android_main;
+    use super::{android_main, AndroidRenderState, BlincAndroidApp};
 
     // Tests run on host, not on Android
     #[test]
     fn test_placeholder() {
         android_main();
+    }
+
+    #[test]
+    fn render_requires_window_focus_and_redraw_request() {
+        let mut state = AndroidRenderState::new();
+        assert!(!state.should_render());
+
+        state.on_window_attached(1080, 2400);
+        assert!(!state.should_render());
+
+        state.on_focus_changed(true);
+        assert!(state.should_render());
+
+        state.mark_rendered();
+        assert!(!state.should_render());
+    }
+
+    #[test]
+    fn resize_and_resume_request_redraw_again() {
+        let mut state = AndroidRenderState::new();
+        state.on_window_attached(100, 200);
+        state.on_focus_changed(true);
+        state.mark_rendered();
+
+        state.on_window_resized(200, 300);
+        assert!(state.should_render());
+        assert_eq!(state.last_surface_size, Some((200, 300)));
+
+        state.mark_rendered();
+        state.on_pause();
+        assert!(!state.should_render());
+
+        state.on_resume();
+        assert!(!state.should_render());
+
+        state.on_focus_changed(true);
+        assert!(state.should_render());
+    }
+
+    #[test]
+    fn detach_and_destroy_stop_rendering() {
+        let mut state = AndroidRenderState::new();
+        state.on_window_attached(100, 200);
+        state.on_focus_changed(true);
+        assert!(state.should_render());
+
+        state.on_window_detached();
+        assert!(!state.should_render());
+
+        state.on_destroy();
+        assert!(!state.running);
+        assert!(!state.should_render());
+    }
+
+    #[test]
+    fn render_frame_clears_pending_redraw_on_app() {
+        let mut app = BlincAndroidApp::new();
+        app.render_state.on_window_attached(100, 200);
+        app.render_state.on_focus_changed(true);
+        assert!(app.should_render());
+
+        app.render_frame();
+        assert!(!app.should_render());
+    }
+
+    #[test]
+    fn focus_regain_and_window_reattach_re_request_redraw() {
+        let mut state = AndroidRenderState::new();
+        state.on_window_attached(100, 200);
+        state.on_focus_changed(true);
+        state.mark_rendered();
+
+        state.on_focus_changed(false);
+        assert!(!state.should_render());
+
+        state.on_focus_changed(true);
+        assert!(state.should_render());
+
+        state.mark_rendered();
+        state.on_window_detached();
+        state.on_window_attached(300, 400);
+        assert_eq!(state.last_surface_size, Some((300, 400)));
+        assert!(state.redraw_requested);
+    }
+
+    #[test]
+    fn low_memory_does_not_drop_pending_redraw() {
+        let mut state = AndroidRenderState::new();
+        state.on_window_attached(100, 200);
+        state.on_focus_changed(true);
+        assert!(state.should_render());
+
+        state.mark_low_memory();
+        assert!(state.should_render());
     }
 }
