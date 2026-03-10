@@ -387,13 +387,15 @@ impl FallbackResolver {
                 use_color: false,
             });
         }
-        self.ensure_symbol_loaded(registry);
-        if let Some(face) = self.symbol_font.as_ref() {
-            out.push(FallbackCandidate {
-                face: Arc::clone(face),
-                kind: FallbackKind::Symbol,
-                use_color: false,
-            });
+        if should_try_symbol_fallback(c) {
+            self.ensure_symbol_loaded(registry);
+            if let Some(face) = self.symbol_font.as_ref() {
+                out.push(FallbackCandidate {
+                    face: Arc::clone(face),
+                    kind: FallbackKind::Symbol,
+                    use_color: false,
+                });
+            }
         }
 
         out
@@ -452,5 +454,51 @@ pub fn fallback_bucket_key(c: char) -> u32 {
         0x0370..=0x03FF => BUCKET_GREEK,
 
         _ => cp,
+    }
+}
+
+pub(crate) fn should_try_symbol_fallback(c: char) -> bool {
+    let cp = c as u32;
+    c.is_ascii_punctuation()
+        || matches!(
+            cp,
+            0x00A1..=0x00BF // Latin-1 punctuation/symbols
+                | 0x00D7 // Multiplication sign
+                | 0x00F7 // Division sign
+                | 0x2000..=0x206F // General Punctuation
+                | 0x20A0..=0x20CF // Currency Symbols
+                | 0x2100..=0x214F // Letterlike Symbols
+                | 0x2190..=0x21FF // Arrows
+                | 0x2200..=0x22FF // Mathematical Operators
+                | 0x2300..=0x23FF // Misc Technical
+                | 0x2460..=0x24FF // Enclosed Alphanumerics
+                | 0x2500..=0x257F // Box Drawing
+                | 0x2580..=0x259F // Block Elements
+                | 0x25A0..=0x25FF // Geometric Shapes
+                | 0x2600..=0x27BF // Misc Symbols + Dingbats
+                | 0x2900..=0x2BFF // Supplemental Arrows/Symbols
+                | 0x3000..=0x303F // CJK Symbols and Punctuation
+                | 0xFE10..=0xFE1F // Vertical forms
+                | 0xFE30..=0xFE4F // CJK compatibility forms
+                | 0xFE50..=0xFE6F // Small form variants
+                | 0xFF01..=0xFF0F // Fullwidth punctuation (part)
+                | 0xFF1A..=0xFF20 // Fullwidth punctuation (part)
+                | 0xFF3B..=0xFF40 // Fullwidth punctuation (part)
+                | 0xFF5B..=0xFF65 // Fullwidth punctuation (part)
+                | 0xFFE0..=0xFFEE // Fullwidth symbol variants
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_try_symbol_fallback;
+
+    #[test]
+    fn symbol_fallback_gate_distinguishes_symbols_from_hangul() {
+        assert!(should_try_symbol_fallback('✓'));
+        assert!(should_try_symbol_fallback('→'));
+        assert!(!should_try_symbol_fallback('한'));
+        assert!(!should_try_symbol_fallback('電'));
+        assert!(!should_try_symbol_fallback('A'));
     }
 }
