@@ -124,6 +124,16 @@ const KNOWN_FONT_PATHS: &[&str] = &[
     "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
 ];
 
+fn is_symbolish_family_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.contains("symbol")
+        || name.contains("dingbat")
+        || name.contains("wingding")
+        || name.contains("webding")
+        || name.contains("icon")
+        || name.contains("emoji")
+}
+
 /// Font registry that discovers and caches system fonts
 pub struct FontRegistry {
     /// fontdb database containing system fonts
@@ -304,15 +314,15 @@ impl FontRegistry {
             }
         }
 
-        // Fast path: try the symbol font first. This covers common UI symbols (✓, arrows, etc.)
-        if let Ok(symbol) = self.load_generic_with_style(GenericFont::Symbol, weight, italic) {
-            if symbol.has_glyph(c) {
-                // Don't cache "None" here: symbol coverage depends on platform and we
-                // don't want to block later lookups that might find a better face
-                // (or a styled variant) after additional fonts are loaded.
-                return Some(symbol);
-            }
-        }
+        // Do not prefer the generic symbol font here.
+        //
+        // Some symbol faces report broad cmap coverage but render script codepoints
+        // (for example Hangul/CJK) as placeholder tofu glyphs. If we pick Symbol first,
+        // fallback can lock onto that placeholder face and display broken squares.
+        //
+        // Symbol fallback is still available in FallbackResolver candidate ordering
+        // (system -> symbol for non-emoji, emoji -> symbol -> system for emoji).
+        // Here we only resolve the best "system/script" fallback for the actual codepoint.
 
         // Score faces that *actually* cover the character.
         // Lower score is better.
@@ -338,15 +348,16 @@ impl FontRegistry {
         ) -> Option<fontdb::ID> {
             let mut best: Option<(u32, fontdb::ID)> = None;
             for face in reg.db.faces() {
-                // Avoid picking emoji fonts for non-emoji chars; they are huge and usually not desired.
-                // Emoji is handled by the caller via GenericFont::Emoji and emoji detection.
-                if face
+                let family_name = face
                     .families
                     .first()
                     .map(|(name, _)| name.as_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase()
-                    .contains("emoji")
+                    .unwrap_or("");
+
+                // Avoid selecting symbol/dingbat/icon/emoji faces for regular script fallback.
+                // Symbol fallback remains available as a separate candidate path.
+                if is_symbolish_family_name(family_name)
+                    && !crate::fallback::should_try_symbol_fallback(c)
                 {
                     continue;
                 }
@@ -1228,6 +1239,58 @@ mod tests {
             }
             println!();
         }
+    }
+
+    #[test]
+    fn test_hangul_fallback_prefers_script_font_over_symbol() {
+        let mut registry = FontRegistry::new();
+        let ch = '한';
+        registry.ensure_system_fonts_loaded();
+
+        // Skip in minimal environments with no Hangul-supporting non-symbol fonts.
+        let has_non_symbol_hangul = registry.db.faces().any(|face| {
+            let family = face
+                .families
+                .first()
+                .map(|(name, _)| name.to_ascii_lowercase())
+                .unwrap_or_default();
+            if family.contains("symbol") || family.contains("emoji") || family.contains("dingbat") {
+                return false;
+            }
+            registry.face_supports_char(face.id, ch)
+        });
+        if !has_non_symbol_hangul {
+            println!("No non-symbol Hangul font available - skipping test");
+            return;
+        }
+
+        let symbol_font = registry.load_generic(GenericFont::Symbol).ok();
+        let symbol_family = symbol_font
+            .as_ref()
+            .map(|f| f.family_name().to_ascii_lowercase());
+        let fallback = registry
+            .load_fallback_for_char(ch, 400, false)
+            .expect("expected Hangul fallback font");
+        let fallback_family = fallback.family_name().to_ascii_lowercase();
+
+        if let Some(symbol_face) = symbol_font.as_ref() {
+            assert!(
+                !Arc::ptr_eq(symbol_face, &fallback),
+                "Hangul fallback should not resolve to generic Symbol face"
+            );
+        }
+        if let Some(symbol_family) = symbol_family.as_deref() {
+            if fallback_family != "unknown" && symbol_family != "unknown" {
+                assert_ne!(
+                    fallback_family, symbol_family,
+                    "Hangul fallback should not resolve to generic Symbol font"
+                );
+            }
+        }
+        assert!(
+            !fallback_family.contains("symbol"),
+            "Hangul fallback should avoid symbol-family fonts, got {fallback_family}"
+        );
     }
 
     #[test]
