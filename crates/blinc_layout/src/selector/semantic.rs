@@ -145,6 +145,7 @@ pub fn resolve_semantic_locator(
         .into_iter()
         .filter(|&node_id| matches_locator(tree, node_id, locator))
         .collect::<Vec<_>>();
+    let matched_nodes = preferred_text_only_matches(tree, locator, matched_nodes);
     let candidate_targets = matched_nodes
         .iter()
         .map(|&node_id| target_label(tree, node_id))
@@ -172,6 +173,68 @@ pub fn resolve_semantic_locator(
         candidate_targets,
         failure_reason,
     })
+}
+
+fn preferred_text_only_matches(
+    tree: &RenderTree,
+    locator: &SemanticLocator,
+    matched_nodes: Vec<LayoutNodeId>,
+) -> Vec<LayoutNodeId> {
+    if !is_text_only_locator(locator) || matched_nodes.len() <= 1 {
+        return matched_nodes;
+    }
+
+    let accessible = matched_nodes
+        .iter()
+        .copied()
+        .filter(|&node_id| tree.layout().accessibility_metadata(node_id).is_some())
+        .collect::<Vec<_>>();
+    if !accessible.is_empty() {
+        return accessible;
+    }
+
+    let actionable = matched_nodes
+        .iter()
+        .copied()
+        .filter(|&node_id| is_actionable_text_candidate(tree, node_id))
+        .collect::<Vec<_>>();
+    if actionable.is_empty() {
+        matched_nodes
+    } else {
+        actionable
+            .iter()
+            .copied()
+            .filter(|&candidate| {
+                !actionable.iter().copied().any(|other| {
+                    other != candidate && is_ancestor_candidate(tree, candidate, other)
+                })
+            })
+            .collect()
+    }
+}
+
+fn is_text_only_locator(locator: &SemanticLocator) -> bool {
+    locator.text.is_some()
+        && locator.role.is_none()
+        && locator.label.is_none()
+        && locator.placeholder.is_none()
+        && locator.tag.is_none()
+}
+
+fn is_actionable_text_candidate(tree: &RenderTree, node_id: LayoutNodeId) -> bool {
+    tree.layout().accessibility_metadata(node_id).is_some()
+        || tree.element_registry().get_id(node_id).is_some()
+}
+
+fn is_ancestor_candidate(tree: &RenderTree, ancestor: LayoutNodeId, node_id: LayoutNodeId) -> bool {
+    let mut current = tree.element_registry().get_parent(node_id);
+    while let Some(parent) = current {
+        if parent == ancestor {
+            return true;
+        }
+        current = tree.element_registry().get_parent(parent);
+    }
+    false
 }
 
 fn record_resolution(resolution: SemanticLocatorResolution) -> SemanticLocatorResolution {
@@ -463,6 +526,25 @@ mod tests {
             &tree,
             &SemanticLocator::role(AccessibilityRole::Button).with_text("Submit"),
         );
+        assert_eq!(resolution.matched_target.as_deref(), Some("submit-button"));
+        assert_eq!(resolution.failure_reason, None);
+    }
+
+    #[test]
+    fn semantic_text_only_query_prefers_actionable_node_over_ancestor_text_matches() {
+        let _guard = semantic_test_guard();
+        ensure_theme();
+        blur_all_text_inputs();
+
+        let button_state = Stateful::new(ButtonState::Idle).shared_state();
+        let ui = div()
+            .id("screen")
+            .child(button(button_state, "Submit").id("submit-button"));
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(320.0, 120.0);
+
+        let resolution = resolve_semantic_locator(&tree, &SemanticLocator::text("Submit"));
         assert_eq!(resolution.matched_target.as_deref(), Some("submit-button"));
         assert_eq!(resolution.failure_reason, None);
     }
