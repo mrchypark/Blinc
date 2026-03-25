@@ -1581,6 +1581,38 @@ fn semantic_locator_scenarios_execute_against_headless_runtime() {
 }
 
 #[test]
+fn wait_steps_report_elapsed_time_using_advanced_frames() {
+    use crate::{run_headless_scenario, HeadlessRunConfig, HeadlessScenario, ReportStatus};
+
+    let _guard = automation_test_guard();
+    ensure_automation_theme();
+
+    let runtime_cfg = HeadlessRunConfig {
+        tick_ms: 16,
+        ..HeadlessRunConfig::default()
+    };
+    let scenario = HeadlessScenario::from_json(
+        r#"{
+  "steps": [
+    {"type":"wait","ms":1},
+    {"type":"assert_exists","id":"missing"}
+  ]
+}"#,
+    )
+    .expect("scenario should parse");
+
+    let run = run_headless_scenario(runtime_cfg, &scenario, |ctx| {
+        div().w(ctx.width).h(ctx.height).child(text("Ready"))
+    })
+    .expect("scenario execution should finish with a failed report");
+
+    assert!(matches!(run.report.status, ReportStatus::Failed));
+    assert_eq!(run.report.failed_step_index, Some(1));
+    assert_eq!(run.report.elapsed_frames, 1);
+    assert_eq!(run.report.elapsed_ms, 16);
+}
+
+#[test]
 fn automation_session_returns_trace_linked_failure_details() {
     use crate::{AutomationLocator, AutomationSession, HeadlessRunConfig};
     use blinc_recorder::TraceEntryKind;

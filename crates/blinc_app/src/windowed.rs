@@ -158,6 +158,17 @@ fn keyboard_text_chars(event: &blinc_platform::KeyboardEvent) -> Vec<char> {
     fallback.into_iter().collect()
 }
 
+fn keyboard_text_chars_for_dispatch(
+    event: &blinc_platform::KeyboardEvent,
+    composition_active: bool,
+) -> Vec<char> {
+    if composition_active && event.text.is_none() {
+        return Vec::new();
+    }
+
+    keyboard_text_chars(event)
+}
+
 fn visible_text_chars(text: &str) -> Vec<char> {
     text.chars().filter(|ch| !ch.is_control()).collect()
 }
@@ -2650,6 +2661,7 @@ impl WindowedApp {
         // Track committed keyboard text across platform input events so a following
         // IME commit event can suppress duplicate TEXT_INPUT dispatch.
         let mut keyboard_committed_text: Option<Vec<char>> = None;
+        let mut composition_active = false;
         // Shared dirty flag for element refs
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
         // Shared reactive graph for signal-based state management
@@ -3276,7 +3288,10 @@ impl WindowedApp {
                                 },
                                 InputEvent::Keyboard(kb_event) => {
                                     let mods = &kb_event.modifiers;
-                                    let text_chars = keyboard_text_chars(&kb_event);
+                                    let text_chars = keyboard_text_chars_for_dispatch(
+                                        &kb_event,
+                                        composition_active,
+                                    );
 
                                     // Key code for special key handling (backspace, arrows, etc)
                                     let key_code = match &kb_event.key {
@@ -3447,15 +3462,18 @@ impl WindowedApp {
                                     scroll_ended = true;
                                 }
                                 InputEvent::CompositionStarted => {
+                                    composition_active = true;
                                     keyboard_committed_text = None;
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
                                 }
                                 InputEvent::CompositionUpdated(update) => {
+                                    composition_active = true;
                                     blinc_layout::widgets::set_focused_text_widget_composition(Some(
                                         update,
                                     ));
                                 }
                                 InputEvent::CompositionCommitted(text) => {
+                                    composition_active = false;
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
                                     for c in take_composition_commit_text(
                                         &mut keyboard_committed_text,
@@ -3469,6 +3487,7 @@ impl WindowedApp {
                                     }
                                 }
                                 InputEvent::CompositionCancelled => {
+                                    composition_active = false;
                                     keyboard_committed_text = None;
                                     blinc_layout::widgets::set_focused_text_widget_composition(None);
                                 }
@@ -4829,6 +4848,30 @@ mod tests {
         };
 
         assert_eq!(keyboard_text_chars(&event), vec!['?']);
+    }
+
+    #[test]
+    fn keyboard_text_chars_for_dispatch_suppresses_fallback_during_composition() {
+        let event = KeyboardEvent {
+            key: Key::A,
+            text: None,
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        assert!(keyboard_text_chars_for_dispatch(&event, true).is_empty());
+    }
+
+    #[test]
+    fn keyboard_text_chars_for_dispatch_keeps_committed_text_during_composition() {
+        let event = KeyboardEvent {
+            key: Key::Unknown,
+            text: Some("한".to_string()),
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        assert_eq!(keyboard_text_chars_for_dispatch(&event, true), vec!['한']);
     }
 
     #[test]
