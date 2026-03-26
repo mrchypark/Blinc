@@ -221,6 +221,15 @@ fn take_composition_commit_text(
     }
 }
 
+fn reset_composition_tracking_state(
+    composition_active: &mut bool,
+    tracked_text: &mut Option<Vec<char>>,
+) {
+    *composition_active = false;
+    *tracked_text = None;
+    blinc_layout::widgets::set_focused_text_widget_composition(None);
+}
+
 fn letter_key_char(key: &Key) -> Option<char> {
     match key {
         Key::A => Some('a'),
@@ -3006,6 +3015,10 @@ impl WindowedApp {
 
                             // When window loses focus, blur all text inputs/areas
                             if !focused {
+                                reset_composition_tracking_state(
+                                    &mut composition_active,
+                                    &mut keyboard_committed_text,
+                                );
                                 blinc_layout::widgets::blur_all_text_inputs();
                             }
 
@@ -3487,9 +3500,10 @@ impl WindowedApp {
                                     }
                                 }
                                 InputEvent::CompositionCancelled => {
-                                    composition_active = false;
-                                    keyboard_committed_text = None;
-                                    blinc_layout::widgets::set_focused_text_widget_composition(None);
+                                    reset_composition_tracking_state(
+                                        &mut composition_active,
+                                        &mut keyboard_committed_text,
+                                    );
                                 }
                                 InputEvent::FocusTraversal(intent) => {
                                     keyboard_events.push(PendingEvent {
@@ -4925,5 +4939,16 @@ mod tests {
             take_composition_commit_text(&mut tracked, "초성"),
             vec!['초', '성']
         );
+    }
+
+    #[test]
+    fn reset_composition_tracking_state_clears_active_flag_and_tracked_text() {
+        let mut composition_active = true;
+        let mut tracked = Some(vec!['한', '글']);
+
+        reset_composition_tracking_state(&mut composition_active, &mut tracked);
+
+        assert!(!composition_active);
+        assert!(tracked.is_none());
     }
 }
