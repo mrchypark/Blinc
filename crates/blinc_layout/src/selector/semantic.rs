@@ -190,7 +190,7 @@ fn preferred_text_only_matches(
         .filter(|&node_id| tree.layout().accessibility_metadata(node_id).is_some())
         .collect::<Vec<_>>();
     if !accessible.is_empty() {
-        return accessible;
+        return prune_ancestor_candidates(tree, accessible);
     }
 
     let actionable = matched_nodes
@@ -201,15 +201,7 @@ fn preferred_text_only_matches(
     if actionable.is_empty() {
         matched_nodes
     } else {
-        actionable
-            .iter()
-            .copied()
-            .filter(|&candidate| {
-                !actionable.iter().copied().any(|other| {
-                    other != candidate && is_ancestor_candidate(tree, candidate, other)
-                })
-            })
-            .collect()
+        prune_ancestor_candidates(tree, actionable)
     }
 }
 
@@ -224,6 +216,22 @@ fn is_text_only_locator(locator: &SemanticLocator) -> bool {
 fn is_actionable_text_candidate(tree: &RenderTree, node_id: LayoutNodeId) -> bool {
     tree.layout().accessibility_metadata(node_id).is_some()
         || tree.element_registry().get_id(node_id).is_some()
+}
+
+fn prune_ancestor_candidates(
+    tree: &RenderTree,
+    candidates: Vec<LayoutNodeId>,
+) -> Vec<LayoutNodeId> {
+    candidates
+        .iter()
+        .copied()
+        .filter(|&candidate| {
+            !candidates
+                .iter()
+                .copied()
+                .any(|other| other != candidate && is_ancestor_candidate(tree, candidate, other))
+        })
+        .collect()
 }
 
 fn is_ancestor_candidate(tree: &RenderTree, ancestor: LayoutNodeId, node_id: LayoutNodeId) -> bool {
@@ -410,6 +418,7 @@ mod tests {
     use super::*;
     use crate::div::div;
     use crate::stateful::{ButtonState, Stateful};
+    use crate::text::text;
     use crate::widgets::{
         blur_all_text_inputs, button, text_input, text_input_state,
         text_input_state_with_placeholder,
@@ -546,6 +555,42 @@ mod tests {
 
         let resolution = resolve_semantic_locator(&tree, &SemanticLocator::text("Submit"));
         assert_eq!(resolution.matched_target.as_deref(), Some("submit-button"));
+        assert_eq!(resolution.failure_reason, None);
+    }
+
+    #[test]
+    fn semantic_text_only_query_prefers_deepest_accessible_match() {
+        let _guard = semantic_test_guard();
+        ensure_theme();
+        blur_all_text_inputs();
+
+        let ui = div()
+            .id("outer-button")
+            .child(div().id("inner-checkbox").child(text("Submit")));
+
+        let mut tree = RenderTree::from_element(&ui);
+        let outer_button = tree
+            .query_by_id("outer-button")
+            .expect("outer button should resolve");
+        let inner_checkbox = tree
+            .query_by_id("inner-checkbox")
+            .expect("inner checkbox should resolve");
+        tree.layout_tree.set_accessibility_metadata(
+            outer_button,
+            crate::accessibility::AccessibilityMetadata::new(AccessibilityRole::Button)
+                .with_name(Some("Submit".to_string()))
+                .with_focusable(true),
+        );
+        tree.layout_tree.set_accessibility_metadata(
+            inner_checkbox,
+            crate::accessibility::AccessibilityMetadata::new(AccessibilityRole::Checkbox)
+                .with_name(Some("Submit".to_string()))
+                .with_focusable(true),
+        );
+        tree.compute_layout(320.0, 120.0);
+
+        let resolution = resolve_semantic_locator(&tree, &SemanticLocator::text("Submit"));
+        assert_eq!(resolution.matched_node_id, Some(inner_checkbox));
         assert_eq!(resolution.failure_reason, None);
     }
 
