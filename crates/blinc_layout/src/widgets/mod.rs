@@ -44,6 +44,7 @@ pub mod radio;
 pub mod scroll;
 pub mod table;
 pub mod text_area;
+pub mod text_edit;
 pub mod text_input;
 
 // Re-export button widget
@@ -108,7 +109,10 @@ pub use cursor::{
 };
 
 // Re-export code widget
-pub use code::{code, pre, Code, CodeConfig};
+pub use code::{
+    code, code_editor, code_editor_state, code_minimap, pre, Code, CodeConfig, CodeEditor,
+    CodeEditorData, SharedCodeEditorState,
+};
 
 // Re-export overlay widget
 pub use overlay::{

@@ -132,6 +132,13 @@ impl ElementRegistry {
         }
     }
 
+    /// Remove all CSS class registrations for a node
+    pub fn clear_classes(&self, node_id: LayoutNodeId) {
+        if let Ok(mut map) = self.classes.write() {
+            map.remove(&node_id);
+        }
+    }
+
     /// Register a semantic element type for CSS type selector matching
     pub fn register_element_type(&self, node_id: LayoutNodeId, type_name: String) {
         if let Ok(mut types) = self.element_types.write() {
@@ -155,6 +162,14 @@ impl ElementRegistry {
     }
 
     /// Check if a node has a specific CSS class
+    /// Get the CSS classes registered for a node
+    pub fn get_classes(&self, node_id: LayoutNodeId) -> Option<Vec<String>> {
+        self.classes
+            .read()
+            .ok()
+            .and_then(|map| map.get(&node_id).cloned())
+    }
+
     pub fn has_class(&self, node_id: LayoutNodeId, class: &str) -> bool {
         self.classes
             .read()

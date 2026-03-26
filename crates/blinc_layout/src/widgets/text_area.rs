@@ -923,6 +923,45 @@ impl TextAreaState {
         self.cursor = TextPosition::new(last_line, self.lines[last_line].chars().count());
     }
 
+    /// Move cursor one word left
+    pub fn move_word_left(&mut self, select: bool) {
+        if select && self.selection_start.is_none() {
+            self.selection_start = Some(self.cursor);
+        } else if !select {
+            self.selection_start = None;
+        }
+        if self.cursor.column == 0 && self.cursor.line > 0 {
+            self.cursor.line -= 1;
+            self.cursor.column = self.lines[self.cursor.line].chars().count();
+        } else if self.cursor.line < self.lines.len() {
+            self.cursor.column = crate::widgets::text_edit::word_boundary_left(
+                &self.lines[self.cursor.line],
+                self.cursor.column,
+            );
+        }
+    }
+
+    /// Move cursor one word right
+    pub fn move_word_right(&mut self, select: bool) {
+        if select && self.selection_start.is_none() {
+            self.selection_start = Some(self.cursor);
+        } else if !select {
+            self.selection_start = None;
+        }
+        if self.cursor.line < self.lines.len() {
+            let line_len = self.lines[self.cursor.line].chars().count();
+            if self.cursor.column >= line_len && self.cursor.line + 1 < self.lines.len() {
+                self.cursor.line += 1;
+                self.cursor.column = 0;
+            } else {
+                self.cursor.column = crate::widgets::text_edit::word_boundary_right(
+                    &self.lines[self.cursor.line],
+                    self.cursor.column,
+                );
+            }
+        }
+    }
+
     /// Select all text
     pub fn select_all(&mut self) {
         self.selection_start = Some(TextPosition::new(0, 0));
@@ -1713,7 +1752,15 @@ impl TextArea {
                         return;
                     }
 
+                    // Skip control characters and modifier combos (Cmd+C/V/Z etc.)
+                    if ctx.meta || ctx.ctrl {
+                        return;
+                    }
+
                     if let Some(c) = ctx.key_char {
+                        if c.is_control() && c != '\t' {
+                            return;
+                        }
                         d.insert(&c.to_string());
                         d.reset_cursor_blink();
                         // Recompute visual lines after text change
@@ -1754,12 +1801,13 @@ impl TextArea {
                     let mut cursor_changed = true;
                     let mut should_blur = false;
                     let mut text_changed = false;
+                    let mod_key = ctx.meta || ctx.ctrl;
+
                     match ctx.key_code {
                         8 => {
                             // Backspace
                             d.delete_backward();
                             text_changed = true;
-                            tracing::debug!("TextArea backspace, value: {}", d.value());
                         }
                         127 => {
                             // Delete
@@ -1770,15 +1818,22 @@ impl TextArea {
                             // Enter - insert newline
                             d.insert_newline();
                             text_changed = true;
-                            tracing::debug!("TextArea newline, lines: {}", d.line_count());
                         }
                         37 => {
                             // Left arrow
-                            d.move_left(ctx.shift);
+                            if mod_key {
+                                d.move_word_left(ctx.shift);
+                            } else {
+                                d.move_left(ctx.shift);
+                            }
                         }
                         39 => {
                             // Right arrow
-                            d.move_right(ctx.shift);
+                            if mod_key {
+                                d.move_word_right(ctx.shift);
+                            } else {
+                                d.move_right(ctx.shift);
+                            }
                         }
                         38 => {
                             // Up arrow
@@ -1802,7 +1857,40 @@ impl TextArea {
                             cursor_changed = true;
                         }
                         _ => {
-                            cursor_changed = false;
+                            if mod_key {
+                                match ctx.key_code {
+                                    65 => d.select_all(), // Cmd+A
+                                    67 => {
+                                        // Cmd+C — Copy
+                                        if let Some(sel) = d.selected_text() {
+                                            crate::widgets::text_edit::clipboard_write(&sel);
+                                        }
+                                        cursor_changed = false;
+                                    }
+                                    88 => {
+                                        // Cmd+X — Cut
+                                        if let Some(sel) = d.selected_text() {
+                                            crate::widgets::text_edit::clipboard_write(&sel);
+                                            d.delete_selection();
+                                            text_changed = true;
+                                        }
+                                    }
+                                    86 => {
+                                        // Cmd+V — Paste
+                                        if let Some(clip) =
+                                            crate::widgets::text_edit::clipboard_read()
+                                        {
+                                            d.insert(&clip);
+                                            text_changed = true;
+                                        }
+                                    }
+                                    _ => {
+                                        cursor_changed = false;
+                                    }
+                                }
+                            } else {
+                                cursor_changed = false;
+                            }
                         }
                     }
 
@@ -1989,7 +2077,69 @@ impl TextArea {
             .relative()
             .overflow_visible();
 
-        if !has_display_text {
+        // Render selection highlights (behind text, absolutely positioned)
+        if is_focused {
+            if let Some(sel_start) = data.selection_start {
+                let (start, end) = data.order_positions(sel_start, data.cursor);
+                if start != end {
+                    let sel_color = config.selection_color;
+                    for line_idx in start.line..=end.line {
+                        if line_idx >= data.lines.len() {
+                            break;
+                        }
+                        let line_text = &data.lines[line_idx];
+                        let line_char_count = line_text.chars().count();
+
+                        let col_start = if line_idx == start.line {
+                            start.column
+                        } else {
+                            0
+                        };
+                        let col_end = if line_idx == end.line {
+                            end.column
+                        } else {
+                            line_char_count
+                        };
+
+                        let x_start = if col_start > 0 {
+                            let before: String = line_text.chars().take(col_start).collect();
+                            crate::text_measure::measure_text(&before, config.font_size).width
+                        } else {
+                            0.0
+                        };
+
+                        let x_end = if col_end > 0 {
+                            let before: String = line_text.chars().take(col_end).collect();
+                            crate::text_measure::measure_text(&before, config.font_size).width
+                        } else {
+                            0.0
+                        };
+
+                        let width = if col_end == line_char_count && line_idx != end.line {
+                            (x_end - x_start) + config.font_size * 0.5
+                        } else {
+                            x_end - x_start
+                        };
+
+                        if width > 0.0 {
+                            let sel_top = line_idx as f32 * line_height;
+                            text_content = text_content.child(
+                                crate::div::div()
+                                    .absolute()
+                                    .left(x_start)
+                                    .top(sel_top)
+                                    .w(width)
+                                    .h(line_height)
+                                    .bg(sel_color)
+                                    .rounded(2.0),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        if data.is_empty() {
             // Use state's placeholder if available, otherwise fall back to config
             let placeholder = if !data.placeholder.is_empty() {
                 &data.placeholder

@@ -1086,6 +1086,7 @@ impl AndroidApp {
                         if tree.apply_animated_layout_props() {
                             if let Some(ref windowed_ctx) = ctx {
                                 tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                tree.update_flip_bounds();
                             }
                         }
                     }

@@ -2,6 +2,71 @@
 
 All notable changes to `blinc_layout` will be documented in this file.
 
+## [0.1.15] - 2026-03-22
+
+### Added
+
+#### Code Editor Widget (`code_editor`)
+
+- `code_editor(&state)` — full-featured editable code editor using Stateful incremental updates
+- `code_editor_state("content")` — shared state constructor that persists across rebuilds
+- Editing: type, Enter (auto-indent), Backspace, Delete, Tab/Shift+Tab (indent/dedent selected lines)
+- Cmd+Backspace/Delete: delete word backward/forward
+- Cmd+Z / Cmd+Shift+Z: undo/redo (200-entry history stack)
+- Cmd+C/X/V: clipboard copy/cut/paste via platform commands
+- Cmd+A: select all
+- Cmd+Left/Right: word jump navigation
+- Smart Home: toggle between first non-whitespace and column 0
+- Page Up/Page Down navigation
+- Mouse click cursor positioning, mouse drag selection, double-click word select
+- Visual selection highlighting with absolutely-positioned divs
+- Current line highlight (subtle overlay when focused)
+- Cursor with blink animation
+- Vertical scrolling via `overflow_y_scroll` on Stateful
+- Monospace text measurement cache (`measure_mono()`)
+- Per-line syntax highlight cache with dirty tracking
+- Escape to blur/unfocus
+
+#### Shared Text Editing Utilities (`text_edit` module)
+
+- `word_boundary_left/right()` for word-jump navigation
+- `word_at_position()` for double-click word selection
+- `clipboard_read/write()` for OS clipboard integration (macOS pbpaste/pbcopy, Linux xclip)
+
+#### Text Area Improvements
+
+- Visual selection rendering (absolutely-positioned highlight divs)
+- Word navigation: Cmd/Ctrl+Left/Right via shared `text_edit` utilities
+- Clipboard: Cmd+C/X/V (copy/cut/paste)
+- Select all: Cmd+A
+- Control character filtering in TEXT_INPUT handler
+
+#### Stateful Enhancements
+
+- `overflow_y_scroll()` builder method on Stateful
+- `inner_scroll_physics()` accessor for programmatic scroll control
+
+#### Platform
+
+- Letter key codes (A-Z) mapped to ASCII in windowed.rs KEY_DOWN events for Cmd+key shortcuts
+
+### Other
+
+- `class_name_with_state()` on `ComplexSelector` for extracting class names from state-bearing selectors (e.g. `.cn-sidebar-item:hover`)
+- `get_classes()` on `ElementRegistry` for retrieving registered CSS classes by node ID
+
+### Fixed
+
+- Hover transition artifacts on sidebar, nav-link, and menubar components caused by incorrect base_styles caching and transition restart loops on sustained hover
+- Checkbox background not updating on check/uncheck: parent node CSS class registrations now updated during full structural rebuilds so `.cn-checkbox--checked` is matched correctly
+- Per-side borders with different colors now use SDF-based rendering with proper corner radius instead of rectangular fill strips
+- Combobox dropdown scroll by using registered physics directly
+- Smooth corner radius artifact on thin borders
+- Stale element data (SVG tint, text content, images) during visual-only rebuilds: `element_type` is now updated in `update_subtree_props_from_builder`
+- Base styles cache invalidated when CSS classes change during visual-only rebuilds
+- Transition detection skipped for nodes already sustaining a hover state to prevent restart loops
+- Toast stack container uses absolute positioning so it covers the full viewport independently of other overlay siblings
+
 ## [0.1.14] - 2026-02-24
 
 ### Added
