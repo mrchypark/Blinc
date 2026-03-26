@@ -4116,6 +4116,26 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
         self.inner.borrow().visual_animation_config()
     }
 
+    fn element_id(&self) -> Option<&str> {
+        self.ensure_callback_invoked();
+        // SAFETY: See layout_style()/event_handlers(). This is safe as long as element_id()
+        // is only called during build/render phases where the inner Div isn't being mutated
+        // concurrently (UI is single-threaded).
+        unsafe {
+            let inner = self.inner.as_ptr();
+            (*inner).element_id()
+        }
+    }
+
+    fn element_classes(&self) -> &[String] {
+        self.ensure_callback_invoked();
+        // SAFETY: Same reasoning as element_id().
+        unsafe {
+            let inner = self.inner.as_ptr();
+            (*inner).classes()
+        }
+    }
+
     fn scroll_physics(&self) -> Option<crate::scroll::SharedScrollPhysics> {
         self.ensure_callback_invoked();
         self.inner.borrow().scroll_physics.clone()

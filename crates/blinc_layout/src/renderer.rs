@@ -3544,6 +3544,8 @@ impl RenderTree {
             }
         }
 
+        let mut outcome = ScrollDispatchOutcome::default();
+
         // Dispatch to each node in the chain
         for node_id in chain {
             // Skip if no remaining delta
@@ -3593,15 +3595,34 @@ impl RenderTree {
 
             // Dispatch if there's delta for this scroll's direction
             if dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001 {
+                if has_handler {
+                    let ctx = crate::event_handler::EventContext::new(
+                        blinc_core::events::event_types::SCROLL,
+                        node_id,
+                    )
+                    .with_mouse_pos(mouse_x, mouse_y)
+                    .with_scroll_delta(dispatch_x, dispatch_y);
+
+                    tracing::trace!(
+                        "    dispatching to {:?}: delta=({:.1}, {:.1})",
+                        node_id,
+                        dispatch_x,
+                        dispatch_y
+                    );
+                    outcome.dispatched = true;
+                    self.handler_registry.dispatch(&ctx);
+                }
+
                 if has_scroll_physics {
-                    // For physics-backed scrolls, update the REGISTERED physics directly.
-                    // This avoids the stale-Arc problem where event handlers may capture
-                    // a different physics instance than what's registered in the tree
-                    // (happens when Stateful rebuilds create new physics during merge).
-                    if let Some(physics) = self.scroll_physics.get(&node_id) {
-                        let mut p = physics.lock().unwrap();
-                        p.apply_scroll_delta(dispatch_x, dispatch_y);
-                        p.on_scroll_activity();
+                    // Keep existing handler dispatch semantics when a node owns a custom
+                    // scroll handler. Fall back to registered physics only for nodes that
+                    // expose physics without a handler, avoiding stale captured Arcs.
+                    if !has_handler {
+                        if let Some(physics) = self.scroll_physics.get(&node_id) {
+                            let mut p = physics.lock().unwrap();
+                            p.apply_scroll_delta(dispatch_x, dispatch_y);
+                            p.on_scroll_activity();
+                        }
                     }
 
                     if can_consume_x && handles_x {
@@ -3612,17 +3633,7 @@ impl RenderTree {
                         delta_y = 0.0;
                         outcome.physics_consumed_y = true;
                     }
-                } else {
-                    // Custom scroll handler (no physics) - dispatch via handler registry
-                    let ctx = crate::event_handler::EventContext::new(
-                        blinc_core::events::event_types::SCROLL,
-                        node_id,
-                    )
-                    .with_mouse_pos(mouse_x, mouse_y)
-                    .with_scroll_delta(dispatch_x, dispatch_y);
-
-                    self.handler_registry.dispatch(&ctx);
-
+                } else if has_handler {
                     if handles_x {
                         delta_x = 0.0;
                         outcome.custom_consumed_x = true;
@@ -3702,22 +3713,7 @@ impl RenderTree {
             let dispatch_y = if handles_y { remaining_dy } else { 0.0 };
 
             if dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001 {
-                if has_scroll_physics {
-                    // For physics-backed scrolls, update the REGISTERED physics directly
-                    if let Some(physics) = self.scroll_physics.get(&node_id) {
-                        let mut p = physics.lock().unwrap();
-                        p.apply_touch_scroll_delta(dispatch_x, dispatch_y, scroll_time);
-                        p.on_scroll_activity();
-                    }
-
-                    if can_consume_x && handles_x {
-                        remaining_dx = 0.0;
-                    }
-                    if can_consume_y && handles_y {
-                        remaining_dy = 0.0;
-                    }
-                } else {
-                    // Custom scroll handler (no physics) - dispatch via handler registry
+                if has_handler {
                     let ctx = crate::event_handler::EventContext::new(
                         blinc_core::events::event_types::SCROLL,
                         node_id,
@@ -3727,7 +3723,24 @@ impl RenderTree {
                     .with_scroll_time(scroll_time);
 
                     self.handler_registry.dispatch(&ctx);
+                }
 
+                if has_scroll_physics {
+                    if !has_handler {
+                        if let Some(physics) = self.scroll_physics.get(&node_id) {
+                            let mut p = physics.lock().unwrap();
+                            p.apply_touch_scroll_delta(dispatch_x, dispatch_y, scroll_time);
+                            p.on_scroll_activity();
+                        }
+                    }
+
+                    if can_consume_x && handles_x {
+                        remaining_dx = 0.0;
+                    }
+                    if can_consume_y && handles_y {
+                        remaining_dy = 0.0;
+                    }
+                } else if has_handler {
                     if handles_x {
                         remaining_dx = 0.0;
                     }
