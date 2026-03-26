@@ -2967,11 +2967,6 @@ impl RenderTree {
                     p.viewport_height = viewport_height;
                     p.content_width = content_width;
                     p.content_height = content_height;
-
-                    tracing::trace!(
-                        "Scroll physics updated: viewport=({:.0}, {:.0}) content=({:.0}, {:.0}) max_offset=({:.0}, {:.0}) direction={:?}",
-                        viewport_width, viewport_height, content_width, content_height, p.max_offset_x(), p.max_offset_y(), p.config.direction
-                    );
                 }
             }
         }
@@ -3549,16 +3544,6 @@ impl RenderTree {
             }
         }
 
-        let mut outcome = ScrollDispatchOutcome::default();
-
-        tracing::trace!(
-            "dispatch_scroll_chain: hit={:?}, chain_len={}, delta=({:.1}, {:.1})",
-            hit_node,
-            chain.len(),
-            delta_x,
-            delta_y
-        );
-
         // Dispatch to each node in the chain
         for node_id in chain {
             // Skip if no remaining delta
@@ -3566,12 +3551,13 @@ impl RenderTree {
                 break;
             }
 
-            // Check if this node has a scroll handler
+            // Check if this node has a scroll handler or registered scroll physics
             let has_handler = self
                 .handler_registry
                 .has_handler(node_id, blinc_core::events::event_types::SCROLL);
+            let has_registered_physics = self.scroll_physics.contains_key(&node_id);
 
-            if !has_handler {
+            if !has_handler && !has_registered_physics {
                 continue;
             }
 
@@ -3601,32 +3587,23 @@ impl RenderTree {
             let dispatch_y = if handles_y { delta_y } else { 0.0 };
 
             tracing::trace!(
-                "  node={:?}, direction={:?}, handles=({}, {}), can_consume=({}, {}), dispatch=({:.1}, {:.1})",
+                "scroll_disp node={:?} dir={:?} handles=({},{}) can_consume=({},{}) dispatch=({:.1},{:.1})",
                 node_id, direction, handles_x, handles_y, can_consume_x, can_consume_y, dispatch_x, dispatch_y
             );
 
             // Dispatch if there's delta for this scroll's direction
             if dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001 {
-                let ctx = crate::event_handler::EventContext::new(
-                    blinc_core::events::event_types::SCROLL,
-                    node_id,
-                )
-                .with_mouse_pos(mouse_x, mouse_y)
-                .with_scroll_delta(dispatch_x, dispatch_y);
-
-                tracing::trace!(
-                    "    dispatching to {:?}: delta=({:.1}, {:.1})",
-                    node_id,
-                    dispatch_x,
-                    dispatch_y
-                );
-                outcome.dispatched = true;
-                self.handler_registry.dispatch(&ctx);
-
-                // Consume the delta for axes this scroll CAN consume (has room to scroll)
-                // This prevents bubbling to outer scrolls for that axis
-                // For custom scroll handlers (no physics), consume all dispatched delta
                 if has_scroll_physics {
+                    // For physics-backed scrolls, update the REGISTERED physics directly.
+                    // This avoids the stale-Arc problem where event handlers may capture
+                    // a different physics instance than what's registered in the tree
+                    // (happens when Stateful rebuilds create new physics during merge).
+                    if let Some(physics) = self.scroll_physics.get(&node_id) {
+                        let mut p = physics.lock().unwrap();
+                        p.apply_scroll_delta(dispatch_x, dispatch_y);
+                        p.on_scroll_activity();
+                    }
+
                     if can_consume_x && handles_x {
                         delta_x = 0.0;
                         outcome.physics_consumed_x = true;
@@ -3636,7 +3613,16 @@ impl RenderTree {
                         outcome.physics_consumed_y = true;
                     }
                 } else {
-                    // Custom scroll handler - consume all delta (it handles its own bounds)
+                    // Custom scroll handler (no physics) - dispatch via handler registry
+                    let ctx = crate::event_handler::EventContext::new(
+                        blinc_core::events::event_types::SCROLL,
+                        node_id,
+                    )
+                    .with_mouse_pos(mouse_x, mouse_y)
+                    .with_scroll_delta(dispatch_x, dispatch_y);
+
+                    self.handler_registry.dispatch(&ctx);
+
                     if handles_x {
                         delta_x = 0.0;
                         outcome.custom_consumed_x = true;
@@ -3687,8 +3673,9 @@ impl RenderTree {
             let has_handler = self
                 .handler_registry
                 .has_handler(node_id, blinc_core::events::event_types::SCROLL);
+            let has_registered_physics = self.scroll_physics.contains_key(&node_id);
 
-            if !has_handler {
+            if !has_handler && !has_registered_physics {
                 continue;
             }
 
@@ -3715,17 +3702,14 @@ impl RenderTree {
             let dispatch_y = if handles_y { remaining_dy } else { 0.0 };
 
             if dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001 {
-                let ctx = crate::event_handler::EventContext::new(
-                    blinc_core::events::event_types::SCROLL,
-                    node_id,
-                )
-                .with_mouse_pos(mouse_x, mouse_y)
-                .with_scroll_delta(dispatch_x, dispatch_y)
-                .with_scroll_time(scroll_time);
-
-                self.handler_registry.dispatch(&ctx);
-
                 if has_scroll_physics {
+                    // For physics-backed scrolls, update the REGISTERED physics directly
+                    if let Some(physics) = self.scroll_physics.get(&node_id) {
+                        let mut p = physics.lock().unwrap();
+                        p.apply_touch_scroll_delta(dispatch_x, dispatch_y, scroll_time);
+                        p.on_scroll_activity();
+                    }
+
                     if can_consume_x && handles_x {
                         remaining_dx = 0.0;
                     }
@@ -3733,6 +3717,17 @@ impl RenderTree {
                         remaining_dy = 0.0;
                     }
                 } else {
+                    // Custom scroll handler (no physics) - dispatch via handler registry
+                    let ctx = crate::event_handler::EventContext::new(
+                        blinc_core::events::event_types::SCROLL,
+                        node_id,
+                    )
+                    .with_mouse_pos(mouse_x, mouse_y)
+                    .with_scroll_delta(dispatch_x, dispatch_y)
+                    .with_scroll_time(scroll_time);
+
+                    self.handler_registry.dispatch(&ctx);
+
                     if handles_x {
                         remaining_dx = 0.0;
                     }
@@ -5812,6 +5807,13 @@ impl RenderTree {
                     }
                 }
             }
+
+            // NOTE: Do NOT eagerly save base_styles here. This function runs for
+            // the entire tree during layout recomputation, at which point hovered
+            // nodes may still carry hover styles. Saving contaminated props as
+            // "base" causes hover to stick (trailing artifacts, blinking).
+            // Eager base_styles saves belong in apply_stylesheet_base_styles() and
+            // apply_stylesheet_base_styles_for_subtree() which run when props are clean.
         }
 
         // =====================================================================
@@ -6288,6 +6290,11 @@ impl RenderTree {
 
         // Create physics and register handlers
         for (node_id, direction) in needs_physics {
+            tracing::trace!(
+                "auto_create_css_scroll_physics: creating for {:?} direction={:?}",
+                node_id,
+                direction
+            );
             let config = ScrollConfig {
                 direction,
                 ..Default::default()
@@ -6655,7 +6662,6 @@ impl RenderTree {
             router.hovered_nodes().collect();
         let pressed_nodes: std::collections::HashSet<LayoutNodeId> =
             router.pressed_target().into_iter().collect();
-
         let focused_node: Option<LayoutNodeId> = {
             // Check all registered nodes for focus
             let mut focused = None;
@@ -6804,14 +6810,15 @@ impl RenderTree {
                         })
                     };
 
-                    // Snapshot for transition detection (visual + layout)
-                    // For prev_affected nodes, use the pre-reset snapshot so that
-                    // "still hovering after transition completed" sees before==after
-                    let before_kp = if transition_set.is_some() {
-                        pre_reset_snapshots
-                            .get(&node_id)
-                            .cloned()
-                            .or_else(|| self.snapshot_before_keyframe_properties(node_id))
+                    // For nodes already in prev_affected (sustaining a state from
+                    // last frame), skip transition detection — the existing transition
+                    // is already in progress or completed. Re-detecting every frame
+                    // can cause spurious restarts due to snapshot mismatches between
+                    // overlaid and non-overlaid properties.
+                    let is_sustaining = prev_affected.contains(&node_id);
+
+                    let before_kp = if !is_sustaining && transition_set.is_some() {
+                        self.snapshot_before_keyframe_properties(node_id)
                     } else {
                         None
                     };
@@ -6828,7 +6835,7 @@ impl RenderTree {
                         }
                     }
 
-                    // Detect transitions (visual + layout)
+                    // Detect transitions only for newly entering state (not sustaining)
                     if let (Some(before_kp), Some(transition_set)) = (before_kp, transition_set) {
                         if let Some(after_kp) = self.snapshot_keyframe_properties(node_id) {
                             self.detect_and_start_transitions(
@@ -8450,6 +8457,29 @@ impl RenderTree {
                     }
                 }
             }
+
+            // Eagerly save base_styles for nodes matching classes that also have
+            // state rules (:hover, :active, :focus). This prevents the lazy save
+            // in apply_complex_selector_styles() from capturing contaminated props
+            // (e.g. inline hover backgrounds set by Stateful component rebuilds).
+            // Only save if not already present — this function runs for the entire
+            // tree and nodes outside a rebuild may still carry hover/active styles.
+            let state_class_names: std::collections::HashSet<&str> = complex_rules
+                .iter()
+                .filter(|(sel, _)| sel.has_state())
+                .filter_map(|(sel, _)| sel.class_name_with_state())
+                .collect();
+            for class_name in &state_class_names {
+                if let Some(node_ids) = class_to_nodes.get(*class_name) {
+                    for &node_id in node_ids {
+                        if !self.base_styles.contains_key(&node_id) {
+                            if let Some(render_node) = self.render_nodes.get(&node_id) {
+                                self.base_styles.insert(node_id, render_node.props.clone());
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Apply simple ID rules LAST — #id has highest specificity and overrides
@@ -8741,6 +8771,27 @@ impl RenderTree {
                     {
                         if let Some(render_node) = self.render_nodes.get_mut(&node_id) {
                             Self::apply_element_style_to_props(&mut render_node.props, style);
+                        }
+                    }
+                }
+            }
+
+            // Eagerly save base_styles for subtree nodes matching classes that
+            // also have :hover/:active/:focus state rules. This prevents the
+            // lazy save in apply_complex_selector_styles() from capturing
+            // contaminated props set by Stateful component rebuilds.
+            let state_class_names: std::collections::HashSet<&str> = complex_rules
+                .iter()
+                .filter(|(sel, _)| sel.has_state())
+                .filter_map(|(sel, _)| sel.class_name_with_state())
+                .collect();
+            for class_name in &state_class_names {
+                if let Some(node_ids) = class_to_nodes.get(*class_name) {
+                    for &node_id in node_ids {
+                        if subtree_set.contains(&node_id) {
+                            if let Some(render_node) = self.render_nodes.get(&node_id) {
+                                self.base_styles.insert(node_id, render_node.props.clone());
+                            }
                         }
                     }
                 }
@@ -9367,9 +9418,37 @@ impl RenderTree {
                     new_props.motion = render_node.props.motion.clone();
                     render_node.props = new_props;
                 }
+                // Update parent node's CSS class registrations so that
+                // apply_stylesheet_base_styles_for_subtree matches the current
+                // classes (e.g., cn-checkbox--checked added/removed on toggle).
+                let parent_classes = rebuild.new_child.element_classes();
+                if !parent_classes.is_empty() {
+                    self.element_registry
+                        .register_classes(rebuild.parent_id, parent_classes.to_vec());
+                } else {
+                    self.element_registry.clear_classes(rebuild.parent_id);
+                }
+                self.base_styles.remove(&rebuild.parent_id);
                 // Also update the taffy layout style (width, height, padding, etc.)
                 if let Some(style) = rebuild.new_child.layout_style() {
                     self.layout_tree.set_style(rebuild.parent_id, style.clone());
+                }
+
+                // Re-register scroll_physics and event_handlers for the parent node.
+                // Without this, Stateful containers with overflow_y_scroll() lose their
+                // scroll state during rebuilds because only children get collect_render_props_boxed.
+                if let Some(physics) = rebuild.new_child.scroll_physics() {
+                    if let Some(scheduler) = self.animations.upgrade() {
+                        physics.lock().unwrap().set_scheduler(&scheduler);
+                    }
+                    self.scroll_physics.insert(rebuild.parent_id, physics);
+                }
+                {
+                    let handlers = rebuild.new_child.event_handlers();
+                    if !handlers.is_empty() {
+                        self.handler_registry
+                            .register(rebuild.parent_id, handlers.clone());
+                    }
                 }
 
                 // Always remove old children first (even if new children is empty)
@@ -9442,6 +9521,10 @@ impl RenderTree {
                     new_props.node_id = render_node.props.node_id;
                     new_props.motion = render_node.props.motion.clone();
                     render_node.props = new_props;
+                    // Also update element_type (SVG tint, text content, image data, etc.)
+                    // Without this, visual-only rebuilds leave stale element data.
+                    render_node.element_type =
+                        Self::determine_element_type_boxed(new_child.as_ref());
                 }
 
                 // Re-register event handlers from the new element builder.
@@ -9449,6 +9532,26 @@ impl RenderTree {
                 // but callbacks may capture new closure state that needs updating.
                 if let Some(handlers) = new_child.event_handlers() {
                     self.handler_registry.register(*child_id, handlers.clone());
+                }
+
+                // Update CSS class registrations so apply_stylesheet_base_styles_for_subtree
+                // uses the current classes (not stale ones from the previous build).
+                // Without this, adding/removing classes (e.g. cn-sidebar-item--active)
+                // wouldn't take effect during visual-only rebuilds.
+                let new_classes = new_child.element_classes();
+                let old_classes = self.element_registry.get_classes(*child_id);
+                let classes_changed = new_classes != old_classes.as_deref().unwrap_or(&[]);
+                if !new_classes.is_empty() {
+                    self.element_registry
+                        .register_classes(*child_id, new_classes.to_vec());
+                } else {
+                    self.element_registry.clear_classes(*child_id);
+                }
+                // Invalidate base_styles cache when classes change so that
+                // apply_complex_selector_styles resets to the correct base
+                // (e.g., node gaining --active needs its new base to include that)
+                if classes_changed {
+                    self.base_styles.remove(child_id);
                 }
 
                 // Recursively update grandchildren
@@ -10741,7 +10844,9 @@ impl RenderTree {
                         bc,
                     );
                 } else {
-                    // Different colors per side — 4x fill_rect with clip
+                    // Different colors per side — group by color, one SDF primitive per group.
+                    // Each fill_rect_with_per_side_border call gets proper corner radius
+                    // from the shader instead of using rectangular strips with clip.
                     let sides = &render_node.props.border_sides;
                     let uniform_width = render_node.props.border_width;
                     let uniform_color =
@@ -10755,80 +10860,53 @@ impl RenderTree {
                         }
                     };
 
-                    let has_radius = radius.top_left > 0.0
-                        || radius.top_right > 0.0
-                        || radius.bottom_left > 0.0
-                        || radius.bottom_right > 0.0;
-                    if has_radius {
-                        ctx.push_clip(ClipShape::rounded_rect(rect, radius));
+                    // Resolve each side: (width, color)
+                    let side_data: [(f32, Color); 4] = [
+                        sides
+                            .top
+                            .as_ref()
+                            .map(|b| (b.width, b.color))
+                            .unwrap_or((uniform_width, uniform_color)),
+                        sides
+                            .right
+                            .as_ref()
+                            .map(|b| (b.width, b.color))
+                            .unwrap_or((uniform_width, uniform_color)),
+                        sides
+                            .bottom
+                            .as_ref()
+                            .map(|b| (b.width, b.color))
+                            .unwrap_or((uniform_width, uniform_color)),
+                        sides
+                            .left
+                            .as_ref()
+                            .map(|b| (b.width, b.color))
+                            .unwrap_or((uniform_width, uniform_color)),
+                    ];
+
+                    // Group sides by color: collect unique colors and their widths
+                    let mut color_groups: Vec<(Color, [f32; 4])> = Vec::with_capacity(4);
+                    for (i, &(w, c)) in side_data.iter().enumerate() {
+                        if w <= 0.0 {
+                            continue;
+                        }
+                        if let Some(group) = color_groups.iter_mut().find(|(gc, _)| *gc == c) {
+                            group.1[i] = w;
+                        } else {
+                            let mut widths = [0.0f32; 4];
+                            widths[i] = w;
+                            color_groups.push((c, widths));
+                        }
                     }
 
-                    let left_border = sides
-                        .left
-                        .as_ref()
-                        .map(|b| (b.width, b.color))
-                        .unwrap_or((uniform_width, uniform_color));
-                    let right_border = sides
-                        .right
-                        .as_ref()
-                        .map(|b| (b.width, b.color))
-                        .unwrap_or((uniform_width, uniform_color));
-                    let top_border = sides
-                        .top
-                        .as_ref()
-                        .map(|b| (b.width, b.color))
-                        .unwrap_or((uniform_width, uniform_color));
-                    let bottom_border = sides
-                        .bottom
-                        .as_ref()
-                        .map(|b| (b.width, b.color))
-                        .unwrap_or((uniform_width, uniform_color));
-
-                    if left_border.0 > 0.0 {
-                        let border_rect = Rect::new(0.0, 0.0, left_border.0, rect.height());
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(left_border.1)),
+                    for (color, widths) in color_groups {
+                        ctx.fill_rect_with_per_side_border(
+                            rect,
+                            radius,
+                            Brush::Solid(Color::TRANSPARENT),
+                            widths,
+                            apply_motion(color),
                         );
-                    }
-                    if right_border.0 > 0.0 {
-                        let border_rect = Rect::new(
-                            rect.width() - right_border.0,
-                            0.0,
-                            right_border.0,
-                            rect.height(),
-                        );
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(right_border.1)),
-                        );
-                    }
-                    if top_border.0 > 0.0 {
-                        let border_rect = Rect::new(0.0, 0.0, rect.width(), top_border.0);
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(top_border.1)),
-                        );
-                    }
-                    if bottom_border.0 > 0.0 {
-                        let border_rect = Rect::new(
-                            0.0,
-                            rect.height() - bottom_border.0,
-                            rect.width(),
-                            bottom_border.0,
-                        );
-                        ctx.fill_rect(
-                            border_rect,
-                            CornerRadius::default(),
-                            Brush::Solid(apply_motion(bottom_border.1)),
-                        );
-                    }
-
-                    if has_radius {
-                        ctx.pop_clip();
                     }
                 }
             } else if render_node.props.border_width > 0.0 && border_in_foreground {

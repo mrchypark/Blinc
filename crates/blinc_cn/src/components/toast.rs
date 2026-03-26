@@ -309,7 +309,7 @@ impl ToastBuilder {
 
 /// Get enter animation based on corner
 fn get_enter_animation(corner: Corner) -> blinc_animation::MultiKeyframeAnimation {
-    const SLIDE_DISTANCE: f32 = 100.0;
+    const SLIDE_DISTANCE: f32 = 200.0;
     match corner {
         Corner::TopLeft | Corner::BottomLeft => AnimationPreset::slide_in_left(200, SLIDE_DISTANCE),
         Corner::TopRight | Corner::BottomRight => {
@@ -320,7 +320,7 @@ fn get_enter_animation(corner: Corner) -> blinc_animation::MultiKeyframeAnimatio
 
 /// Get exit animation based on corner
 fn get_exit_animation(corner: Corner) -> blinc_animation::MultiKeyframeAnimation {
-    const SLIDE_DISTANCE: f32 = 100.0;
+    const SLIDE_DISTANCE: f32 = 200.0;
     match corner {
         Corner::TopLeft | Corner::BottomLeft => {
             AnimationPreset::slide_out_left(150, SLIDE_DISTANCE)
@@ -397,7 +397,6 @@ fn build_toast_content(
     // Add left border accent for variant toasts
     if has_accent {
         toast = toast.border_left(4.0, accent_color);
-        toast = toast.rounded_corners(0.0, radius, radius, 0.0)
     }
 
     // Inner content container
