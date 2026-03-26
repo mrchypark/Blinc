@@ -3279,6 +3279,7 @@ impl WindowedApp {
                                     let text_chars = keyboard_text_chars(&kb_event);
 
                                     // Key code for special key handling (backspace, arrows, etc)
+                                    // Letter keys use ASCII uppercase (65=A, 90=Z) for Cmd+key shortcuts
                                     let key_code = match &kb_event.key {
                                         Key::Backspace => 8,
                                         Key::Delete => 127,
@@ -3291,6 +3292,16 @@ impl WindowedApp {
                                         Key::Down => 40,
                                         Key::Home => 36,
                                         Key::End => 35,
+                                        // Map letter keys to ASCII uppercase for Cmd+key shortcuts
+                                        Key::A => 65, Key::B => 66, Key::C => 67,
+                                        Key::D => 68, Key::E => 69, Key::F => 70,
+                                        Key::G => 71, Key::H => 72, Key::I => 73,
+                                        Key::J => 74, Key::K => 75, Key::L => 76,
+                                        Key::M => 77, Key::N => 78, Key::O => 79,
+                                        Key::P => 80, Key::Q => 81, Key::R => 82,
+                                        Key::S => 83, Key::T => 84, Key::U => 85,
+                                        Key::V => 86, Key::W => 87, Key::X => 88,
+                                        Key::Y => 89, Key::Z => 90,
                                         _ => 0,
                                     };
 
@@ -3563,10 +3574,6 @@ impl WindowedApp {
                                     if let Some(ref mut windowed_ctx) = ctx {
                                         let router = &mut windowed_ctx.event_router;
                                         if let Some(hit) = router.hit_test(tree, mouse_x, mouse_y) {
-                                            tracing::trace!(
-                                                "Hit: node={:?}, ancestors={:?}",
-                                                hit.node, hit.ancestors
-                                            );
                                             tree.dispatch_scroll_chain(
                                                 hit.node,
                                                 &hit.ancestors,

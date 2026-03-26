@@ -686,6 +686,7 @@ pub const CN_STYLES: &str = r#"
     padding: var(--cn-sidebar-item-py, var(--overlay-item-py)) var(--cn-sidebar-item-px, var(--overlay-item-px));
     border-radius: var(--cn-sidebar-item-radius, var(--control-radius-md));
     cursor: pointer;
+    background: transparent;
     color: var(--text-secondary);
     corner-shape: var(--cn-sidebar-item-corner-shape, var(--control-corner-shape));
     transition: background 150ms, color 150ms, corner-shape 180ms;
@@ -696,8 +697,8 @@ pub const CN_STYLES: &str = r#"
     corner-shape: var(--cn-sidebar-item-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-sidebar-item--active {
-    background: var(--primary);
-    color: var(--text-inverse);
+    background: var(--surface-elevated);
+    color: var(--text-primary);
 }
 .cn-sidebar-item__label { max-width: 100%; }
 
@@ -796,6 +797,7 @@ pub const CN_STYLES: &str = r#"
     cursor: pointer;
     color: var(--text-primary);
     font-size: var(--cn-menubar-font-size, var(--type-action-md));
+    background: transparent;
     corner-shape: var(--cn-menubar-trigger-corner-shape, var(--control-corner-shape));
     transition: background 100ms, corner-shape 180ms;
 }
@@ -804,6 +806,16 @@ pub const CN_STYLES: &str = r#"
     corner-shape: var(--cn-menubar-trigger-corner-shape-hover, var(--control-corner-shape-hover));
 }
 .cn-menubar-trigger__label { max-width: 100%; }
+.cn-menubar-item {
+    border-radius: var(--cn-menubar-item-radius, var(--control-radius-sm));
+    background: transparent;
+    corner-shape: var(--cn-menubar-item-corner-shape, var(--control-corner-shape));
+    transition: background 100ms, corner-shape 180ms;
+}
+.cn-menubar-item:hover {
+    background: var(--surface-elevated);
+    corner-shape: var(--cn-menubar-item-corner-shape-hover, var(--control-corner-shape-hover));
+}
 
 /* ============================================================================
    Popover

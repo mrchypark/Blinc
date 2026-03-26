@@ -488,13 +488,6 @@ pub fn check_stateful_deps(changed_signals: &[SignalId]) -> bool {
     // -> register_stateful_deps() which would try to acquire the same lock.
     let callbacks_to_call: Vec<Arc<dyn Fn() + Send + Sync>> = {
         let registry = STATEFUL_DEPS.lock().unwrap();
-        if !changed_signals.is_empty() {
-            tracing::debug!(
-                "check_stateful_deps: checking {} changed signals against {} registered statefuls",
-                changed_signals.len(),
-                registry.len()
-            );
-        }
         registry
             .iter()
             .filter_map(|(key, (deps, refresh_fn))| {
@@ -2352,6 +2345,18 @@ impl<S: StateTransitions> Stateful<S> {
             // Mark as updated
             self.shared_state.lock().unwrap().needs_visual_update = false;
 
+            // After merge, the inner Div may have event_handlers (e.g. scroll handlers
+            // from overflow_y_scroll()). Merge them into the event_handlers_cache so
+            // they're returned by event_handlers() and registered in the handler_registry.
+            {
+                let inner = self.inner.borrow();
+                if !inner.event_handlers.is_empty() {
+                    let handlers_clone = inner.event_handlers.clone();
+                    drop(inner);
+                    self.event_handlers_cache.borrow_mut().merge(handlers_clone);
+                }
+            }
+
             // Log children count after callback
             let children_count = self.inner.borrow().children.len();
             tracing::trace!("After callback: {} children in inner Div", children_count);
@@ -2450,6 +2455,11 @@ impl<S: StateTransitions> Stateful<S> {
     /// This allows capturing the final taffy Style after all builder methods have been applied.
     pub fn inner_layout_style(&self) -> Option<taffy::Style> {
         self.inner.borrow().layout_style().cloned()
+    }
+
+    /// Get the inner Div's scroll physics (if overflow scroll is set)
+    pub fn inner_scroll_physics(&self) -> Option<crate::scroll::SharedScrollPhysics> {
+        self.inner.borrow().scroll_physics.clone()
     }
 
     /// Apply the state callback to update the inner div
@@ -2825,12 +2835,10 @@ impl<S: StateTransitions> Stateful<S> {
 
             if structure_changed {
                 // Full structural rebuild (children added/removed/reordered, or layout changed)
-                tracing::trace!("refresh_props_internal: structural change, full rebuild");
                 queue_subtree_rebuild(cached_node_id, temp_div);
             } else {
                 // Visual-only change (transform, opacity, bg, etc.) — skip expensive rebuild.
                 // Just update render props of existing children in-place.
-                tracing::trace!("refresh_props_internal: visual-only change, fast update");
                 queue_visual_subtree_rebuild(cached_node_id, temp_div);
             }
         }
@@ -2892,6 +2900,20 @@ impl<S: StateTransitions> Stateful<S> {
             shared.needs_visual_update = false;
             drop(shared); // Release lock before calling callback
             callback(&state_copy, &mut self.inner.borrow_mut());
+
+            // Sync event_handlers_cache from inner Div after callback.
+            // The callback may have merged event handlers (e.g. scroll handlers
+            // from overflow_y_scroll()) into the inner Div. Without this sync,
+            // event_handlers() returns an empty cache and collect_render_props_boxed
+            // never registers the handlers — breaking scroll dispatch on first build.
+            {
+                let inner = self.inner.borrow();
+                if !inner.event_handlers.is_empty() {
+                    let handlers_clone = inner.event_handlers.clone();
+                    drop(inner);
+                    self.event_handlers_cache.borrow_mut().merge(handlers_clone);
+                }
+            }
         }
     }
 
@@ -3224,6 +3246,12 @@ impl<S: StateTransitions> Stateful<S> {
     /// Set overflow to clip (clips children to container bounds)
     pub fn overflow_clip(self) -> Self {
         self.merge_into_inner(Div::new().overflow_clip());
+        self
+    }
+
+    /// Set overflow to scroll on Y-axis (builder pattern)
+    pub fn overflow_y_scroll(self) -> Self {
+        self.merge_into_inner(Div::new().overflow_y_scroll());
         self
     }
 
@@ -3754,6 +3782,11 @@ impl<S: StateTransitions> BoundStateful<S> {
         self.transform_inner(|s| s.overflow_clip())
     }
 
+    /// Set overflow to scroll on Y-axis
+    pub fn overflow_y_scroll(self) -> Self {
+        self.transform_inner(|s| s.overflow_y_scroll())
+    }
+
     /// Set cursor style (builder pattern)
     pub fn cursor(self, cursor: crate::element::CursorStyle) -> Self {
         self.transform_inner(|s| s.cursor(cursor))
@@ -4101,6 +4134,11 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
             let inner = self.inner.as_ptr();
             (*inner).classes()
         }
+    }
+
+    fn scroll_physics(&self) -> Option<crate::scroll::SharedScrollPhysics> {
+        self.ensure_callback_invoked();
+        self.inner.borrow().scroll_physics.clone()
     }
 }
 
