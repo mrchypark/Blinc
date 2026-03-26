@@ -71,7 +71,7 @@ where
                 let frames = wait_frames_for_duration(*ms, runtime_cfg.tick_ms);
                 session.tick_frames(frames)?;
                 elapsed_frames += frames as u64;
-                elapsed_ms += ms;
+                elapsed_ms += runtime_cfg.tick_ms.saturating_mul(frames as u64);
                 Ok(())
             }
             ScenarioStep::Tick { frames } => {
