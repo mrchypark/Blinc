@@ -207,6 +207,7 @@ fn preferred_text_only_matches(
 
 fn is_text_only_locator(locator: &SemanticLocator) -> bool {
     locator.text.is_some()
+        && locator.nth.is_none()
         && locator.role.is_none()
         && locator.label.is_none()
         && locator.placeholder.is_none()
@@ -554,6 +555,25 @@ mod tests {
         tree.compute_layout(320.0, 120.0);
 
         let resolution = resolve_semantic_locator(&tree, &SemanticLocator::text("Submit"));
+        assert_eq!(resolution.matched_target.as_deref(), Some("submit-button"));
+        assert_eq!(resolution.failure_reason, None);
+    }
+
+    #[test]
+    fn semantic_text_only_query_preserves_nth_selection_without_pruning() {
+        let _guard = semantic_test_guard();
+        ensure_theme();
+        blur_all_text_inputs();
+
+        let button_state = Stateful::new(ButtonState::Idle).shared_state();
+        let ui = div()
+            .id("screen")
+            .child(button(button_state, "Submit").id("submit-button"));
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(320.0, 120.0);
+
+        let resolution = resolve_semantic_locator(&tree, &SemanticLocator::text("Submit").nth(1));
         assert_eq!(resolution.matched_target.as_deref(), Some("submit-button"));
         assert_eq!(resolution.failure_reason, None);
     }
