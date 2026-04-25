@@ -118,7 +118,7 @@ impl IOSEventLoop {
 impl EventLoop for IOSEventLoop {
     type Window = IOSWindow;
 
-    fn run<F>(self, _handler: F) -> Result<(), PlatformError>
+    fn run<F>(self, mut handler: F) -> Result<(), PlatformError>
     where
         F: FnMut(Event, &Self::Window) -> ControlFlow + 'static,
     {

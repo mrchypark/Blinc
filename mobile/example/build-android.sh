@@ -132,23 +132,8 @@ export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
 export NDK_HOME="$ANDROID_NDK_HOME"
 
 # Allow `-s <serial>` override on the command line
-if [ "$1" = "-s" ] && [ -n "$2" ]; then
+if [ "${1:-}" = "-s" ] && [ -n "${2:-}" ]; then
     export ANDROID_SERIAL="$2"
-fi
-
-# Resolve target device:
-#   1. ANDROID_SERIAL env var if set (and authorized)
-#   2. Otherwise the first `device` (authorized) entry from `adb devices`
-#      — unauthorized / offline / no_permissions entries are skipped.
-if [ -n "$ANDROID_SERIAL" ]; then
-    DEVICE_SERIAL="$ANDROID_SERIAL"
-else
-    DEVICE_SERIAL=$($ADB devices | awk '$2 == "device" { print $1; exit }')
-fi
-
-if [ -z "$DEVICE_SERIAL" ]; then
-    echo "No authorized device connected. Plug one in and accept the USB debugging prompt."
-    echo "(APK will still be built and left at platforms/android/app/build/outputs/apk/debug/app-debug.apk)"
 fi
 
 # Step 1: Build Rust library for Android
@@ -165,17 +150,46 @@ cd platforms/android
 ./gradlew "${GRADLE_TASK}"
 cd "$SCRIPT_DIR"
 
-if [ -n "$DEVICE_SERIAL" ]; then
-    echo "Installing APK to $DEVICE_SERIAL..."
-    $ADB -s "$DEVICE_SERIAL" install -r app/build/outputs/apk/debug/app-debug.apk
+if [ ! -f "$OUTPUT_PATH" ] && [ -n "${FALLBACK_OUTPUT_PATH:-}" ] && [ -f "$FALLBACK_OUTPUT_PATH" ]; then
+    OUTPUT_PATH="$FALLBACK_OUTPUT_PATH"
+fi
 
-    echo "Starting app on $DEVICE_SERIAL..."
-    $ADB -s "$DEVICE_SERIAL" shell am start -n com.blinc.example/.MainActivity
+if [ ! -f "$OUTPUT_PATH" ]; then
+    echo "Expected Android artifact was not produced: $OUTPUT_PATH" >&2
+    exit 1
+fi
 
-    echo "Showing logs (Ctrl+C to exit)..."
-    $ADB -s "$DEVICE_SERIAL" logcat -c  # Clear old logs
-    $ADB -s "$DEVICE_SERIAL" logcat -s Blinc:D RustStdoutStderr:D AndroidRuntime:E DEBUG:F BlincNativeBridge:D
-else
-    echo "APK is at:"
-    echo "  platforms/android/app/build/outputs/apk/debug/app-debug.apk"
+cp "$OUTPUT_PATH" "$ARTIFACT_DIR/$ARTIFACT_NAME"
+echo "Exported Android artifact:"
+echo "  $ARTIFACT_DIR/$ARTIFACT_NAME"
+
+# Step 3: Install APK (debug only)
+if [ "$INSTALL_ON_DEVICE" -eq 1 ]; then
+    # Resolve target device:
+    #   1. ANDROID_SERIAL env var if set
+    #   2. Otherwise the first authorized `device` entry from `adb devices`
+    DEVICE_SERIAL="${ANDROID_SERIAL:-}"
+    if [ -z "$DEVICE_SERIAL" ]; then
+        DEVICE_SERIAL="$($ADB devices | awk 'NR>1 && $2=="device" {print $1; exit}')"
+    fi
+
+    if [ -n "$DEVICE_SERIAL" ]; then
+        echo "Installing APK to $DEVICE_SERIAL..."
+        "$ADB" -s "$DEVICE_SERIAL" install -r "$OUTPUT_PATH"
+        grant_runtime_permissions "$DEVICE_SERIAL"
+
+        echo "Starting app on $DEVICE_SERIAL..."
+        "$ADB" -s "$DEVICE_SERIAL" shell am start -n "${PACKAGE_NAME}/${ACTIVITY_NAME}"
+
+        echo "Showing logs (Ctrl+C to exit)..."
+        "$ADB" -s "$DEVICE_SERIAL" logcat -c
+        "$ADB" -s "$DEVICE_SERIAL" logcat -s Blinc:D RustStdoutStderr:D AndroidRuntime:E DEBUG:F BlincNativeBridge:D
+    else
+        echo "No authorized device connected. Debug APK is at:"
+        echo "  $ARTIFACT_DIR/$ARTIFACT_NAME"
+        echo "Verify with: $ADB devices -l"
+    fi
+elif [ "$MODE" = "release" ] || [ "$MODE" = "bundle-release" ]; then
+    echo "Release packaging finished."
+    echo "If signing is required, provide BLINC_ANDROID_KEYSTORE_* inputs before distribution."
 fi

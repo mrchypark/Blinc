@@ -12,7 +12,9 @@ use blinc_platform::{ViewportInsets, WindowMetrics};
 #[cfg(target_os = "ios")]
 use objc2_foundation::MainThreadMarker;
 #[cfg(target_os = "ios")]
-use objc2_ui_kit::{UIApplication, UIScreen, UIWindowScene};
+use objc2_ui_kit::{
+    UIApplication, UIApplicationState, UIScreen, UIUserInterfaceStyle, UIWindow, UIWindowScene,
+};
 
 #[cfg(target_os = "ios")]
 use tracing::info;
