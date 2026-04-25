@@ -190,7 +190,7 @@ fn counter_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
 /// the model level (cursor moves, characters insert via hardware
 /// keyboard / Bluetooth keyboard) but the soft keyboard won't pop
 /// up.
-fn keyboard_section(ctx: &WindowedContext) -> Div {
+fn keyboard_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
     // Persistent text-input state, keyed so it survives rebuilds.
     // `text_input_state_with_placeholder` returns a
     // `SharedTextInputState` (Arc<Mutex<TextInputData>>) which is
@@ -209,7 +209,7 @@ fn keyboard_section(ctx: &WindowedContext) -> Div {
     let input_bg = Color::rgba(0.20, 0.20, 0.27, 1.0);
     let input_focus_bg = Color::rgba(0.24, 0.24, 0.32, 1.0);
 
-    section_card("Soft Keyboard Test")
+    section_card("Soft Keyboard Test", theme)
         .child(
             text("Tap the field — the OS soft keyboard should pop up on mobile.")
                 .size(13.0)
@@ -599,9 +599,9 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
                             .color(theme.text_muted),
                     )
                     // Counter section
-                    .child(counter_section(ctx))
+                    .child(counter_section(ctx, theme))
                     // Soft-keyboard test section
-                    .child(keyboard_section(ctx))
+                    .child(keyboard_section(ctx, theme))
                     // Animation section
                     .child(animation_section(ctx, theme)),
             ),
