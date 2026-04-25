@@ -5,6 +5,21 @@
 use std::{borrow::Cow, sync::Arc};
 use wgpu::util::DeviceExt;
 
+/// Color space tag for a compressed texture upload.
+///
+/// BC1 and BC3 come in two wgpu variants — sRGB-decoded-on-sample
+/// for color slots (diffuse, emissive) and linear for non-color
+/// slots. BC4 / BC5 only exist as linear.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompressedColorSpace {
+    /// sRGB encoding on disk; hardware decodes to linear when
+    /// sampled. Use for diffuse / base color / emissive.
+    Srgb,
+    /// Linear encoding both on disk and in the shader. Use for
+    /// normal, MR, occlusion.
+    Linear,
+}
+
 /// A GPU image texture ready for rendering
 pub struct GpuImage {
     /// The GPU texture
@@ -18,26 +33,81 @@ pub struct GpuImage {
 }
 
 impl GpuImage {
-    /// Create an empty GPU image (uninitialized contents)
-    pub fn empty(device: &wgpu::Device, width: u32, height: u32, label: Option<&str>) -> Self {
-        let max_dim = device.limits().max_texture_dimension_2d;
-        let width = width.clamp(1, max_dim);
-        let height = height.clamp(1, max_dim);
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+    /// Create a GPU image from RGBA pixel data (linear encoding).
+    pub fn from_rgba(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        label: Option<&str>,
+    ) -> Self {
+        Self::from_rgba_with_format(
+            device,
+            queue,
+            pixels,
+            wgpu::TextureFormat::Rgba8Unorm,
+            width,
+            height,
             label,
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
+        )
+    }
+
+    /// Create a GPU image from sRGB-encoded RGBA pixel data.
+    ///
+    /// Use for diffuse / base-color / emissive textures. The sampler
+    /// decodes sRGB to linear on read, so shader math sees linear
+    /// values. Without this, uploading sRGB-authored assets as
+    /// `Rgba8Unorm` double-applies gamma (too bright) or not at all
+    /// (too bright / washed) depending on the downstream pipeline —
+    /// PNG/JPEG assets from glTF are sRGB-encoded by convention.
+    pub fn from_rgba_srgb(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        label: Option<&str>,
+    ) -> Self {
+        Self::from_rgba_with_format(
+            device,
+            queue,
+            pixels,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            width,
+            height,
+            label,
+        )
+    }
+
+    fn from_rgba_with_format(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pixels: &[u8],
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        label: Option<&str>,
+    ) -> Self {
+        let texture = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label,
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+            wgpu::util::TextureDataOrder::LayerMajor,
+            pixels,
+        );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -49,43 +119,159 @@ impl GpuImage {
         }
     }
 
-    /// Create a GPU image from RGBA pixel data
-    pub fn from_rgba(
+    /// Upload RGBA pixel data, compressing to BC1/BC3 when the
+    /// device supports `TEXTURE_COMPRESSION_BC` and the
+    /// `bc-encode` feature is enabled. Otherwise falls back to
+    /// [`Self::from_rgba`] or [`Self::from_rgba_srgb`] depending on
+    /// `is_srgb`.
+    ///
+    /// Intended for one-time-uploaded, many-frames-read images (the
+    /// 2D image widget cache, CSS mask images). BC1 for opaque,
+    /// BC3 for images with meaningful alpha — decided by
+    /// [`crate::bc_encode::is_effectively_opaque`]. Minimum 4×4
+    /// dimensions for block coverage; smaller images skip BC and
+    /// go through the uncompressed path.
+    ///
+    /// The encode happens inline — caller owns whatever thread the
+    /// latency lives on. Budget ~50-150 ms per 2K × 2K texture on
+    /// native; linear fallback when the feature is off means zero
+    /// added cost for callers who never opt in.
+    #[cfg(feature = "bc-encode")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_rgba_maybe_compressed(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         pixels: &[u8],
         width: u32,
         height: u32,
+        is_srgb: bool,
+        has_bc_support: bool,
         label: Option<&str>,
     ) -> Self {
-        let max_dim = device.limits().max_texture_dimension_2d;
-        let width = width.clamp(1, max_dim);
-        let height = height.clamp(1, max_dim);
-        let Some(required_len) = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|v| v.checked_mul(4))
-        else {
-            tracing::warn!(
-                "from_rgba: failed to compute required buffer size for {}x{} image",
-                width,
-                height
-            );
-            return Self::empty(device, width, height, label);
-        };
-        if pixels.len() < required_len {
-            tracing::warn!(
-                "from_rgba: pixel buffer too small (required {}, got {}), falling back to empty image",
-                required_len,
-                pixels.len()
-            );
-            debug_assert!(
-                pixels.len() >= required_len,
-                "from_rgba: pixel buffer too small (required {}, got {})",
-                required_len,
-                pixels.len()
-            );
-            return Self::empty(device, width, height, label);
+        // BC formats quantize in 4×4 blocks, so wgpu's
+        // `Device::create_texture` rejects any texture whose
+        // dimensions aren't multiples of 4 for the BC formats. Most
+        // call sites already filter on alignment, but keep the
+        // check here as defense-in-depth — a missed guard upstream
+        // should fall back to Rgba8, not panic the render loop.
+        //
+        // Also bail if pixel length doesn't match width*height*4 —
+        // the encoder's debug_assert would fire otherwise, and in
+        // release builds we'd silently corrupt.
+        let can_compress = has_bc_support
+            && width >= 4
+            && height >= 4
+            && width % 4 == 0
+            && height % 4 == 0
+            && pixels.len() == (width as usize) * (height as usize) * 4;
+        if can_compress {
+            let td = crate::bc_encode::encode_auto(pixels, width, height);
+            let color_space = if is_srgb {
+                CompressedColorSpace::Srgb
+            } else {
+                CompressedColorSpace::Linear
+            };
+            // `td` was just produced above; `with_bytes` can only
+            // return None after a `drop_cpu_bytes()` call, which
+            // nothing between construction and here performs.
+            return td
+                .with_bytes(|bytes| {
+                    Self::from_compressed(
+                        device,
+                        queue,
+                        bytes,
+                        td.format,
+                        color_space,
+                        td.width,
+                        td.height,
+                        label,
+                    )
+                })
+                .expect("freshly encoded TextureData retains its CPU bytes");
         }
+        if is_srgb {
+            Self::from_rgba_srgb(device, queue, pixels, width, height, label)
+        } else {
+            Self::from_rgba(device, queue, pixels, width, height, label)
+        }
+    }
+
+    /// Feature-disabled variant — mirrors the signature so call
+    /// sites can pin their dispatch logic regardless of whether
+    /// the downstream build has `bc-encode` turned on.
+    #[cfg(not(feature = "bc-encode"))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_rgba_maybe_compressed(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        is_srgb: bool,
+        _has_bc_support: bool,
+        label: Option<&str>,
+    ) -> Self {
+        if is_srgb {
+            Self::from_rgba_srgb(device, queue, pixels, width, height, label)
+        } else {
+            Self::from_rgba(device, queue, pixels, width, height, label)
+        }
+    }
+
+    /// Slot intent for a compressed upload — determines whether the
+    /// sRGB variant of the matching wgpu `TextureFormat` is used.
+    ///
+    /// - `Color` for diffuse / base-color / emissive (sRGB-encoded
+    ///   on disk, sampled as sRGB so the shader sees linear values).
+    /// - `Linear` for normal maps, metallic-roughness, occlusion, and
+    ///   anything that already stores linear values.
+    pub fn compressed_color_space(color: bool) -> CompressedColorSpace {
+        if color {
+            CompressedColorSpace::Srgb
+        } else {
+            CompressedColorSpace::Linear
+        }
+    }
+
+    /// Create a GPU image from block-compressed pixel data.
+    ///
+    /// `pixels` is the packed BC block buffer — 8 bytes per 4×4
+    /// block for BC1/BC4 and 16 bytes per 4×4 block for BC3/BC5.
+    /// See `blinc_core::TexturePixelFormat` for the format's byte
+    /// layout; the caller is responsible for producing bytes in
+    /// that shape.
+    ///
+    /// `width` and `height` must round up to a multiple of 4 for
+    /// block coverage — fractional edge blocks are the encoder's
+    /// responsibility to pad.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_compressed(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pixels: &[u8],
+        format: blinc_core::TexturePixelFormat,
+        color_space: CompressedColorSpace,
+        width: u32,
+        height: u32,
+        label: Option<&str>,
+    ) -> Self {
+        use blinc_core::TexturePixelFormat as P;
+        let wgpu_format = match (format, color_space) {
+            (P::Rgba8, _) => {
+                // Fallback: caller asked for compressed but passed
+                // Rgba8. Treat as the uncompressed path.
+                return Self::from_rgba(device, queue, pixels, width, height, label);
+            }
+            (P::Bc1, CompressedColorSpace::Srgb) => wgpu::TextureFormat::Bc1RgbaUnormSrgb,
+            (P::Bc1, CompressedColorSpace::Linear) => wgpu::TextureFormat::Bc1RgbaUnorm,
+            (P::Bc3, CompressedColorSpace::Srgb) => wgpu::TextureFormat::Bc3RgbaUnormSrgb,
+            (P::Bc3, CompressedColorSpace::Linear) => wgpu::TextureFormat::Bc3RgbaUnorm,
+            // BC4 and BC5 are single/dual-channel linear formats —
+            // no sRGB variant exists in wgpu for them. Color-space
+            // argument is accepted for uniformity but ignored.
+            (P::Bc4, _) => wgpu::TextureFormat::Bc4RUnorm,
+            (P::Bc5, _) => wgpu::TextureFormat::Bc5RgUnorm,
+        };
 
         let texture = device.create_texture_with_data(
             queue,
@@ -99,7 +285,7 @@ impl GpuImage {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: wgpu_format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             },
@@ -489,14 +675,36 @@ impl ImageRenderingContext {
         )
     }
 
-    /// Create an empty GPU image
-    pub fn create_empty_image(&self, width: u32, height: u32) -> GpuImage {
-        GpuImage::empty(&self.device, width, height, None)
-    }
-
-    /// Create an empty GPU image with a label
-    pub fn create_empty_image_labeled(&self, width: u32, height: u32, label: &str) -> GpuImage {
-        GpuImage::empty(&self.device, width, height, Some(label))
+    /// Create a labeled GPU image that is BC-compressed when
+    /// `has_bc_support` is true (and the `bc-encode` feature is
+    /// built in), otherwise falls back to the uncompressed upload.
+    /// Thin wrapper over [`GpuImage::from_rgba_maybe_compressed`]
+    /// so callers don't need to reach into raw device/queue.
+    ///
+    /// `is_srgb` selects between `Rgba8UnormSrgb` /
+    /// `Bc{1,3}RgbaUnormSrgb` (for color images the sampler should
+    /// decode sRGB→linear) and the linear variants. The 2D image
+    /// widget cache today treats image bytes as linear, matching
+    /// [`Self::create_image_labeled`]; pass `false` to keep parity.
+    pub fn create_image_maybe_compressed(
+        &self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        is_srgb: bool,
+        has_bc_support: bool,
+        label: &str,
+    ) -> GpuImage {
+        GpuImage::from_rgba_maybe_compressed(
+            &self.device,
+            &self.queue,
+            pixels,
+            width,
+            height,
+            is_srgb,
+            has_bc_support,
+            Some(label),
+        )
     }
 
     /// Get the linear sampler

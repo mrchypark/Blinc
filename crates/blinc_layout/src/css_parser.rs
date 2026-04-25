@@ -2968,6 +2968,8 @@ fn parse_flow_target<'a>(input: &'a str, graph: &mut FlowGraph) -> Option<&'a st
     match value {
         "fragment" => graph.target = FlowTarget::Fragment,
         "compute" => graph.target = FlowTarget::Compute,
+        "vertex" => graph.target = FlowTarget::Vertex,
+        "material" => graph.target = FlowTarget::Material,
         _ => return None,
     }
     Some(&rest[semi + 1..])
@@ -3116,6 +3118,26 @@ fn parse_flow_node<'a>(
     Some(&expr_start[semi_pos + 1..])
 }
 
+fn parse_output_target(name: &str) -> FlowOutputTarget {
+    match name {
+        "color" => FlowOutputTarget::Color,
+        "alpha" => FlowOutputTarget::Alpha,
+        "displacement" => FlowOutputTarget::Displacement,
+        // 3D vertex outputs
+        "position" => FlowOutputTarget::Position,
+        "world_normal_out" | "world_normal" => FlowOutputTarget::WorldNormalOut,
+        "world_position_out" | "world_position" => FlowOutputTarget::WorldPositionOut,
+        // 3D material outputs
+        "albedo" | "base_color" => FlowOutputTarget::Albedo,
+        "metallic" => FlowOutputTarget::Metallic,
+        "roughness" => FlowOutputTarget::Roughness,
+        "emissive" => FlowOutputTarget::Emissive,
+        "surface_normal" => FlowOutputTarget::SurfaceNormal,
+        "alpha_out" => FlowOutputTarget::AlphaOut,
+        _ => FlowOutputTarget::Color,
+    }
+}
+
 fn parse_flow_output<'a>(
     input: &'a str,
     graph: &mut FlowGraph,
@@ -3143,22 +3165,12 @@ fn parse_flow_output<'a>(
         // output <name> = <expr>;
         let name = decl[..eq_pos].trim();
         let expr_s = decl[eq_pos + 1..].trim();
-        let target = match name {
-            "color" => FlowOutputTarget::Color,
-            "alpha" => FlowOutputTarget::Alpha,
-            "displacement" => FlowOutputTarget::Displacement,
-            _ => FlowOutputTarget::Color,
-        };
+        let target = parse_output_target(name);
         (target, name.to_string(), Some(expr_s))
     } else {
         // Bare output: output color;
         let name = decl.trim();
-        let target = match name {
-            "color" => FlowOutputTarget::Color,
-            "alpha" => FlowOutputTarget::Alpha,
-            "displacement" => FlowOutputTarget::Displacement,
-            _ => FlowOutputTarget::Color,
-        };
+        let target = parse_output_target(name);
         (target, name.to_string(), None)
     };
 
@@ -5467,6 +5479,35 @@ fn apply_property(style: &mut ElementStyle, name: &str, value: &str) {
                 style.object_position = Some(pos);
             }
         }
+        "loading" => match value.trim() {
+            "lazy" => style.loading_strategy = Some(1),
+            "eager" => style.loading_strategy = Some(0),
+            _ => {}
+        },
+        "image-placeholder-color" => {
+            if let Some(color) = parse_color(value) {
+                style.image_placeholder_color = Some([color.r, color.g, color.b, color.a]);
+                style.image_placeholder_type = Some(1);
+            }
+        }
+        "image-placeholder-image" | "image-placeholder" => {
+            let trimmed = value.trim().trim_matches(|c| c == '"' || c == '\'');
+            if !trimmed.is_empty() {
+                style.image_placeholder_image = Some(trimmed.to_string());
+                style.image_placeholder_type = Some(2);
+            }
+        }
+        "image-placeholder-type" => match value.trim() {
+            "skeleton" => style.image_placeholder_type = Some(3),
+            "none" => style.image_placeholder_type = Some(0),
+            "color" => style.image_placeholder_type = Some(1),
+            _ => {}
+        },
+        "fade-duration" => {
+            if let Some(ms) = parse_time_value(value) {
+                style.fade_duration_ms = Some(ms);
+            }
+        }
         "pointer-events" => match value.trim() {
             "auto" => style.pointer_events = Some(blinc_core::PointerEvents::Auto),
             "none" => style.pointer_events = Some(blinc_core::PointerEvents::None),
@@ -6731,6 +6772,39 @@ fn apply_property_with_errors(
             "none" => style.object_fit = Some(4),
             _ => errors.push(ParseError::invalid_value(name, value, line, column)),
         },
+        "loading" => match value.trim() {
+            "lazy" => style.loading_strategy = Some(1),
+            "eager" => style.loading_strategy = Some(0),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "image-placeholder-color" => {
+            if let Some(color) = parse_color(value) {
+                style.image_placeholder_color = Some([color.r, color.g, color.b, color.a]);
+                style.image_placeholder_type = Some(1);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
+        "image-placeholder-image" | "image-placeholder" => {
+            let trimmed = value.trim().trim_matches(|c| c == '"' || c == '\'');
+            if !trimmed.is_empty() {
+                style.image_placeholder_image = Some(trimmed.to_string());
+                style.image_placeholder_type = Some(2);
+            }
+        }
+        "image-placeholder-type" => match value.trim() {
+            "skeleton" => style.image_placeholder_type = Some(3),
+            "none" => style.image_placeholder_type = Some(0),
+            "color" => style.image_placeholder_type = Some(1),
+            _ => errors.push(ParseError::invalid_value(name, value, line, column)),
+        },
+        "fade-duration" => {
+            if let Some(ms) = parse_time_value(value) {
+                style.fade_duration_ms = Some(ms);
+            } else {
+                errors.push(ParseError::invalid_value(name, value, line, column));
+            }
+        }
         "object-position" => {
             if let Some(pos) = parse_object_position(value) {
                 style.object_position = Some(pos);

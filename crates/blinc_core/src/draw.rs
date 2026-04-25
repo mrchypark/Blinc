@@ -34,8 +34,8 @@
 
 use crate::layer::{
     Affine2D, BillboardFacing, BlendMode, Brush, Camera, ClipShape, Color, CornerRadius,
-    Environment, LayerId, Light, Mat4, ParticleSystemData, Point, Rect, Sdf3DViewport, Shadow,
-    Size, Vec2,
+    CubemapData, Environment, LayerId, Light, Mat4, ParticleSystemData, Point, Rect, Sdf3DViewport,
+    Shadow, Size, Vec2,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -338,6 +338,20 @@ impl TextStyle {
     /// Set font family
     pub fn with_family(mut self, family: impl Into<String>) -> Self {
         self.family = family.into();
+        self
+    }
+
+    /// Set the horizontal alignment relative to the anchor x.
+    pub fn with_align(mut self, align: TextAlign) -> Self {
+        self.align = align;
+        self
+    }
+
+    /// Set the vertical baseline — determines which reference point
+    /// the origin `y` coordinate represents (top of text, middle,
+    /// or text baseline — matches the HTML5 Canvas convention).
+    pub fn with_baseline(mut self, baseline: TextBaseline) -> Self {
+        self.baseline = baseline;
         self
     }
 }
@@ -667,11 +681,11 @@ impl ImageOptions {
 // 3D Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Handle to a loaded mesh
+/// Handle to a loaded mesh (for cached/registered meshes)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MeshId(pub u64);
 
-/// Handle to a material
+/// Handle to a material (for cached/registered materials)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MaterialId(pub u64);
 
@@ -680,6 +694,541 @@ pub struct MaterialId(pub u64);
 pub struct MeshInstance {
     pub transform: Mat4,
     pub material: Option<MaterialId>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic Mesh Data — users convert from glTF/OBJ/FBX/custom formats
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A single vertex with position, normal, UV, and color
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct Vertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub uv: [f32; 2],
+    pub color: [f32; 4],
+    /// Tangent vector for normal mapping (xyz = direction, w = handedness ±1)
+    pub tangent: [f32; 4],
+    /// Joint indices for skeletal animation (up to 4 influences per vertex)
+    pub joints: [u32; 4],
+    /// Joint weights for skeletal animation (should sum to 1.0)
+    pub weights: [f32; 4],
+}
+
+impl Vertex {
+    pub fn new(pos: [f32; 3]) -> Self {
+        Self {
+            position: pos,
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+            tangent: [1.0, 0.0, 0.0, 1.0],
+            joints: [0; 4],
+            weights: [1.0, 0.0, 0.0, 0.0],
+        }
+    }
+
+    pub fn with_normal(mut self, n: [f32; 3]) -> Self {
+        self.normal = n;
+        self
+    }
+    pub fn with_uv(mut self, uv: [f32; 2]) -> Self {
+        self.uv = uv;
+        self
+    }
+    pub fn with_color(mut self, c: [f32; 4]) -> Self {
+        self.color = c;
+        self
+    }
+    pub fn with_tangent(mut self, t: [f32; 4]) -> Self {
+        self.tangent = t;
+        self
+    }
+    pub fn with_joints(mut self, joints: [u32; 4], weights: [f32; 4]) -> Self {
+        self.joints = joints;
+        self.weights = weights;
+        self
+    }
+}
+
+/// Generic mesh data — the interchange format for 3D geometry.
+///
+/// Users convert from any source format (glTF, OBJ, FBX, procedural)
+/// into this struct, then pass it to `DrawContext::draw_mesh_data()`.
+///
+/// # Example
+///
+/// ```ignore
+/// // Triangle
+/// let mesh = MeshData {
+///     vertices: vec![
+///         Vertex::new([-0.5, -0.5, 0.0]).with_color([1.0, 0.0, 0.0, 1.0]),
+///         Vertex::new([ 0.5, -0.5, 0.0]).with_color([0.0, 1.0, 0.0, 1.0]),
+///         Vertex::new([ 0.0,  0.5, 0.0]).with_color([0.0, 0.0, 1.0, 1.0]),
+///     ],
+///     indices: vec![0, 1, 2],
+///     material: Material::default(),
+/// };
+/// ctx.draw_mesh_data(&mesh, Mat4::IDENTITY);
+/// ```
+#[derive(Clone, Debug)]
+pub struct MeshData {
+    /// Shared-reference vertex buffer. `Arc<Vec<…>>` (not plain
+    /// `Vec<…>`) so animated meshes can clone `MeshData` per frame
+    /// for per-draw morph / skin updates without deep-copying the
+    /// vertex data each time. A 5 K-vertex mesh is ~400 KB; at
+    /// 60 fps × N meshes this add up to significant bandwidth
+    /// otherwise. Readers should Deref-chain through to the slice:
+    /// `mesh.vertices.len()`, `&mesh.vertices[..]`,
+    /// `bytemuck::cast_slice(&mesh.vertices)` all work.
+    pub vertices: std::sync::Arc<Vec<Vertex>>,
+    /// Shared-reference index buffer. Same rationale as
+    /// [`Self::vertices`].
+    pub indices: std::sync::Arc<Vec<u32>>,
+    pub material: Material,
+    /// Optional skinning data for skeletal animation.
+    /// When provided, the GPU applies bone transforms to each vertex
+    /// based on joint indices and weights.
+    pub skin: Option<SkinningData>,
+    /// Per-primitive morph targets (blend shapes). Shared-reference
+    /// for the same reason as `vertices` — morph deltas on a
+    /// 152-target face can be tens of megabytes. Each entry is a
+    /// set of per-vertex deltas (position, optionally normal /
+    /// tangent) authored against the base `vertices` array. At
+    /// runtime the renderer computes
+    /// `final_vertex = base_vertex + Σ weights[i] · morph_targets[i]`
+    /// using weights provided by the animation pipeline
+    /// (`blinc_skeleton::Pose::morph_weights`). Empty `Arc<Vec>` for
+    /// meshes without morph data — which is the common case.
+    pub morph_targets: std::sync::Arc<Vec<MorphTarget>>,
+    /// Per-draw morph weights, one float per entry in `morph_targets`.
+    /// The renderer reads this to compute
+    /// `final = base + Σ weights[i] · morph_targets[i]` in the vertex
+    /// stage. Callers update this each frame from their animation
+    /// source (typically `blinc_skeleton::Pose::morph_weights_for_node`).
+    /// Plain `Vec` (not Arc) because it's written per draw — the
+    /// whole point of Arc-ing the *other* fields is that this one
+    /// stays cheap to mutate.
+    pub morph_weights: Vec<f32>,
+}
+
+/// One morph target (aka blend shape) — per-vertex deltas that layer
+/// on top of the base mesh. A mesh can have any number of morph
+/// targets; each carries a weight ∈ [0, 1] (or outside that range
+/// for over/undershoot), and the final rendered vertex is the base
+/// plus a weighted sum of the targets.
+///
+/// `delta_positions.len()` must equal `MeshData::vertices.len()`;
+/// the renderer uses positional identity between the base vertex at
+/// index `v` and `delta_positions[v]`. Normal and tangent deltas
+/// follow the same convention and are optional — when a target
+/// only animates positions (a character's cheek bulging with no
+/// meaningful shading change) leaving the normal / tangent slots
+/// empty saves memory.
+#[derive(Clone, Debug, Default)]
+pub struct MorphTarget {
+    /// Per-vertex position delta: `final_position[v] += weight *
+    /// delta_positions[v]`.
+    pub delta_positions: Vec<[f32; 3]>,
+    /// Optional per-vertex normal delta. Same length as
+    /// `delta_positions` when present.
+    pub delta_normals: Option<Vec<[f32; 3]>>,
+    /// Optional per-vertex tangent delta (xyz — the handedness `w`
+    /// of the base vertex tangent isn't morphed). Same length as
+    /// `delta_positions` when present.
+    pub delta_tangents: Option<Vec<[f32; 3]>>,
+}
+
+/// Per-material UV transform — affine offset + rotation + scale applied
+/// to the interpolated texture coordinate before any slot is sampled.
+/// Encodes the `KHR_texture_transform` glTF extension.
+///
+/// Spec form: `uv_out = translate * rotate * scale * uv_in` — the
+/// renderer flattens that to a 2×2 matrix + 2-element offset at upload
+/// time. Identity transform is the default (all slots sampled with the
+/// raw vertex UV).
+///
+/// **Scope note:** Blinc currently stores one transform per-material,
+/// applied uniformly to every slot. The spec allows independent
+/// transforms per texture binding; in practice atlas-packed assets
+/// apply the same transform across all slots and that's what `Option<
+/// TextureTransform>` on [`Material`] reflects. Per-slot transforms
+/// can be layered on later without breaking the current API.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextureTransform {
+    /// UV offset added after scale + rotation.
+    pub offset: [f32; 2],
+    /// Counter-clockwise rotation in radians, around UV origin.
+    pub rotation: f32,
+    /// Per-axis scale applied before rotation. `[1.0, 1.0]` is identity.
+    pub scale: [f32; 2],
+}
+
+impl Default for TextureTransform {
+    fn default() -> Self {
+        Self {
+            offset: [0.0, 0.0],
+            rotation: 0.0,
+            scale: [1.0, 1.0],
+        }
+    }
+}
+
+/// PBR material for mesh rendering.
+///
+/// Follows the glTF 2.0 metallic-roughness workflow. Scalar factors
+/// (`base_color`, `metallic`, `roughness`, `emissive`) are multiplied
+/// by their optional textures when those textures are present; when a
+/// texture is `None` the scalar acts alone, which means a caller can
+/// leave every texture unset and still get a valid flat-shaded material.
+#[derive(Clone, Debug)]
+pub struct Material {
+    /// Base color (RGBA). Multiplied against `base_color_texture` when
+    /// that texture is present.
+    pub base_color: [f32; 4],
+    /// Metallic factor. Multiplied against the `.b` channel of
+    /// `metallic_roughness_texture` when present. glTF convention:
+    /// `0.0` = dielectric, `1.0` = pure metal.
+    pub metallic: f32,
+    /// Roughness factor. Multiplied against the `.g` channel of
+    /// `metallic_roughness_texture` when present. `0.0` = mirror,
+    /// `1.0` = perfectly diffuse.
+    pub roughness: f32,
+    /// Emissive color (RGB, linear). Multiplied against
+    /// `emissive_texture` when present.
+    pub emissive: [f32; 3],
+    /// Base color texture (sRGB RGBA pixels, decoded per-fragment).
+    /// `None` = use `base_color` alone.
+    pub base_color_texture: Option<TextureData>,
+    /// Normal map (tangent-space normals encoded as RGB in `[0,1]`,
+    /// shader unpacks to `[-1,1]`).
+    pub normal_map: Option<TextureData>,
+    /// Normal map strength. `0.0` = flat, `1.0` = full effect.
+    pub normal_scale: f32,
+    /// Metallic/roughness texture. glTF convention: metallic in `.b`,
+    /// roughness in `.g`. The shader multiplies these per-texel by the
+    /// scalar `metallic` / `roughness` factors above.
+    pub metallic_roughness_texture: Option<TextureData>,
+    /// Emissive texture (sRGB RGB). Multiplied per-texel by
+    /// `emissive`. Used for glowing HUD elements, lights, screens —
+    /// anything the mesh emits light from regardless of incident
+    /// illumination.
+    pub emissive_texture: Option<TextureData>,
+    /// Ambient occlusion texture (grayscale). The `.r` channel
+    /// attenuates the ambient + indirect diffuse terms to simulate
+    /// crevice self-shadowing without running a full ray query.
+    pub occlusion_texture: Option<TextureData>,
+    /// Occlusion strength. `0.0` = no AO, `1.0` = full AO from the
+    /// texture. Matches the glTF `occlusionTexture.strength` semantic.
+    pub occlusion_strength: f32,
+    /// Displacement / height map (grayscale). Drives parallax
+    /// occlusion mapping in the shader.
+    pub displacement_map: Option<TextureData>,
+    /// Displacement scale in world units.
+    pub displacement_scale: f32,
+    /// Whether the material is unlit (ignore lighting).
+    pub unlit: bool,
+    /// Alpha mode.
+    pub alpha_mode: AlphaMode,
+    /// Per-material cutoff used when `alpha_mode == Mask`. Fragments
+    /// with base-color alpha below this threshold are discarded.
+    /// glTF default is `0.5`; overridden per asset via the
+    /// `alphaCutoff` material property. Ignored for `Opaque` and
+    /// `Blend` modes.
+    pub alpha_cutoff: f32,
+    /// Whether this mesh receives shadows from other meshes.
+    pub receives_shadows: bool,
+    /// Whether this mesh casts shadows onto other meshes.
+    pub casts_shadows: bool,
+    /// Optional UV transform (`KHR_texture_transform`). Applied to the
+    /// interpolated UV before every texture sample — see
+    /// [`TextureTransform`] for semantics. `None` means the identity
+    /// transform and costs the shader one extra vec2 multiply with
+    /// zero runtime branch.
+    pub texture_transform: Option<TextureTransform>,
+}
+
+impl Default for Material {
+    fn default() -> Self {
+        Self {
+            base_color: [1.0, 1.0, 1.0, 1.0],
+            metallic: 0.0,
+            roughness: 0.5,
+            emissive: [0.0, 0.0, 0.0],
+            base_color_texture: None,
+            normal_map: None,
+            normal_scale: 1.0,
+            metallic_roughness_texture: None,
+            emissive_texture: None,
+            occlusion_texture: None,
+            occlusion_strength: 1.0,
+            displacement_map: None,
+            displacement_scale: 0.05,
+            unlit: false,
+            alpha_mode: AlphaMode::Opaque,
+            alpha_cutoff: 0.5,
+            receives_shadows: true,
+            casts_shadows: true,
+            texture_transform: None,
+        }
+    }
+}
+
+/// Pixel storage format for a [`TextureData`].
+///
+/// Block-compressed variants match the wgpu `TexturePixelFormat` family
+/// they map to — the GPU sampler handles the on-the-fly
+/// decompression, so callers don't need a shader change when
+/// switching a texture slot from uncompressed to BC.
+///
+/// All BC variants pack 4×4 pixel blocks into a fixed byte budget:
+///
+/// | Variant | Intended use           | Block size | Bits/pixel |
+/// |---------|------------------------|-----------:|-----------:|
+/// | `Rgba8` | Uncompressed RGBA8     |   —        |    32      |
+/// | `Bc1`   | Opaque RGB (diffuse)   |  8 bytes   |     4      |
+/// | `Bc3`   | RGBA with alpha        | 16 bytes   |     8      |
+/// | `Bc4`   | Single-channel R       |  8 bytes   |     4      |
+/// | `Bc5`   | Two-channel RG         | 16 bytes   |     8      |
+///
+/// Diffuse/emissive slots are sRGB-encoded; normal/MR/occlusion
+/// slots are linear. The GPU upload path in `blinc_gpu` picks the
+/// right sRGB-vs-linear wgpu format per slot intent — `TextureData`
+/// only carries the compression topology.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TexturePixelFormat {
+    /// RGBA8 — 32 bits per pixel. Default; matches PNG/JPEG decode
+    /// output.
+    #[default]
+    Rgba8,
+    /// BC1 — 4 bpp; one-bit alpha at best. Good for opaque RGB
+    /// diffuse and emissive.
+    Bc1,
+    /// BC3 — 8 bpp; full alpha. Good for RGBA diffuse when alpha
+    /// is actually used.
+    Bc3,
+    /// BC4 — 4 bpp; single channel. Good for occlusion / AO or
+    /// any R-only input.
+    Bc4,
+    /// BC5 — 8 bpp; two channels. Good for tangent-space normal
+    /// maps (RG; B reconstructed in shader) and metallic-roughness
+    /// (G+B in glTF convention).
+    Bc5,
+}
+
+impl TexturePixelFormat {
+    /// Bits per pixel — used by load-time size sanity checks and
+    /// by the memory accounting in debug logs.
+    pub const fn bits_per_pixel(self) -> u32 {
+        match self {
+            TexturePixelFormat::Rgba8 => 32,
+            TexturePixelFormat::Bc1 | TexturePixelFormat::Bc4 => 4,
+            TexturePixelFormat::Bc3 | TexturePixelFormat::Bc5 => 8,
+        }
+    }
+
+    /// `true` iff the variant is one of the block-compressed formats
+    /// (everything except `Rgba8`).
+    pub const fn is_compressed(self) -> bool {
+        !matches!(self, TexturePixelFormat::Rgba8)
+    }
+}
+
+/// Texture data for materials.
+///
+/// Stores CPU-side pixel bytes (RGBA8 or a BC variant — see
+/// [`TexturePixelFormat`]) plus the dimensions. Cloning a
+/// `TextureData` (and therefore the `Material` that contains it) is a
+/// refcount bump, not a pixel-data copy — multiple materials that
+/// reference the same decoded image share one backing buffer.
+///
+/// The CPU buffer is wrapped in `Mutex<Option<Arc<[u8]>>>` and lives
+/// behind an outer `Arc` shared across clones. That lets the GPU
+/// renderer drop the CPU copy via [`TextureData::drop_cpu_bytes`]
+/// after uploading to VRAM without needing mutable access to every
+/// `Material` that holds a clone. Every clone sees the drop, and
+/// [`TextureData::cache_key`] keeps returning the same stable
+/// identifier so the GPU cache's per-texture entry stays reachable
+/// for subsequent frames.
+///
+/// Readers use [`TextureData::with_bytes`] to borrow `&[u8]` while
+/// the CPU copy is still present. After `drop_cpu_bytes()` those
+/// calls return `None` — callers that need to re-upload must hold
+/// their own copy elsewhere.
+#[derive(Clone, Debug)]
+pub struct TextureData {
+    inner: std::sync::Arc<TextureDataInner>,
+    pub width: u32,
+    pub height: u32,
+    /// Pixel storage format. Defaults to [`TexturePixelFormat::Rgba8`]
+    /// for the legacy constructor; [`TextureData::new_compressed`]
+    /// sets one of the BC variants.
+    pub format: TexturePixelFormat,
+}
+
+#[derive(Debug)]
+struct TextureDataInner {
+    /// CPU-side pixel buffer. `None` once
+    /// [`TextureData::drop_cpu_bytes`] has been called — typically
+    /// after the first GPU upload. For compressed variants this
+    /// holds the already-encoded BC blocks, not raw RGBA.
+    rgba: std::sync::Mutex<Option<std::sync::Arc<[u8]>>>,
+    /// Identifier used as the key in GPU texture caches. Captured at
+    /// construction from the original `Arc<[u8]>` pointer and
+    /// preserved even after `rgba` has been dropped.
+    cache_key: usize,
+}
+
+impl TextureData {
+    /// Construct a new `TextureData` from raw RGBA8 bytes. Panics (in
+    /// debug builds) if `bytes.len() != width * height * 4`.
+    pub fn new(bytes: Vec<u8>, width: u32, height: u32) -> Self {
+        debug_assert_eq!(
+            bytes.len(),
+            (width as usize) * (height as usize) * 4,
+            "TextureData::new: byte count doesn't match dimensions",
+        );
+        let arc_bytes: std::sync::Arc<[u8]> = bytes.into();
+        // `Arc::as_ptr(&Arc<[u8]>)` returns a fat `*const [u8]` — cast
+        // through the thin `*const u8` element pointer to get a plain
+        // address for the cache key.
+        let cache_key = std::sync::Arc::as_ptr(&arc_bytes) as *const u8 as usize;
+        Self {
+            inner: std::sync::Arc::new(TextureDataInner {
+                rgba: std::sync::Mutex::new(Some(arc_bytes)),
+                cache_key,
+            }),
+            width,
+            height,
+            format: TexturePixelFormat::Rgba8,
+        }
+    }
+
+    /// Construct a new `TextureData` backed by already-encoded
+    /// block-compressed pixels (one of the `Bc*` [`TexturePixelFormat`]
+    /// variants). Panics in debug builds when `bytes.len()` doesn't
+    /// match the format's expected block count for `width × height`.
+    ///
+    /// Width and height both round up to the nearest multiple of 4
+    /// for block coverage; fractional blocks at the edge are the
+    /// caller's responsibility to pad.
+    pub fn new_compressed(
+        bytes: Vec<u8>,
+        format: TexturePixelFormat,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        debug_assert!(
+            format.is_compressed(),
+            "TextureData::new_compressed: expected a BC variant, got {format:?}"
+        );
+        // 4×4 block count. Round up so non-multiple-of-4 dimensions
+        // don't under-report the buffer size.
+        let block_w = width.div_ceil(4) as usize;
+        let block_h = height.div_ceil(4) as usize;
+        let block_size = match format {
+            TexturePixelFormat::Bc1 | TexturePixelFormat::Bc4 => 8,
+            TexturePixelFormat::Bc3 | TexturePixelFormat::Bc5 => 16,
+            TexturePixelFormat::Rgba8 => unreachable!(),
+        };
+        debug_assert_eq!(
+            bytes.len(),
+            block_w * block_h * block_size,
+            "TextureData::new_compressed: byte count doesn't match {format:?} block count"
+        );
+        let arc_bytes: std::sync::Arc<[u8]> = bytes.into();
+        let cache_key = std::sync::Arc::as_ptr(&arc_bytes) as *const u8 as usize;
+        Self {
+            inner: std::sync::Arc::new(TextureDataInner {
+                rgba: std::sync::Mutex::new(Some(arc_bytes)),
+                cache_key,
+            }),
+            width,
+            height,
+            format,
+        }
+    }
+
+    /// Stable identifier for the backing CPU buffer, suitable for use
+    /// as a GPU cache key. Preserved across `clone()` and across
+    /// [`Self::drop_cpu_bytes`].
+    pub fn cache_key(&self) -> usize {
+        self.inner.cache_key
+    }
+
+    /// Borrow the CPU pixel buffer and run `f` with `&[u8]`. Returns
+    /// `None` if the buffer has been released via
+    /// [`Self::drop_cpu_bytes`]. Blocks only for the duration of
+    /// `f` — callers shouldn't do GPU submits inside.
+    pub fn with_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        let guard = self.inner.rgba.lock().unwrap();
+        guard.as_ref().map(|arc| f(arc))
+    }
+
+    /// `true` iff the CPU pixel buffer is still retained.
+    pub fn has_cpu_bytes(&self) -> bool {
+        self.inner.rgba.lock().unwrap().is_some()
+    }
+
+    /// Release the CPU pixel buffer. Every clone of this
+    /// `TextureData` shares the same inner handle, so one call drops
+    /// the buffer for all of them. Intended to be called by the GPU
+    /// renderer after [`GpuRenderer`](`crate::draw::DrawContext`)-
+    /// shaped code has uploaded the texture to VRAM.
+    pub fn drop_cpu_bytes(&self) {
+        *self.inner.rgba.lock().unwrap() = None;
+    }
+}
+
+/// Alpha blending mode
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AlphaMode {
+    #[default]
+    Opaque,
+    Blend,
+    Mask,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Skeletal Animation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A bone in a skeletal hierarchy.
+///
+/// Users construct bones from glTF skins, FBX skeletons, etc.
+/// The `inverse_bind_matrix` transforms from mesh space to bone-local space.
+#[derive(Clone, Debug)]
+pub struct Bone {
+    /// Human-readable name (e.g., "LeftUpperArm")
+    pub name: String,
+    /// Index of parent bone, or None for the root
+    pub parent: Option<usize>,
+    /// Inverse bind matrix — transforms mesh-space positions into this bone's local space
+    pub inverse_bind_matrix: [f32; 16],
+}
+
+/// Skeletal hierarchy (bind pose).
+///
+/// The bone list defines the hierarchy and rest pose.
+/// Users animate by computing per-frame joint matrices and passing
+/// them via `SkinningData`.
+#[derive(Clone, Debug)]
+pub struct Skeleton {
+    pub bones: Vec<Bone>,
+}
+
+/// Per-frame skinning data sent to the GPU.
+///
+/// Each joint matrix is the product of the bone's current world transform
+/// and its inverse bind matrix: `joint_matrix[i] = world_transform[i] * inverse_bind[i]`.
+///
+/// Maximum 256 joints. Vertices reference these via `Vertex::joints` indices.
+#[derive(Clone, Debug)]
+pub struct SkinningData {
+    /// Joint matrices — one per bone, max 256.
+    /// Each is a column-major 4x4 matrix.
+    pub joint_matrices: Vec<[f32; 16]>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1247,6 +1796,71 @@ pub trait DrawContext {
     /// Fill a rectangle (convenience method)
     fn fill_rect(&mut self, rect: Rect, corner_radius: CornerRadius, brush: Brush);
 
+    /// Fill a notched rect using the SDF pipeline.
+    ///
+    /// A notch is a rounded rect with:
+    /// - Optional per-corner concave curves (indicated by the `corner_types`
+    ///   slot: 0.0 = sharp/convex, 1.0 = concave).
+    /// - Optional top and/or bottom edge modifier — scoop (1), bulge (2),
+    ///   v-cut (3), or v-peak (4) — described by the `top_mod` / `bottom_mod`
+    ///   tuples as `(type, width, height_or_depth, corner_radius)`. Pass
+    ///   `(0, 0, 0, 0)` for no modifier on a given edge.
+    ///
+    /// All geometry is evaluated per-pixel in the SDF fragment shader so
+    /// notches inherit the main pipeline's antialiasing, clip/layer
+    /// composition, transform stack, and border/shadow support — no CPU
+    /// path tessellation and no dependency on the separate tessellated-
+    /// path pipeline (which had portability issues on some WebGPU
+    /// implementations).
+    ///
+    /// The default implementation falls back to `fill_rect` so non-GPU
+    /// renderers (hit-testing, headless unit tests, etc.) don't have to
+    /// reimplement the full SDF composition.
+    ///
+    /// # Parameters
+    /// - `rect` — outer bounds in layout coordinates.
+    /// - `corner_radii` — per-corner radii (top-left, top-right,
+    ///   bottom-right, bottom-left). Magnitude only; sign is ignored.
+    /// - `corner_types` — per-corner type flags in the same order
+    ///   (0.0 = sharp or convex, 1.0 = concave).
+    /// - `top_mod` — top edge modifier `(type, width, height, corner_radius)`.
+    /// - `bottom_mod` — bottom edge modifier, same layout as `top_mod`.
+    /// - `border` — optional `(width, color)` to stroke the notch with.
+    /// - `shadow` — optional drop shadow.
+    /// - `brush` — fill brush.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_notch(
+        &mut self,
+        rect: Rect,
+        corner_radii: [f32; 4],
+        corner_types: [f32; 4],
+        top_mod: [f32; 4],
+        bottom_mod: [f32; 4],
+        border: Option<(f32, Color)>,
+        shadow: Option<Shadow>,
+        brush: Brush,
+    ) {
+        // Default: drop every notch feature and draw a plain rounded rect.
+        // The sign-less max() keeps concave radii from bleeding a rect
+        // larger than the caller's bounds on fallback backends.
+        let _ = (corner_types, top_mod, bottom_mod);
+        let cr = CornerRadius {
+            top_left: corner_radii[0].max(0.0),
+            top_right: corner_radii[1].max(0.0),
+            bottom_right: corner_radii[2].max(0.0),
+            bottom_left: corner_radii[3].max(0.0),
+        };
+        if let Some(sh) = shadow {
+            self.draw_shadow(rect, cr, sh);
+        }
+        self.fill_rect(rect, cr, brush);
+        if let Some((width, color)) = border {
+            if width > 0.0 {
+                self.stroke_rect(rect, cr, &Stroke::new(width), Brush::Solid(color));
+            }
+        }
+    }
+
     /// Fill a rectangle with per-side borders (all same color)
     /// Border format: [top, right, bottom, left]
     /// Default implementation draws fill then strokes with max border width
@@ -1310,63 +1924,19 @@ pub trait DrawContext {
     /// Draw an image
     fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions);
 
-    #[doc(hidden)]
-    fn _debug_assert_rgba_buffer_size(&self, pixels: &[u8], width: u32, height: u32) {
-        let expected_len = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|v| v.checked_mul(4));
-        debug_assert_eq!(
-            expected_len,
-            Some(pixels.len()),
-            "Pixel buffer size does not match dimensions, or dimensions overflow"
-        );
-    }
-
-    /// Create a GPU image from RGBA pixels.
+    /// Draw raw RGBA pixel data directly to the target.
     ///
-    /// `pixels` must be tightly packed RGBA8 with length `width * height * 4`.
+    /// Uploads the pixel data as a GPU texture and renders it to the
+    /// destination rect. Use for video frames, camera preview, or
+    /// any dynamically-generated image data.
     ///
-    /// Default implementation returns [`ImageId::UNSUPPORTED`].
-    fn create_image_rgba(
-        &mut self,
-        pixels: &[u8],
-        width: u32,
-        height: u32,
-        _label: &str,
-    ) -> ImageId {
-        self._debug_assert_rgba_buffer_size(pixels, width, height);
-        ImageId::UNSUPPORTED
-    }
-
-    /// Create an empty GPU image (for later sub-rect writes)
-    ///
-    /// Default implementation returns [`ImageId::UNSUPPORTED`].
-    fn create_image_empty(&mut self, _width: u32, _height: u32, _label: &str) -> ImageId {
-        ImageId::UNSUPPORTED
-    }
-
-    /// Write RGBA pixels into a sub-rect of an existing image.
-    ///
-    /// `pixels` must be tightly packed RGBA8 with length `width * height * 4`.
-    ///
-    /// Default implementation is a no-op.
-    fn write_image_rgba(
-        &mut self,
-        _image: ImageId,
-        _x: u32,
-        _y: u32,
-        width: u32,
-        height: u32,
-        pixels: &[u8],
-    ) {
-        self._debug_assert_rgba_buffer_size(pixels, width, height);
-    }
-
-    /// Query the dimensions of a known image
-    ///
-    /// Default implementation returns None.
-    fn image_dimensions(&self, _image: ImageId) -> Option<(u32, u32)> {
-        None
+    /// # Arguments
+    /// * `data` — RGBA pixel data (4 bytes per pixel)
+    /// * `width` — Image width in pixels
+    /// * `height` — Image height in pixels
+    /// * `dest` — Destination rectangle in layout coordinates
+    fn draw_rgba_pixels(&mut self, _data: &[u8], _width: u32, _height: u32, _dest: Rect) {
+        // Default no-op — GPU implementations override
     }
 
     /// Draw a drop shadow (renders outside the shape)
@@ -1400,17 +1970,49 @@ pub trait DrawContext {
     /// Set the camera for 3D rendering
     fn set_camera(&mut self, camera: &Camera);
 
-    /// Draw a mesh with a material
+    /// Set the logical bounds of the 3D viewport region. Called by
+    /// `SceneKit3D::element` before `draw_mesh_data` so the paint
+    /// context can compute the physical-pixel viewport rect from the
+    /// current transform stack + these bounds, clipping the mesh to
+    /// the canvas element rather than the full frame.
+    fn set_3d_viewport_bounds(&mut self, _width: f32, _height: f32) {}
+
+    /// Draw a mesh with a material (using cached mesh/material handles)
     fn draw_mesh(&mut self, mesh: MeshId, material: MaterialId, transform: Mat4);
 
-    /// Draw instanced meshes
+    /// Draw instanced meshes (using cached mesh handle)
     fn draw_mesh_instanced(&mut self, mesh: MeshId, instances: &[MeshInstance]);
+
+    /// Draw mesh data directly (no registration needed).
+    ///
+    /// Users convert from any format (glTF, OBJ, FBX, procedural) into
+    /// `MeshData`, then pass it here. The GPU implementation handles
+    /// vertex/index buffer upload and rendering.
+    ///
+    /// ```ignore
+    /// let mesh = Arc::new(MeshData {
+    ///     vertices: vec![Vertex::new([-0.5, -0.5, 0.0]), ...],
+    ///     indices: vec![0, 1, 2],
+    ///     material: Material::default(),
+    /// });
+    /// ctx.draw_mesh_data(mesh.clone(), Mat4::IDENTITY);
+    /// ```
+    fn draw_mesh_data(&mut self, _mesh: std::sync::Arc<MeshData>, _transform: Mat4) {
+        // Default no-op — GPU implementations override
+    }
 
     /// Add a light to the scene
     fn add_light(&mut self, light: Light);
 
     /// Set the environment (skybox, IBL)
     fn set_environment(&mut self, env: &Environment);
+
+    /// Provide a pre-generated cubemap for IBL reflections.
+    ///
+    /// The GPU implementation uploads the face/mip data to the environment
+    /// cubemap texture. Scenes that don't call this get a neutral gray
+    /// fallback.
+    fn set_environment_cubemap(&mut self, _data: std::sync::Arc<CubemapData>) {}
 
     // ─────────────────────────────────────────────────────────────────────────
     // Dimension Bridging

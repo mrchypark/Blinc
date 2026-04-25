@@ -37,8 +37,8 @@ use crate::widgets::cursor::{cursor_state, CursorAnimation, SharedCursorState};
 
 /// Get elapsed time in milliseconds since app start (for cursor blinking)
 pub fn elapsed_ms() -> u64 {
-    static START_TIME: OnceLock<std::time::Instant> = OnceLock::new();
-    let start = START_TIME.get_or_init(std::time::Instant::now);
+    static START_TIME: OnceLock<web_time::Instant> = OnceLock::new();
+    let start = START_TIME.get_or_init(web_time::Instant::now);
     start.elapsed().as_millis() as u64
 }
 
@@ -50,6 +50,276 @@ pub const CURSOR_BLINK_INTERVAL_MS: u64 = 400;
 // =============================================================================
 
 static GLOBAL_FOCUS_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Generation counter that increments on every text-input tap, regardless
+/// of whether the tap actually transitions focus state. Polled by mobile
+/// runners (`blinc_app::android` / `blinc_app::ios`) to detect "user tapped
+/// a text input again" events that `take_keyboard_state_change` misses,
+/// because that flag only fires on `0 → 1` / `1 → 0` focus-count
+/// transitions.
+///
+/// Re-tapping the same input (or a different input while the keyboard is
+/// already up) does NOT cross those transitions, so the runner has no
+/// other way to know the user wanted to re-engage the keyboard. This
+/// counter gives it that signal: bump on every tap that lands on a text
+/// input handler, runner stores the last value it saw, and runs
+/// scroll-into-view whenever the value advances.
+///
+/// Used by [`focus_tap_generation`] / bumped by the `text_input`,
+/// `text_area`, `code_editor`, and `rich_text_editor` widgets'
+/// `on_mouse_down` handlers.
+static FOCUS_TAP_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Layout node ID of the currently focused text-editable widget, encoded as
+/// the raw `u64` from `LayoutNodeId::to_raw()`. `0` is the sentinel for
+/// "nothing focused" since taffy never assigns id `0`.
+///
+/// `text_input` and `text_area` track their focus through dedicated
+/// `FOCUSED_TEXT_INPUT` / `FOCUSED_TEXT_AREA` mutexes (which carry the
+/// full widget data), but other text-editable widgets (`code_editor`,
+/// `rich_text_editor`) don't share that data layout — they have their
+/// own state types that the global trackers can't store. This atomic is
+/// the lowest-common-denominator pointer-back: every editable widget can
+/// register its own LayoutNodeId here on focus, and the
+/// `scroll_focused_text_input_above_keyboard` helper consults this
+/// generic ID when the typed lookups (`focused_text_input_node_id` /
+/// `focused_text_area_node_id`) come up empty.
+///
+/// Bumped by [`set_focused_editable_node`] / cleared by
+/// [`clear_focused_editable_node`]. Read by [`focused_editable_node_id`].
+static FOCUSED_EDITABLE_NODE_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Companion to `FOCUSED_EDITABLE_NODE_ID` — an opaque blur callback
+/// that the focused widget registers alongside its node id, so
+/// [`blur_all_text_inputs`] can dismiss the editor when the user taps
+/// outside it. The dedicated trackers (`FOCUSED_TEXT_INPUT` /
+/// `FOCUSED_TEXT_AREA`) carry typed widget data and can call into the
+/// widget's blur path directly; widgets that don't fit those types
+/// (`code_editor`, `rich_text_editor`) instead pass a closure here so
+/// the global blur path remains a single call.
+///
+/// `Box<dyn Fn() + Send + Sync>` rather than `FnOnce` because the
+/// closure is invoked at most once but `take()` and replace would race
+/// with the writer that just registered it. The closure typically
+/// captures an `Arc<Mutex<...>>` to the widget state so it can flip
+/// the local `focused` flag, decrement the global focus count, and
+/// release any cursor-tick callbacks the widget held.
+#[allow(clippy::type_complexity)]
+static FOCUSED_EDITABLE_BLUR_CALLBACK: Mutex<Option<Box<dyn Fn() + Send + Sync>>> =
+    Mutex::new(None);
+
+/// Whether the most recent pointer event came from a touchscreen rather
+/// than a mouse / trackpad.
+///
+/// Set to `true` from the iOS / Android runners on every
+/// `TouchPhase::Began` (and reset to `false` from the desktop / web
+/// runners on `mouse_down`). Editable widgets read this on
+/// `on_mouse_down` / `on_drag` to switch between desktop semantics
+/// (drag = extend selection) and mobile semantics (drag = move cursor
+/// with haptic feedback, double-tap = native context menu).
+///
+/// Polled by [`is_touch_input`]. Updated by
+/// [`set_touch_input`]. The flag is *sticky* — it stays set until a
+/// non-touch input event flips it back, so re-rendering between
+/// touch frames doesn't lose the bit.
+static INPUT_SOURCE_IS_TOUCH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Long-press timer state for editable widgets.
+///
+/// When a user begins a touch on a focused text-editable widget, the
+/// widget calls [`arm_long_press_timer`] to record the start time +
+/// anchor position + bounds where the menu should pop. The platform
+/// runner's frame loop polls [`fire_long_press_timer_if_due`] every
+/// tick, and when 500 ms have elapsed without a cancel-via-drag or
+/// cancel-via-release, the helper fires `show_edit_menu` with the
+/// PASTE bit set so the user can paste from the clipboard the same
+/// way native iOS UITextField / Android EditText do.
+///
+/// The timer is cancelled by [`cancel_long_press_timer`], called
+/// from `on_drag` (when the finger moves too far) and from
+/// `on_mouse_up`.
+///
+/// Stored as a `Mutex<Option<...>>` rather than separate atomics
+/// because the four fields must be read atomically together — a
+/// torn read between deadline and anchor would dispatch the menu
+/// at the wrong location.
+struct LongPressArm {
+    /// Deadline in milliseconds since app start
+    /// (`text_input::elapsed_ms`). When `elapsed_ms()` >= this,
+    /// the timer fires.
+    deadline_ms: u64,
+    /// Anchor position in window-space logical pixels — passed
+    /// straight through to `show_edit_menu`'s anchor_x / anchor_y.
+    anchor_x: f32,
+    anchor_y: f32,
+    /// Original press position used for movement-cancel check.
+    start_x: f32,
+    start_y: f32,
+    /// Selection rect height (used as the menu's vertical extent
+    /// hint). The width is intentionally 0 because the menu hugs
+    /// the anchor point, not a real selection rect.
+    bounds_height: f32,
+    /// Optional pre-show callback. Fired immediately before
+    /// `show_edit_menu` when the long-press deadline elapses, so
+    /// the focused widget can update its selection state to match
+    /// the iOS UITextField / Android EditText UX of selecting the
+    /// word under the finger on a long press (mirroring the
+    /// double-tap behavior). Captured at arm time with an `Arc` to
+    /// the widget's data state and the cursor position computed
+    /// from the press location, so the callback runs entirely
+    /// against state owned by the widget and doesn't need to walk
+    /// any registries at fire time.
+    on_fire: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+#[allow(clippy::type_complexity)]
+static LONG_PRESS_ARM: Mutex<Option<LongPressArm>> = Mutex::new(None);
+
+/// Long-press deadline relative to the press start time (ms). 500ms
+/// matches iOS UITextField / Android EditText long-press timing.
+const LONG_PRESS_DURATION_MS: u64 = 500;
+
+/// Maximum movement (in logical pixels) allowed before the long-press
+/// is cancelled. Mirrors the existing `widgets::gesture` constant.
+const LONG_PRESS_MAX_DRIFT_PX: f32 = 10.0;
+
+/// Arm the long-press timer at the given position. Called from a
+/// text-editable widget's `on_mouse_down` handler when
+/// `is_touch_input()` returns true.
+///
+/// The runner's frame poll calls [`fire_long_press_timer_if_due`]
+/// each tick to check whether the deadline has elapsed.
+///
+/// `on_fire` is an optional pre-show callback that runs when the
+/// deadline elapses, immediately before the edit menu is shown.
+/// Editable widgets pass a closure here that selects the word
+/// under the press position so a long-press behaves the same as a
+/// double-tap (matches iOS UITextField / Android EditText UX). The
+/// closure should capture an `Arc` to the widget's data state and
+/// any state needed to update the selection (cursor position,
+/// stateful refresh handle).
+///
+/// Calling this overwrites any previously armed timer — only the
+/// most recent press counts, mirroring the iOS UITextField behavior
+/// where re-tapping during a press cancels the previous long-press.
+pub fn arm_long_press_timer(
+    anchor_x: f32,
+    anchor_y: f32,
+    bounds_height: f32,
+    on_fire: Option<Box<dyn Fn() + Send + Sync>>,
+) {
+    if let Ok(mut slot) = LONG_PRESS_ARM.lock() {
+        *slot = Some(LongPressArm {
+            deadline_ms: elapsed_ms() + LONG_PRESS_DURATION_MS,
+            anchor_x,
+            anchor_y,
+            start_x: anchor_x,
+            start_y: anchor_y,
+            bounds_height,
+            on_fire,
+        });
+    }
+}
+
+/// Cancel any armed long-press timer.
+///
+/// Called from a text-editable widget's `on_mouse_up` handler and
+/// from `on_drag` when the finger moves more than
+/// `LONG_PRESS_MAX_DRIFT_PX` from the original position. Idempotent
+/// — clearing an already-empty slot is a no-op.
+pub fn cancel_long_press_timer() {
+    if let Ok(mut slot) = LONG_PRESS_ARM.lock() {
+        *slot = None;
+    }
+}
+
+/// Returns `true` if a long-press timer is currently armed and waiting
+/// to fire. Used by `IOSRenderContext::needs_render` to keep the frame
+/// loop ticking while the user holds a text input — without this, no
+/// events would come in during the hold and the deadline poll would
+/// never run.
+pub fn is_long_press_armed() -> bool {
+    LONG_PRESS_ARM
+        .lock()
+        .map(|slot| slot.is_some())
+        .unwrap_or(false)
+}
+
+/// Check whether an active drag has exceeded the movement budget for
+/// the armed long-press, cancelling it if so. Called from `on_drag`
+/// before the cursor-move logic so a small finger jitter doesn't
+/// kill a still-valid long press.
+pub fn check_long_press_drift(current_x: f32, current_y: f32) {
+    if let Ok(mut slot) = LONG_PRESS_ARM.lock() {
+        if let Some(arm) = slot.as_ref() {
+            let dx = (current_x - arm.start_x).abs();
+            let dy = (current_y - arm.start_y).abs();
+            if dx > LONG_PRESS_MAX_DRIFT_PX || dy > LONG_PRESS_MAX_DRIFT_PX {
+                *slot = None;
+            }
+        }
+    }
+}
+
+/// Poll: if a long-press is armed and the deadline has elapsed, fire
+/// `show_edit_menu` with the PASTE bit set and clear the timer.
+///
+/// Returns `true` if the timer fired (so the runner can request a
+/// redraw), `false` otherwise. Called from the platform runner's
+/// frame loop on every tick — for iOS this lives in
+/// `blinc_build_frame`, for Android it lives in the `android_main`
+/// poll loop.
+pub fn fire_long_press_timer_if_due() -> bool {
+    let arm = if let Ok(mut slot) = LONG_PRESS_ARM.lock() {
+        if let Some(arm) = slot.as_ref() {
+            if elapsed_ms() >= arm.deadline_ms {
+                slot.take()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(arm) = arm {
+        // Long press fired. Run the widget-supplied pre-show
+        // callback first so the focused editable can update its
+        // selection state to match the iOS UITextField /
+        // Android EditText UX of selecting the word under the
+        // finger on a long press (mirroring double-tap). The
+        // callback is registered at arm time and captures an
+        // `Arc` to the widget's data + a stateful refresh handle.
+        if let Some(cb) = arm.on_fire.as_ref() {
+            cb();
+        }
+        // Then show the paste menu. We expose CUT / COPY too so
+        // the user can still cut/copy the just-selected word.
+        // SELECT_ALL is also useful from a long press. The bridge
+        // will dim items the field reports as unavailable.
+        use crate::widgets::text_edit::edit_menu_actions;
+        crate::widgets::text_edit::haptic_impact_light();
+        crate::widgets::text_edit::show_edit_menu(
+            arm.anchor_x,
+            arm.anchor_y,
+            arm.anchor_x,
+            arm.anchor_y,
+            0.0,
+            arm.bounds_height,
+            edit_menu_actions::PASTE
+                | edit_menu_actions::SELECT_ALL
+                | edit_menu_actions::COPY
+                | edit_menu_actions::CUT,
+        );
+        true
+    } else {
+        false
+    }
+}
+
 static NEEDS_REBUILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static NEEDS_RELAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static NEEDS_CSS_REPARSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -64,6 +334,15 @@ static FOCUSED_TEXT_AREA: Mutex<Option<Weak<Mutex<crate::widgets::text_area::Tex
 #[allow(clippy::type_complexity)]
 static CONTINUOUS_REDRAW_CALLBACK: Mutex<Option<Box<dyn Fn(bool) + Send + Sync>>> =
     Mutex::new(None);
+
+/// Tracks whether the soft keyboard should be visible on mobile platforms.
+/// Set to `true` when the first text widget gains focus, `false` when all lose focus.
+/// Polled by the platform runner (android.rs / ios.rs) in the frame loop.
+static KEYBOARD_SHOULD_SHOW: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Set when keyboard visibility state changes and needs platform action.
+static KEYBOARD_STATE_CHANGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Set the callback for continuous redraw requests
 ///
@@ -99,50 +378,139 @@ fn notify_continuous_redraw(enabled: bool) {
     }
 }
 
+/// Internal function to flag that the soft keyboard visibility should change.
+/// The platform runner polls this via `take_keyboard_state_change()`.
+fn notify_keyboard_visibility(show: bool) {
+    KEYBOARD_SHOULD_SHOW.store(show, Ordering::SeqCst);
+    KEYBOARD_STATE_CHANGED.store(true, Ordering::SeqCst);
+}
+
+/// Check if the keyboard visibility state changed and needs platform action.
+/// Returns `Some(true)` = show keyboard, `Some(false)` = hide keyboard, `None` = no change.
+/// The flag is consumed (cleared) on read.
+pub fn take_keyboard_state_change() -> Option<bool> {
+    if KEYBOARD_STATE_CHANGED.swap(false, Ordering::SeqCst) {
+        Some(KEYBOARD_SHOULD_SHOW.load(Ordering::SeqCst))
+    } else {
+        None
+    }
+}
+
 pub fn has_focused_text_input() -> bool {
     GLOBAL_FOCUS_COUNT.load(Ordering::Relaxed) > 0
 }
 
-fn focused_text_input_is_live() -> bool {
-    let focused = match FOCUSED_TEXT_INPUT.lock() {
-        Ok(focused) => focused,
-        Err(_) => return false,
-    };
-    let weak = match focused.as_ref() {
-        Some(weak) => weak,
-        None => return false,
-    };
-    let data = match weak.upgrade() {
-        Some(data) => data,
-        None => return false,
-    };
-    data.lock()
-        .ok()
-        .map(|guard| guard.visual.is_focused())
-        .unwrap_or(false)
+/// Get the current text-input tap generation counter.
+///
+/// Increments on every tap that lands on a text input or text area
+/// `on_mouse_down` handler, regardless of whether the focus state
+/// actually transitioned. Mobile platform runners use this as a more
+/// reliable "user just tapped an input" signal than
+/// [`take_keyboard_state_change`], which only fires on transitions
+/// of the global focus count and misses re-taps of an already-focused
+/// input.
+///
+/// The runner pattern is:
+/// ```ignore
+/// let gen = focus_tap_generation();
+/// if gen != last_seen_gen {
+///     last_seen_gen = gen;
+///     tree.scroll_focused_text_input_above_keyboard(viewport_h, inset);
+/// }
+/// ```
+pub fn focus_tap_generation() -> u64 {
+    FOCUS_TAP_GENERATION.load(Ordering::Relaxed)
 }
 
-fn focused_text_area_is_live() -> bool {
-    let focused = match FOCUSED_TEXT_AREA.lock() {
-        Ok(focused) => focused,
-        Err(_) => return false,
-    };
-    let weak = match focused.as_ref() {
-        Some(weak) => weak,
-        None => return false,
-    };
-    let data = match weak.upgrade() {
-        Some(data) => data,
-        None => return false,
-    };
-    data.lock()
-        .ok()
-        .map(|guard| guard.visual.is_focused())
-        .unwrap_or(false)
+/// Bump the tap generation counter.
+///
+/// Called by text-editable widgets (`text_input`, `text_area`,
+/// `code_editor`, `rich_text_editor`) from their `on_mouse_down`
+/// handlers, after they've confirmed the tap landed on the widget
+/// (passes the disabled / pointer_events check). Mobile runners poll
+/// this via [`focus_tap_generation`] to drive scroll-into-view on
+/// re-taps and cross-input focus swaps.
+pub fn bump_focus_tap_generation() {
+    FOCUS_TAP_GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn has_live_focused_text_widget() -> bool {
-    focused_text_input_is_live() || focused_text_area_is_live()
+/// Register a text-editable widget's `LayoutNodeId` as the currently
+/// focused editable, optionally with a blur callback.
+///
+/// Called by widgets that don't fit the dedicated `text_input` /
+/// `text_area` focus trackers (`code_editor`, `rich_text_editor`).
+/// Pass `node_id` from the widget's `on_mouse_down` handler so the
+/// scroll-into-view helper knows which node to keep above the
+/// soft keyboard.
+///
+/// `blur_callback`, if `Some`, is invoked from
+/// [`blur_all_text_inputs`] when the user taps outside any editable
+/// widget. It should clear the widget's local `focused` flag, call
+/// [`decrement_focus_count`] (so the soft keyboard hides), and
+/// release any cursor-tick callbacks the widget held. Widgets that
+/// have their own `on_event(BLUR)` handling can pass `None` and
+/// rely on that path instead.
+pub fn set_focused_editable_node(
+    node_id: LayoutNodeId,
+    blur_callback: Option<Box<dyn Fn() + Send + Sync>>,
+) {
+    FOCUSED_EDITABLE_NODE_ID.store(node_id.to_raw(), Ordering::Relaxed);
+    if let Ok(mut slot) = FOCUSED_EDITABLE_BLUR_CALLBACK.lock() {
+        *slot = blur_callback;
+    }
+}
+
+/// Clear the focused-editable node id and drop any registered blur
+/// callback. See [`set_focused_editable_node`].
+///
+/// Also dismisses any open native edit menu (Cut / Copy / Paste /
+/// Select All) and cancels any armed long-press timer. The edit
+/// menu is anchored to the focused widget — leaving it visible
+/// after focus moves away would let the user pick Cut / Copy / etc.
+/// against the wrong (now-unfocused) input. Cancelling the
+/// long-press is the same logic: a timer that fires while no
+/// editable is focused would pop a menu against a stale anchor.
+pub fn clear_focused_editable_node() {
+    FOCUSED_EDITABLE_NODE_ID.store(0, Ordering::Relaxed);
+    if let Ok(mut slot) = FOCUSED_EDITABLE_BLUR_CALLBACK.lock() {
+        *slot = None;
+    }
+    crate::widgets::text_edit::hide_edit_menu();
+    cancel_long_press_timer();
+}
+
+/// Get the LayoutNodeId of the currently focused generic editable widget,
+/// if any. Used by the mobile-runner scroll-into-view helper as a fallback
+/// when the typed `focused_text_input_node_id` / `focused_text_area_node_id`
+/// lookups return `None` (e.g. for `code_editor` and `rich_text_editor`).
+pub fn focused_editable_node_id() -> Option<LayoutNodeId> {
+    let raw = FOCUSED_EDITABLE_NODE_ID.load(Ordering::Relaxed);
+    if raw == 0 {
+        None
+    } else {
+        Some(LayoutNodeId::from_raw(raw))
+    }
+}
+
+/// Set whether the most recent pointer input came from a touchscreen.
+///
+/// Called by platform runners on every input event so editable widgets
+/// can branch on input source: mouse drags extend selections, touch
+/// drags move the cursor with haptic feedback. Pass `true` from
+/// `TouchPhase::Began` / `MotionAction::Down` (mobile), and `false`
+/// from desktop / web `mouse_down` paths.
+///
+/// The flag is sticky between events — calling once per input event
+/// is enough; the widget consults it during the same frame's event
+/// dispatch.
+pub fn set_touch_input(is_touch: bool) {
+    INPUT_SOURCE_IS_TOUCH.store(is_touch, Ordering::Relaxed);
+}
+
+/// Returns true if the most recent pointer event came from a
+/// touchscreen. See [`set_touch_input`] for the contract.
+pub fn is_touch_input() -> bool {
+    INPUT_SOURCE_IS_TOUCH.load(Ordering::Relaxed)
 }
 
 pub fn take_needs_continuous_redraw() -> bool {
@@ -197,22 +565,26 @@ pub fn request_css_reparse() {
     NEEDS_CSS_REPARSE.store(true, Ordering::SeqCst);
 }
 
-pub(crate) fn increment_focus_count() {
+pub fn increment_focus_count() {
     let prev = GLOBAL_FOCUS_COUNT.fetch_add(1, Ordering::Relaxed);
     // If this is the first focused text widget, enable continuous redraw for cursor animation
+    // and show the soft keyboard on mobile platforms
     if prev == 0 {
         notify_continuous_redraw(true);
+        notify_keyboard_visibility(true);
     }
 }
 
-pub(crate) fn decrement_focus_count() {
+pub fn decrement_focus_count() {
     let prev = GLOBAL_FOCUS_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
         Some(v.saturating_sub(1))
     });
     // If no more focused text widgets, disable continuous redraw
+    // and hide the soft keyboard on mobile platforms
     if let Ok(prev_val) = prev {
         if prev_val == 1 {
             notify_continuous_redraw(false);
+            notify_keyboard_visibility(false);
         }
     }
 }
@@ -321,6 +693,27 @@ fn blur_focused_text_area() {
 pub fn blur_all_text_inputs() {
     use crate::stateful::refresh_stateful;
     use blinc_core::events::event_types;
+
+    // Run any registered generic-editable blur callback first so
+    // widgets that don't fit the typed `text_input` / `text_area`
+    // trackers (`code_editor`, `rich_text_editor`) get their local
+    // `focused = false` and matching `decrement_focus_count` call
+    // when the user taps outside. The callback is taken out of the
+    // slot before invocation so a re-entrant blur can't run it
+    // twice. After running, `clear_focused_editable_node` zeroes the
+    // node id so the scroll-into-view helper doesn't reach for a
+    // stale entry on the next frame.
+    let editable_blur = {
+        if let Ok(mut slot) = FOCUSED_EDITABLE_BLUR_CALLBACK.lock() {
+            slot.take()
+        } else {
+            None
+        }
+    };
+    if let Some(cb) = editable_blur {
+        cb();
+    }
+    clear_focused_editable_node();
 
     // Blur focused TextInput
     {
@@ -598,7 +991,37 @@ pub struct TextInputData {
     pub(crate) css_element_id: Option<String>,
     /// CSS class names for stylesheet matching (set via TextInput::class())
     pub(crate) css_classes: Vec<String>,
+    /// Last click timestamp for double-click detection
+    pub(crate) last_click_time: Option<web_time::Instant>,
+    /// Anchor position for drag-to-select
+    pub(crate) drag_select_anchor: Option<usize>,
+    /// Undo history. Each entry snapshots `(value, cursor, selection_start)`
+    /// captured immediately BEFORE a text-mutating operation runs (insert,
+    /// delete_*). Cmd+Z pops from this stack onto the redo stack and
+    /// restores the popped entry. Capped at [`UNDO_HISTORY_MAX`] entries
+    /// — older entries are dropped from the front when the cap is hit.
+    pub(crate) undo_stack: Vec<UndoEntry>,
+    /// Redo history. Populated by [`Self::undo`] (and cleared by any new
+    /// edit since a fresh edit starts a new branch in the history). Cmd+Shift+Z
+    /// (or Cmd+Y) pops from this stack onto the undo stack.
+    pub(crate) redo_stack: Vec<UndoEntry>,
 }
+
+/// One snapshot in the undo / redo history. Stores the full pre-edit
+/// state of the text input. We snapshot the entire `value` rather than
+/// a diff because the typical input field is short enough that the
+/// memory cost is negligible (a 100-entry stack of 80-char strings is
+/// ~8 KB).
+#[derive(Clone, Debug)]
+pub struct UndoEntry {
+    pub value: String,
+    pub cursor: usize,
+    pub selection_start: Option<usize>,
+}
+
+/// Maximum number of entries kept in the undo / redo stacks. Once
+/// exceeded, the oldest entry is dropped from the front to make room.
+const UNDO_HISTORY_MAX: usize = 100;
 
 impl std::fmt::Debug for TextInputData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -650,7 +1073,71 @@ impl TextInputData {
             on_change_callback: None,
             css_element_id: None,
             css_classes: Vec::new(),
+            last_click_time: None,
+            drag_select_anchor: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
+    }
+
+    /// Snapshot the current `(value, cursor, selection_start)` triple
+    /// onto the undo stack and clear the redo stack. Called from inside
+    /// the text-mutating helpers BEFORE they apply their change so the
+    /// snapshot represents the pre-edit state.
+    ///
+    /// New edits invalidate the redo branch — once you type something
+    /// after an undo, the path you undid is no longer reachable.
+    pub(crate) fn push_undo(&mut self) {
+        self.undo_stack.push(UndoEntry {
+            value: self.value.clone(),
+            cursor: self.cursor,
+            selection_start: self.selection_start,
+        });
+        if self.undo_stack.len() > UNDO_HISTORY_MAX {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    /// Pop the most recent undo entry, push the current state onto the
+    /// redo stack, and restore the popped state. Returns `true` if any
+    /// state was actually restored (i.e. the undo stack was non-empty).
+    pub fn undo(&mut self) -> bool {
+        let Some(entry) = self.undo_stack.pop() else {
+            return false;
+        };
+        self.redo_stack.push(UndoEntry {
+            value: self.value.clone(),
+            cursor: self.cursor,
+            selection_start: self.selection_start,
+        });
+        if self.redo_stack.len() > UNDO_HISTORY_MAX {
+            self.redo_stack.remove(0);
+        }
+        self.value = entry.value;
+        self.cursor = entry.cursor;
+        self.selection_start = entry.selection_start;
+        true
+    }
+
+    /// Symmetric inverse of [`Self::undo`]. Returns `true` when the
+    /// redo stack had something to apply.
+    pub fn redo(&mut self) -> bool {
+        let Some(entry) = self.redo_stack.pop() else {
+            return false;
+        };
+        self.undo_stack.push(UndoEntry {
+            value: self.value.clone(),
+            cursor: self.cursor,
+            selection_start: self.selection_start,
+        });
+        if self.undo_stack.len() > UNDO_HISTORY_MAX {
+            self.undo_stack.remove(0);
+        }
+        self.value = entry.value;
+        self.cursor = entry.cursor;
+        self.selection_start = entry.selection_start;
+        true
     }
 
     pub fn with_placeholder(placeholder: impl Into<String>) -> Self {
@@ -701,6 +1188,14 @@ impl TextInputData {
 
     /// Insert text at cursor, respecting input type constraints
     pub fn insert(&mut self, text: &str) {
+        // Snapshot for undo BEFORE the mutation. We snapshot
+        // unconditionally even if the eventual `filtered` text turns
+        // out empty (e.g. typing a non-digit into an InputType::Number)
+        // because the cost is one no-op undo entry, and the
+        // alternative — snapshotting after filtering — would mean the
+        // undo history conflates "I typed nothing" with "I typed
+        // something that got dropped", which is the wrong UX.
+        self.push_undo();
         // Delete selection first if any
         if let Some(start) = self.selection_start {
             let (from, to) = if start < self.cursor {
@@ -755,6 +1250,11 @@ impl TextInputData {
     }
 
     pub fn delete_backward(&mut self) {
+        // Snapshot for undo BEFORE the mutation. We always snapshot
+        // even when there's nothing to delete (cursor at 0, no
+        // selection) — the resulting no-op undo entry is harmless
+        // and keeps the call sites simple.
+        self.push_undo();
         if let Some(start) = self.selection_start {
             let (from, to) = if start < self.cursor {
                 (start, self.cursor)
@@ -778,6 +1278,7 @@ impl TextInputData {
     }
 
     pub fn delete_forward(&mut self) {
+        self.push_undo();
         if let Some(start) = self.selection_start {
             let (from, to) = if start < self.cursor {
                 (start, self.cursor)
@@ -861,6 +1362,113 @@ impl TextInputData {
             };
             self.value.chars().skip(from).take(to - from).collect()
         })
+    }
+
+    /// Move cursor to the previous word boundary
+    pub fn move_word_left(&mut self, shift: bool) {
+        if shift && self.selection_start.is_none() {
+            self.selection_start = Some(self.cursor);
+        } else if !shift {
+            self.selection_start = None;
+        }
+        self.cursor = crate::widgets::text_edit::word_boundary_left(&self.value, self.cursor);
+    }
+
+    /// Move cursor to the next word boundary
+    pub fn move_word_right(&mut self, shift: bool) {
+        if shift && self.selection_start.is_none() {
+            self.selection_start = Some(self.cursor);
+        } else if !shift {
+            self.selection_start = None;
+        }
+        self.cursor = crate::widgets::text_edit::word_boundary_right(&self.value, self.cursor);
+    }
+
+    /// Delete from cursor to the previous word boundary
+    pub fn delete_word_backward(&mut self) {
+        // Push BEFORE the early-return delete_selection branch so we
+        // don't end up with the selection-delete branch double-pushing
+        // (delete_selection also pushes its own undo). Take the
+        // selection-delete fast path WITHOUT pushing here, then bail.
+        if self.selection_start.is_some() {
+            self.delete_selection();
+            return;
+        }
+        self.push_undo();
+        let target = crate::widgets::text_edit::word_boundary_left(&self.value, self.cursor);
+        if target < self.cursor {
+            let byte_start = self
+                .value
+                .char_indices()
+                .nth(target)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let byte_end = self
+                .value
+                .char_indices()
+                .nth(self.cursor)
+                .map(|(i, _)| i)
+                .unwrap_or(self.value.len());
+            self.value = format!("{}{}", &self.value[..byte_start], &self.value[byte_end..]);
+            self.cursor = target;
+        }
+    }
+
+    /// Delete from cursor to the next word boundary
+    pub fn delete_word_forward(&mut self) {
+        if self.selection_start.is_some() {
+            self.delete_selection();
+            return;
+        }
+        self.push_undo();
+        let target = crate::widgets::text_edit::word_boundary_right(&self.value, self.cursor);
+        if target > self.cursor {
+            let byte_start = self
+                .value
+                .char_indices()
+                .nth(self.cursor)
+                .map(|(i, _)| i)
+                .unwrap_or(self.value.len());
+            let byte_end = self
+                .value
+                .char_indices()
+                .nth(target)
+                .map(|(i, _)| i)
+                .unwrap_or(self.value.len());
+            self.value = format!("{}{}", &self.value[..byte_start], &self.value[byte_end..]);
+        }
+    }
+
+    /// Delete the current selection, returning true if text changed
+    pub fn delete_selection(&mut self) -> bool {
+        if self.selection_start.is_none() {
+            return false;
+        }
+        // Snapshot before mutating, but only if there's actually a
+        // selection to delete. Calling `push_undo` for a no-op delete
+        // would otherwise pollute the history with empty entries.
+        self.push_undo();
+        let start = self.selection_start.take().expect("checked above");
+        let (from, to) = if start < self.cursor {
+            (start, self.cursor)
+        } else {
+            (self.cursor, start)
+        };
+        let byte_from = self
+            .value
+            .char_indices()
+            .nth(from)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let byte_to = self
+            .value
+            .char_indices()
+            .nth(to)
+            .map(|(i, _)| i)
+            .unwrap_or(self.value.len());
+        self.value = format!("{}{}", &self.value[..byte_from], &self.value[byte_to..]);
+        self.cursor = from;
+        true
     }
 
     pub fn validate(&mut self) {
@@ -1502,6 +2110,9 @@ impl TextInput {
         use blinc_core::events::event_types;
 
         let data_for_click = Arc::clone(&data);
+        let data_for_drag = Arc::clone(&data);
+        let config_for_drag = Arc::clone(&config);
+        let stateful_for_drag = Arc::clone(&stateful_state);
         let data_for_text = Arc::clone(&data);
         let data_for_key = Arc::clone(&data);
         let config_for_click = Arc::clone(&config);
@@ -1523,8 +2134,51 @@ impl TextInput {
                         return;
                     }
 
-                    // Get font size for cursor positioning
-                    let font_size = config_for_click.lock().unwrap().font_size;
+                    // Bump the focus-tap generation counter so the
+                    // mobile runner picks this up as a "user tapped a
+                    // text input" event, even if the input was already
+                    // focused. This drives scroll-into-view on re-taps
+                    // — see `focus_tap_generation` for the rationale
+                    // and `blinc_app::android::android_main` /
+                    // `blinc_app::ios::blinc_build_frame` for the
+                    // consumers.
+                    bump_focus_tap_generation();
+
+                    // Register this node id as the generic
+                    // focused-editable. The scroll-into-view helper
+                    // consults this when the typed
+                    // `focused_text_input_node_id` lookup is empty
+                    // (e.g. for code_editor / rich_text_editor); we
+                    // populate it here too so a single lookup site
+                    // covers every editable widget.
+                    //
+                    // No blur callback because text_input has its own
+                    // dedicated `FOCUSED_TEXT_INPUT` tracker that
+                    // `blur_all_text_inputs` walks via the typed path
+                    // — passing a callback here would cause double
+                    // blur.
+                    set_focused_editable_node(ctx.node_id, None);
+
+                    // Get font size + the horizontal offset of the
+                    // text content area inside the widget bounds.
+                    // The widget renders a `padding_x`-wide spacer
+                    // before the clip container that holds the text
+                    // (see [`build_text_input_inner`]), and the
+                    // border on the parent stateful adds another
+                    // `border_width` on the left edge — so the very
+                    // first glyph sits at
+                    // `local_x = padding_x + border_width`, NOT at
+                    // `local_x = 0`. Without subtracting this offset
+                    // before calling `cursor_position_from_x`, every
+                    // click is shifted right by ~13.5px and the very
+                    // first character is unreachable: clicking on the
+                    // "H" of "Hello World" lands a cursor position
+                    // PAST the H, so a drag-select that starts there
+                    // misses the first character.
+                    let (font_size, text_origin_x) = {
+                        let cfg = config_for_click.lock().unwrap();
+                        (cfg.font_size, cfg.padding_x + cfg.border_width)
+                    };
 
                     // Update FSM state
                     {
@@ -1557,23 +2211,207 @@ impl TextInput {
                         d.computed_width = Some(ctx.bounds_width);
                     }
 
-                    // Calculate cursor position from click x position
-                    // local_x is relative to the hit element (text inside the wrapper).
-                    // Since the text element is positioned after padding/border via layout,
-                    // local_x is already in text-relative coordinates - use it directly.
-                    // cursor_position_from_x handles scroll offset internally.
-                    let text_x = ctx.local_x.max(0.0);
+                    // Calculate cursor position from click x position.
+                    // Translate widget-local x into text-content x by
+                    // subtracting the left padding + border, then clamp
+                    // to >= 0 so clicks in the padding gutter snap to
+                    // the start of the text instead of going negative.
+                    let text_x = (ctx.local_x - text_origin_x).max(0.0);
                     let cursor_pos = d.cursor_position_from_x(text_x, font_size);
-                    d.cursor = cursor_pos;
-                    d.selection_start = None;
+
+                    // Double-click detection (select word)
+                    let now = web_time::Instant::now();
+                    let is_double_click = d
+                        .last_click_time
+                        .map(|t| now.duration_since(t).as_millis() < 400)
+                        .unwrap_or(false);
+                    d.last_click_time = Some(now);
+
+                    let touch = is_touch_input();
+
+                    if is_double_click {
+                        // Select word at cursor — same on touch and
+                        // mouse. On touch we additionally fire an
+                        // impact haptic and ask the platform to show
+                        // the native edit menu (Cut / Copy / Paste /
+                        // Select All) anchored at the tap position.
+                        let (start, end) =
+                            crate::widgets::text_edit::word_at_position(&d.value, cursor_pos);
+                        d.selection_start = Some(start);
+                        d.cursor = end;
+                        if touch {
+                            crate::widgets::text_edit::haptic_impact_light();
+                            // Show edit menu — actions reflect the
+                            // current state. There IS a selection
+                            // (the just-selected word) so Cut / Copy
+                            // are available; SELECT_ALL is always
+                            // valid; PASTE depends on clipboard
+                            // contents but we let the native side
+                            // figure that out (it'll dim the menu
+                            // item if the system clipboard is empty).
+                            use crate::widgets::text_edit::edit_menu_actions;
+                            crate::widgets::text_edit::show_edit_menu(
+                                ctx.bounds_x + text_x,
+                                ctx.bounds_y,
+                                ctx.bounds_x + text_x,
+                                ctx.bounds_y,
+                                0.0,
+                                ctx.bounds_height,
+                                edit_menu_actions::CUT
+                                    | edit_menu_actions::COPY
+                                    | edit_menu_actions::PASTE
+                                    | edit_menu_actions::SELECT_ALL,
+                            );
+                        }
+                    } else {
+                        // Single click: position cursor. On touch, we
+                        // do NOT start a drag-select anchor — touch
+                        // drag is repurposed for cursor movement (see
+                        // the on_drag handler below). On mouse,
+                        // single-click + drag extends selection just
+                        // like the desktop UX expects.
+                        d.cursor = cursor_pos;
+                        d.selection_start = None;
+                        if touch {
+                            d.drag_select_anchor = None;
+                            // Subtle haptic on single-tap focus, mirroring
+                            // iOS UITextField's selection feedback.
+                            crate::widgets::text_edit::haptic_selection();
+                            // Hide any leftover edit menu from a
+                            // previous double-tap so the user gets a
+                            // clean re-engagement.
+                            crate::widgets::text_edit::hide_edit_menu();
+                            // Arm the long-press timer. The platform
+                            // runner's frame loop polls
+                            // `fire_long_press_timer_if_due` each
+                            // tick, and after 500 ms (cancelled by
+                            // any drift past 10 px or by mouse_up)
+                            // it shows the edit menu with PASTE
+                            // available — matching the iOS
+                            // UITextField / Android EditText
+                            // long-press-to-paste UX.
+                            // Capture clones of the data + stateful
+                            // refresh handle for the long-press
+                            // callback. The closure runs at
+                            // deadline-fire time and selects the
+                            // word at the captured cursor position,
+                            // matching the double-tap UX.
+                            let data_for_long_press = std::sync::Arc::clone(&data_for_click);
+                            let stateful_for_long_press =
+                                std::sync::Arc::clone(&stateful_for_click);
+                            let captured_cursor = cursor_pos;
+                            arm_long_press_timer(
+                                ctx.bounds_x + text_x,
+                                ctx.bounds_y,
+                                ctx.bounds_height,
+                                Some(Box::new(move || {
+                                    let did_update = {
+                                        let mut d = match data_for_long_press.lock() {
+                                            Ok(d) => d,
+                                            Err(_) => return,
+                                        };
+                                        if !d.visual.is_focused() {
+                                            return;
+                                        }
+                                        let (start, end) =
+                                            crate::widgets::text_edit::word_at_position(
+                                                &d.value,
+                                                captured_cursor,
+                                            );
+                                        if start == end {
+                                            return;
+                                        }
+                                        d.selection_start = Some(start);
+                                        d.cursor = end;
+                                        true
+                                    };
+                                    if did_update {
+                                        refresh_stateful(&stateful_for_long_press);
+                                    }
+                                })),
+                            );
+                        } else {
+                            d.drag_select_anchor = Some(cursor_pos);
+                        }
+                    }
                     d.reset_cursor_blink();
 
-                    true // needs refresh
-                }; // Lock released here
+                    true
+                };
 
-                // Trigger incremental refresh AFTER releasing the data lock
                 if needs_refresh {
                     refresh_stateful(&stateful_for_click);
+                }
+            })
+            // Mouse drag to extend selection
+            .on_drag({
+                move |ctx| {
+                    let needs_refresh = {
+                        let mut d = match data_for_drag.lock() {
+                            Ok(d) => d,
+                            Err(_) => return,
+                        };
+                        if !d.visual.is_focused() {
+                            return;
+                        }
+
+                        // Mirror the offset translation in
+                        // on_mouse_down: convert widget-local x into
+                        // text-content x by subtracting the left
+                        // padding + border before mapping to a
+                        // character index. Without this, the drag
+                        // would cover one character less than the
+                        // mouse-down anchor on the very first
+                        // character.
+                        let (font_size, text_origin_x) = {
+                            let cfg = config_for_drag.lock().unwrap();
+                            (cfg.font_size, cfg.padding_x + cfg.border_width)
+                        };
+                        let text_x = (ctx.local_x - text_origin_x).max(0.0);
+                        let new_pos = d.cursor_position_from_x(text_x, font_size);
+
+                        // Touch input branches its drag semantics:
+                        //
+                        //   * Mouse drag (desktop / web) — extends
+                        //     selection from the anchor recorded by
+                        //     `on_mouse_down`. Same behavior as
+                        //     `text_input` has always had.
+                        //
+                        //   * Touch drag (mobile) — moves the caret
+                        //     to wherever the finger is, without
+                        //     starting a selection. Each character
+                        //     boundary crossed gets a subtle
+                        //     selection-changed haptic, mirroring the
+                        //     UITextField / Android EditText cursor-
+                        //     drag UX. Selection is reserved for
+                        //     double-tap and the native edit menu.
+                        //
+                        // The branch is gated on
+                        // `text_input::is_touch_input()`, which the
+                        // platform runners flip on every touch /
+                        // mouse event.
+                        if is_touch_input() {
+                            // Cancel any armed long-press as soon as
+                            // the finger drifts past the threshold —
+                            // a real drag should not also fire the
+                            // paste menu mid-gesture.
+                            check_long_press_drift(ctx.mouse_x, ctx.mouse_y);
+                            if new_pos != d.cursor {
+                                d.cursor = new_pos;
+                                d.selection_start = None;
+                                crate::widgets::text_edit::haptic_selection();
+                            }
+                        } else if let Some(anchor) = d.drag_select_anchor {
+                            if new_pos != anchor {
+                                d.selection_start = Some(anchor);
+                                d.cursor = new_pos;
+                            }
+                        }
+                        true
+                    };
+                    if needs_refresh {
+                        refresh_stateful(&stateful_for_drag);
+                    }
                 }
             })
             // Handle text input
@@ -1627,25 +2465,108 @@ impl TextInput {
 
                     let mut changed = true;
                     let mut should_blur = false;
-                    let mut value_changed = false; // Track if text content actually changed
+                    let mut value_changed = false;
+                    let mod_key = ctx.meta || ctx.ctrl;
+
                     match ctx.key_code {
+                        8 if mod_key => {
+                            // Cmd+Backspace: delete word backward
+                            d.delete_word_backward();
+                            value_changed = true;
+                        }
                         8 => {
-                            d.delete_backward(); // Backspace
+                            // Backspace
+                            if d.selection_start.is_some() {
+                                d.delete_selection();
+                            } else {
+                                d.delete_backward();
+                            }
+                            value_changed = true;
+                        }
+                        127 if mod_key => {
+                            // Cmd+Delete: delete word forward
+                            d.delete_word_forward();
                             value_changed = true;
                         }
                         127 => {
-                            d.delete_forward(); // Delete
+                            // Delete
+                            if d.selection_start.is_some() {
+                                d.delete_selection();
+                            } else {
+                                d.delete_forward();
+                            }
                             value_changed = true;
                         }
-                        37 => d.move_left(ctx.shift),     // Left arrow
-                        39 => d.move_right(ctx.shift),    // Right arrow
-                        36 => d.move_to_start(ctx.shift), // Home
-                        35 => d.move_to_end(ctx.shift),   // End
-                        65 if ctx.meta || ctx.ctrl => d.select_all(), // Ctrl/Cmd+A
+                        37 if mod_key => d.move_word_left(ctx.shift), // Cmd+Left
+                        39 if mod_key => d.move_word_right(ctx.shift), // Cmd+Right
+                        37 => d.move_left(ctx.shift),                 // Left
+                        39 => d.move_right(ctx.shift),                // Right
+                        36 => d.move_to_start(ctx.shift),             // Home
+                        35 => d.move_to_end(ctx.shift),               // End
                         27 => {
-                            // Escape - blur the input
                             should_blur = true;
-                            changed = true;
+                        }
+                        _ if mod_key => {
+                            match ctx.key_code {
+                                // Cmd+A: select all
+                                65 => d.select_all(),
+                                // Cmd+C: copy
+                                67 => {
+                                    if let Some(text) = d.selected_text() {
+                                        crate::widgets::text_edit::clipboard_write(&text);
+                                    }
+                                    changed = true;
+                                }
+                                // Cmd+X: cut
+                                88 => {
+                                    if let Some(text) = d.selected_text() {
+                                        crate::widgets::text_edit::clipboard_write(&text);
+                                        d.delete_selection();
+                                        value_changed = true;
+                                    }
+                                }
+                                // Cmd+V: paste
+                                86 => {
+                                    if let Some(clip) = crate::widgets::text_edit::clipboard_read()
+                                    {
+                                        // Remove newlines for single-line input
+                                        let clean: String = clip
+                                            .chars()
+                                            .filter(|c| *c != '\n' && *c != '\r')
+                                            .collect();
+                                        if !clean.is_empty() {
+                                            if d.selection_start.is_some() {
+                                                d.delete_selection();
+                                            }
+                                            d.insert(&clean);
+                                            value_changed = true;
+                                        }
+                                    }
+                                }
+                                // Cmd+Z: undo. Cmd+Shift+Z and Cmd+Y
+                                // are both treated as redo (the two
+                                // are mutually exclusive convention-
+                                // wise on macOS vs Windows, so we
+                                // accept both — single-source-of-
+                                // truth: the user pressed something
+                                // that means "redo").
+                                90 if ctx.shift => {
+                                    if d.redo() {
+                                        value_changed = true;
+                                    }
+                                }
+                                90 => {
+                                    if d.undo() {
+                                        value_changed = true;
+                                    }
+                                }
+                                89 => {
+                                    if d.redo() {
+                                        value_changed = true;
+                                    }
+                                }
+                                _ => changed = false,
+                            }
                         }
                         _ => changed = false,
                     }

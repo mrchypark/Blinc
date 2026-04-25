@@ -464,5 +464,8 @@ mod tests {
         let _ = div()
             .w(100.0)
             .animate(|a| a.opacity(0.5, 1.0).scale(0.8, 1.0));
+
+        // The initial values should be applied
+        // (We can't easily test this without accessing private fields)
     }
 }

@@ -14,14 +14,11 @@ crate-type = ["lib"]
 [features]
 default = []
 # Enable recorder integration for debugging/testing. Disable for production builds.
-recorder = ["dep:blinc_recorder"]
-
+recorder = []
 [dependencies]
-blinc_core = { path = "../blinc_core", version = "0.1.14" }
-blinc_animation = { path = "../blinc_animation", version = "0.1.14" }
-blinc_theme = { path = "../blinc_theme", version = "0.1.14" }
-blinc_platform = { path = "../blinc_platform", version = "0.1.14" }
-blinc_recorder = { path = "../blinc_recorder", version = "0.1.14", optional = true }
+blinc_core = { path = "../blinc_core", version = "0.5.1" }
+blinc_animation = { path = "../blinc_animation", version = "0.5.1" }
+blinc_theme = { path = "../blinc_theme", version = "0.5.1" }
 
 # Layout
 taffy.workspace = true
@@ -36,6 +33,9 @@ tracing.workspace = true
 # Regex for syntax highlighting
 regex.workspace = true
 
+# Media widgets (audio/video player)
+blinc_media = { path = "../blinc_media", version = "0.5.1" }
+
 # Markdown parsing
 pulldown-cmark = "0.10"
 
@@ -45,6 +45,38 @@ html-escape = "0.2"
 # CSS parser combinators
 nom = "7"
 
+# `web_time::Instant` — drop-in replacement for `std::time::Instant`
+# that works on `wasm32-unknown-unknown` via `performance.now()`. On
+# native targets it's a `pub use std::time::Instant` re-export with
+# zero overhead. Required because `std::time::Instant::now()` panics
+# at runtime on wasm32 with "time not implemented on this platform".
+web-time = "1.1"
+
 # URL opening (for links) - desktop only
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
 open = "5"
+
+# Clipboard (cross-platform text + image) — desktop + iOS only.
+# `arboard` does not compile on `wasm32-unknown-unknown` (no platform
+# backend) or on Android (no X11/Wayland/UIKit clipboard layer either).
+# The wasm runner provides its own impl in `widgets/text_edit.rs`
+# under `cfg(target_arch = "wasm32")` that goes through
+# `navigator.clipboard.writeText()` (see `web-sys` features below);
+# the Android runner stubs the clipboard via the system clipboard
+# service in `BlincNativeBridge.kt` and the matching Rust handler
+# that the native bridge dispatches into.
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+arboard = "3"
+
+# Web clipboard plumbing for the wasm32 target. The text widgets
+# need to call `navigator.clipboard.writeText(...)` directly from
+# inside their Cmd+C / Cmd+X handlers, which requires
+# `web_sys::Window` + `Navigator::clipboard()` + `Clipboard::write_text()`.
+# `clipboard_read` on wasm intentionally does NOT use this — paste
+# is wired through a document-level `paste` event listener in the
+# web runner that broadcasts the pasted text into the focused
+# widget, bypassing the sync `clipboard_read` API entirely (the
+# browser clipboard read API is async-only and can't satisfy a
+# sync `Option<String>` return).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Navigator", "Clipboard"] }

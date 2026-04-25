@@ -962,6 +962,41 @@ impl TextAreaState {
         }
     }
 
+    /// Delete from cursor to the previous word boundary
+    pub fn delete_word_backward(&mut self) {
+        if self.selection_start.is_some() {
+            self.delete_selection();
+            return;
+        }
+        let saved = self.cursor;
+        self.move_word_left(false);
+        if self.cursor != saved {
+            self.selection_start = Some(saved);
+            self.delete_selection();
+        }
+    }
+
+    /// Delete from cursor to the next word boundary
+    pub fn delete_word_forward(&mut self) {
+        if self.selection_start.is_some() {
+            self.delete_selection();
+            return;
+        }
+        let saved = self.cursor;
+        self.move_word_right(false);
+        if self.cursor != saved {
+            self.selection_start = Some(saved);
+            self.cursor = saved;
+            // Swap: we want to delete forward, so select from cursor to word end
+            self.selection_start = Some(self.cursor);
+            self.move_word_right(false);
+            let end = self.cursor;
+            self.cursor = saved;
+            self.selection_start = Some(end);
+            self.delete_selection();
+        }
+    }
+
     /// Select all text
     pub fn select_all(&mut self) {
         self.selection_start = Some(TextPosition::new(0, 0));
@@ -1677,6 +1712,23 @@ impl TextArea {
                         return;
                     }
 
+                    // Bump the focus-tap generation counter so the
+                    // mobile runner sees this as a "user tapped a text
+                    // area" event even if it was already focused. See
+                    // `text_input::focus_tap_generation` docs.
+                    crate::widgets::text_input::bump_focus_tap_generation();
+
+                    // Register the layout node id with the generic
+                    // focused-editable atomic so the scroll-into-view
+                    // helper has a single lookup that covers every
+                    // text-editable widget regardless of which typed
+                    // tracker (text_input vs text_area) holds the data.
+                    //
+                    // No blur callback — text_area has its own
+                    // dedicated `FOCUSED_TEXT_AREA` tracker that the
+                    // typed blur path walks.
+                    crate::widgets::text_input::set_focused_editable_node(ctx.node_id, None);
+
                     // Set focus via FSM transition
                     {
                         let mut shared = shared_for_click.lock().unwrap();
@@ -1731,6 +1783,38 @@ impl TextArea {
                     d.cursor = new_pos;
                     d.selection_start = None; // Clear any selection
                     d.reset_cursor_blink();
+
+                    // Mobile UX touches: light haptic on every tap +
+                    // hide any leftover edit menu from a previous
+                    // double-tap. The edit menu itself fires from a
+                    // double-tap detector below. The double-tap
+                    // tracking lives on the data lock so we don't
+                    // need extra fields here.
+                    //
+                    // Also arm the long-press timer so a press-and-
+                    // hold of 500 ms shows the edit menu with
+                    // PASTE available — matches the iOS
+                    // UITextField / Android EditText long-press UX.
+                    if crate::widgets::text_input::is_touch_input() {
+                        crate::widgets::text_edit::haptic_selection();
+                        crate::widgets::text_edit::hide_edit_menu();
+                        // No word-selection callback here: text_area
+                        // doesn't yet implement double-tap word
+                        // selection either, so passing `None` keeps
+                        // both gestures consistent within the widget
+                        // (long press just shows the menu without
+                        // selecting anything). When text_area gains
+                        // double-tap word selection, mirror the
+                        // text_input/code pattern and pass a closure
+                        // that calls `text_edit::word_at_position`
+                        // against the cursor's line.
+                        crate::widgets::text_input::arm_long_press_timer(
+                            ctx.bounds_x + click_x,
+                            ctx.bounds_y + click_y,
+                            ctx.bounds_height.clamp(24.0, 48.0),
+                            None,
+                        );
+                    }
 
                     true // needs refresh
                 }; // Lock released here
@@ -1804,9 +1888,19 @@ impl TextArea {
                     let mod_key = ctx.meta || ctx.ctrl;
 
                     match ctx.key_code {
+                        8 if mod_key => {
+                            // Cmd+Backspace: delete word backward
+                            d.delete_word_backward();
+                            text_changed = true;
+                        }
                         8 => {
                             // Backspace
                             d.delete_backward();
+                            text_changed = true;
+                        }
+                        127 if mod_key => {
+                            // Cmd+Delete: delete word forward
+                            d.delete_word_forward();
                             text_changed = true;
                         }
                         127 => {

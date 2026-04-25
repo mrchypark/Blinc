@@ -36,16 +36,20 @@ pub mod button;
 pub mod checkbox;
 pub mod code;
 pub mod cursor;
+pub mod gesture;
 pub mod hr;
 pub mod link;
 pub mod list;
+pub mod media;
 pub mod overlay;
 pub mod radio;
+pub mod rich_text_editor;
 pub mod scroll;
 pub mod table;
 pub mod text_area;
 pub mod text_edit;
 pub mod text_input;
+pub mod virtual_list;
 
 // Re-export button widget
 pub use button::{button, button_with, Button, ButtonConfig, ButtonVisualState};

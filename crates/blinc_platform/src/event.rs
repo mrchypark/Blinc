@@ -33,23 +33,23 @@ pub enum ControlFlow {
     Exit,
 }
 
+use crate::window::WindowId;
+
 /// Platform events
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// Window-related event
-    Window(WindowEvent),
-    /// Input event (mouse, keyboard, touch)
-    Input(InputEvent),
-    /// Application lifecycle event
+    /// Window-related event (tagged with the target window)
+    Window(WindowId, WindowEvent),
+    /// Input event (tagged with the target window)
+    Input(WindowId, InputEvent),
+    /// Application lifecycle event (global, not per-window)
     Lifecycle(LifecycleEvent),
-    /// Accessibility action invoked by a platform bridge.
-    AccessibilityAction(AccessibilityActionRequest),
-    /// Frame tick - time to render
+    /// Frame tick for a specific window
     ///
     /// This event is sent when the application should render a frame.
     /// On desktop, this typically happens after vsync or at 60fps.
     /// On mobile, this happens when the app is focused and ready.
-    Frame,
+    Frame(WindowId),
 }
 
 /// Window events
@@ -78,6 +78,18 @@ pub enum WindowEvent {
         /// New scale factor
         scale_factor: f64,
     },
+    /// Files are being dragged over the window
+    DroppedFileHovered {
+        /// File paths being dragged
+        paths: Vec<std::path::PathBuf>,
+    },
+    /// Files were dropped onto the window
+    DroppedFile {
+        /// Dropped file paths
+        paths: Vec<std::path::PathBuf>,
+    },
+    /// File drag was cancelled (dragged away from window)
+    DroppedFileCancelled,
 }
 
 /// Application lifecycle events

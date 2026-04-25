@@ -748,34 +748,168 @@ pub type ReadyCallback = Box<dyn FnOnce() + Send + Sync>;
 /// Shared storage for ready callbacks
 pub type SharedReadyCallbacks = Arc<Mutex<Vec<ReadyCallback>>>;
 
-pub(crate) fn shared_runtime_scheduler() -> SharedAnimationScheduler {
-    static RUNTIME_SCHEDULER: OnceLock<SharedAnimationScheduler> = OnceLock::new();
-    RUNTIME_SCHEDULER
-        .get_or_init(|| Arc::new(Mutex::new(AnimationScheduler::new())))
-        .clone()
+/// UI builder function for a window. Called each frame to produce the UI tree.
+/// Returns a `Div` (the root element type for all Blinc UIs).
+pub type WindowBuilder = Box<dyn FnMut(&mut WindowedContext) -> Div + Send>;
+
+/// Pending window request: config + optional UI builder
+struct PendingWindowRequest {
+    config: WindowConfig,
+    builder: Option<WindowBuilder>,
 }
 
-pub(crate) fn prepare_runtime_scheduler(
-    wake_callback: Option<WakeCallback>,
-    run_background: bool,
-) -> SharedAnimationScheduler {
-    let scheduler = shared_runtime_scheduler();
-    {
-        let mut guard = scheduler.lock().unwrap();
-        guard.reset_runtime_state();
-        if let Some(callback) = wake_callback {
-            guard.set_wake_callback_arc(callback);
-        }
-        if run_background {
-            guard.start_background();
+/// Queue of pending window requests (builder closures waiting to be picked up
+/// by the event loop after AppCommand::CreateWindow fires).
+static PENDING_WINDOW_BUILDERS: std::sync::OnceLock<Mutex<Vec<PendingWindowRequest>>> =
+    std::sync::OnceLock::new();
+
+fn pending_builders() -> &'static Mutex<Vec<PendingWindowRequest>> {
+    PENDING_WINDOW_BUILDERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Global callback for sending CreateWindow command to the event loop.
+static OPEN_WINDOW_FN: std::sync::OnceLock<Arc<dyn Fn(WindowConfig) + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+/// Global callback for initiating a window drag operation (custom title bars).
+static DRAG_WINDOW_FN: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+/// Start a window drag operation (for custom title bars).
+///
+/// Call this from a mouse-down handler on a draggable element.
+/// The OS takes over and the window follows the cursor until release.
+pub fn drag_window() {
+    if let Some(f) = DRAG_WINDOW_FN.get() {
+        f();
+    }
+}
+
+/// Open a new window with a UI builder from anywhere in the application.
+///
+/// The builder closure is called each frame to produce the window's UI.
+///
+/// # Example
+/// ```ignore
+/// use blinc_app::windowed::open_window_with;
+///
+/// open_window_with(
+///     WindowConfig::new("Settings").size(400, 300),
+///     |ctx| {
+///         Box::new(div()
+///             .w(ctx.width).h(ctx.height)
+///             .bg(Color::rgb(0.1, 0.1, 0.15))
+///             .child(text("Settings Window").size(24.0).color(Color::WHITE)))
+///     },
+/// );
+/// ```
+pub fn open_window_with<F>(config: WindowConfig, builder: F)
+where
+    F: FnMut(&mut WindowedContext) -> Div + Send + 'static,
+{
+    // Queue the builder so the event loop can pick it up
+    pending_builders()
+        .lock()
+        .unwrap()
+        .push(PendingWindowRequest {
+            config: config.clone(),
+            builder: Some(Box::new(builder)),
+        });
+
+    // Send the CreateWindow command to the event loop
+    if let Some(f) = OPEN_WINDOW_FN.get() {
+        f(config);
+    } else {
+        tracing::warn!("open_window_with() called before app initialization");
+    }
+}
+
+/// Open a new window with a default blank UI.
+///
+/// For windows with custom UI, use `open_window_with()` instead.
+pub fn open_window(config: WindowConfig) {
+    // Queue without builder (uses default UI)
+    pending_builders()
+        .lock()
+        .unwrap()
+        .push(PendingWindowRequest {
+            config: config.clone(),
+            builder: None,
+        });
+
+    if let Some(f) = OPEN_WINDOW_FN.get() {
+        f(config);
+    } else {
+        tracing::warn!("open_window() called before app initialization");
+    }
+}
+
+/// Per-window state bundle.
+///
+/// Groups all state that is specific to a single window, extracted from the
+/// monolithic event loop closure. This is the foundation for multi-window support.
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
+pub(crate) struct WindowState {
+    /// GPU app (renderer, device, queue)
+    pub app: Option<BlincApp>,
+    /// Window surface for rendering
+    pub surface: Option<wgpu::Surface<'static>>,
+    /// Surface configuration
+    pub surface_config: Option<wgpu::SurfaceConfiguration>,
+    /// UI context (dimensions, event router, shared handles)
+    pub ctx: Option<WindowedContext>,
+    /// Render tree (layout + render nodes)
+    pub render_tree: Option<RenderTree>,
+    /// Render state (cursor blink, animated values, motion)
+    pub render_state: Option<blinc_layout::RenderState>,
+    /// CSS animation/transition store
+    pub css_anim_store: Arc<Mutex<blinc_layout::CssAnimationStore>>,
+    /// Shared motion animation states
+    pub shared_motion_states:
+        Arc<std::sync::RwLock<std::collections::HashMap<String, blinc_core::MotionAnimationState>>>,
+    /// Whether the UI tree needs rebuilding
+    pub needs_rebuild: bool,
+    /// Whether layout needs recomputing
+    pub needs_relayout: bool,
+    /// Last frame timestamp for CSS animation delta
+    pub last_frame_time_ms: u64,
+    /// Active touch point IDs
+    pub active_touch_ids: std::collections::HashSet<u64>,
+    /// UI builder for this window (None = default static UI)
+    pub ui_builder: Option<WindowBuilder>,
+    /// Whether this window was created with a transparent surface.
+    /// Drives the wgpu `CompositeAlphaMode` selection at surface config
+    /// time and the per-frame clear-color alpha. Mirrors
+    /// `WindowConfig::transparent`.
+    pub transparent: bool,
+}
+
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
+impl WindowState {
+    /// Create a new empty WindowState with shared resources
+    pub fn new(
+        css_anim_store: Arc<Mutex<blinc_layout::CssAnimationStore>>,
+        shared_motion_states: Arc<
+            std::sync::RwLock<std::collections::HashMap<String, blinc_core::MotionAnimationState>>,
+        >,
+    ) -> Self {
+        Self {
+            app: None,
+            surface: None,
+            surface_config: None,
+            ctx: None,
+            render_tree: None,
+            render_state: None,
+            css_anim_store,
+            shared_motion_states,
+            needs_rebuild: true,
+            needs_relayout: false,
+            last_frame_time_ms: 0,
+            active_touch_ids: std::collections::HashSet::new(),
+            ui_builder: None,
+            transparent: false,
         }
     }
-    scheduler
-}
-
-fn headless_context_init_lock() -> &'static Mutex<()> {
-    static HEADLESS_CONTEXT_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    HEADLESS_CONTEXT_INIT_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 /// Context passed to the UI builder function
@@ -790,6 +924,30 @@ pub struct WindowedContext {
     pub height: f32,
     /// Current scale factor (physical / logical)
     pub scale_factor: f64,
+    /// Safe area insets (top, right, bottom, left) in logical pixels.
+    /// On mobile: notch, status bar, home indicator.
+    /// On desktop: all zeros.
+    pub safe_area: (f32, f32, f32, f32),
+    /// Soft-keyboard inset, in **logical** pixels — height in pixels of
+    /// the area at the bottom of the screen currently obscured by an
+    /// on-screen keyboard. Zero when the keyboard is hidden.
+    ///
+    /// Updated by the platform runner from native keyboard events:
+    ///
+    ///   - iOS: parsed from
+    ///     `UIKeyboardWillChangeFrameNotification.userInfo[UIKeyboardFrameEndUserInfoKey]`
+    ///     in `BlincKeyboardHelper`, pushed via the
+    ///     `blinc_ios_set_keyboard_inset` FFI export.
+    ///   - Android: read from
+    ///     `WindowInsets.Type.ime().bottom` in
+    ///     `BlincNativeBridge.kt`, dispatched into Rust through the
+    ///     `keyboard.set_inset` native-bridge handler.
+    ///   - Desktop / web / Fuchsia: always zero.
+    ///
+    /// The text-input refocus path consumes this to scroll the focused
+    /// input above the keyboard when it appears, mirroring the iOS UIKit
+    /// `UIScrollView.contentInset` adjustment dance.
+    pub keyboard_inset: f32,
     /// Physical window width (for internal use)
     pub(crate) physical_width: f32,
     /// Physical window height (for internal use)
@@ -814,9 +972,9 @@ pub struct WindowedContext {
     /// Hook state for call-order based signal persistence
     hooks: SharedHookState,
     /// Overlay manager for modals, dialogs, toasts, etc.
-    overlay_manager: OverlayManager,
+    pub(crate) overlay_manager: OverlayManager,
     /// Whether overlays were visible last frame (for triggering rebuilds)
-    had_visible_overlays: bool,
+    pub(crate) had_visible_overlays: bool,
     /// Element registry for query API (shared with RenderTree)
     element_registry: SharedElementRegistry,
     /// Callbacks to run after UI is ready (motion bindings registered)
@@ -827,6 +985,18 @@ pub struct WindowedContext {
     /// Raw CSS source strings, preserved for reparsing on theme changes.
     /// Each entry corresponds to one `add_css()` call, in order.
     css_sources: Vec<String>,
+    /// Continuous pointer query state (per-element pointer tracking)
+    pub pointer_query: blinc_layout::pointer_query::PointerQueryState,
+    /// Callback to request opening a new window (set by desktop runner)
+    open_window_fn: Option<Arc<dyn Fn(WindowConfig) + Send + Sync>>,
+    /// Per-window close callback (sends CloseWindow command for THIS window)
+    close_fn: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Per-window drag callback (starts OS drag for THIS window)
+    drag_fn: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Per-window minimize callback
+    minimize_fn: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Per-window maximize callback
+    maximize_fn: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl WindowedContext {
@@ -933,6 +1103,8 @@ impl WindowedContext {
             width: logical_width,
             height: logical_height,
             scale_factor,
+            safe_area: window.safe_area_insets(),
+            keyboard_inset: 0.0,
             physical_width: physical_width as f32,
             physical_height: physical_height as f32,
             focused: window.is_focused(),
@@ -949,6 +1121,12 @@ impl WindowedContext {
             ready_callbacks,
             stylesheet: None,
             css_sources: Vec::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
+            open_window_fn: None,
+            close_fn: None,
+            drag_fn: None,
+            minimize_fn: None,
+            maximize_fn: None,
         }
     }
 
@@ -956,6 +1134,7 @@ impl WindowedContext {
     ///
     /// This is used by the Android runner since it doesn't have a Window trait implementation.
     #[cfg(all(feature = "android", target_os = "android"))]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_android(
         logical_width: f32,
         logical_height: f32,
@@ -963,6 +1142,7 @@ impl WindowedContext {
         physical_width: f32,
         physical_height: f32,
         focused: bool,
+        safe_area: (f32, f32, f32, f32),
         animations: SharedAnimationScheduler,
         ref_dirty_flag: RefDirtyFlag,
         reactive: SharedReactiveGraph,
@@ -975,6 +1155,8 @@ impl WindowedContext {
             width: logical_width,
             height: logical_height,
             scale_factor,
+            safe_area,
+            keyboard_inset: 0.0,
             physical_width,
             physical_height,
             focused,
@@ -991,6 +1173,12 @@ impl WindowedContext {
             ready_callbacks,
             stylesheet: None,
             css_sources: Vec::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
+            open_window_fn: None,
+            close_fn: None,
+            drag_fn: None,
+            minimize_fn: None,
+            maximize_fn: None,
         }
     }
 
@@ -998,7 +1186,69 @@ impl WindowedContext {
     ///
     /// This is used by the iOS runner since it doesn't have a Window trait implementation.
     #[cfg(all(feature = "ios", target_os = "ios"))]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_ios(
+        logical_width: f32,
+        logical_height: f32,
+        scale_factor: f64,
+        physical_width: f32,
+        physical_height: f32,
+        focused: bool,
+        safe_area: (f32, f32, f32, f32),
+        animations: SharedAnimationScheduler,
+        ref_dirty_flag: RefDirtyFlag,
+        reactive: SharedReactiveGraph,
+        hooks: SharedHookState,
+        overlay_mgr: OverlayManager,
+        element_registry: SharedElementRegistry,
+        ready_callbacks: SharedReadyCallbacks,
+    ) -> Self {
+        Self {
+            width: logical_width,
+            height: logical_height,
+            scale_factor,
+            safe_area,
+            keyboard_inset: 0.0,
+            physical_width,
+            physical_height,
+            focused,
+            rebuild_count: 0,
+            event_router: EventRouter::new(),
+            animations,
+            ref_dirty_flag,
+            reactive,
+            hooks,
+            overlay_manager: overlay_mgr,
+            had_visible_overlays: false,
+            element_registry,
+            ready_callbacks,
+            stylesheet: None,
+            css_sources: Vec::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
+            open_window_fn: None,
+            close_fn: None,
+            drag_fn: None,
+            minimize_fn: None,
+            maximize_fn: None,
+        }
+    }
+
+    /// Create a WindowedContext for the web target.
+    ///
+    /// Mirrors [`Self::new_android`] / [`Self::new_ios`] / [`Self::new_fuchsia`]:
+    /// the web runner extracts canvas dimensions and `devicePixelRatio`
+    /// from the browser before calling, instead of going through the
+    /// `Window` trait (which requires `raw-window-handle` types that
+    /// `HtmlCanvasElement` doesn't implement).
+    ///
+    /// Wired into the `web` feature so this constructor is invisible to
+    /// non-wasm builds. The shared / animation / overlay parameters are
+    /// the same as the other `new_*` constructors so the wasm runner
+    /// can build the same `WindowedContext` shape every other platform
+    /// gets.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_web(
         logical_width: f32,
         logical_height: f32,
         scale_factor: f64,
@@ -1017,6 +1267,8 @@ impl WindowedContext {
             width: logical_width,
             height: logical_height,
             scale_factor,
+            safe_area: (0.0, 0.0, 0.0, 0.0),
+            keyboard_inset: 0.0,
             physical_width,
             physical_height,
             focused,
@@ -1033,6 +1285,12 @@ impl WindowedContext {
             ready_callbacks,
             stylesheet: None,
             css_sources: Vec::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
+            open_window_fn: None,
+            close_fn: None,
+            drag_fn: None,
+            minimize_fn: None,
+            maximize_fn: None,
         }
     }
 
@@ -1059,6 +1317,8 @@ impl WindowedContext {
             width: logical_width,
             height: logical_height,
             scale_factor,
+            safe_area: (0.0, 0.0, 0.0, 0.0),
+            keyboard_inset: 0.0,
             physical_width,
             physical_height,
             focused,
@@ -1075,6 +1335,12 @@ impl WindowedContext {
             ready_callbacks,
             stylesheet: None,
             css_sources: Vec::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
+            open_window_fn: None,
+            close_fn: None,
+            drag_fn: None,
+            minimize_fn: None,
+            maximize_fn: None,
         }
     }
 
@@ -1212,6 +1478,124 @@ impl WindowedContext {
     /// ```
     pub fn is_ready(&self) -> bool {
         self.rebuild_count > 0
+    }
+
+    /// Safe area inset from the top (status bar, notch)
+    pub fn safe_top(&self) -> f32 {
+        self.safe_area.0
+    }
+
+    /// Safe area inset from the right
+    pub fn safe_right(&self) -> f32 {
+        self.safe_area.1
+    }
+
+    /// Safe area inset from the bottom (home indicator)
+    pub fn safe_bottom(&self) -> f32 {
+        self.safe_area.2
+    }
+
+    /// Safe area inset from the left
+    pub fn safe_left(&self) -> f32 {
+        self.safe_area.3
+    }
+
+    /// Content width excluding safe area insets
+    pub fn safe_width(&self) -> f32 {
+        self.width - self.safe_area.1 - self.safe_area.3
+    }
+
+    /// Content height excluding safe area insets
+    pub fn safe_height(&self) -> f32 {
+        self.height - self.safe_area.0 - self.safe_area.2
+    }
+
+    /// Open a new window with the given configuration.
+    ///
+    /// The window is created asynchronously on the next event loop tick.
+    /// Only available on desktop platforms.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.open_window(WindowConfig::new("Settings").size(400, 300));
+    /// ```
+    pub fn open_window(&self, config: WindowConfig) {
+        if let Some(ref open_fn) = self.open_window_fn {
+            open_fn(config);
+        } else {
+            tracing::warn!(
+                "open_window() called but no window creation callback is set (not on desktop?)"
+            );
+        }
+    }
+
+    /// Set the callback for opening new windows (called by the desktop runner)
+    pub(crate) fn set_open_window_fn(&mut self, f: Arc<dyn Fn(WindowConfig) + Send + Sync>) {
+        self.open_window_fn = Some(f);
+    }
+
+    /// Set per-window action callbacks (called by the desktop runner)
+    pub(crate) fn set_window_actions(
+        &mut self,
+        close: Arc<dyn Fn() + Send + Sync>,
+        drag: Arc<dyn Fn() + Send + Sync>,
+        minimize: Arc<dyn Fn() + Send + Sync>,
+        maximize: Arc<dyn Fn() + Send + Sync>,
+    ) {
+        self.close_fn = Some(close);
+        self.drag_fn = Some(drag);
+        self.minimize_fn = Some(minimize);
+        self.maximize_fn = Some(maximize);
+    }
+
+    /// Close THIS window. Safe to call from any click handler.
+    pub fn close(&self) {
+        if let Some(ref f) = self.close_fn {
+            f();
+        }
+    }
+
+    /// Start dragging THIS window (for custom title bars).
+    pub fn drag(&self) {
+        if let Some(ref f) = self.drag_fn {
+            f();
+        }
+    }
+
+    /// Minimize THIS window.
+    pub fn minimize(&self) {
+        if let Some(ref f) = self.minimize_fn {
+            f();
+        }
+    }
+
+    /// Maximize/restore THIS window.
+    pub fn maximize(&self) {
+        if let Some(ref f) = self.maximize_fn {
+            f();
+        }
+    }
+
+    /// Get a cloneable close callback for THIS window.
+    /// Use this to capture the close action in event handler closures.
+    pub fn close_callback(&self) -> Arc<dyn Fn() + Send + Sync> {
+        self.close_fn.clone().unwrap_or_else(|| Arc::new(|| {}))
+    }
+
+    /// Get a cloneable drag callback for THIS window.
+    pub fn drag_callback(&self) -> Arc<dyn Fn() + Send + Sync> {
+        self.drag_fn.clone().unwrap_or_else(|| Arc::new(|| {}))
+    }
+
+    /// Get a cloneable minimize callback for THIS window.
+    pub fn minimize_callback(&self) -> Arc<dyn Fn() + Send + Sync> {
+        self.minimize_fn.clone().unwrap_or_else(|| Arc::new(|| {}))
+    }
+
+    /// Get a cloneable maximize callback for THIS window.
+    pub fn maximize_callback(&self) -> Arc<dyn Fn() + Send + Sync> {
+        self.maximize_fn.clone().unwrap_or_else(|| Arc::new(|| {}))
     }
 
     /// Register a callback to run once after the UI is ready
@@ -2573,18 +2957,18 @@ impl WindowedApp {
             let bundle = platform_theme_bundle();
             let scheme = detect_system_color_scheme();
             ThemeState::init(bundle, scheme);
-        }
 
-        // Set up the redraw callback to trigger full UI rebuilds when theme changes
-        // We use request_full_rebuild() to trigger all three phases:
-        // 1. Tree rebuild - reconstruct UI with new theme values
-        // 2. Layout recompute - recalculate flexbox layout
-        // 3. Visual redraw - render the frame
-        set_redraw_callback(|| {
-            tracing::debug!("Theme changed - requesting full rebuild + CSS reparse");
-            blinc_layout::widgets::request_css_reparse();
-            blinc_layout::widgets::request_full_rebuild();
-        });
+            // Set up the redraw callback to trigger full UI rebuilds when theme changes
+            // We use request_full_rebuild() to trigger all three phases:
+            // 1. Tree rebuild - reconstruct UI with new theme values
+            // 2. Layout recompute - recalculate flexbox layout
+            // 3. Visual redraw - render the frame
+            set_redraw_callback(|| {
+                tracing::debug!("Theme changed - requesting full rebuild + CSS reparse");
+                blinc_layout::widgets::request_css_reparse();
+                blinc_layout::widgets::request_full_rebuild();
+            });
+        }
     }
 
     /// Run a windowed Blinc application on desktop platforms
@@ -2623,10 +3007,106 @@ impl WindowedApp {
         Self::run_desktop(config, ui_builder)
     }
 
-    #[cfg(all(
-        feature = "windowed",
-        not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
-    ))]
+    /// Create per-window action closures (close, drag, minimize, maximize).
+    /// Returns (close, drag, minimize, maximize) Arcs.
+    #[cfg(all(feature = "windowed", not(target_os = "android")))]
+    #[allow(clippy::type_complexity)]
+    fn make_window_actions(
+        win: std::sync::Arc<winit::window::Window>,
+        wake: blinc_platform_desktop::WakeProxy,
+    ) -> (
+        Arc<dyn Fn() + Send + Sync>,
+        Arc<dyn Fn() + Send + Sync>,
+        Arc<dyn Fn() + Send + Sync>,
+        Arc<dyn Fn() + Send + Sync>,
+    ) {
+        let d = Arc::downgrade(&win);
+        let mi = Arc::downgrade(&win);
+        let ma = Arc::downgrade(&win);
+        let cl = Arc::downgrade(&win);
+        let wake_for_close = wake;
+        (
+            Arc::new(move || {
+                if let Some(w) = cl.upgrade() {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    w.id().hash(&mut hasher);
+                    wake_for_close.close_window(blinc_platform::WindowId(hasher.finish()));
+                }
+            }),
+            Arc::new(move || {
+                if let Some(w) = d.upgrade() {
+                    let _ = w.drag_window();
+                }
+            }),
+            Arc::new(move || {
+                if let Some(w) = mi.upgrade() {
+                    w.set_minimized(true);
+                }
+            }),
+            Arc::new(move || {
+                if let Some(w) = ma.upgrade() {
+                    w.set_maximized(!w.is_maximized());
+                }
+            }),
+        )
+    }
+
+    /// Register global window action callbacks (for drag_region() on Div).
+    /// Called for both primary and secondary windows, and on focus changes.
+    #[cfg(all(feature = "windowed", not(target_os = "android")))]
+    fn register_window_actions_static(
+        win: std::sync::Arc<winit::window::Window>,
+        wake: blinc_platform_desktop::WakeProxy,
+    ) {
+        let d = win.clone();
+        let mi = win.clone();
+        let ma = win.clone();
+        let cl = win;
+        blinc_layout::window_actions::set_active_window_actions(
+            move || {
+                let _ = d.drag_window();
+            },
+            move || mi.set_minimized(true),
+            move || ma.set_maximized(!ma.is_maximized()),
+            move || {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                cl.id().hash(&mut hasher);
+                wake.close_window(blinc_platform::WindowId(hasher.finish()));
+            },
+        );
+    }
+
+    /// Pick the wgpu `CompositeAlphaMode` to configure the surface with.
+    ///
+    /// Transparent windows need an alpha mode that lets the OS compositor
+    /// see through to what's behind the window; opaque windows keep
+    /// `Opaque` to match historical behavior. We prefer `PostMultiplied`
+    /// because our shaders write non-premultiplied RGBA; macOS typically
+    /// supports it. `PreMultiplied` is the common fallback on Windows
+    /// DWM. If neither is supported we fall back to `Inherit`/`Auto` —
+    /// some drivers only expose those and will still composite alpha.
+    ///
+    /// Note: this doesn't query `surface.get_capabilities()` — it trusts
+    /// the platform choice. If surface config fails because the mode
+    /// isn't supported, wgpu will log a clear error.
+    #[cfg(all(feature = "windowed", not(target_os = "android")))]
+    fn pick_alpha_mode(transparent: bool) -> wgpu::CompositeAlphaMode {
+        if !transparent {
+            return wgpu::CompositeAlphaMode::Opaque;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            wgpu::CompositeAlphaMode::PostMultiplied
+        }
+    }
+
+    #[cfg(all(feature = "windowed", not(target_os = "android")))]
     fn run_desktop<F, E>(config: WindowConfig, mut ui_builder: F) -> Result<()>
     where
         F: FnMut(&mut WindowedContext) -> E + 'static,
@@ -2642,35 +3122,16 @@ impl WindowedApp {
         Self::init_theme();
 
         let platform = DesktopPlatform::new().map_err(|e| BlincError::Platform(e.to_string()))?;
+        let primary_transparent = config.transparent;
         let event_loop = platform
             .create_event_loop_with_config(config)
             .map_err(|e| BlincError::Platform(e.to_string()))?;
 
         // Get a wake proxy to allow the animation thread to wake up the event loop
         let wake_proxy = event_loop.wake_proxy();
-        let programmatic_event_wake_proxy = event_loop.wake_proxy();
-        let focus_wake_proxy = event_loop.wake_proxy();
-        let scroll_wake_proxy = event_loop.wake_proxy();
+        // Clone for the open_window callback
+        let wake_proxy_for_windows = event_loop.wake_proxy();
 
-        // We need to defer BlincApp creation until we have a window
-        let mut app: Option<BlincApp> = None;
-        let mut surface: Option<wgpu::Surface<'static>> = None;
-        let mut surface_config: Option<wgpu::SurfaceConfiguration> = None;
-
-        // Persistent context with event router
-        let mut ctx: Option<WindowedContext> = None;
-        // Persistent render tree for hit testing and dirty tracking
-        let mut render_tree: Option<RenderTree> = None;
-        // Track last frame time for CSS animation delta calculation
-        let mut last_frame_time_ms: u64 = 0;
-        // Track if we need to rebuild UI (e.g., after resize)
-        let mut needs_rebuild = true;
-        // Track if we need to relayout (e.g., after resize even if tree unchanged)
-        let mut needs_relayout = false;
-        // Track committed keyboard text across platform input events so a following
-        // IME commit event can suppress duplicate TEXT_INPUT dispatch.
-        let mut keyboard_committed_text: Option<Vec<char>> = None;
-        let mut composition_active = false;
         // Shared dirty flag for element refs
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
         // Shared reactive graph for signal-based state management
@@ -2873,34 +3334,276 @@ impl WindowedApp {
             OverlayContext::init(Arc::clone(&overlays));
         }
 
-        let e2e_enabled = e2e_is_enabled();
-        let e2e_expect = e2e_expect();
-        let e2e_capture_path = std::env::var("BLINC_E2E_CAPTURE_PATH")
-            .ok()
-            .map(std::path::PathBuf::from);
-        let e2e_trigger_path = e2e_trigger_path();
-        let e2e_capture_on_start = e2e_capture_on_start(e2e_trigger_path.as_ref());
-        let e2e_max_captures = e2e_max_captures();
-        let e2e_exit = e2e_exit_after();
-        let mut e2e_captures_done: usize = 0;
-
-        let e2e_script = e2e_script();
-        let e2e_script_exit = e2e_script_exit_after(e2e_script.is_some());
-        let mut e2e_script_ran: bool = false;
+        // Primary window state
+        let mut ws = WindowState::new(
+            Arc::clone(&css_anim_store),
+            Arc::clone(&shared_motion_states),
+        );
+        ws.transparent = primary_transparent;
+        // Track primary window ID once known
+        let mut primary_wid: Option<blinc_platform::WindowId> = None;
+        // Secondary windows (opened via ctx.open_window())
+        let mut secondary_windows: std::collections::HashMap<
+            blinc_platform::WindowId,
+            WindowState,
+        > = std::collections::HashMap::new();
+        // UI builders for secondary windows (queued via open_window)
+        // For now secondary windows get a blank UI — full UI builder support is future work
 
         event_loop
             .run(move |event, window| {
+                // Check if this event is for a secondary window
+                let event_wid = match &event {
+                    Event::Window(wid, _) | Event::Input(wid, _) | Event::Frame(wid) => Some(*wid),
+                    _ => None,
+                };
+                let is_secondary = event_wid
+                    .map(|wid| primary_wid.is_some_and(|p| wid != p))
+                    .unwrap_or(false);
+
+                // Handle secondary window events
+                if is_secondary {
+                    let wid = event_wid.unwrap();
+                    match event {
+                        Event::Window(_, WindowEvent::Resized { width, height }) => {
+                            if let Some(sws) = secondary_windows.get_mut(&wid) {
+                                if let (Some(ref surf), Some(ref mut config)) =
+                                    (&sws.surface, &mut sws.surface_config)
+                                {
+                                    if width > 0 && height > 0 {
+                                        config.width = width;
+                                        config.height = height;
+                                        if let Some(ref blinc_app) = ws.app {
+                                            surf.configure(blinc_app.device(), config);
+                                        }
+                                        sws.needs_rebuild = true;
+                                        if let Some(ref mut ctx) = sws.ctx {
+                                            let sf = window.scale_factor();
+                                            ctx.width = width as f32 / sf as f32;
+                                            ctx.height = height as f32 / sf as f32;
+                                            ctx.physical_width = width as f32;
+                                            ctx.physical_height = height as f32;
+                                            ctx.scale_factor = sf;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Event::Window(_, WindowEvent::CloseRequested) => {
+                            secondary_windows.remove(&wid);
+                            tracing::info!("Secondary window closed (wid={:?})", wid);
+                        }
+                        Event::Window(_, WindowEvent::Focused(_focused)) => {}
+                        Event::Input(_, ref input_event) => {
+
+                            if let Some(sws) = secondary_windows.get_mut(&wid) {
+                                if let (Some(ref mut ctx), Some(ref mut tree)) =
+                                    (&mut sws.ctx, &mut sws.render_tree)
+                                {
+                                    let sf = ctx.scale_factor as f32;
+
+                                    // Collect events from the router
+                                    let mut pending: Vec<(blinc_layout::tree::LayoutNodeId, u32)> =
+                                        Vec::new();
+                                    ctx.event_router.set_event_callback({
+                                        let events =
+                                            &mut pending as *mut Vec<(blinc_layout::tree::LayoutNodeId, u32)>;
+                                        move |node, event_type| unsafe {
+                                            (*events).push((node, event_type));
+                                        }
+                                    });
+
+                                    let convert_button =
+                                        |b: &blinc_platform::MouseButton| match b {
+                                            blinc_platform::MouseButton::Left => {
+                                                blinc_layout::prelude::MouseButton::Left
+                                            }
+                                            blinc_platform::MouseButton::Right => {
+                                                blinc_layout::prelude::MouseButton::Right
+                                            }
+                                            blinc_platform::MouseButton::Middle => {
+                                                blinc_layout::prelude::MouseButton::Middle
+                                            }
+                                            _ => blinc_layout::prelude::MouseButton::Left,
+                                        };
+
+                                    match input_event {
+                                        InputEvent::Mouse(MouseEvent::Moved { x, y }) => {
+                                            ctx.event_router
+                                                .on_mouse_move(tree, *x / sf, *y / sf);
+                                        }
+                                        InputEvent::Mouse(MouseEvent::ButtonPressed {
+                                            button,
+                                            x,
+                                            y,
+                                        }) => {
+                                            // Mark this event as mouse (not
+                                            // touch) input so editable widgets
+                                            // restore desktop semantics
+                                            // (drag = extend selection). The
+                                            // flag is sticky between events
+                                            // and gets flipped back to true
+                                            // by the touch path on
+                                            // touchscreens — desktop runners
+                                            // don't see touch events at all,
+                                            // but a docked tablet running
+                                            // the desktop runner could mix
+                                            // both, so we set this on every
+                                            // mouse press to be safe.
+                                            blinc_layout::widgets::text_input::set_touch_input(false);
+                                            ctx.event_router.on_mouse_down(
+                                                tree,
+                                                *x / sf,
+                                                *y / sf,
+                                                convert_button(button),
+                                            );
+                                        }
+                                        InputEvent::Mouse(MouseEvent::ButtonReleased {
+                                            button,
+                                            x,
+                                            y,
+                                        }) => {
+                                            ctx.event_router.on_mouse_up(
+                                                tree,
+                                                *x / sf,
+                                                *y / sf,
+                                                convert_button(button),
+                                            );
+                                        }
+                                        _ => {}
+                                    }
+
+                                    ctx.event_router.clear_event_callback();
+
+                                    // Dispatch collected events through render tree handlers
+                                    for (node_id, event_type) in &pending {
+                                        tree.dispatch_event(
+                                            *node_id,
+                                            *event_type,
+                                            ctx.event_router.mouse_position().0,
+                                            ctx.event_router.mouse_position().1,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Event::Frame(_) => {
+                            if let Some(sws) = secondary_windows.get_mut(&wid) {
+
+                                if let (Some(ref mut blinc_app), Some(ref surf), Some(ref config)) =
+                                    (&mut ws.app, &sws.surface, &sws.surface_config)
+                                {
+                                    // Build render tree on first frame or after resize
+                                    if sws.render_tree.is_none() || sws.needs_rebuild {
+                                        let (w, h) = sws.ctx.as_ref()
+                                            .map(|c| (c.width, c.height))
+                                            .unwrap_or((400.0, 300.0));
+
+                                        let ui: Div =
+                                            if let Some(ref mut builder) = sws.ui_builder {
+                                                if let Some(ref mut sctx) = sws.ctx {
+                                                    builder(sctx)
+                                                } else {
+                                                    div().w(w).h(h)
+                                                }
+                                            } else {
+                                                let title = window.winit_window().title();
+                                                div()
+                                                    .w(w)
+                                                    .h(h)
+                                                    .bg(blinc_core::Color::rgba(
+                                                        0.06, 0.06, 0.09, 1.0,
+                                                    ))
+                                                    .flex_col()
+                                                    .justify_center()
+                                                    .items_center()
+                                                    .gap_px(12.0)
+                                                    .child(
+                                                        text(&title)
+                                                            .size(24.0)
+                                                            .color(blinc_core::Color::WHITE)
+                                                            .bold(),
+                                                    )
+                                                    .child(
+                                                        text(format!("{:.0} x {:.0}", w, h))
+                                                            .size(14.0)
+                                                            .color(blinc_core::Color::rgba(
+                                                                0.5, 0.5, 0.6, 1.0,
+                                                            )),
+                                                    )
+                                            };
+
+                                        let sf = sws
+                                            .ctx
+                                            .as_ref()
+                                            .map(|c| c.scale_factor as f32)
+                                            .unwrap_or(1.0);
+                                        let mut tree = RenderTree::from_element(&ui);
+                                        tree.set_scale_factor(sf);
+                                        tree.compute_layout(w, h);
+                                        sws.render_tree = Some(tree);
+                                        sws.needs_rebuild = false;
+                                    }
+
+                                    // Render the tree (skip if minimized / zero size)
+                                    if config.width > 0 && config.height > 0 {
+                                        if let (Some(ref tree), Some(ref rs)) =
+                                            (&sws.render_tree, &sws.render_state)
+                                        {
+                                            match surf.get_current_texture() {
+                                                Ok(frame) => {
+                                                    let view = frame.texture.create_view(
+                                                        &wgpu::TextureViewDescriptor::default(),
+                                                    );
+                                                    blinc_app.set_clear_alpha(if sws.transparent {
+                                                        0.0
+                                                    } else {
+                                                        1.0
+                                                    });
+                                                    let _ = blinc_app.render_tree_with_motion(
+                                                        tree,
+                                                        rs,
+                                                        &view,
+                                                        config.width,
+                                                        config.height,
+                                                    );
+                                                    frame.present();
+                                                }
+                                                Err(
+                                                    wgpu::SurfaceError::Lost
+                                                    | wgpu::SurfaceError::Outdated,
+                                                ) => {
+                                                    surf.configure(blinc_app.device(), config);
+                                                }
+                                                Err(_) => {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    return ControlFlow::Continue;
+                }
+
                 match event {
                     Event::Lifecycle(LifecycleEvent::Resumed) => {
-                        // Initialize GPU if not already done
-                        if app.is_none() {
+                        let wid = window.id();
+                        // Initialize GPU if not already done (primary window)
+                        if ws.app.is_none() {
+                            primary_wid = Some(wid);
                             let winit_window = window.winit_window_arc();
 
                             match BlincApp::with_window(winit_window, None) {
-                                Ok((blinc_app, surf)) => {
+                                Ok((mut blinc_app, surf)) => {
                                     let (width, height) = window.size();
                                     // Use the same texture format that the renderer's pipelines use
                                     let format = blinc_app.texture_format();
+                                    let alpha_mode = Self::pick_alpha_mode(ws.transparent);
+                                    if ws.transparent {
+                                        blinc_app.set_clear_alpha(0.0);
+                                    }
                                     let config = wgpu::SurfaceConfiguration {
                                         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                                             | if e2e_enabled {
@@ -2912,7 +3615,7 @@ impl WindowedApp {
                                         width,
                                         height,
                                         present_mode: wgpu::PresentMode::AutoVsync,
-                                        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+                                        alpha_mode,
                                         view_formats: vec![],
                                         desired_maximum_frame_latency: 2,
                                     };
@@ -2923,12 +3626,12 @@ impl WindowedApp {
                                         blinc_app.font_registry(),
                                     );
 
-                                    surface = Some(surf);
-                                    surface_config = Some(config);
-                                    app = Some(blinc_app);
+                                    ws.surface = Some(surf);
+                                    ws.surface_config = Some(config);
+                                    ws.app = Some(blinc_app);
 
                                     // Initialize context with event router, animations, dirty flag, reactive graph, hooks, overlay manager, registry, and ready callbacks
-                                    ctx = Some(WindowedContext::from_window(
+                                    ws.ctx = Some(WindowedContext::from_window(
                                         window,
                                         EventRouter::new(),
                                         Arc::clone(&animations),
@@ -2940,8 +3643,34 @@ impl WindowedApp {
                                         Arc::clone(&ready_callbacks),
                                     ));
 
+                                    // Wire open_window callback using the event loop's wake proxy
+                                    let wp_for_ctx = wake_proxy_for_windows.clone();
+                                    let open_fn: Arc<dyn Fn(WindowConfig) + Send + Sync> =
+                                        Arc::new(move |config| {
+                                            wp_for_ctx.create_window(config);
+                                        });
+                                    if let Some(ref mut windowed_ctx) = ws.ctx {
+                                        windowed_ctx.set_open_window_fn(Arc::clone(&open_fn));
+                                        // Per-window action callbacks
+                                        let win_actions = Self::make_window_actions(
+                                            window.winit_window_arc(),
+                                            wake_proxy_for_windows.clone(),
+                                        );
+                                        windowed_ctx.set_window_actions(
+                                            win_actions.0,
+                                            win_actions.1,
+                                            win_actions.2,
+                                            win_actions.3,
+                                        );
+                                    }
+                                    // Register globally so open_window() works from anywhere
+                                    let _ = OPEN_WINDOW_FN.set(open_fn);
+
+                                    // Register global window action callbacks (for drag_region() on Div)
+                                    Self::register_window_actions_static(window.winit_window_arc(), wake_proxy_for_windows.clone());
+
                                     // Set initial viewport size in BlincContextState
-                                    if let Some(ref windowed_ctx) = ctx {
+                                    if let Some(ref windowed_ctx) = ws.ctx {
                                         BlincContextState::get().set_viewport_size(windowed_ctx.width, windowed_ctx.height);
                                     }
 
@@ -2950,32 +3679,149 @@ impl WindowedApp {
                                     // independently from tree structure changes
                                     let mut rs = blinc_layout::RenderState::new(Arc::clone(&animations));
                                     rs.set_shared_motion_states(Arc::clone(&shared_motion_states));
-                                    render_state = Some(rs);
+                                    ws.render_state = Some(rs);
 
-                                    tracing::debug!("Blinc windowed app initialized");
+                                    tracing::debug!("Blinc windowed ws.app initialized");
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to initialize Blinc: {}", e);
                                     return ControlFlow::Exit;
                                 }
                             }
+                        } else {
+                            // Resumed for a secondary window
+                            let wid = window.id();
+                            #[allow(clippy::map_entry)]
+                            if !secondary_windows.contains_key(&wid) {
+                                if let Some(ref blinc_app) = ws.app {
+                                    let winit_window = window.winit_window_arc();
+                                    match blinc_app.create_surface_for_window(winit_window) {
+                                        Ok(surf) => {
+                                            let (w, h) = window.size();
+                                            let format = blinc_app.texture_format();
+                                            let window_transparent = window.is_transparent();
+                                            let alpha_mode =
+                                                Self::pick_alpha_mode(window_transparent);
+                                            let config = wgpu::SurfaceConfiguration {
+                                                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                                                    | wgpu::TextureUsages::COPY_SRC,
+                                                format,
+                                                width: w,
+                                                height: h,
+                                                present_mode: wgpu::PresentMode::AutoVsync,
+                                                alpha_mode,
+                                                view_formats: vec![],
+                                                desired_maximum_frame_latency: 2,
+                                            };
+                                            surf.configure(blinc_app.device(), &config);
+
+                                            let mut sws = WindowState::new(
+                                                Arc::clone(&css_anim_store),
+                                                Arc::clone(&shared_motion_states),
+                                            );
+                                            sws.transparent = window_transparent;
+                                            sws.surface = Some(surf);
+                                            sws.surface_config = Some(config);
+
+                                            sws.ctx = Some(WindowedContext::from_window(
+                                                window,
+                                                EventRouter::new(),
+                                                Arc::clone(&animations),
+                                                Arc::clone(&ref_dirty_flag),
+                                                Arc::clone(&reactive),
+                                                Arc::clone(&hooks),
+                                                Arc::clone(&overlays),
+                                                Arc::clone(&element_registry),
+                                                Arc::clone(&ready_callbacks),
+                                            ));
+
+                                            if let Some(ref mut ctx) = sws.ctx {
+                                                let wp = wake_proxy_for_windows.clone();
+                                                ctx.set_open_window_fn(Arc::new(move |c| {
+                                                    wp.create_window(c);
+                                                }));
+                                                // Per-window actions
+                                                let win_actions = Self::make_window_actions(
+                                                    window.winit_window_arc(),
+                                                    wake_proxy_for_windows.clone(),
+                                                );
+                                                ctx.set_window_actions(
+                                                    win_actions.0,
+                                                    win_actions.1,
+                                                    win_actions.2,
+                                                    win_actions.3,
+                                                );
+                                            }
+
+                                            let mut rs = blinc_layout::RenderState::new(
+                                                Arc::clone(&animations),
+                                            );
+                                            rs.set_shared_motion_states(
+                                                Arc::clone(&shared_motion_states),
+                                            );
+                                            sws.render_state = Some(rs);
+
+                                            // Pop the UI builder from the pending queue
+                                            if let Ok(mut pending) =
+                                                pending_builders().lock()
+                                            {
+                                                // Find matching request by config title
+                                                let title =
+                                                    window.winit_window().title();
+                                                if let Some(idx) = pending.iter().position(|r| {
+                                                    r.config.title == title
+                                                }) {
+                                                    let req = pending.remove(idx);
+                                                    sws.ui_builder = req.builder;
+                                                }
+                                            }
+
+                                            // Per-window callbacks are set via set_window_actions above.
+                                            // Global window_actions is NOT set — secondary windows
+                                            // use ctx.close_callback() etc. instead.
+
+                                            secondary_windows.insert(wid, sws);
+                                            tracing::info!(
+                                                "Secondary window initialized (wid={:?})",
+                                                wid
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "Failed to create surface for window: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
-                    Event::Window(WindowEvent::Resized { width, height }) => {
+                    Event::Window(_, WindowEvent::Resized { width, height }) => {
                         if let (Some(ref blinc_app), Some(ref surf), Some(ref mut config)) =
-                            (&app, &surface, &mut surface_config)
+                            (&ws.app, &ws.surface, &mut ws.surface_config)
                         {
-                            if width > 0 && height > 0 {
+                            // winit fires a spurious Resized event when the window is first
+                            // mapped, with the same dimensions used to configure the surface.
+                            // Rebuilding on that no-op resize triggers a double initial build
+                            // (visible as duplicated `build_ui` side effects) and — more
+                            // critically — clobbers Stateful-handle state from the first build
+                            // that downstream canvases depend on, so sketches wired up during
+                            // the initial build stop painting after the phantom rebuild.
+                            // Short-circuit when neither axis actually changed.
+                            let dims_changed =
+                                config.width != width || config.height != height;
+                            if width > 0 && height > 0 && dims_changed {
                                 config.width = width;
                                 config.height = height;
                                 surf.configure(blinc_app.device(), config);
-                                needs_rebuild = true;
-                                needs_relayout = true;
+                                ws.needs_rebuild = true;
+                                ws.needs_relayout = true;
 
                                 // Dispatch RESIZE event to elements (use logical dimensions)
                                 if let (Some(ref mut windowed_ctx), Some(ref tree)) =
-                                    (&mut ctx, &render_tree)
+                                    (&mut ws.ctx, &ws.render_tree)
                                 {
                                     let logical_width = width as f32 / windowed_ctx.scale_factor as f32;
                                     let logical_height = height as f32 / windowed_ctx.scale_factor as f32;
@@ -3005,15 +3851,12 @@ impl WindowedApp {
                         }
                     }
 
-                    Event::Window(WindowEvent::Focused(focused)) => {
+                    Event::Window(_, WindowEvent::Focused(focused)) => {
                         // Update context focus state
-                        if let Some(ref mut windowed_ctx) = ctx {
+                        if let Some(ref mut windowed_ctx) = ws.ctx {
                             windowed_ctx.focused = focused;
-
-                            // Dispatch WINDOW_FOCUS or WINDOW_BLUR to the focused element
                             windowed_ctx.event_router.on_window_focus(focused);
 
-                            // When window loses focus, blur all text inputs/areas
                             if !focused {
                                 reset_composition_tracking_state(
                                     &mut composition_active,
@@ -3026,12 +3869,23 @@ impl WindowedApp {
                         }
                     }
 
-                    Event::Window(WindowEvent::CloseRequested) => {
+                    Event::Window(_, WindowEvent::CloseRequested) => {
                         return ControlFlow::Exit;
                     }
 
+                    // File drop events — dispatch to drop handler and render tree
+                    Event::Window(_, WindowEvent::DroppedFile { paths }) => {
+                        crate::dnd::dispatch_drop_event(crate::dnd::DropEvent::Dropped(paths));
+                    }
+                    Event::Window(_, WindowEvent::DroppedFileHovered { paths }) => {
+                        crate::dnd::dispatch_drop_event(crate::dnd::DropEvent::Hovered(paths));
+                    }
+                    Event::Window(_, WindowEvent::DroppedFileCancelled) => {
+                        crate::dnd::dispatch_drop_event(crate::dnd::DropEvent::Cancelled);
+                    }
+
                     // Handle input events
-                    Event::Input(input_event) => {
+                    Event::Input(_, input_event) => {
                         // Pending event structure for deferred dispatch
                         #[derive(Clone)]
                         struct PendingEvent {
@@ -3057,6 +3911,8 @@ impl WindowedApp {
                             ctrl: bool,
                             alt: bool,
                             meta: bool,
+                            /// Pinch scale or rotation delta
+                            pinch_scale: f32,
                         }
 
                         impl Default for PendingEvent {
@@ -3080,13 +3936,14 @@ impl WindowedApp {
                                     ctrl: false,
                                     alt: false,
                                     meta: false,
+                                    pinch_scale: 1.0,
                                 }
                             }
                         }
 
                         // First phase: collect events using immutable borrow
-                        let (pending_events, keyboard_events, scroll_ended, gesture_ended, scroll_info, pinch_info) = if let (Some(ref mut windowed_ctx), Some(ref tree)) =
-                            (&mut ctx, &render_tree)
+                        let (pending_events, keyboard_events, scroll_ended, gesture_ended, scroll_info, scroll_cancel_hit) = if let (Some(ref mut windowed_ctx), Some(ref tree)) =
+                            (&mut ws.ctx, &ws.render_tree)
                         {
                             let router = &mut windowed_ctx.event_router;
 
@@ -3100,8 +3957,13 @@ impl WindowedApp {
                             let mut gesture_ended = false;
                             // Track scroll info for nested scroll dispatch (mouse_x, mouse_y, delta_x, delta_y)
                             let mut scroll_info: Option<(f32, f32, f32, f32)> = None;
-                            // Track pinch (magnify) info for dispatch (mouse_x, mouse_y, scale_ratio_delta)
-                            let mut pinch_info: Option<(f32, f32, f32)> = None;
+                            // Hit chain (leaf + ancestors) captured at mouse-down so the
+                            // mutable phase can cancel any active scroll animation under
+                            // the cursor — the "grab-to-stop" affordance.
+                            let mut scroll_cancel_hit: Option<(
+                                blinc_layout::LayoutNodeId,
+                                Vec<blinc_layout::LayoutNodeId>,
+                            )> = None;
 
                             // Set up callback to collect events
                             router.set_event_callback({
@@ -3222,6 +4084,15 @@ impl WindowedApp {
                                             // and clicking on an input then re-focuses it via its own handler
                                             blinc_layout::widgets::blur_all_text_inputs();
 
+                                            // "Grab-to-stop" — record the hit chain so the
+                                            // mutable phase below can cancel any scroll
+                                            // animation under the cursor before the click
+                                            // dispatches. Without this a coasting list keeps
+                                            // decelerating past the tap.
+                                            scroll_cancel_hit = router
+                                                .hit_test(tree, lx, ly)
+                                                .map(|h| (h.node, h.ancestors.clone()));
+
                                             // Route through main tree (includes overlay content)
                                             let _events = router.on_mouse_down(tree, lx, ly, btn);
 
@@ -3314,6 +4185,7 @@ impl WindowedApp {
                                         Key::Enter => 13,
                                         Key::Tab => 9,
                                         Key::Escape => 27,
+                                        Key::Space => 32,
                                         Key::Left => 37,
                                         Key::Right => 39,
                                         Key::Up => 38,
@@ -3330,6 +4202,36 @@ impl WindowedApp {
                                         Key::S => 83, Key::T => 84, Key::U => 85,
                                         Key::V => 86, Key::W => 87, Key::X => 88,
                                         Key::Y => 89, Key::Z => 90,
+                                        // Digit row — match standard JS
+                                        // KeyboardEvent.keyCode for parity
+                                        // with web-convention chord tables.
+                                        Key::Num0 => 48, Key::Num1 => 49, Key::Num2 => 50,
+                                        Key::Num3 => 51, Key::Num4 => 52, Key::Num5 => 53,
+                                        Key::Num6 => 54, Key::Num7 => 55, Key::Num8 => 56,
+                                        Key::Num9 => 57,
+                                        // Punctuation / symbol keys — JS
+                                        // keyCode values so chord tables
+                                        // that bind `,` / `=` / `-` etc
+                                        // resolve cleanly.
+                                        Key::Semicolon => 186,
+                                        Key::Equals => 187,
+                                        Key::Comma => 188,
+                                        Key::Minus => 189,
+                                        Key::Period => 190,
+                                        Key::Slash => 191,
+                                        Key::Grave => 192,
+                                        Key::LeftBracket => 219,
+                                        Key::Backslash => 220,
+                                        Key::RightBracket => 221,
+                                        Key::Quote => 222,
+                                        Key::Back => {
+                                            // System back button — dispatch through back handler
+                                            if blinc_layout::back_handler::dispatch_back() {
+                                                return ControlFlow::Continue;
+                                            }
+                                            // Not consumed — let default handling proceed
+                                            0
+                                        }
                                         _ => 0,
                                     };
 
@@ -3389,33 +4291,111 @@ impl WindowedApp {
                                             }
                                         }
                                         KeyState::Released => {
-                                            router.on_key_up_with_modifiers(
-                                                key_code,
-                                                mods.shift,
-                                                mods.ctrl,
-                                                mods.alt,
-                                                mods.meta,
-                                            );
+                                            router.on_key_up(key_code);
+
+                                            // Also broadcast KEY_UP through the
+                                            // `keyboard_events` path. Without this the
+                                            // focus-targeted dispatch only fires on the
+                                            // focused leaf node, so ancestor handlers
+                                            // (e.g. `blinc_input::DivInputExt::capture_input`
+                                            // attached to a viewport Div) never see
+                                            // releases and their internal
+                                            // `keys_down`-tracking sets never clear —
+                                            // which in turn makes polling consumers see
+                                            // every key as permanently-held after the
+                                            // first press. Matches the broadcast path
+                                            // KEY_DOWN already uses below.
+                                            if key_code != 0 {
+                                                keyboard_events.push(PendingEvent {
+                                                    event_type: blinc_core::events::event_types::KEY_UP,
+                                                    key_char: None,
+                                                    key_code,
+                                                    shift: mods.shift,
+                                                    ctrl: mods.ctrl,
+                                                    alt: mods.alt,
+                                                    meta: mods.meta,
+                                                    ..Default::default()
+                                                });
+                                            }
                                         }
                                     }
                                 },
-                                InputEvent::Touch(touch_event) => match touch_event {
-                                    TouchEvent::Started { x, y, .. } => {
-                                        let lx = x / scale;
-                                        let ly = y / scale;
-                                        router.on_mouse_down(tree, lx, ly, MouseButton::Left);
-                                        let (local_x, local_y) = router.last_hit_local();
-                                        let (bounds_x, bounds_y) = router.last_hit_bounds_pos();
-                                        let (bounds_width, bounds_height) = router.last_hit_bounds();
-                                        for event in pending_events.iter_mut() {
-                                            event.mouse_x = lx;
-                                            event.mouse_y = ly;
-                                            event.local_x = local_x;
-                                            event.local_y = local_y;
-                                            event.bounds_x = bounds_x;
-                                            event.bounds_y = bounds_y;
-                                            event.bounds_width = bounds_width;
-                                            event.bounds_height = bounds_height;
+                                InputEvent::Touch(touch_event) => {
+                                    // Track active touch IDs for touch count
+                                    match &touch_event {
+                                        TouchEvent::Started { .. } => {
+                                            ws.active_touch_ids.insert(touch_event.id());
+                                            windowed_ctx.pointer_query.set_touch_count(ws.active_touch_ids.len() as u32);
+                                        }
+                                        TouchEvent::Ended { .. } => {
+                                            ws.active_touch_ids.remove(&touch_event.id());
+                                            windowed_ctx.pointer_query.set_touch_count(ws.active_touch_ids.len() as u32);
+                                        }
+                                        TouchEvent::Cancelled { .. } => {
+                                            ws.active_touch_ids.remove(&touch_event.id());
+                                            windowed_ctx.pointer_query.set_touch_count(ws.active_touch_ids.len() as u32);
+                                        }
+                                        _ => {}
+                                    }
+                                    match touch_event {
+                                        TouchEvent::Started { x, y, pressure, .. } => {
+                                            let lx = x / scale;
+                                            let ly = y / scale;
+                                            windowed_ctx.pointer_query.set_pressure(pressure);
+                                            router.on_mouse_down(tree, lx, ly, MouseButton::Left);
+                                            let (local_x, local_y) = router.last_hit_local();
+                                            let (bounds_x, bounds_y) = router.last_hit_bounds_pos();
+                                            let (bounds_width, bounds_height) = router.last_hit_bounds();
+                                            for event in pending_events.iter_mut() {
+                                                event.mouse_x = lx;
+                                                event.mouse_y = ly;
+                                                event.local_x = local_x;
+                                                event.local_y = local_y;
+                                                event.bounds_x = bounds_x;
+                                                event.bounds_y = bounds_y;
+                                                event.bounds_width = bounds_width;
+                                                event.bounds_height = bounds_height;
+                                            }
+                                        }
+                                        TouchEvent::Moved { x, y, pressure, .. } => {
+                                            let lx = x / scale;
+                                            let ly = y / scale;
+                                            windowed_ctx.pointer_query.set_pressure(pressure);
+
+                                            // Use occlusion-aware hit testing for touch move as well
+                                            let overlay_bounds = windowed_ctx.overlay_manager.get_visible_overlay_bounds();
+                                            let overlay_layer_id = tree.query_by_id(
+                                                blinc_layout::widgets::overlay::OVERLAY_LAYER_ID
+                                            );
+                                            router.on_mouse_move_with_occlusion(
+                                                tree,
+                                                lx,
+                                                ly,
+                                                &overlay_bounds,
+                                                overlay_layer_id,
+                                            );
+
+                                            for event in pending_events.iter_mut() {
+                                                event.mouse_x = lx;
+                                                event.mouse_y = ly;
+                                            }
+                                        }
+                                        TouchEvent::Ended { x, y, .. } => {
+                                            let lx = x / scale;
+                                            let ly = y / scale;
+                                            windowed_ctx.pointer_query.set_pressure(0.0);
+                                            router.on_mouse_up(tree, lx, ly, MouseButton::Left);
+                                            for event in pending_events.iter_mut() {
+                                                event.mouse_x = lx;
+                                                event.mouse_y = ly;
+                                            }
+                                        }
+                                        TouchEvent::Cancelled { .. } => {
+                                            // Touch cancelled - treat like mouse leave
+                                            // This will emit POINTER_UP if there was a pressed target
+                                            windowed_ctx.pointer_query.set_pressure(0.0);
+                                            windowed_ctx.pointer_query.set_touch_count(0);
+                                            router.on_mouse_leave();
                                         }
                                     }
                                     TouchEvent::Moved { x, y, .. } => {
@@ -3485,59 +4465,46 @@ impl WindowedApp {
                                     // Scroll momentum ended - full stop
                                     scroll_ended = true;
                                 }
-                                InputEvent::CompositionStarted => {
-                                    composition_active = true;
-                                    keyboard_committed_text = None;
-                                    blinc_layout::widgets::set_focused_text_widget_composition(None);
+                                InputEvent::Pinch { scale, .. } => {
+                                    let (mx, my) = router.mouse_position();
+                                    pending_events.push(PendingEvent {
+                                        event_type: blinc_core::events::event_types::PINCH,
+                                        mouse_x: mx,
+                                        mouse_y: my,
+                                        pinch_scale: scale,
+                                        ..Default::default()
+                                    });
                                 }
-                                InputEvent::CompositionUpdated(update) => {
-                                    composition_active = true;
-                                    blinc_layout::widgets::set_focused_text_widget_composition(Some(
-                                        update,
-                                    ));
-                                }
-                                InputEvent::CompositionCommitted(text) => {
-                                    composition_active = false;
-                                    blinc_layout::widgets::set_focused_text_widget_composition(None);
-                                    for c in take_composition_commit_text(
-                                        &mut keyboard_committed_text,
-                                        &text,
-                                    ) {
-                                        keyboard_events.push(PendingEvent {
-                                            event_type: blinc_core::events::event_types::TEXT_INPUT,
-                                            key_char: Some(c),
-                                            ..Default::default()
-                                        });
-                                    }
-                                }
-                                InputEvent::CompositionCancelled => {
-                                    reset_composition_tracking_state(
-                                        &mut composition_active,
-                                        &mut keyboard_committed_text,
-                                    );
-                                }
-                                InputEvent::FocusTraversal(intent) => {
-                                    keyboard_events.push(PendingEvent {
-                                        event_type: blinc_core::events::event_types::KEY_DOWN,
-                                        key_code: 9,
-                                        shift: matches!(
-                                            intent,
-                                            blinc_platform::FocusTraversalIntent::Previous
-                                        ),
+                                InputEvent::Rotation { angle, .. } => {
+                                    let (mx, my) = router.mouse_position();
+                                    pending_events.push(PendingEvent {
+                                        event_type: blinc_core::events::event_types::ROTATE,
+                                        mouse_x: mx,
+                                        mouse_y: my,
+                                        pinch_scale: angle,
                                         ..Default::default()
                                     });
                                 }
                             }
 
                             router.clear_event_callback();
-                            (pending_events, keyboard_events, scroll_ended, gesture_ended, scroll_info, pinch_info)
+                            (pending_events, keyboard_events, scroll_ended, gesture_ended, scroll_info, scroll_cancel_hit)
                         } else {
                             (Vec::new(), Vec::new(), false, false, None, None)
                         };
 
                         // Second phase: dispatch events with mutable borrow
                         // This automatically marks the tree dirty when handlers fire
-                        if let Some(ref mut tree) = render_tree {
+                        if let Some(ref mut tree) = ws.render_tree {
+                            // "Grab-to-stop": if mouse-down landed on an
+                            // animating scroll container, stop its
+                            // momentum/rebound before any other handler
+                            // runs. The target was captured in phase 1;
+                            // we apply here where the tree is mutable.
+                            if let Some((hit, ancestors)) = scroll_cancel_hit {
+                                tree.cancel_scroll_animation_in_chain(hit, &ancestors);
+                            }
+
                             // IMPORTANT: Process gesture_ended BEFORE scroll delta dispatch
                             // When gesture ends while overscrolling, we start bounce which
                             // sets state to Bouncing. Then apply_scroll_delta will early-return
@@ -3558,7 +4525,7 @@ impl WindowedApp {
                             // Note: We only check has_blocking_overlay(), not has_dismissable_overlay(),
                             // because overlays with dismiss_on_click_outside (like popovers) should allow
                             // scroll events to pass through to content behind them.
-                            let has_overlay_backdrop = ctx
+                            let has_overlay_backdrop = ws.ctx
                                 .as_ref()
                                 .map(|c| c.overlay_manager.has_blocking_overlay())
                                 .unwrap_or(false);
@@ -3604,7 +4571,7 @@ impl WindowedApp {
 
                                     // Re-do hit test with mutable borrow to get ancestor chain
                                     // Then use dispatch_scroll_chain for proper nested scroll handling
-                                    if let Some(ref mut windowed_ctx) = ctx {
+                                    if let Some(ref mut windowed_ctx) = ws.ctx {
                                         let router = &mut windowed_ctx.event_router;
                                         if let Some(hit) = router.hit_test(tree, mouse_x, mouse_y) {
                                             tree.dispatch_scroll_chain(
@@ -3621,12 +4588,33 @@ impl WindowedApp {
                             }
 
                             // Dispatch mouse/touch events (scroll is handled above with nested support)
-                            if let Some(ref mut windowed_ctx) = ctx {
+                            if let Some(ref mut windowed_ctx) = ws.ctx {
                                 let router = &windowed_ctx.event_router;
-                                for event in pending_events {
+                                for mut event in pending_events {
                                     // Skip scroll events - already handled with nested scroll support
                                     if event.event_type == blinc_core::events::event_types::SCROLL {
                                         continue;
+                                    }
+                                    // Gesture events (PINCH/ROTATE) need hit testing since
+                                    // they were collected without a node target
+                                    if (event.event_type == blinc_core::events::event_types::PINCH
+                                        || event.event_type
+                                            == blinc_core::events::event_types::ROTATE)
+                                        && event.node_id == LayoutNodeId::default()
+                                    {
+                                        if let Some(hit) =
+                                            router.hit_test(tree, event.mouse_x, event.mouse_y)
+                                        {
+                                            event.node_id = hit.node;
+                                            event.local_x = hit.local_x;
+                                            event.local_y = hit.local_y;
+                                            event.bounds_x = hit.bounds_x;
+                                            event.bounds_y = hit.bounds_y;
+                                            event.bounds_width = hit.bounds_width;
+                                            event.bounds_height = hit.bounds_height;
+                                        } else {
+                                            continue; // No element under cursor
+                                        }
                                     }
                                     // Look up the correct bounds for this specific node.
                                     // When events bubble from a child to a parent handler,
@@ -3653,7 +4641,7 @@ impl WindowedApp {
                                         bounds_height,
                                         event.drag_delta_x,
                                         event.drag_delta_y,
-                                        1.0,
+                                        event.pinch_scale,
                                     );
                                 }
                             }
@@ -3691,10 +4679,15 @@ impl WindowedApp {
                                 }
                             }
 
-                            // If scroll momentum ended, notify scroll physics
+                            // Fire the rebound on `TouchPhase::Ended`. macOS
+                            // trackpads deliver Ended twice per gesture (once
+                            // at finger-lift, once at OS-momentum end); the
+                            // physics' `on_scroll_end` is idempotent — the
+                            // second call is a no-op because `is_overscrolling`
+                            // is false after the first spring has already
+                            // clamped the content to the edge.
                             if scroll_ended {
                                 tree.on_scroll_end();
-                                // Request redraw to animate bounce-back
                                 window.request_redraw();
                             }
                         }
@@ -3702,14 +4695,14 @@ impl WindowedApp {
                         sync_platform_ime_state();
                     }
 
-                    Event::Frame => {
+                    Event::Frame(_) => {
                         if let (
                             Some(ref mut blinc_app),
                             Some(ref surf),
                             Some(ref config),
                             Some(ref mut windowed_ctx),
                             Some(ref mut rs),
-                        ) = (&mut app, &surface, &surface_config, &mut ctx, &mut render_state)
+                        ) = (&mut ws.app, &ws.surface, &ws.surface_config, &mut ws.ctx, &mut ws.render_state)
                         {
                             // Get current frame
                             let frame = match surf.get_current_texture() {
@@ -3749,18 +4742,7 @@ impl WindowedApp {
                             // Tick scroll physics and sync ScrollRef state BEFORE any rebuilds
                             // This ensures ScrollRef has up-to-date values when stateful components
                             // query scroll position during rebuild
-                            let scroll_animating = if let Some(ref mut tree) = render_tree {
-                                blinc_layout::selector::drain_programmatic_runtime_requests(
-                                    tree,
-                                    &mut windowed_ctx.event_router,
-                                    &pending_focus_changes,
-                                    &pending_scroll_requests,
-                                    &programmatic_events,
-                                );
-                                blinc_layout::selector::sync_context_focus_from_runtime(
-                                    tree,
-                                    &windowed_ctx.event_router,
-                                );
+                            let scroll_animating = if let Some(ref mut tree) = ws.render_tree {
                                 let animating = tree.tick_scroll_physics(current_time);
                                 tree.process_pending_scroll_refs();
                                 animating
@@ -3774,29 +4756,29 @@ impl WindowedApp {
                             // =========================================================
 
                             // Check if event handlers marked anything dirty (auto-rebuild)
-                            if let Some(ref tree) = render_tree {
+                            if let Some(ref tree) = ws.render_tree {
                                 if tree.needs_rebuild() {
                                     tracing::debug!("Rebuild triggered by: dirty_tracker");
-                                    needs_rebuild = true;
+                                    ws.needs_rebuild = true;
                                 }
                             }
 
                             // Check if element refs were modified (triggers rebuild)
                             if ref_dirty_flag.swap(false, Ordering::SeqCst) {
                                 tracing::debug!("Rebuild triggered by: ref_dirty_flag (State::set)");
-                                needs_rebuild = true;
+                                ws.needs_rebuild = true;
                             }
 
                             // Check if text widgets requested a rebuild (focus/text changes)
                             if blinc_layout::widgets::take_needs_rebuild() {
                                 tracing::debug!("Rebuild triggered by: text widget state change");
-                                needs_rebuild = true;
+                                ws.needs_rebuild = true;
                             }
 
                             // Check if a full relayout was requested (e.g., theme changes)
                             if blinc_layout::widgets::take_needs_relayout() {
                                 tracing::debug!("Relayout triggered by: theme or global state change");
-                                needs_relayout = true;
+                                ws.needs_relayout = true;
                             }
 
                             // Check if CSS stylesheets need reparsing (e.g., theme color scheme changed)
@@ -3875,7 +4857,7 @@ impl WindowedApp {
 
                                 // Apply prop updates to the main tree
                                 // (Overlays are now part of the main tree, so all nodes are here)
-                                if let Some(ref mut tree) = render_tree {
+                                if let Some(ref mut tree) = ws.render_tree {
                                     for (node_id, props) in &prop_updates {
                                         tree.update_render_props(*node_id, |p| *p = props.clone());
                                     }
@@ -3883,12 +4865,12 @@ impl WindowedApp {
 
                                 // Process subtree rebuilds (from stateful changes OR overlay changes)
                                 let mut needs_layout = false;
-                                if let Some(ref mut tree) = render_tree {
+                                if let Some(ref mut tree) = ws.render_tree {
                                     needs_layout = tree.process_pending_subtree_rebuilds();
                                 }
 
                                 if needs_layout {
-                                    if let Some(ref mut tree) = render_tree {
+                                    if let Some(ref mut tree) = ws.render_tree {
                                         tracing::debug!("Subtree rebuilds processed, recomputing layout");
                                         tree.apply_stylesheet_layout_overrides();
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
@@ -3918,7 +4900,7 @@ impl WindowedApp {
                             // This clears the "used" set so we can detect which motions are no longer in the tree
                             rs.begin_stable_motion_frame();
 
-                            if needs_rebuild || render_tree.is_none() {
+                            if ws.needs_rebuild || ws.render_tree.is_none() {
                                 // Reset call counters for stable key generation
                                 reset_call_counters();
                                 // Clear stale Stateful base_render_props updaters
@@ -3948,8 +4930,8 @@ impl WindowedApp {
                                 // Use incremental update if we have an existing tree
                                 // BUT: Skip incremental update during resize - do full rebuild instead
                                 // This ensures parent constraints properly propagate to all children
-                                if let Some(ref mut existing_tree) = render_tree {
-                                    if needs_relayout {
+                                if let Some(ref mut existing_tree) = ws.render_tree {
+                                    if ws.needs_relayout {
                                         // Window resize: bypass incremental update, do full rebuild
                                         // This ensures proper constraint propagation from parents to children
                                         tracing::debug!("Window resize: full tree rebuild (bypassing incremental update)");
@@ -3997,7 +4979,7 @@ impl WindowedApp {
                                         *existing_tree = tree;
 
                                         // Clear relayout flag after full rebuild
-                                        needs_relayout = false;
+                                        ws.needs_relayout = false;
                                     } else {
                                         // Normal incremental update (no resize)
                                         use blinc_layout::UpdateResult;
@@ -4083,15 +5065,25 @@ impl WindowedApp {
                                     // Start CSS animations for elements with animation properties
                                     tree.start_all_css_animations();
 
-                                    render_tree = Some(tree);
+                                    ws.render_tree = Some(tree);
                                 }
 
-                                needs_rebuild = false;
-                                windowed_ctx.finish_runtime_rebuild();
+                                ws.needs_rebuild = false;
+                                let was_first_rebuild = windowed_ctx.rebuild_count == 0;
+                                windowed_ctx.rebuild_count = windowed_ctx.rebuild_count.saturating_add(1);
+
+                                // Execute on_ready callbacks after first rebuild
+                                if was_first_rebuild {
+                                    if let Ok(mut callbacks) = ready_callbacks.lock() {
+                                        for callback in callbacks.drain(..) {
+                                            callback();
+                                        }
+                                    }
+                                }
                             } else {
                                 // No rebuild needed - still need to end the motion frame
                                 // If an existing tree exists, initialize motions to mark them as used
-                                if let Some(ref tree) = render_tree {
+                                if let Some(ref tree) = ws.render_tree {
                                     tree.initialize_motion_animations(rs);
                                 }
                                 rs.end_stable_motion_frame();
@@ -4290,12 +5282,12 @@ impl WindowedApp {
                             // Tick CSS animations/transitions synchronously on the main thread.
                             // The scheduler's bg thread drives 120fps redraws via wake_callback,
                             // but actual ticking is done here to stay in phase with rendering.
-                            let dt_ms = if last_frame_time_ms > 0 {
-                                (current_time - last_frame_time_ms) as f32
+                            let dt_ms = if ws.last_frame_time_ms > 0 {
+                                (current_time - ws.last_frame_time_ms) as f32
                             } else {
                                 16.0
                             };
-                            let css_active = if let Some(ref tree) = render_tree {
+                            let css_active = if let Some(ref mut tree) = ws.render_tree {
                                 let store = tree.css_anim_store();
                                 let mut s = store.lock().unwrap();
                                 let (anim, trans) = s.tick(dt_ms);
@@ -4304,7 +5296,7 @@ impl WindowedApp {
                             } else {
                                 false
                             };
-                            last_frame_time_ms = current_time;
+                            ws.last_frame_time_ms = current_time;
 
                             // Sync motion states to shared store for query_motion API
                             rs.sync_shared_motion_states();
@@ -4332,7 +5324,7 @@ impl WindowedApp {
 
                             // Apply CSS state styles (:hover, :active, :focus) from stylesheet
                             // This also detects property changes and starts new transitions
-                            if let Some(ref mut tree) = render_tree {
+                            if let Some(ref mut tree) = ws.render_tree {
                                 if tree.stylesheet().is_some() {
                                     let state_changed = tree.apply_stylesheet_state_styles(&windowed_ctx.event_router);
                                     // Recompute layout if state styles affected layout properties
@@ -4350,8 +5342,8 @@ impl WindowedApp {
 
                             // Apply CSS animation/transition values AFTER state styles
                             // (state styles reset to base, animations must override)
-                            if css_active || !render_tree.as_ref().map_or(true, |t| t.css_transitions_empty()) {
-                                if let Some(ref mut tree) = render_tree {
+                            if css_active || !ws.render_tree.as_ref().map_or(true, |t| t.css_transitions_empty()) {
+                                if let Some(ref mut tree) = ws.render_tree {
                                     tree.apply_all_css_animation_props();
                                     tree.apply_all_css_transition_props();
                                     if tree.apply_animated_layout_props() {
@@ -4360,10 +5352,60 @@ impl WindowedApp {
                                 }
                             }
 
-                            if let Some(ref tree) = render_tree {
-                                sync_accessibility_snapshot(tree);
-                                maybe_record_tree_snapshot(tree, &windowed_ctx);
-                                sync_platform_ime_state();
+                            // Update continuous pointer query state
+                            if !windowed_ctx.pointer_query.is_empty() {
+                                let (mx, my) = windowed_ctx.event_router.mouse_position();
+                                let is_pressed = windowed_ctx.event_router.pressed_target().is_some();
+                                let dt_sec = dt_ms / 1000.0;
+                                let time_sec = current_time as f64 / 1000.0;
+                                // Use event router's hit test results for hover detection.
+                                // The router already handles scroll offsets, transforms, and occlusion
+                                // correctly, so bounds from get_node_bounds match the rendering pipeline.
+                                windowed_ctx.pointer_query.update(
+                                    mx, my, is_pressed, dt_sec, time_sec,
+                                    |id| {
+                                        let node = element_registry.get(id)?;
+                                        if windowed_ctx.event_router.is_hovered(node) {
+                                            windowed_ctx.event_router.get_node_bounds(node)
+                                        } else {
+                                            None
+                                        }
+                                    },
+                                );
+                                // Evaluate dynamic calc(env(...)) properties with current pointer state
+                                if let Some(ref mut tree) = ws.render_tree {
+                                    tree.apply_pointer_styles(
+                                        &windowed_ctx.pointer_query,
+                                        &windowed_ctx.event_router,
+                                    );
+                                }
+                            }
+
+                            if let Some(ref tree) = ws.render_tree {
+                                // Set blend target for mix-blend-mode support
+                                blinc_app.set_blend_target(&frame.texture);
+
+                                // Pass cursor position for @flow pointer input
+                                let (mx, my) = windowed_ctx.event_router.mouse_position();
+                                let sf = windowed_ctx.scale_factor as f32;
+                                blinc_app.set_cursor_position(mx * sf, my * sf);
+
+                                // Drain any custom passes queued via BlincContextState
+                                // (e.g. SceneKit3D registering a GridPass from a closure)
+                                {
+                                    let ctx_state = blinc_core::BlincContextState::get();
+                                    for pass in ctx_state.drain_custom_passes() {
+                                        if let Ok(typed) = pass.downcast::<Box<dyn blinc_gpu::custom_pass::CustomRenderPass>>() {
+                                            blinc_app.context().register_custom_pass(*typed);
+                                        }
+                                    }
+                                }
+
+                                // Clear alpha tracks per-window transparency so a
+                                // mix of opaque and transparent windows can share
+                                // the same BlincApp.
+                                blinc_app.set_clear_alpha(if ws.transparent { 0.0 } else { 1.0 });
+
                                 // Render with motion animations
                                 // Use physical pixel dimensions for the render surface
                                 let result = blinc_app.render_tree_with_motion(
@@ -4579,7 +5621,7 @@ impl WindowedApp {
                             let needs_cursor_redraw = blinc_layout::widgets::take_needs_continuous_redraw();
 
                             // Check if motion animations are active (enter/exit animations)
-                            let needs_motion_redraw = if let Some(ref rs) = render_state {
+                            let needs_motion_redraw = if let Some(ref rs) = ws.render_state {
                                 rs.has_active_motions()
                             } else {
                                 false
@@ -4594,9 +5636,12 @@ impl WindowedApp {
                             // Check if CSS animations/transitions need continued redraws
                             // (includes transitions created during apply_complex_selector_styles)
                             let css_needs_redraw = css_active
-                                || !render_tree
+                                || !ws.render_tree
                                     .as_ref()
-                                    .map_or(true, |t| t.css_transitions_empty());
+                                    .map_or(true, |t| t.css_transitions_empty())
+                                || ws.render_tree
+                                    .as_ref()
+                                    .is_some_and(|t| t.has_active_flip_animations());
 
                             let needs_e2e_redraw = e2e_enabled
                                 && e2e_captures_done < e2e_max_captures
@@ -4689,11 +5734,8 @@ fn convert_cursor_style(cursor: CursorStyle) -> blinc_platform::Cursor {
     }
 }
 
-/// Convenience function to run a windowed app with default configuration
-#[cfg(all(
-    feature = "windowed",
-    not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
-))]
+/// Convenience function to run a windowed ws.app with default configuration
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
 pub fn run_windowed<F, E>(ui_builder: F) -> Result<()>
 where
     F: FnMut(&mut WindowedContext) -> E + 'static,
@@ -4702,11 +5744,8 @@ where
     WindowedApp::run(WindowConfig::default(), ui_builder)
 }
 
-/// Convenience function to run a windowed app with a title
-#[cfg(all(
-    feature = "windowed",
-    not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
-))]
+/// Convenience function to run a windowed ws.app with a title
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
 pub fn run_windowed_with_title<F, E>(title: &str, ui_builder: F) -> Result<()>
 where
     F: FnMut(&mut WindowedContext) -> E + 'static,

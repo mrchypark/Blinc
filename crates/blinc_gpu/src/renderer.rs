@@ -2,6 +2,23 @@
 //!
 //! The main renderer that manages wgpu resources and executes render passes
 //! for SDF primitives, glass effects, and text.
+//!
+//! ## A note on wasm32 + `Arc`
+//!
+//! On `wasm32-unknown-unknown` the wgpu API is single-threaded by design
+//! (the WebGPU JavaScript interface lives on the main browser thread),
+//! so `wgpu::Device` and `wgpu::Queue` are `!Send + !Sync`. Wrapping them
+//! in `Arc` is still the right call — every other Blinc subsystem uses
+//! `Arc<Device>` / `Arc<Queue>` to share GPU handles, and the
+//! alternative (per-target `Rc` vs `Arc` aliases) would leak through
+//! every storage site in `blinc_gpu`, `blinc_app::context`, the text
+//! renderer, etc. Clippy's `arc_with_non_send_sync` lint catches the
+//! theoretical footgun that an `Arc` of a `!Send` type can never
+//! actually be sent across threads, but on wasm32 there are no other
+//! threads to send to. The lint is `allow`ed at the module level for
+//! that target only.
+
+#![cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,13 +30,16 @@ use crate::image::GpuImageInstance;
 use crate::path::PathVertex;
 use crate::primitives::{
     BlurUniforms, ColorMatrixUniforms, DropShadowUniforms, GlassType, GlassUniforms, GlowUniforms,
-    GpuGlassPrimitive, GpuGlyph, GpuLineSegment, GpuPrimitive, MaskImageUniforms, PathUniforms,
-    PrimitiveBatch, Sdf3DUniform, Uniforms, Viewport3D,
+    GpuGlassPrimitive, GpuGlyph, GpuPrimitive, MaskImageUniforms, PathUniforms, PrimitiveBatch,
+    Sdf3DUniform, SdfPipelineCategory, SdfVertexInstance, Uniforms, Viewport3D,
 };
 use crate::shaders::{
-    BLUR_SHADER, COLOR_MATRIX_SHADER, COMPOSITE_SHADER, DROP_SHADOW_SHADER, GLASS_SHADER,
-    GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, LINE_SHADER, MASK_IMAGE_SHADER, PATH_SHADER,
-    SDF_SHADER, SIMPLE_GLASS_SHADER, TEXT_SHADER,
+    BLUR_SHADER, COLOR_MATRIX_SHADER, COMPOSITE_SHADER, DROP_SHADOW_SHADER, GLASS_DT_SHADER,
+    GLASS_SHADER, GLOW_SHADER, IMAGE_SHADER, LAYER_COMPOSITE_SHADER, MASK_IMAGE_SHADER,
+    MESH_DT_SHADER, PATH_SHADER, SDF_3D_DT_SHADER, SDF_3D_SHADER, SDF_3D_VB_SHADER,
+    SDF_CORE_DT_SHADER, SDF_CORE_SHADER, SDF_CORE_VB_SHADER, SDF_NOTCH_DT_SHADER, SDF_NOTCH_SHADER,
+    SDF_NOTCH_VB_SHADER, SDF_SHADER, SDF_SHADOW_DT_SHADER, SDF_SHADOW_SHADER, SDF_SHADOW_VB_SHADER,
+    SIMPLE_GLASS_DT_SHADER, SIMPLE_GLASS_SHADER, TEXT_DT_SHADER, TEXT_SHADER,
 };
 
 fn env_u64(name: &str) -> Option<u64> {
@@ -34,15 +54,24 @@ fn env_usize(name: &str) -> Option<usize> {
         .and_then(|v| v.trim().parse::<usize>().ok())
 }
 
-const fn align256(v: u64) -> u64 {
-    (v + 255) & !255
-}
-
-const PATH_UNIFORM_SIZE: u64 = std::mem::size_of::<PathUniforms>() as u64;
-const PATH_UNIFORM_STRIDE: u64 = align256(PATH_UNIFORM_SIZE);
-
-fn has_path_geometry(paths: &crate::primitives::PathBatch) -> bool {
-    !paths.vertices.is_empty() && !paths.indices.is_empty()
+/// Feature set to request from `adapter.request_device`. Picks
+/// `TEXTURE_COMPRESSION_BC` when the adapter advertises it; the
+/// renderer probes the active feature set afterward via
+/// `device.features()` to decide whether to upload BC-encoded
+/// material textures or fall back to Rgba8.
+///
+/// Safe to call on wgpu backends that don't support BC (WebGL2,
+/// iOS/Metal-without-BC): the adapter's features query simply
+/// returns `false` and no feature is requested. Callers that
+/// need to detect this downstream should query
+/// `GpuRenderer::has_texture_compression_bc()`.
+fn requested_device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    let mut features = wgpu::Features::empty();
+    let available = adapter.features();
+    if available.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
+        features |= wgpu::Features::TEXTURE_COMPRESSION_BC;
+    }
+    features
 }
 
 fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
@@ -50,7 +79,17 @@ fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     // (e.g. GLES reporting zero for some compute limits) won't fail device creation.
     // Then clamp max_buffer_size conservatively unless overridden.
     let supported = adapter.limits();
+
+    // On wasm32, use the adapter's own supported limits directly
+    // instead of requesting wgpu defaults. Different browsers support
+    // different subsets of WebGPU — Safari/Firefox may report 0 for
+    // compute workgroups or storage buffer binding size. Requesting
+    // any limit above what the adapter supports causes device creation
+    // to fail. Using the adapter's limits verbatim is always safe.
+    #[cfg(target_arch = "wasm32")]
     let mut limits = supported.clone();
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut limits = wgpu::Limits::default();
 
     if let Some(mib) = env_u64("BLINC_WGPU_MAX_BUFFER_MB") {
         let requested = mib.saturating_mul(1024 * 1024);
@@ -185,10 +224,22 @@ pub struct RendererConfig {
     ///
     /// Default: true (unified rendering for consistent animations)
     pub unified_text_rendering: bool,
+    /// GPU texture memory budget in bytes.
+    ///
+    /// When total tracked texture memory exceeds this budget, the renderer
+    /// evicts least-recently-used textures from caches. Set to 0 to disable.
+    ///
+    /// Default: 128 MB. Override with `BLINC_GPU_MEMORY_BUDGET_MB` env var.
+    pub gpu_memory_budget: u64,
 }
 
 impl Default for RendererConfig {
     fn default() -> Self {
+        let budget_mb: u64 = std::env::var("BLINC_GPU_MEMORY_BUDGET_MB")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(128);
+
         Self {
             // Conservative defaults for low memory footprint
             // Buffers are re-created if scenes exceed these limits, so no hard cap
@@ -199,20 +250,128 @@ impl Default for RendererConfig {
             sample_count: 1,
             texture_format: None,
             unified_text_rendering: true, // Enabled for consistent transforms during animations
+            gpu_memory_budget: budget_mb * 1024 * 1024,
         }
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GPU Memory Budget & Eviction
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Tracks GPU texture memory usage across all caches and enforces a budget.
+pub struct GpuMemoryBudget {
+    /// Maximum allowed texture memory in bytes (0 = unlimited)
+    budget: u64,
+    /// Memory used by mask image cache
+    mask_image_bytes: u64,
+    /// Memory used by mesh textures (transient, per-frame)
+    mesh_texture_bytes: u64,
+    /// Number of eviction passes performed
+    eviction_count: u64,
+}
+
+impl GpuMemoryBudget {
+    pub fn new(budget: u64) -> Self {
+        Self {
+            budget,
+            mask_image_bytes: 0,
+            mesh_texture_bytes: 0,
+            eviction_count: 0,
+        }
+    }
+
+    /// Report current total tracked memory across all sources.
+    pub fn total_tracked_bytes(&self, layer_cache_bytes: u64) -> u64 {
+        layer_cache_bytes + self.mask_image_bytes + self.mesh_texture_bytes
+    }
+
+    /// Check if we're over budget.
+    pub fn is_over_budget(&self, layer_cache_bytes: u64) -> bool {
+        self.budget > 0 && self.total_tracked_bytes(layer_cache_bytes) > self.budget
+    }
+
+    /// Track a mask image being added to the cache.
+    pub fn track_mask_image(&mut self, width: u32, height: u32) {
+        self.mask_image_bytes += (width as u64) * (height as u64) * 4;
+    }
+
+    /// Track a mask image being removed from the cache.
+    pub fn untrack_mask_image(&mut self, width: u32, height: u32) {
+        let bytes = (width as u64) * (height as u64) * 4;
+        self.mask_image_bytes = self.mask_image_bytes.saturating_sub(bytes);
+    }
+
+    /// Reset per-frame transient tracking (mesh textures, etc.)
+    pub fn reset_transient(&mut self) {
+        self.mesh_texture_bytes = 0;
+    }
+
+    /// Get the memory budget in bytes.
+    pub fn budget(&self) -> u64 {
+        self.budget
+    }
+
+    /// Get number of eviction passes performed.
+    pub fn eviction_count(&self) -> u64 {
+        self.eviction_count
+    }
+
+    /// Increment eviction counter.
+    pub fn record_eviction(&mut self) {
+        self.eviction_count += 1;
+    }
+}
+
 /// Render pipelines for different primitive types
+/// One stack frame for a pending `LayerCommand::Push`, holding the
+/// primitive / path indices at push time so the matching Pop can
+/// compute full ranges.
+#[derive(Copy, Clone)]
+struct LayerStackFrame {
+    primitive_start: usize,
+    path_index_start: usize,
+    path_vertex_start: usize,
+}
+
+/// A resolved effect layer (between Push and Pop) with its primitive
+/// range and path range. Processed by `render_with_layer_effects` to
+/// either skip its content in the first pass or composite it
+/// offscreen in the second pass.
+#[derive(Clone)]
+struct EffectLayerRange {
+    primitive_start: usize,
+    primitive_end: usize,
+    path_index_start: usize,
+    path_index_end: usize,
+    path_vertex_start: usize,
+    path_vertex_end: usize,
+    config: blinc_core::LayerConfig,
+}
+
 struct Pipelines {
-    /// Pipeline for SDF primitives (rects, circles, etc.)
+    /// Pipeline for SDF primitives (rects, circles, etc.) — monolithic fallback (deprecated)
+    #[allow(dead_code)]
     sdf: wgpu::RenderPipeline,
-    /// Pipeline for SDF primitives rendering on top of existing content (1x sampled)
+    /// Pipeline for SDF primitives rendering on top of existing content (1x sampled) — monolithic fallback (deprecated)
+    #[allow(dead_code)]
     sdf_overlay: wgpu::RenderPipeline,
-    /// Pipeline for compact line segments (MSAA)
-    lines: wgpu::RenderPipeline,
-    /// Pipeline for compact line segments rendering on top of existing content (1x sampled)
-    lines_overlay: wgpu::RenderPipeline,
+    /// Split SDF pipeline: core shapes (Rect, Circle, Ellipse)
+    sdf_core: wgpu::RenderPipeline,
+    /// Split SDF pipeline: shadow shapes (Shadow, InnerShadow, CircleShadow, CircleInnerShadow)
+    sdf_shadow: wgpu::RenderPipeline,
+    /// Split SDF pipeline: 3D raymarched shapes
+    sdf_3d: wgpu::RenderPipeline,
+    /// Split SDF pipeline: notch shapes
+    sdf_notch: wgpu::RenderPipeline,
+    /// Split SDF overlay pipeline: core shapes (1x sampled)
+    sdf_core_overlay: wgpu::RenderPipeline,
+    /// Split SDF overlay pipeline: shadow shapes (1x sampled)
+    sdf_shadow_overlay: wgpu::RenderPipeline,
+    /// Split SDF overlay pipeline: 3D raymarched shapes (1x sampled)
+    sdf_3d_overlay: wgpu::RenderPipeline,
+    /// Split SDF overlay pipeline: notch shapes (1x sampled)
+    sdf_notch_overlay: wgpu::RenderPipeline,
     /// Pipeline for text rendering (MSAA)
     _text: wgpu::RenderPipeline,
     /// Pipeline for text rendering on top of existing content (1x sampled)
@@ -249,8 +408,17 @@ struct EffectPipelines {
 
 /// Cached MSAA pipelines for dynamic sample counts
 struct MsaaPipelines {
-    /// SDF pipeline for this sample count
+    /// SDF pipeline for this sample count (monolithic fallback, deprecated)
+    #[allow(dead_code)]
     sdf: wgpu::RenderPipeline,
+    /// Split SDF MSAA pipeline: core shapes
+    sdf_core: wgpu::RenderPipeline,
+    /// Split SDF MSAA pipeline: shadow shapes
+    sdf_shadow: wgpu::RenderPipeline,
+    /// Split SDF MSAA pipeline: 3D raymarched shapes
+    sdf_3d: wgpu::RenderPipeline,
+    /// Split SDF MSAA pipeline: notch shapes
+    sdf_notch: wgpu::RenderPipeline,
     /// Path pipeline for this sample count
     path: wgpu::RenderPipeline,
     /// Sample count these pipelines were created for
@@ -287,6 +455,25 @@ struct Buffers {
     color_matrix_uniforms: Option<wgpu::Buffer>,
     /// Storage buffer for auxiliary per-primitive data (group shapes, polygon clips)
     aux_data: wgpu::Buffer,
+    /// Instance vertex buffer for VERTEX_STORAGE fallback (WebGL2).
+    /// Created/resized on demand when the adapter lacks storage buffers in
+    /// vertex shaders.
+    sdf_vertex_instances: Option<wgpu::Buffer>,
+    /// Data texture for primitive data (WebGL2 fallback when no storage buffers).
+    /// Width = 23 texels (one per vec4 field of GpuPrimitive), height = max_primitives.
+    /// Format: Rgba32Float.
+    prim_data_texture: Option<wgpu::Texture>,
+    prim_data_view: Option<wgpu::TextureView>,
+    /// Data texture for auxiliary data (WebGL2 fallback when no storage buffers).
+    /// Width = 1024 texels, height grows on demand. Format: Rgba32Float.
+    aux_data_texture: Option<wgpu::Texture>,
+    aux_data_view: Option<wgpu::TextureView>,
+    /// Current height of the aux data texture (for resize detection)
+    aux_data_texture_height: u32,
+    /// Data texture for glyph data (WebGL2 fallback).
+    /// Width = 6 texels (one per vec4 field of GpuGlyph), height = max_glyphs.
+    glyph_data_texture: Option<wgpu::Texture>,
+    glyph_data_view: Option<wgpu::TextureView>,
 }
 
 /// Bind groups for shader resources
@@ -734,6 +921,34 @@ impl LayerTextureCache {
         self.update_pool_stats();
     }
 
+    /// Evict pooled textures until memory usage drops below `target_bytes`.
+    ///
+    /// Evicts largest textures first (XLarge → Large → Medium → Small).
+    /// Returns the number of bytes freed.
+    pub fn evict_to_budget(&mut self, target_bytes: u64) -> u64 {
+        let mut freed = 0u64;
+        let pools = [
+            TextureSizeBucket::XLarge,
+            TextureSizeBucket::Large,
+            TextureSizeBucket::Medium,
+            TextureSizeBucket::Small,
+        ];
+
+        for bucket in pools {
+            while self.stats.pool_memory_bytes > target_bytes {
+                let pool = self.get_pool_mut(bucket);
+                if let Some(tex) = pool.pop() {
+                    let bytes = Self::estimate_texture_bytes(tex.size, tex.has_depth);
+                    freed += bytes;
+                    self.update_pool_stats();
+                } else {
+                    break;
+                }
+            }
+        }
+        freed
+    }
+
     /// Store a texture with a layer ID for later retrieval
     pub fn store(&mut self, id: blinc_core::LayerId, texture: LayerTexture) {
         self.named_textures.insert(id, texture);
@@ -808,6 +1023,25 @@ impl LayerTextureCache {
     }
 }
 
+/// Primitive range boundaries for split SDF pipeline dispatch.
+///
+/// After sorting primitives by `SdfPipelineCategory`, each category
+/// occupies a contiguous range in the GPU buffer. Text primitives are
+/// tracked here for completeness but rendered by the separate text pipeline.
+#[derive(Clone, Default)]
+struct SdfPrimitiveRanges {
+    core: std::ops::Range<u32>,
+    shadow: std::ops::Range<u32>,
+    sdf_3d: std::ops::Range<u32>,
+    notch: std::ops::Range<u32>,
+    text: std::ops::Range<u32>,
+    /// Contiguous `(category, start, end)` runs covering the primitive
+    /// stream in instance-index order. `draw_split_sdf` issues one draw
+    /// per run so cross-category z-order is preserved (the split pipelines
+    /// otherwise lose it when each pipeline runs over the full range).
+    runs: Vec<(SdfPipelineCategory, u32, u32)>,
+}
+
 /// The GPU renderer using wgpu
 ///
 /// This is the main rendering engine that:
@@ -821,9 +1055,9 @@ pub struct GpuRenderer {
     /// GPU adapter
     _adapter: wgpu::Adapter,
     /// GPU device
-    device: Arc<wgpu::Device>,
+    pub(crate) device: Arc<wgpu::Device>,
     /// Command queue
-    queue: Arc<wgpu::Queue>,
+    pub(crate) queue: Arc<wgpu::Queue>,
     /// Render pipelines
     pipelines: Pipelines,
     /// Effect pipelines (lazily created on first use)
@@ -837,7 +1071,7 @@ pub struct GpuRenderer {
     /// Bind group layouts
     bind_group_layouts: BindGroupLayouts,
     /// Current viewport size
-    viewport_size: (u32, u32),
+    pub(crate) viewport_size: (u32, u32),
     /// Saved viewport size during offscreen rendering (for restore_viewport)
     saved_viewport_size: Option<(u32, u32)>,
     /// Renderer configuration
@@ -845,9 +1079,15 @@ pub struct GpuRenderer {
     /// Current frame time (for animations)
     time: f32,
     /// Resolved texture format used by pipelines
-    texture_format: wgpu::TextureFormat,
+    pub(crate) texture_format: wgpu::TextureFormat,
     /// Lazily-created image pipeline and resources
     image_pipeline: Option<ImagePipeline>,
+    /// Lazily-created mesh rendering pipeline
+    pub(crate) mesh_pipeline: Option<MeshPipeline>,
+    /// User-registered custom render passes
+    custom_passes: crate::custom_pass::CustomPassManager,
+    /// GPU texture memory budget and tracking
+    memory_budget: GpuMemoryBudget,
     /// Cached MSAA textures for overlay rendering (avoids per-frame allocation)
     cached_msaa: Option<CachedMsaaTextures>,
     /// Cached glass resources (avoids per-frame allocation)
@@ -889,6 +1129,23 @@ pub struct GpuRenderer {
     /// Staging texture for scene capture (used by flow shaders with sample_scene()).
     /// Lazily created/resized to match the render target.
     scene_copy_texture: Option<(wgpu::Texture, wgpu::TextureView, u32, u32)>,
+    /// Whether the GPU adapter supports storage buffers in vertex shaders.
+    /// When `false`, SDF pipelines use an instance-stepped vertex buffer
+    /// fallback (WebGL2 path).
+    has_vertex_storage: bool,
+    /// Whether the GPU adapter supports storage buffers at all
+    /// (i.e. `max_storage_buffers_per_shader_stage > 0`).
+    /// When `false`, the renderer uses data textures (Rgba32Float) to pass
+    /// primitive and auxiliary data to fragment shaders instead of storage
+    /// buffers. This is the Tier 3 / WebGL2 fallback path.
+    pub(crate) has_storage_buffers: bool,
+    /// `true` when `device.features()` reports
+    /// `TEXTURE_COMPRESSION_BC` — the renderer can upload BC1 / BC3
+    /// / BC4 / BC5 material textures and cut GPU VRAM by 4-8× vs
+    /// Rgba8. When `false`, upload paths must fall back to Rgba8
+    /// (all desktop adapters support BC; WebGL2 on iOS Safari and
+    /// a handful of older browsers do not).
+    pub(crate) has_texture_compression_bc: bool,
 }
 
 /// Image rendering pipeline (created lazily on first image render)
@@ -898,6 +1155,14 @@ struct ImagePipeline {
     instance_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
 }
+
+/// Shadow map resolution (square)
+pub(crate) const SHADOW_MAP_SIZE: u32 = 2048;
+
+use crate::mesh_pipeline::{
+    MeshBufferCacheEntry, MeshPipeline, MAX_MORPH_TARGETS, MESH_CACHE_CAPACITY,
+    MORPH_CACHE_CAPACITY,
+};
 
 struct BindGroupLayouts {
     sdf: wgpu::BindGroupLayout,
@@ -921,54 +1186,16 @@ struct BindGroupLayouts {
 }
 
 impl GpuRenderer {
-    fn merged_paths_for_msaa(
-        a: &crate::primitives::PathBatch,
-        b: &crate::primitives::PathBatch,
-    ) -> Option<crate::primitives::PathBatch> {
-        if !has_path_geometry(a) && !has_path_geometry(b) {
-            return None;
-        }
-        if !has_path_geometry(b) {
-            return Some(a.clone());
-        }
-        if !has_path_geometry(a) {
-            return Some(b.clone());
-        }
+    /// Whether the GPU adapter supports storage buffers.
+    pub fn has_storage_buffers(&self) -> bool {
+        self.has_storage_buffers
+    }
 
-        // Merge into one batch so MSAA render paths can draw everything in a single pass.
-        // Note: brush metadata is still batch-wide; when both batches use conflicting
-        // advanced brush features simultaneously, this will pick a "best effort" merge.
-        let mut out = a.clone();
-        let base_vertex = out.vertices.len() as u32;
-        let base_index = out.indices.len() as u32;
-
-        out.vertices.extend_from_slice(&b.vertices);
-        out.indices
-            .extend(b.indices.iter().copied().map(|i| i + base_vertex));
-        out.draws.extend(b.draws.iter().map(|d| {
-            let mut dd = *d;
-            dd.index_start = dd.index_start.saturating_add(base_index);
-            dd
-        }));
-
-        out.use_gradient_texture |= b.use_gradient_texture;
-        if out.gradient_stops.is_none() && b.gradient_stops.is_some() {
-            out.gradient_stops = b.gradient_stops.clone();
-        }
-        out.use_image_texture |= b.use_image_texture;
-        if out.image_source.is_none() && b.image_source.is_some() {
-            out.image_source = b.image_source.clone();
-        }
-        if !out.use_image_texture && b.use_image_texture {
-            out.image_uv_bounds = b.image_uv_bounds;
-        }
-        out.use_glass_effect |= b.use_glass_effect;
-        if !out.use_glass_effect && b.use_glass_effect {
-            out.glass_params = b.glass_params;
-            out.glass_tint = b.glass_tint;
-        }
-
-        Some(out)
+    /// Whether the GPU device has `TEXTURE_COMPRESSION_BC` enabled.
+    /// Callers that upload material textures should query this to
+    /// decide between BC (when `true`) and Rgba8 fallback paths.
+    pub fn has_texture_compression_bc(&self) -> bool {
+        self.has_texture_compression_bc
     }
 
     /// Get the preferred backend for the current platform
@@ -1021,41 +1248,293 @@ impl GpuRenderer {
         } else {
             primitives
         };
-        self.queue.write_buffer(
-            &self.buffers.primitives,
-            0,
-            bytemuck::cast_slice(primitives_to_write),
-        );
-        primitives_to_write.len()
+
+        if !self.has_storage_buffers {
+            // DT mode: upload to data texture instead of storage buffer.
+            // Each GpuPrimitive is 23 × vec4<f32> = 23 RGBA32F texels in a row.
+            if let Some(ref tex) = self.buffers.prim_data_texture {
+                let bytes = bytemuck::cast_slice::<GpuPrimitive, u8>(primitives_to_write);
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    bytes,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        // 23 texels × 16 bytes per RGBA32F texel = 368 bytes per row
+                        bytes_per_row: Some(23 * 16),
+                        rows_per_image: None,
+                    },
+                    wgpu::Extent3d {
+                        width: 23,
+                        height: primitives_to_write.len() as u32,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        } else {
+            // Tier 1/2: write to storage buffer as before
+            self.queue.write_buffer(
+                &self.buffers.primitives,
+                0,
+                bytemuck::cast_slice(primitives_to_write),
+            );
+        }
     }
 
-    /// Safely write line segments to buffer, truncating if necessary to prevent overflow
-    fn write_line_segments_safe(&self, segments: &[GpuLineSegment]) -> usize {
-        if segments.is_empty() {
-            return 0;
+    /// Sort primitives by `SdfPipelineCategory` and compute contiguous ranges.
+    ///
+    /// Returns a new sorted `Vec` and the corresponding `SdfPrimitiveRanges`.
+    /// Text primitives are included in the sorted output (and tracked in ranges)
+    /// but should NOT be drawn by the split SDF pipelines — they use the separate
+    /// text pipeline.
+    fn sort_primitives_by_category(
+        primitives: &[GpuPrimitive],
+    ) -> (Vec<GpuPrimitive>, SdfPrimitiveRanges) {
+        if primitives.is_empty() {
+            return (Vec::new(), SdfPrimitiveRanges::default());
         }
-        let max_segments = self.config.max_line_segments;
-        let segs_to_write = if segments.len() > max_segments {
-            tracing::warn!(
-                "Line segment count {} exceeds buffer capacity {}, truncating",
-                segments.len(),
-                max_segments
-            );
-            &segments[..max_segments]
+        let mut sorted: Vec<GpuPrimitive> = primitives.to_vec();
+        sorted.sort_by_key(|p| p.pipeline_category());
+
+        let mut ranges = SdfPrimitiveRanges::default();
+        let mut i = 0u32;
+        let len = sorted.len() as u32;
+        while i < len {
+            let cat = sorted[i as usize].pipeline_category();
+            let start = i;
+            while i < len && sorted[i as usize].pipeline_category() == cat {
+                i += 1;
+            }
+            let range = start..i;
+            match cat {
+                SdfPipelineCategory::Core => ranges.core = range,
+                SdfPipelineCategory::Shadow => ranges.shadow = range,
+                SdfPipelineCategory::Sdf3D => ranges.sdf_3d = range,
+                SdfPipelineCategory::Notch => ranges.notch = range,
+                SdfPipelineCategory::Text => ranges.text = range,
+            }
+        }
+        (sorted, ranges)
+    }
+
+    /// Sort primitives, upload to the GPU buffer (with safety truncation), and return ranges.
+    ///
+    /// When `has_vertex_storage` is `false`, also builds and uploads the
+    /// `SdfVertexInstance` buffer used by the VB fallback shaders.
+    fn upload_sorted_primitives(&mut self, primitives: &[GpuPrimitive]) -> SdfPrimitiveRanges {
+        if primitives.is_empty() {
+            return SdfPrimitiveRanges::default();
+        }
+        // Preserve instance-index z-order. Scan once to (a) populate the
+        // per-category ranges (used for has-text / has-shadow checks) and
+        // (b) build the contiguous-run list that `draw_split_sdf` iterates
+        // in order so shadow/3D/notch don't get overdrawn by later core
+        // primitives (app backgrounds, section containers).
+        let mut ranges = SdfPrimitiveRanges::default();
+        let len = primitives.len() as u32;
+        let full = 0..len;
+        for p in primitives {
+            match p.pipeline_category() {
+                SdfPipelineCategory::Core => {
+                    if ranges.core.is_empty() {
+                        ranges.core = full.clone();
+                    }
+                }
+                SdfPipelineCategory::Shadow => {
+                    if ranges.shadow.is_empty() {
+                        ranges.shadow = full.clone();
+                    }
+                }
+                SdfPipelineCategory::Sdf3D => {
+                    if ranges.sdf_3d.is_empty() {
+                        ranges.sdf_3d = full.clone();
+                    }
+                }
+                SdfPipelineCategory::Notch => {
+                    if ranges.notch.is_empty() {
+                        ranges.notch = full.clone();
+                    }
+                }
+                SdfPipelineCategory::Text => {
+                    if ranges.text.is_empty() {
+                        ranges.text = full.clone();
+                    }
+                }
+            }
+        }
+        ranges.runs = Self::compute_category_runs(primitives);
+        self.write_primitives_safe(primitives);
+
+        // VERTEX_STORAGE fallback: build instance data and upload to VB
+        if !self.has_vertex_storage {
+            let instances: Vec<SdfVertexInstance> = primitives
+                .iter()
+                .map(SdfVertexInstance::from_primitive)
+                .collect();
+            let bytes = bytemuck::cast_slice::<SdfVertexInstance, u8>(&instances);
+            let needed = bytes.len() as u64;
+
+            // Create or resize the vertex buffer if necessary
+            let needs_new_buffer = match &self.buffers.sdf_vertex_instances {
+                Some(buf) => buf.size() < needed,
+                None => true,
+            };
+            if needs_new_buffer {
+                self.buffers.sdf_vertex_instances =
+                    Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("SDF Vertex Instances (VB Fallback)"),
+                        size: needed,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }));
+            }
+            if let Some(buf) = &self.buffers.sdf_vertex_instances {
+                self.queue.write_buffer(buf, 0, bytes);
+            }
+        }
+
+        ranges
+    }
+
+    /// Returns the SDF vertex instance buffer for the VB fallback path,
+    /// or `None` when VERTEX_STORAGE is supported.
+    fn sdf_vb_buffer(&self) -> Option<&wgpu::Buffer> {
+        if self.has_vertex_storage {
+            None
         } else {
-            segments
+            self.buffers.sdf_vertex_instances.as_ref()
+        }
+    }
+
+    /// Issue draw calls for split SDF pipelines using pre-computed ranges.
+    ///
+    /// The bind group must already be set on the render pass before calling this.
+    /// If `overlay` is true, the overlay pipeline variants are used (1x sampled).
+    /// When `vb_buffer` is `Some`, the instance vertex buffer is bound at slot 0
+    /// before each pipeline draw (VERTEX_STORAGE fallback path).
+    fn draw_split_sdf<'a>(
+        render_pass: &mut wgpu::RenderPass<'a>,
+        pipelines: &'a Pipelines,
+        ranges: &SdfPrimitiveRanges,
+        overlay: bool,
+        vb_buffer: Option<&'a wgpu::Buffer>,
+    ) {
+        if let Some(buf) = vb_buffer {
+            render_pass.set_vertex_buffer(0, buf.slice(..));
+        }
+        // Issue one draw per contiguous same-category run. That's how the
+        // monolithic shader preserved cross-type z-order: one pipeline,
+        // per-instance branching. The split pipelines enforce the same
+        // ordering by switching pipelines between runs. Drawing each
+        // pipeline over the full range (the old approach) lost ordering —
+        // e.g. a section background at index 5 would paint over a shadow at
+        // index 10 because the core pipeline ran after the shadow pipeline
+        // regardless of instance order.
+        for &(cat, start, end) in &ranges.runs {
+            if start >= end {
+                continue;
+            }
+            let pipeline = match (cat, overlay) {
+                (SdfPipelineCategory::Shadow, false) => &pipelines.sdf_shadow,
+                (SdfPipelineCategory::Shadow, true) => &pipelines.sdf_shadow_overlay,
+                (SdfPipelineCategory::Notch, false) => &pipelines.sdf_notch,
+                (SdfPipelineCategory::Notch, true) => &pipelines.sdf_notch_overlay,
+                (SdfPipelineCategory::Sdf3D, false) => &pipelines.sdf_3d,
+                (SdfPipelineCategory::Sdf3D, true) => &pipelines.sdf_3d_overlay,
+                // Core and Text both ride the sdf_core pipeline — its
+                // PRIM_TEXT branch samples the glyph atlas for prim_type=7.
+                (SdfPipelineCategory::Core, false) | (SdfPipelineCategory::Text, false) => {
+                    &pipelines.sdf_core
+                }
+                (SdfPipelineCategory::Core, true) | (SdfPipelineCategory::Text, true) => {
+                    &pipelines.sdf_core_overlay
+                }
+            };
+            render_pass.set_pipeline(pipeline);
+            render_pass.draw(0..6, start..end);
+        }
+    }
+
+    /// Walk the primitive slice and emit `(category, start_index, end_index)`
+    /// tuples covering every contiguous run of same-category primitives.
+    /// Drawing these in order preserves instance-index z-order across all
+    /// pipeline categories.
+    fn compute_category_runs(primitives: &[GpuPrimitive]) -> Vec<(SdfPipelineCategory, u32, u32)> {
+        let mut runs = Vec::new();
+        if primitives.is_empty() {
+            return runs;
+        }
+        let mut start = 0u32;
+        let mut cat = primitives[0].pipeline_category();
+        for (i, p) in primitives.iter().enumerate().skip(1) {
+            let c = p.pipeline_category();
+            if c != cat {
+                runs.push((cat, start, i as u32));
+                start = i as u32;
+                cat = c;
+            }
+        }
+        runs.push((cat, start, primitives.len() as u32));
+        runs
+    }
+
+    /// Issue draw calls for split SDF pipelines using MSAA pipeline variants.
+    ///
+    /// Used by `render_overlay_msaa` where a specific sample count is in play.
+    /// When `vb_buffer` is `Some`, the instance vertex buffer is bound at slot 0
+    /// (VERTEX_STORAGE fallback path).
+    fn draw_split_sdf_msaa<'a>(
+        render_pass: &mut wgpu::RenderPass<'a>,
+        msaa: &'a MsaaPipelines,
+        ranges: &SdfPrimitiveRanges,
+        vb_buffer: Option<&'a wgpu::Buffer>,
+    ) {
+        if let Some(buf) = vb_buffer {
+            render_pass.set_vertex_buffer(0, buf.slice(..));
+        }
+        // Full range for z-order preservation (same approach as draw_split_sdf)
+        let total_start = [&ranges.core, &ranges.shadow, &ranges.sdf_3d, &ranges.notch]
+            .iter()
+            .filter(|r| !r.is_empty())
+            .map(|r| r.start)
+            .min();
+        let total_end = [&ranges.core, &ranges.shadow, &ranges.sdf_3d, &ranges.notch]
+            .iter()
+            .filter(|r| !r.is_empty())
+            .map(|r| r.end)
+            .max();
+        let full_range = match (total_start, total_end) {
+            (Some(s), Some(e)) => s..e,
+            _ => return,
         };
-        self.queue.write_buffer(
-            &self.buffers.line_segments,
-            0,
-            bytemuck::cast_slice(segs_to_write),
-        );
-        segs_to_write.len()
+        // Per-run draws preserve cross-category z-order (same approach as
+        // `draw_split_sdf`). `full_range` is now only used to short-circuit
+        // empty batches.
+        let _ = full_range;
+        for &(cat, start, end) in &ranges.runs {
+            if start >= end {
+                continue;
+            }
+            let pipeline = match cat {
+                SdfPipelineCategory::Shadow => &msaa.sdf_shadow,
+                SdfPipelineCategory::Notch => &msaa.sdf_notch,
+                SdfPipelineCategory::Sdf3D => &msaa.sdf_3d,
+                // Core + Text both ride sdf_core (its PRIM_TEXT branch
+                // samples the glyph atlas for prim_type=7).
+                SdfPipelineCategory::Core | SdfPipelineCategory::Text => &msaa.sdf_core,
+            };
+            render_pass.set_pipeline(pipeline);
+            render_pass.draw(0..6, start..end);
+        }
     }
 
     /// Create a new renderer without a surface (for headless rendering)
     pub async fn new(config: RendererConfig) -> Result<Self, RendererError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: Self::preferred_backends(),
             ..Default::default()
         });
@@ -1067,25 +1546,23 @@ impl GpuRenderer {
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or(RendererError::AdapterNotFound)?;
+            .map_err(|_| RendererError::AdapterNotFound)?;
 
         let required_limits = device_required_limits(&adapter);
         let config = apply_renderer_config_overrides(config, &required_limits);
         log_renderer_config(&config);
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("Blinc GPU Device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits,
-                    // MemoryUsage hint tells the driver to prefer lower memory over performance.
-                    // This helps reduce RSS on integrated GPUs (Apple Silicon) where GPU memory
-                    // is shared with CPU and counts against process memory.
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("Blinc GPU Device"),
+                required_features: requested_device_features(&adapter),
+                required_limits,
+                // MemoryUsage hint tells the driver to prefer lower memory over performance.
+                // This helps reduce RSS on integrated GPUs (Apple Silicon) where GPU memory
+                // is shared with CPU and counts against process memory.
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+            })
             .await
             .map_err(RendererError::DeviceError)?;
 
@@ -1120,7 +1597,7 @@ impl GpuRenderer {
             + Sync
             + 'static,
     {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: Self::preferred_backends(),
             ..Default::default()
         });
@@ -1136,25 +1613,23 @@ impl GpuRenderer {
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or(RendererError::AdapterNotFound)?;
+            .map_err(|_| RendererError::AdapterNotFound)?;
 
         let required_limits = device_required_limits(&adapter);
         let config = apply_renderer_config_overrides(config, &required_limits);
         log_renderer_config(&config);
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("Blinc GPU Device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits,
-                    // MemoryUsage hint tells the driver to prefer lower memory over performance.
-                    // This helps reduce RSS on integrated GPUs (Apple Silicon) where GPU memory
-                    // is shared with CPU and counts against process memory.
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("Blinc GPU Device"),
+                required_features: requested_device_features(&adapter),
+                required_limits,
+                // MemoryUsage hint tells the driver to prefer lower memory over performance.
+                // This helps reduce RSS on integrated GPUs (Apple Silicon) where GPU memory
+                // is shared with CPU and counts against process memory.
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+            })
             .await
             .map_err(RendererError::DeviceError)?;
 
@@ -1184,6 +1659,156 @@ impl GpuRenderer {
             }
             #[cfg(not(target_os = "macos"))]
             {
+                // On WebGL2 (GL adapter without storage buffers), prefer non-sRGB
+                // to avoid double gamma correction — shaders output sRGB-encoded
+                // colors directly, and an sRGB surface would apply gamma again.
+                let prefer_non_srgb = adapter.limits().max_storage_buffers_per_shader_stage == 0;
+                if prefer_non_srgb {
+                    surface_caps
+                        .formats
+                        .iter()
+                        .find(|f| !f.is_srgb())
+                        .copied()
+                        .unwrap_or(surface_caps.formats[0])
+                } else {
+                    surface_caps
+                        .formats
+                        .iter()
+                        .find(|f| f.is_srgb())
+                        .copied()
+                        .unwrap_or(surface_caps.formats[0])
+                }
+            }
+        });
+        tracing::info!(
+            "Selected texture format: {:?} (sRGB: {})",
+            texture_format,
+            texture_format.is_srgb()
+        );
+
+        let renderer = Self::create_renderer(
+            instance,
+            adapter,
+            device,
+            queue,
+            texture_format,
+            config,
+            (800, 600),
+        )?;
+
+        Ok((renderer, surface))
+    }
+
+    /// Create a new renderer with a `<canvas>` element on `wasm32`.
+    ///
+    /// Mirrors [`Self::with_surface`] but takes a
+    /// [`web_sys::HtmlCanvasElement`] instead of a raw-window-handle
+    /// type, because `HtmlCanvasElement` doesn't (and can't) implement
+    /// `HasWindowHandle` / `HasDisplayHandle` — the browser exposes its
+    /// surface through `wgpu::SurfaceTarget::Canvas` instead.
+    ///
+    /// The texture format is selected from the browser-reported surface
+    /// capabilities, preferring an sRGB format. WebGPU's canonical
+    /// preferred format on Chrome is `Bgra8UnormSrgb`, but Safari
+    /// Technology Preview reports only `Rgba8UnormSrgb` — the
+    /// `find(is_srgb)` lookup handles both.
+    ///
+    /// # Browser availability
+    ///
+    /// Requires WebGPU (Chrome ≥ 113, Edge ≥ 113, Safari Technology
+    /// Preview, Firefox Nightly with the WebGPU flag). The `web` feature
+    /// also enables the `webgl` backend so wgpu can fall back to WebGL2
+    /// where WebGPU isn't available, but the fallback path will reject
+    /// some Blinc shader features (storage buffers in particular).
+    #[cfg(target_arch = "wasm32")]
+    pub async fn with_canvas(
+        canvas: web_sys::HtmlCanvasElement,
+        config: RendererConfig,
+    ) -> Result<(Self, wgpu::Surface<'static>), RendererError> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: Self::preferred_backends(),
+            ..Default::default()
+        });
+
+        let surface = instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+            .map_err(RendererError::SurfaceError)?;
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|_| RendererError::AdapterNotFound)?;
+
+        // Check that the adapter supports storage buffers in vertex
+        // shaders — Blinc's SDF pipeline requires this (the primitives
+        // buffer is `var<storage, read>` accessed from both vertex and
+        // fragment stages). Skip on wasm32: the WebGPU spec guarantees
+        // storage buffer support, but wgpu's downlevel report can be
+        // wrong when the GL fallback adapter is selected (WebGL2 lacks
+        // VERTEX_STORAGE, producing a false negative even though the
+        // browser's WebGPU backend supports it).
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let downlevel = adapter.get_downlevel_capabilities();
+            if !downlevel
+                .flags
+                .contains(wgpu::DownlevelFlags::VERTEX_STORAGE)
+            {
+                return Err(RendererError::ShaderError(
+                    "GPU adapter does not support storage buffers in vertex shaders \
+                     (VERTEX_STORAGE). Blinc requires this feature for its SDF \
+                     rendering pipeline."
+                        .to_string(),
+                ));
+            }
+        }
+
+        let required_limits = device_required_limits(&adapter);
+        let config = apply_renderer_config_overrides(config, &required_limits);
+        log_renderer_config(&config);
+
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("Blinc GPU Device (Web)"),
+                required_features: requested_device_features(&adapter),
+                required_limits,
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+            })
+            .await
+            .map_err(RendererError::DeviceError)?;
+
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+
+        let surface_caps = surface.get_capabilities(&adapter);
+        tracing::debug!(
+            "Web surface capabilities - formats: {:?}",
+            surface_caps.formats
+        );
+        tracing::debug!(
+            "Web surface capabilities - alpha modes: {:?}",
+            surface_caps.alpha_modes
+        );
+
+        // On WebGPU (Chrome/Safari), prefer sRGB — the browser pipeline
+        // expects sRGB output. On WebGL2 (GL adapter, no storage buffers),
+        // prefer non-sRGB — shaders output sRGB-encoded colors directly,
+        // and an sRGB surface would apply gamma encoding again (washed out).
+        let is_gl_adapter = adapter.limits().max_storage_buffers_per_shader_stage == 0;
+        let texture_format = config.texture_format.unwrap_or_else(|| {
+            if is_gl_adapter {
+                surface_caps
+                    .formats
+                    .iter()
+                    .find(|f| !f.is_srgb())
+                    .copied()
+                    .unwrap_or(surface_caps.formats[0])
+            } else {
                 surface_caps
                     .formats
                     .iter()
@@ -1192,7 +1817,12 @@ impl GpuRenderer {
                     .unwrap_or(surface_caps.formats[0])
             }
         });
-        tracing::debug!("Selected texture format: {:?}", texture_format);
+        tracing::info!(
+            "Web surface texture format: {:?} (sRGB: {}, GL adapter: {})",
+            texture_format,
+            texture_format.is_srgb(),
+            is_gl_adapter
+        );
 
         let renderer = Self::create_renderer(
             instance,
@@ -1223,22 +1853,20 @@ impl GpuRenderer {
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or(RendererError::AdapterNotFound)?;
+            .map_err(|_| RendererError::AdapterNotFound)?;
 
         let required_limits = device_required_limits(&adapter);
         let config = apply_renderer_config_overrides(config, &required_limits);
         log_renderer_config(&config);
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("Blinc GPU Device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits,
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("Blinc GPU Device"),
+                required_features: requested_device_features(&adapter),
+                required_limits,
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+            })
             .await
             .map_err(RendererError::DeviceError)?;
 
@@ -1280,26 +1908,71 @@ impl GpuRenderer {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         texture_format: wgpu::TextureFormat,
-        config: RendererConfig,
+        mut config: RendererConfig,
         viewport_size: (u32, u32),
     ) -> Result<Self, RendererError> {
+        // Check if the adapter supports storage buffers in vertex shaders
+        let has_vertex_storage = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::VERTEX_STORAGE);
+        if !has_vertex_storage {
+            tracing::info!("VERTEX_STORAGE not supported — using instance vertex buffer fallback");
+        }
+
+        // Check if the device enabled BC texture compression (requested
+        // via `requested_device_features` earlier; we check the
+        // *device* features, not the adapter's, because the device
+        // may have been opened with a subset).
+        let has_texture_compression_bc = device
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+        if has_texture_compression_bc {
+            tracing::info!(
+                "BC texture compression enabled — material textures upload as BC1/3/4/5"
+            );
+        } else {
+            tracing::info!(
+                "BC texture compression unavailable on this adapter — material textures upload as Rgba8"
+            );
+        }
+
+        // Check if the adapter supports storage buffers at all (Tier 3 / DT fallback)
+        let has_storage_buffers = adapter.limits().max_storage_buffers_per_shader_stage > 0;
+        if !has_storage_buffers {
+            tracing::info!("No storage buffer support — using data texture fallback (WebGL2 mode)");
+            // When there are no storage buffers, max_storage_buffer_binding_size is 0,
+            // so apply_renderer_config_overrides clamped max_primitives/max_glyphs to 1.
+            // Re-apply sensible defaults clamped by texture dimension limits instead.
+            let tex_max = adapter.limits().max_texture_dimension_2d as usize;
+            let defaults = RendererConfig::default();
+            // Use env overrides if present, otherwise fall back to defaults
+            config.max_primitives = env_usize("BLINC_GPU_MAX_PRIMITIVES")
+                .unwrap_or(defaults.max_primitives)
+                .clamp(1, tex_max);
+            config.max_glyphs = env_usize("BLINC_GPU_MAX_GLYPHS")
+                .unwrap_or(defaults.max_glyphs)
+                .clamp(1, tex_max);
+            log_renderer_config(&config);
+        }
+
         // Create bind group layouts
-        let bind_group_layouts = Self::create_bind_group_layouts(&device);
+        let bind_group_layouts = Self::create_bind_group_layouts_with_flags(
+            &device,
+            has_vertex_storage,
+            has_storage_buffers,
+        );
 
         // Create shaders
-        let sdf_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("SDF Shader"),
-            source: wgpu::ShaderSource::Wgsl(SDF_SHADER.into()),
-        });
 
-        let line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Line Shader"),
-            source: wgpu::ShaderSource::Wgsl(LINE_SHADER.into()),
-        });
-
+        let text_source = if has_storage_buffers {
+            TEXT_SHADER
+        } else {
+            TEXT_DT_SHADER
+        };
         let text_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Text Shader"),
-            source: wgpu::ShaderSource::Wgsl(TEXT_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(text_source.into()),
         });
 
         let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1317,22 +1990,83 @@ impl GpuRenderer {
             source: wgpu::ShaderSource::Wgsl(LAYER_COMPOSITE_SHADER.into()),
         });
 
+        // Split SDF shaders — specialized pipelines for each primitive category.
+        // Three tiers:
+        //   Tier 1 (full): Storage buffers in VS + FS — sdf_*.wgsl
+        //   Tier 2 (VB):   No VS storage, FS storage works — sdf_*_vb.wgsl + vertex buffer
+        //   Tier 3 (DT):   No storage at all (WebGL2) — sdf_*_dt.wgsl + VB + data textures
+        let (sdf_core_source, sdf_shadow_source, sdf_3d_source, sdf_notch_source) =
+            if !has_storage_buffers {
+                // Tier 3: Data texture fallback (no storage buffers at all)
+                (
+                    SDF_CORE_DT_SHADER,
+                    SDF_SHADOW_DT_SHADER,
+                    SDF_3D_DT_SHADER,
+                    SDF_NOTCH_DT_SHADER,
+                )
+            } else if !has_vertex_storage {
+                // Tier 2: VB fallback (no VS storage, FS storage works)
+                (
+                    SDF_CORE_VB_SHADER,
+                    SDF_SHADOW_VB_SHADER,
+                    SDF_3D_VB_SHADER,
+                    SDF_NOTCH_VB_SHADER,
+                )
+            } else {
+                // Tier 1: Full storage buffer support
+                (
+                    SDF_CORE_SHADER,
+                    SDF_SHADOW_SHADER,
+                    SDF_3D_SHADER,
+                    SDF_NOTCH_SHADER,
+                )
+            };
+
+        // The monolithic SDF_SHADER is no longer compiled — split pipelines
+        // handle all primitive types. Use core shader as stand-in for the
+        // dead-code monolithic pipeline fields in the Pipelines struct.
+        let sdf_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("SDF Shader (stand-in — split pipelines active)"),
+            source: wgpu::ShaderSource::Wgsl(sdf_core_source.into()),
+        });
+
+        let sdf_core_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("SDF Core Shader"),
+            source: wgpu::ShaderSource::Wgsl(sdf_core_source.into()),
+        });
+        let sdf_shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("SDF Shadow Shader"),
+            source: wgpu::ShaderSource::Wgsl(sdf_shadow_source.into()),
+        });
+        let sdf_3d_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("SDF 3D Shader"),
+            source: wgpu::ShaderSource::Wgsl(sdf_3d_source.into()),
+        });
+        let sdf_notch_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("SDF Notch Shader"),
+            source: wgpu::ShaderSource::Wgsl(sdf_notch_source.into()),
+        });
+
         // Create pipelines (core only — effect pipelines are lazy)
         let pipelines = Self::create_pipelines(
             &device,
             &bind_group_layouts,
             &sdf_shader,
-            &line_shader,
+            &sdf_core_shader,
+            &sdf_shadow_shader,
+            &sdf_3d_shader,
+            &sdf_notch_shader,
             &text_shader,
             &composite_shader,
             &path_shader,
             &layer_composite_shader,
             texture_format,
             config.sample_count,
+            has_vertex_storage,
         );
 
-        // Create buffers
-        let buffers = Self::create_buffers(&device, &config);
+        // Create buffers (storage buffers always created; DT textures added when needed)
+        let buffers = Self::create_buffers(&device, &config, has_storage_buffers);
 
         // Create placeholder glyph atlas textures (1x1 transparent)
         // These are used when no text is rendered, satisfying the bind group layout
@@ -1402,14 +2136,14 @@ impl GpuRenderer {
         });
         // Initialize with white pixel
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &placeholder_path_image,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &[255u8, 255, 255, 255], // White pixel
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4),
                 rows_per_image: Some(1),
@@ -1451,14 +2185,14 @@ impl GpuRenderer {
             view_formats: &[],
         });
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &dummy_blend_dest,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &[0u8, 0, 0, 0], // Transparent pixel
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4),
                 rows_per_image: Some(1),
@@ -1483,6 +2217,7 @@ impl GpuRenderer {
             &gradient_texture_cache,
             &placeholder_path_image_view,
             &path_image_sampler,
+            has_storage_buffers,
         );
 
         let flow_pipeline_cache =
@@ -1509,10 +2244,13 @@ impl GpuRenderer {
             bind_group_layouts,
             viewport_size,
             saved_viewport_size: None,
+            memory_budget: GpuMemoryBudget::new(config.gpu_memory_budget),
             config,
             time: 0.0,
             texture_format,
             image_pipeline: None,
+            mesh_pipeline: None,
+            custom_passes: crate::custom_pass::CustomPassManager::new(),
             cached_msaa: None,
             cached_glass: None,
             cached_text: None,
@@ -1532,10 +2270,92 @@ impl GpuRenderer {
             blend_target_ptr: None,
             flow_pipeline_cache,
             scene_copy_texture: None,
+            has_vertex_storage,
+            has_storage_buffers,
+            has_texture_compression_bc,
         })
     }
 
-    fn create_bind_group_layouts(device: &wgpu::Device) -> BindGroupLayouts {
+    fn create_bind_group_layouts_with_flags(
+        device: &wgpu::Device,
+        has_vertex_storage: bool,
+        has_storage_buffers: bool,
+    ) -> BindGroupLayouts {
+        // When VERTEX_STORAGE is available, the primitives storage buffer
+        // is visible to both vertex and fragment stages. Otherwise, only
+        // the fragment stage reads it — the vertex shader gets its data
+        // from an instance-stepped vertex buffer instead.
+        let primitives_visibility = if has_vertex_storage {
+            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
+        } else {
+            wgpu::ShaderStages::FRAGMENT
+        };
+
+        // Binding 1 & 5: Storage buffers normally; data textures when no storage support
+        let binding_1_entry = if has_storage_buffers {
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: primitives_visibility,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }
+        } else {
+            // DT mode: primitive data comes from an Rgba32Float texture.
+            // VERTEX | FRAGMENT visibility needed because WGSL module-scope
+            // bindings are validated against all entry points in the module,
+            // even if only fs_main reads the texture. Texture bindings don't
+            // require VERTEX_STORAGE (that flag only applies to storage buffers).
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }
+        };
+
+        let binding_5_entry = if has_storage_buffers {
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                // VERTEX as well as FRAGMENT: `PRIM_MESH` routes
+                // tessellated path fills through this pipeline and
+                // has the vertex shader pull each triangle's three
+                // corners from `aux_data` at the primitive's
+                // `border.z` offset so hardware rasterises the
+                // real triangle (instead of a per-pixel point-in-
+                // triangle walk over an AABB-covering quad). Without
+                // VERTEX visibility wgpu rejects the pipeline
+                // layout because the shader reads a binding the
+                // layout didn't authorise for that stage.
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }
+        } else {
+            // DT mode: aux data comes from an Rgba32Float texture
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }
+        };
+
         // SDF bind group layout (includes glyph atlas for unified text rendering)
         let sdf = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SDF Bind Group Layout"),
@@ -1551,17 +2371,8 @@ impl GpuRenderer {
                     },
                     count: None,
                 },
-                // Primitives storage buffer
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                // Binding 1: Primitives (storage buffer or data texture)
+                binding_1_entry,
                 // Glyph atlas texture (grayscale text)
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
@@ -1591,17 +2402,8 @@ impl GpuRenderer {
                     },
                     count: None,
                 },
-                // Auxiliary data storage buffer (group shapes, polygon clips)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                // Binding 5: Auxiliary data (storage buffer or data texture)
+                binding_5_entry,
             ],
         });
 
@@ -1649,14 +2451,24 @@ impl GpuRenderer {
                     },
                     count: None,
                 },
-                // Glass primitives storage buffer
+                // Glass primitives: storage buffer (normal) or texture (WebGL2 DT fallback).
+                // VERTEX | FRAGMENT in both modes — DT shader declares binding at module
+                // scope, wgpu validates against all entry points.
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    ty: if has_storage_buffers {
+                        wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        }
+                    } else {
+                        wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        }
                     },
                     count: None,
                 },
@@ -1696,14 +2508,27 @@ impl GpuRenderer {
                     },
                     count: None,
                 },
-                // Glyphs storage buffer
+                // Glyphs: storage buffer (normal) or texture (WebGL2 DT fallback)
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    visibility: if has_storage_buffers {
+                        wgpu::ShaderStages::VERTEX
+                    } else {
+                        // DT mode: TEXT_DT_SHADER reads glyph_data texture in vs_main
+                        wgpu::ShaderStages::VERTEX
+                    },
+                    ty: if has_storage_buffers {
+                        wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        }
+                    } else {
+                        wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        }
                     },
                     count: None,
                 },
@@ -1842,6 +2667,22 @@ impl GpuRenderer {
                     binding: 6,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // Aux data storage buffer — carries polygon clip vertices
+                // packed 2-per-vec4. Shared with the SDF pipeline's
+                // binding(5) so tessellated path fills honour the same
+                // `ClipShape::Polygon` clips (Lottie track mattes are
+                // built this way). Re-bound via `recreate_path_bind_group`
+                // whenever the aux buffer gets resized.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
                     count: None,
                 },
             ],
@@ -2131,13 +2972,17 @@ impl GpuRenderer {
         device: &wgpu::Device,
         layouts: &BindGroupLayouts,
         sdf_shader: &wgpu::ShaderModule,
-        line_shader: &wgpu::ShaderModule,
+        sdf_core_shader: &wgpu::ShaderModule,
+        sdf_shadow_shader: &wgpu::ShaderModule,
+        sdf_3d_shader: &wgpu::ShaderModule,
+        sdf_notch_shader: &wgpu::ShaderModule,
         text_shader: &wgpu::ShaderModule,
         composite_shader: &wgpu::ShaderModule,
         path_shader: &wgpu::ShaderModule,
         layer_composite_shader: &wgpu::ShaderModule,
         texture_format: wgpu::TextureFormat,
         sample_count: u32,
+        has_vertex_storage: bool,
     ) -> Pipelines {
         let blend_state = wgpu::BlendState {
             color: wgpu::BlendComponent {
@@ -2181,13 +3026,21 @@ impl GpuRenderer {
             push_constant_ranges: &[],
         });
 
+        // When VERTEX_STORAGE is unavailable, SDF vertex shaders read from an
+        // instance-stepped vertex buffer instead of the storage buffer.
+        let sdf_vb_buffers: &[wgpu::VertexBufferLayout<'_>] = if has_vertex_storage {
+            &[]
+        } else {
+            &[SdfVertexInstance::LAYOUT]
+        };
+
         let sdf = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("SDF Pipeline"),
             layout: Some(&sdf_layout),
             vertex: wgpu::VertexState {
                 module: sdf_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: sdf_vb_buffers,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -2216,7 +3069,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: sdf_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: sdf_vb_buffers,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -2232,56 +3085,65 @@ impl GpuRenderer {
             cache: None,
         });
 
-        // Lines pipeline
-        let lines_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Lines Pipeline Layout"),
-            bind_group_layouts: &[&layouts.lines],
-            push_constant_ranges: &[],
-        });
+        // --- Split SDF pipelines (share sdf_layout, same blend/primitive state) ---
 
-        let lines = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Lines Pipeline"),
-            layout: Some(&lines_layout),
-            vertex: wgpu::VertexState {
-                module: line_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: line_shader,
-                entry_point: Some("fs_main"),
-                targets: color_targets,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: primitive_state,
-            depth_stencil: None,
-            multisample: multisample_state,
-            multiview: None,
-            cache: None,
-        });
+        // Helper closure to create an SDF pipeline pair (MSAA + overlay) from a shader module
+        let make_sdf_pipeline_pair = |shader: &wgpu::ShaderModule,
+                                      label: &str|
+         -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
+            let msaa = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&sdf_layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_main"),
+                    buffers: sdf_vb_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_main"),
+                    targets: color_targets,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: primitive_state,
+                depth_stencil: None,
+                multisample: multisample_state,
+                multiview: None,
+                cache: None,
+            });
+            let overlay_label = format!("{label} Overlay");
+            let overlay = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(&overlay_label),
+                layout: Some(&sdf_layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_main"),
+                    buffers: sdf_vb_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_main"),
+                    targets: color_targets,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: primitive_state,
+                depth_stencil: None,
+                multisample: overlay_multisample_state,
+                multiview: None,
+                cache: None,
+            });
+            (msaa, overlay)
+        };
 
-        let lines_overlay = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Lines Overlay Pipeline"),
-            layout: Some(&lines_layout),
-            vertex: wgpu::VertexState {
-                module: line_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: line_shader,
-                entry_point: Some("fs_main"),
-                targets: color_targets,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: primitive_state,
-            depth_stencil: None,
-            multisample: overlay_multisample_state,
-            multiview: None,
-            cache: None,
-        });
+        let (sdf_core, sdf_core_overlay) =
+            make_sdf_pipeline_pair(sdf_core_shader, "SDF Core Pipeline");
+        let (sdf_shadow, sdf_shadow_overlay) =
+            make_sdf_pipeline_pair(sdf_shadow_shader, "SDF Shadow Pipeline");
+        let (sdf_3d, sdf_3d_overlay) = make_sdf_pipeline_pair(sdf_3d_shader, "SDF 3D Pipeline");
+        let (sdf_notch, sdf_notch_overlay) =
+            make_sdf_pipeline_pair(sdf_notch_shader, "SDF Notch Pipeline");
 
         // Text pipeline
         let text_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2290,13 +3152,17 @@ impl GpuRenderer {
             push_constant_ranges: &[],
         });
 
+        // TEXT_DT_SHADER has its own vs_main that reads from a glyph data texture
+        // (no VB instance attributes needed — unlike SDF DT which uses VB + DT).
+        let text_vb_buffers: &[wgpu::VertexBufferLayout<'_>] = &[];
+
         let text = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Text Pipeline"),
             layout: Some(&text_layout),
             vertex: wgpu::VertexState {
                 module: text_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: text_vb_buffers,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -2319,7 +3185,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: text_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: text_vb_buffers,
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -2403,7 +3269,10 @@ impl GpuRenderer {
         //   gradient_params: [f32;4] - 16 bytes, offset 48
         //   gradient_type: u32       - 4 bytes, offset 64
         //   edge_distance: f32       - 4 bytes, offset 68
-        //   _padding: [u32; 2]       - 8 bytes, offset 72
+        //   clip_bounds: [f32;4]     - 16 bytes, offset 72
+        //   clip_radius: [f32;4]     - 16 bytes, offset 88
+        //   clip_type: u32           - 4 bytes, offset 104
+        //   _padding: [u32; 3]       - 12 bytes, offset 108
         let path_vertex_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<PathVertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -2449,6 +3318,24 @@ impl GpuRenderer {
                     format: wgpu::VertexFormat::Float32,
                     offset: 68,
                     shader_location: 6,
+                },
+                // clip_bounds: vec4<f32>
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 72,
+                    shader_location: 7,
+                },
+                // clip_radius: vec4<f32>
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 88,
+                    shader_location: 8,
+                },
+                // clip_type: u32
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Uint32,
+                    offset: 104,
+                    shader_location: 9,
                 },
             ],
         };
@@ -2557,9 +3444,15 @@ impl GpuRenderer {
         Pipelines {
             sdf,
             sdf_overlay,
-            lines,
-            lines_overlay,
-            _text: text,
+            sdf_core,
+            sdf_shadow,
+            sdf_3d,
+            sdf_notch,
+            sdf_core_overlay,
+            sdf_shadow_overlay,
+            sdf_3d_overlay,
+            sdf_notch_overlay,
+            text,
             text_overlay,
             composite,
             composite_overlay,
@@ -2569,7 +3462,11 @@ impl GpuRenderer {
         }
     }
 
-    fn create_buffers(device: &wgpu::Device, config: &RendererConfig) -> Buffers {
+    fn create_buffers(
+        device: &wgpu::Device,
+        config: &RendererConfig,
+        has_storage_buffers: bool,
+    ) -> Buffers {
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Uniforms Buffer"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -2577,6 +3474,9 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
+        // Storage buffers are always created (even in DT mode they are needed by
+        // non-SDF pipelines like glass). In DT mode the SDF bind group uses data
+        // textures instead, but these buffers remain for other uses.
         let primitives = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Primitives Buffer"),
             size: (std::mem::size_of::<GpuPrimitive>() * config.max_primitives) as u64,
@@ -2630,6 +3530,80 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
+        // Create data textures for DT (Tier 3) fallback when no storage buffers
+        let (
+            prim_data_texture,
+            prim_data_view,
+            aux_data_texture,
+            aux_data_view,
+            aux_data_texture_height,
+            glyph_data_texture,
+            glyph_data_view,
+        ) = if !has_storage_buffers {
+            // Primitive data texture: width=23 (one texel per vec4 field), height=max_primitives
+            let prim_tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Primitive Data Texture"),
+                size: wgpu::Extent3d {
+                    width: 23,
+                    height: config.max_primitives as u32,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let prim_view = prim_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            // Aux data texture: width=1024, height=1 initially (resized on demand)
+            let aux_tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Aux Data Texture"),
+                size: wgpu::Extent3d {
+                    width: 1024,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let aux_view = aux_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            // Glyph data texture: width=6 (one texel per vec4 field), height=max_glyphs
+            let glyph_tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Glyph Data Texture"),
+                size: wgpu::Extent3d {
+                    width: 6,
+                    height: config.max_glyphs as u32,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let glyph_view = glyph_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            (
+                Some(prim_tex),
+                Some(prim_view),
+                Some(aux_tex),
+                Some(aux_view),
+                1u32,
+                Some(glyph_tex),
+                Some(glyph_view),
+            )
+        } else {
+            (None, None, None, None, 0u32, None, None)
+        };
+
         Buffers {
             uniforms,
             primitives,
@@ -2645,6 +3619,14 @@ impl GpuRenderer {
             glow_uniforms: None,
             color_matrix_uniforms: None,
             aux_data,
+            sdf_vertex_instances: None,
+            prim_data_texture,
+            prim_data_view,
+            aux_data_texture,
+            aux_data_view,
+            aux_data_texture_height,
+            glyph_data_texture,
+            glyph_data_view,
         }
     }
 
@@ -2659,7 +3641,44 @@ impl GpuRenderer {
         gradient_texture_cache: &GradientTextureCache,
         path_image_view: &wgpu::TextureView,
         path_image_sampler: &wgpu::Sampler,
+        has_storage_buffers: bool,
     ) -> BindGroups {
+        // Binding 1: primitives (storage buffer or data texture)
+        let binding_1 = if has_storage_buffers {
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buffers.primitives.as_entire_binding(),
+            }
+        } else {
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(
+                    buffers
+                        .prim_data_view
+                        .as_ref()
+                        .expect("DT mode requires prim_data_view"),
+                ),
+            }
+        };
+
+        // Binding 5: aux data (storage buffer or data texture)
+        let binding_5 = if has_storage_buffers {
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: buffers.aux_data.as_entire_binding(),
+            }
+        } else {
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(
+                    buffers
+                        .aux_data_view
+                        .as_ref()
+                        .expect("DT mode requires aux_data_view"),
+                ),
+            }
+        };
+
         let sdf = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SDF Bind Group"),
             layout: &layouts.sdf,
@@ -2668,10 +3687,7 @@ impl GpuRenderer {
                     binding: 0,
                     resource: buffers.uniforms.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: buffers.primitives.as_entire_binding(),
-                },
+                binding_1,
                 // Glyph atlas texture (binding 2)
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -2687,11 +3703,7 @@ impl GpuRenderer {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(color_glyph_atlas_view),
                 },
-                // Auxiliary data buffer (binding 5)
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: buffers.aux_data.as_entire_binding(),
-                },
+                binding_5,
             ],
         });
 
@@ -2753,6 +3765,11 @@ impl GpuRenderer {
                     binding: 6,
                     resource: wgpu::BindingResource::Sampler(path_image_sampler),
                 },
+                // Aux data (binding 7) — shared with the SDF pipeline.
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: buffers.aux_data.as_entire_binding(),
+                },
             ],
         });
 
@@ -2771,6 +3788,8 @@ impl GpuRenderer {
         layouts: &BindGroupLayouts,
         texture_format: wgpu::TextureFormat,
         sample_count: u32,
+        has_vertex_storage: bool,
+        has_storage_buffers: bool,
     ) -> MsaaPipelines {
         let blend_state = wgpu::BlendState {
             color: wgpu::BlendComponent {
@@ -2807,10 +3826,18 @@ impl GpuRenderer {
             alpha_to_coverage_enabled: false,
         };
 
-        // Create SDF shader
+        // Monolithic stand-in (MSAA) — uses core shader to avoid compiling
+        // the full SDF_SHADER which exceeds PowerVR's shader compiler limit.
+        let msaa_core_source = if !has_storage_buffers {
+            SDF_CORE_DT_SHADER
+        } else if !has_vertex_storage {
+            SDF_CORE_VB_SHADER
+        } else {
+            SDF_CORE_SHADER
+        };
         let sdf_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("SDF Shader (MSAA)"),
-            source: wgpu::ShaderSource::Wgsl(SDF_SHADER.into()),
+            label: Some("SDF Shader (MSAA stand-in)"),
+            source: wgpu::ShaderSource::Wgsl(msaa_core_source.into()),
         });
 
         let sdf_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2841,6 +3868,69 @@ impl GpuRenderer {
             cache: None,
         });
 
+        // Split SDF shader modules (MSAA)
+        let sdf_vb_buffers: &[wgpu::VertexBufferLayout<'_>] = if has_vertex_storage {
+            &[]
+        } else {
+            &[SdfVertexInstance::LAYOUT]
+        };
+        let make_msaa_sdf_pipeline = |source: &str, label: &str| -> wgpu::RenderPipeline {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&sdf_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: sdf_vb_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: color_targets,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: primitive_state,
+                depth_stencil: None,
+                multisample: multisample_state,
+                multiview: None,
+                cache: None,
+            })
+        };
+
+        let (msaa_core_src, msaa_shadow_src, msaa_3d_src, msaa_notch_src) = if !has_storage_buffers
+        {
+            (
+                SDF_CORE_DT_SHADER,
+                SDF_SHADOW_DT_SHADER,
+                SDF_3D_DT_SHADER,
+                SDF_NOTCH_DT_SHADER,
+            )
+        } else if !has_vertex_storage {
+            (
+                SDF_CORE_VB_SHADER,
+                SDF_SHADOW_VB_SHADER,
+                SDF_3D_VB_SHADER,
+                SDF_NOTCH_VB_SHADER,
+            )
+        } else {
+            (
+                SDF_CORE_SHADER,
+                SDF_SHADOW_SHADER,
+                SDF_3D_SHADER,
+                SDF_NOTCH_SHADER,
+            )
+        };
+
+        let sdf_core = make_msaa_sdf_pipeline(msaa_core_src, "SDF Core Pipeline (MSAA)");
+        let sdf_shadow = make_msaa_sdf_pipeline(msaa_shadow_src, "SDF Shadow Pipeline (MSAA)");
+        let sdf_3d = make_msaa_sdf_pipeline(msaa_3d_src, "SDF 3D Pipeline (MSAA)");
+        let sdf_notch = make_msaa_sdf_pipeline(msaa_notch_src, "SDF Notch Pipeline (MSAA)");
+
         // Create path shader
         let path_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Path Shader (MSAA)"),
@@ -2853,7 +3943,7 @@ impl GpuRenderer {
             push_constant_ranges: &[],
         });
 
-        // PathVertex layout
+        // PathVertex layout — see PathVertex struct in path.rs for offset rationale
         let path_vertex_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<PathVertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -2893,6 +3983,24 @@ impl GpuRenderer {
                     offset: 68,
                     shader_location: 6,
                 },
+                // clip_bounds: vec4<f32>
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 72,
+                    shader_location: 7,
+                },
+                // clip_radius: vec4<f32>
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 88,
+                    shader_location: 8,
+                },
+                // clip_type: u32
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Uint32,
+                    offset: 104,
+                    shader_location: 9,
+                },
             ],
         };
 
@@ -2920,6 +4028,10 @@ impl GpuRenderer {
 
         MsaaPipelines {
             sdf,
+            sdf_core,
+            sdf_shadow,
+            sdf_3d,
+            sdf_notch,
             path,
             sample_count,
         }
@@ -2973,6 +4085,24 @@ impl GpuRenderer {
         self.queue.clone()
     }
 
+    /// Create a new surface for an additional window.
+    ///
+    /// Uses the existing wgpu Instance to create a surface that can be
+    /// configured and rendered to using the shared device and queue.
+    /// This is used for multi-window support.
+    pub fn create_surface<W>(&self, window: Arc<W>) -> Result<wgpu::Surface<'static>, RendererError>
+    where
+        W: raw_window_handle::HasWindowHandle
+            + raw_window_handle::HasDisplayHandle
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.instance
+            .create_surface(wgpu::SurfaceTarget::from(window))
+            .map_err(RendererError::SurfaceError)
+    }
+
     /// Get the texture format used by this renderer's pipelines
     pub fn texture_format(&self) -> wgpu::TextureFormat {
         self.texture_format
@@ -2990,7 +4120,11 @@ impl GpuRenderer {
     /// Poll the device to process completed GPU operations and free resources.
     /// Call this after frame rendering to prevent memory accumulation.
     pub fn poll(&self) {
-        self.device.poll(wgpu::Maintain::Wait);
+        // wgpu 26: `Maintain::Wait` was renamed to `PollType::Wait`. Result
+        // is a `Result<PollStatus, _>` rather than the old `MaintainResult`,
+        // and we don't care about the precise status here — we just want
+        // to block until the GPU is idle.
+        let _ = self.device.poll(wgpu::PollType::Wait);
     }
 
     /// Bind real glyph atlas textures into the default SDF bind group.
@@ -3086,13 +4220,13 @@ impl GpuRenderer {
                             label: Some("Flow Scene Copy Encoder"),
                         });
                 copy_encoder.copy_texture_to_texture(
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: src_tex,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
                     },
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: scene_tex,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
@@ -3147,6 +4281,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load, // Preserve existing content
                         store: wgpu::StoreOp::Store,
@@ -3250,6 +4385,82 @@ impl GpuRenderer {
     }
 
     /// Simple render with clear (no layer effect processing)
+    /// Test whether a primitive's expanded bounds intersect the viewport.
+    ///
+    /// Returns `true` if the primitive might be visible and should be rendered.
+    /// Conservative: accounts for shadow, border, and rotation expansion.
+    /// Primitives with 3D perspective are always considered visible.
+    #[inline]
+    fn is_primitive_visible(&self, prim: &GpuPrimitive) -> bool {
+        let vp_w = self.viewport_size.0 as f32;
+        let vp_h = self.viewport_size.1 as f32;
+
+        let px = prim.bounds[0];
+        let py = prim.bounds[1];
+        let pw = prim.bounds[2];
+        let ph = prim.bounds[3];
+
+        // Primitives with 3D perspective may project anywhere
+        if prim.perspective[2] > 0.0 {
+            return true;
+        }
+
+        // Text glyph primitives (prim_type 7) bypass the
+        // viewport AABB cull. A scroll / layer container translates
+        // its children at composite time, so glyph bounds live in
+        // content (pre-translate) space — a glyph at content y=2000
+        // that's visible on screen after a -1000 scroll would otherwise
+        // get dropped here. The fragment shader's clip / alpha already
+        // discards fragments outside the layer bounds, so skipping this
+        // cull is cheap: the primitive either clips to nothing (free)
+        // or renders at the correct place.
+        if prim.type_info[0] == 7 {
+            return true;
+        }
+
+        // Account for shadow expansion (matches shader bounds computation)
+        let shadow_blur = prim.shadow[2];
+        let shadow_ox = prim.shadow[0].abs();
+        let shadow_oy = prim.shadow[1].abs();
+        let mut expand = shadow_blur * 3.0 + shadow_ox + shadow_oy;
+
+        // Account for border (stroke) expansion
+        expand += prim.border[0];
+
+        // Account for rotation — rotated rects have larger AABB
+        // rotation = [sin_rz, cos_rz, sin_ry, cos_ry], identity = [0, 1, 0, 1]
+        let has_rotation = prim.rotation[0] != 0.0 || prim.rotation[2] != 0.0;
+        if has_rotation {
+            // Worst case AABB expansion for rotated rect: half-diagonal
+            let half_diag = (pw * pw + ph * ph).sqrt() * 0.5;
+            expand += half_diag;
+        }
+
+        // Non-identity local affine — be generous with expansion
+        let has_affine = prim.local_affine[1] != 0.0 || prim.local_affine[2] != 0.0;
+        if has_affine {
+            let half_diag = (pw * pw + ph * ph).sqrt() * 0.5;
+            expand += half_diag;
+        }
+
+        // AABB intersection with viewport [0, 0, vp_w, vp_h]
+        let left = px - expand;
+        let top = py - expand;
+        let right = px + pw + expand;
+        let bottom = py + ph + expand;
+
+        right > 0.0 && bottom > 0.0 && left < vp_w && top < vp_h
+    }
+
+    /// Cull a slice of primitives, returning only those visible in the viewport.
+    fn cull_primitives(&self, prims: &[GpuPrimitive]) -> Vec<GpuPrimitive> {
+        prims
+            .iter()
+            .filter(|p| self.is_primitive_visible(p))
+            .copied()
+            .collect()
+    }
+
     fn render_with_clear_simple(
         &mut self,
         target: &wgpu::TextureView,
@@ -3358,11 +4569,11 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update primitives buffer (with safety limit to prevent buffer overflow)
-        let prim_count = self.write_primitives_safe(&batch.primitives);
+        // Cull off-screen primitives before GPU upload
+        let visible_primitives = self.cull_primitives(&batch.primitives);
 
-        // Update line segments buffer
-        let line_count = self.write_line_segments_safe(&batch.line_segments);
+        // Sort primitives by pipeline category and upload
+        let sdf_ranges = self.upload_sorted_primitives(&visible_primitives);
 
         // Update auxiliary data buffer (group shapes, polygon clips)
         // This may call rebind_sdf_bind_group() if the buffer needs resizing.
@@ -3392,6 +4603,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: clear_color[0],
@@ -3407,22 +4619,31 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            // Render SDF primitives
-            if prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf);
+            // Render SDF primitives via split pipelines.
+            if !visible_primitives.is_empty() {
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                // 6 vertices per quad (2 triangles), one instance per primitive
-                render_pass.draw(0..6, 0..prim_count as u32);
+                Self::draw_split_sdf(
+                    &mut render_pass,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    false,
+                    self.sdf_vb_buffer(),
+                );
             }
 
-            // Render compact line segments
-            if line_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.lines);
-                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-                render_pass.draw(0..6, 0..line_count as u32);
-            }
-
-            // Render paths
+            // Render tessellated paths in a single monolithic draw. This
+            // places every path on top of every SDF primitive regardless
+            // of submission order, which is the right default for most
+            // Blinc UI (SVG icons over background cards, canvas fills
+            // over SDF text, etc). For Lottie scenes whose layer stack
+            // interleaves text (SDF primitive stream via `draw_text`)
+            // with shape fills (tessellated path pipeline), this order
+            // can bury text under later shape fills even though Lottie's
+            // back-to-front order would put the text on top. The
+            // follow-up is to route path fills through the SDF pipeline
+            // as a new primitive type so the existing submission-order
+            // dispatch handles them the same way it handles text — see
+            // BACKLOG.md for the plan.
             if has_paths {
                 render_pass.set_pipeline(&self.pipelines.path);
                 self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
@@ -3514,22 +4735,41 @@ impl GpuRenderer {
     ) {
         use crate::primitives::LayerCommand;
 
-        // Build list of effect layers with their primitive ranges
-        let mut effect_layers: Vec<(usize, usize, blinc_core::LayerConfig)> = Vec::new();
-        let mut layer_stack: Vec<(usize, blinc_core::LayerConfig)> = Vec::new();
+        // Build list of effect layers with their primitive AND path
+        // ranges. Tracking path ranges (not just primitive indices)
+        // is what lets translucent-opacity Lottie layers — whose
+        // shapes live entirely in `batch.paths` — reach the
+        // offscreen composite instead of bypassing it.
+        let mut effect_layers: Vec<EffectLayerRange> = Vec::new();
+        let mut layer_stack: Vec<(LayerStackFrame, blinc_core::LayerConfig)> = Vec::new();
 
         for entry in &batch.layer_commands {
             match &entry.command {
                 LayerCommand::Push { config } => {
-                    layer_stack.push((entry.primitive_index, config.clone()));
+                    layer_stack.push((
+                        LayerStackFrame {
+                            primitive_start: entry.primitive_index,
+                            path_index_start: entry.path_index_count,
+                            path_vertex_start: entry.path_vertex_index,
+                        },
+                        config.clone(),
+                    ));
                 }
                 LayerCommand::Pop => {
-                    if let Some((start_idx, config)) = layer_stack.pop() {
+                    if let Some((start, config)) = layer_stack.pop() {
                         if !config.effects.is_empty()
                             || config.blend_mode != blinc_core::BlendMode::Normal
                             || config.transform_3d.is_some()
                         {
-                            effect_layers.push((start_idx, entry.primitive_index, config));
+                            effect_layers.push(EffectLayerRange {
+                                primitive_start: start.primitive_start,
+                                primitive_end: entry.primitive_index,
+                                path_index_start: start.path_index_start,
+                                path_index_end: entry.path_index_count,
+                                path_vertex_start: start.path_vertex_start,
+                                path_vertex_end: entry.path_vertex_index,
+                                config,
+                            });
                         }
                     }
                 }
@@ -3543,30 +4783,67 @@ impl GpuRenderer {
             return;
         }
 
-        // Build set of primitive indices that belong to effect layers (to skip in first pass)
+        // Build set of primitive indices AND path-index ranges that
+        // belong to effect layers so the first pass knows what to
+        // skip. Paths are skipped as whole `[start..end)` ranges —
+        // the draw call is split around them rather than using a
+        // per-index hash set (index buffers are much larger than
+        // the primitive count).
         let mut effect_primitives = std::collections::HashSet::new();
-        for (start, end, _) in &effect_layers {
-            for i in *start..*end {
+        let mut path_skip_ranges: Vec<(u32, u32)> = Vec::new();
+        for layer in &effect_layers {
+            for i in layer.primitive_start..layer.primitive_end {
                 effect_primitives.insert(i);
             }
+            if layer.path_index_end > layer.path_index_start {
+                path_skip_ranges.push((layer.path_index_start as u32, layer.path_index_end as u32));
+            }
         }
+        path_skip_ranges.sort_unstable();
 
-        // First pass: render primitives that are NOT in effect layers
-        self.render_primitives_excluding(target, batch, &effect_primitives, clear_color);
+        // First pass: render primitives + paths that are NOT in effect layers
+        self.render_primitives_excluding_with_paths(
+            target,
+            batch,
+            &effect_primitives,
+            &path_skip_ranges,
+            clear_color,
+        );
         drop(effect_primitives); // Free HashSet immediately - not needed after first pass
 
         // Process each effect layer
-        for (start_idx, end_idx, config) in effect_layers {
-            if start_idx >= end_idx || end_idx > batch.primitives.len() {
+        for layer in effect_layers {
+            let EffectLayerRange {
+                primitive_start: start_idx,
+                primitive_end: end_idx,
+                config,
+                ..
+            } = &layer;
+            let (start_idx, end_idx) = (*start_idx, *end_idx);
+            let config = config.clone();
+            let has_primitives = start_idx < end_idx && end_idx <= batch.primitives.len();
+            let has_paths = layer.path_index_end > layer.path_index_start
+                && layer.path_index_end <= batch.paths.indices.len();
+            if !has_primitives && !has_paths {
                 continue;
             }
 
-            // Config position/size are in local coordinates (relative to parent)
-            // But primitives are at screen-space coordinates after transforms
-            // We need to compute the actual bounding box from primitives
+            // Compute the layer's screen-space bounding box from its
+            // primitives + path vertices. Lottie layers contain only
+            // paths (tessellated by `fill_path`), no SDF primitives —
+            // so the bbox MUST include path vertices, otherwise the
+            // tight texture would be sized from the LayerConfig
+            // fallback (often viewport-sized) and the offscreen blit
+            // would be in the wrong position.
             let primitives = &batch.primitives[start_idx..end_idx];
-            let (layer_pos, layer_size, layer_clip) = if primitives.is_empty() {
-                // Fallback to config values if no primitives
+            let path_verts = if has_paths {
+                &batch.paths.vertices[layer.path_vertex_start..layer.path_vertex_end]
+            } else {
+                &[][..]
+            };
+            let (layer_pos, layer_size, layer_clip) = if primitives.is_empty()
+                && path_verts.is_empty()
+            {
                 let pos = config.position.map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0));
                 let size = config
                     .size
@@ -3574,13 +4851,10 @@ impl GpuRenderer {
                     .unwrap_or((self.viewport_size.0 as f32, self.viewport_size.1 as f32));
                 (pos, size, None)
             } else {
-                // Compute bounding box from primitives (which are in screen coordinates)
                 let mut min_x = f32::MAX;
                 let mut min_y = f32::MAX;
                 let mut max_x = f32::MIN;
                 let mut max_y = f32::MIN;
-                // Extract clip bounds from the first primitive with a valid clip
-                // All primitives in a layer should have the same clip (from scroll container)
                 let mut clip: Option<([f32; 4], [f32; 4])> = None;
                 for p in primitives {
                     let (px, py, pw, ph) = (p.bounds[0], p.bounds[1], p.bounds[2], p.bounds[3]);
@@ -3588,10 +4862,17 @@ impl GpuRenderer {
                     min_y = min_y.min(py);
                     max_x = max_x.max(px + pw);
                     max_y = max_y.max(py + ph);
-                    // Check for valid clip bounds (not the default "no clip" values)
-                    // Default is [-10000, -10000, 100000, 100000]
                     if clip.is_none() && p.clip_bounds[0] > -5000.0 && p.clip_bounds[2] < 90000.0 {
                         clip = Some((p.clip_bounds, p.clip_radius));
+                    }
+                }
+                for v in path_verts {
+                    min_x = min_x.min(v.position[0]);
+                    min_y = min_y.min(v.position[1]);
+                    max_x = max_x.max(v.position[0]);
+                    max_y = max_y.max(v.position[1]);
+                    if clip.is_none() && v.clip_bounds[0] > -5000.0 && v.clip_bounds[2] < 90000.0 {
+                        clip = Some((v.clip_bounds, v.clip_radius));
                     }
                 }
                 let width = (max_x - min_x).max(1.0);
@@ -3616,13 +4897,20 @@ impl GpuRenderer {
             // Calculate effect expansion (how much effects extend beyond original bounds)
             let effect_expansion = Self::calculate_effect_expansion(&config.effects);
 
-            // Render layer primitives to a TIGHT texture (not viewport-sized!)
-            // This significantly reduces memory usage and effect processing time
-            // Returns both texture and content_size (which may differ from texture.size due to pool bucket rounding)
-            let (layer_texture, content_size) = self.render_primitive_range_tight(
+            // Render layer primitives + paths to a TIGHT texture
+            // (not viewport-sized!). Path range comes from the
+            // recorded `LayerCommandEntry`, so Lottie shapes —
+            // which only ever produce path geometry — get their
+            // own slice composed at full alpha into the offscreen
+            // before the blit applies the layer's opacity.
+            let (layer_texture, content_size) = self.render_layer_range_tight(
                 batch,
                 start_idx,
                 end_idx,
+                layer.path_vertex_start,
+                layer.path_vertex_end,
+                layer.path_index_start,
+                layer.path_index_end,
                 layer_pos,
                 layer_size,
                 effect_expansion,
@@ -3701,18 +4989,35 @@ impl GpuRenderer {
         exclude: &std::collections::HashSet<usize>,
         clear_color: [f64; 4],
     ) {
+        self.render_primitives_excluding_with_paths(target, batch, exclude, &[], clear_color)
+    }
+
+    /// Like [`Self::render_primitives_excluding`] but also skips a
+    /// set of path-index ranges from the single path draw call. The
+    /// ranges must be sorted by start index and non-overlapping —
+    /// callers get that from `EffectLayerRange` values built by
+    /// `render_with_layer_effects`, which emits layers in a
+    /// stack-ordered, non-overlapping manner.
+    fn render_primitives_excluding_with_paths(
+        &mut self,
+        target: &wgpu::TextureView,
+        batch: &PrimitiveBatch,
+        exclude: &std::collections::HashSet<usize>,
+        path_skip_ranges: &[(u32, u32)],
+        clear_color: [f64; 4],
+    ) {
         // If nothing to exclude, use simple path
-        if exclude.is_empty() {
+        if exclude.is_empty() && path_skip_ranges.is_empty() {
             self.render_with_clear_simple(target, batch, clear_color);
             return;
         }
 
-        // Build list of primitives to render (excluding those in effect layers)
+        // Build list of primitives to render (excluding effect layers + off-screen)
         let included_primitives: Vec<GpuPrimitive> = batch
             .primitives
             .iter()
             .enumerate()
-            .filter(|(i, _)| !exclude.contains(i))
+            .filter(|(i, p)| !exclude.contains(i) && self.is_primitive_visible(p))
             .map(|(_, p)| *p)
             .collect();
 
@@ -3732,6 +5037,7 @@ impl GpuRenderer {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: target,
                         resolve_target: None,
+                        depth_slice: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
                                 r: clear_color[0],
@@ -3762,8 +5068,8 @@ impl GpuRenderer {
         // Update auxiliary data buffer
         self.update_aux_data_buffer(batch);
 
-        // Update primitives buffer with filtered primitives (bounded by buffer capacity)
-        let prim_count = self.write_primitives_safe(&included_primitives);
+        // Sort and upload filtered primitives
+        let sdf_ranges = self.upload_sorted_primitives(&included_primitives);
 
         // Update path buffers if we have background paths.
         let has_paths = has_path_geometry(&batch.paths);
@@ -3786,6 +5092,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: clear_color[0],
@@ -3801,17 +5108,42 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            // Render SDF primitives (filtered)
-            if prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf);
+            // Render SDF primitives via split pipelines (filtered)
+            if !included_primitives.is_empty() {
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..prim_count as u32);
+                Self::draw_split_sdf(
+                    &mut render_pass,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    false,
+                    self.sdf_vb_buffer(),
+                );
             }
 
-            // Render paths (always rendered - path filtering would be more complex)
+            // Render paths, skipping any index ranges that belong
+            // to translucent / effect layers (those are composited
+            // offscreen in the second pass). Paths in non-effect
+            // ranges still render here directly to the target.
             if has_paths {
-                render_pass.set_pipeline(&self.pipelines.path);
-                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
+                if let (Some(vb), Some(ib)) =
+                    (&self.buffers.path_vertices, &self.buffers.path_indices)
+                {
+                    render_pass.set_pipeline(&self.pipelines.path);
+                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                    render_pass.set_vertex_buffer(0, vb.slice(..));
+                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    let total = batch.paths.indices.len() as u32;
+                    let mut cursor = 0u32;
+                    for &(skip_start, skip_end) in path_skip_ranges {
+                        if skip_start > cursor {
+                            render_pass.draw_indexed(cursor..skip_start, 0, 0..1);
+                        }
+                        cursor = cursor.max(skip_end);
+                    }
+                    if cursor < total {
+                        render_pass.draw_indexed(cursor..total, 0, 0..1);
+                    }
+                }
             }
         }
 
@@ -3854,6 +5186,12 @@ impl GpuRenderer {
             return;
         }
 
+        if !self.has_storage_buffers {
+            // DT mode: upload aux data to texture instead of storage buffer
+            self.update_aux_data_texture(&batch.aux_data);
+            return;
+        }
+
         let data_size = (batch.aux_data.len() * std::mem::size_of::<[f32; 4]>()) as u64;
         let buffer_size = self.buffers.aux_data.size();
 
@@ -3866,8 +5204,11 @@ impl GpuRenderer {
                 mapped_at_creation: false,
             });
 
-            // Must recreate the SDF bind group since the buffer changed
+            // Must recreate the SDF and path bind groups since the
+            // buffer changed — path binding(7) references aux_data too
+            // so the same handle-invalidation applies.
             self.rebind_sdf_bind_group();
+            self.rebind_path_bind_group();
         }
 
         self.queue.write_buffer(
@@ -3875,6 +5216,117 @@ impl GpuRenderer {
             0,
             bytemuck::cast_slice(&batch.aux_data),
         );
+    }
+
+    /// Upload auxiliary data to the DT fallback texture (Tier 3 / WebGL2).
+    ///
+    /// The texture has width=1024 and variable height. If the data exceeds
+    /// the current texture capacity, the texture is recreated larger and
+    /// the SDF bind group is rebound.
+    fn update_aux_data_texture(&mut self, aux_data: &[[f32; 4]]) {
+        const AUX_TEX_WIDTH: u32 = 1024;
+        let count = aux_data.len() as u32;
+        let needed_height = count.div_ceil(AUX_TEX_WIDTH).max(1);
+
+        if needed_height > self.buffers.aux_data_texture_height {
+            // Recreate the texture with more rows
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Aux Data Texture"),
+                size: wgpu::Extent3d {
+                    width: AUX_TEX_WIDTH,
+                    height: needed_height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.buffers.aux_data_texture = Some(tex);
+            self.buffers.aux_data_view = Some(view);
+            self.buffers.aux_data_texture_height = needed_height;
+
+            // Rebind since the texture changed
+            self.rebind_sdf_bind_group();
+        }
+
+        if let Some(ref tex) = self.buffers.aux_data_texture {
+            // Pad aux_data to full rows so write_texture gets a complete rectangle
+            let total_texels = (AUX_TEX_WIDTH * needed_height) as usize;
+            let mut padded = aux_data.to_vec();
+            padded.resize(total_texels, [0.0f32; 4]);
+
+            let bytes = bytemuck::cast_slice::<[f32; 4], u8>(&padded);
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(AUX_TEX_WIDTH * 16), // 1024 texels × 16 bytes
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: AUX_TEX_WIDTH,
+                    height: needed_height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+
+    /// Recreate the path bind group. Needed when the aux_data storage
+    /// buffer is resized (binding 7 references the buffer by handle,
+    /// so the old bind group keeps pointing at the freed buffer). Uses
+    /// the placeholder path-image view — glass backdrops are applied
+    /// through a separate bind group set that carries the real
+    /// backdrop texture, so binding 5 here stays a placeholder.
+    fn rebind_path_bind_group(&mut self) {
+        self.bind_groups.path = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Path Bind Group (rebound)"),
+            layout: &self.bind_group_layouts.path,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.buffers.path_uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.gradient_texture_cache.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.gradient_texture_cache.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.placeholder_path_image_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&self.placeholder_path_image_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.buffers.aux_data.as_entire_binding(),
+                },
+            ],
+        });
     }
 
     /// Recreate the SDF bind group (needed when aux_data buffer is resized).
@@ -3894,6 +5346,42 @@ impl GpuRenderer {
                 )
             };
 
+        // Binding 1: primitives (storage buffer or data texture)
+        let binding_1 = if self.has_storage_buffers {
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: self.buffers.primitives.as_entire_binding(),
+            }
+        } else {
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(
+                    self.buffers
+                        .prim_data_view
+                        .as_ref()
+                        .expect("DT mode requires prim_data_view"),
+                ),
+            }
+        };
+
+        // Binding 5: aux data (storage buffer or data texture)
+        let binding_5 = if self.has_storage_buffers {
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: self.buffers.aux_data.as_entire_binding(),
+            }
+        } else {
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(
+                    self.buffers
+                        .aux_data_view
+                        .as_ref()
+                        .expect("DT mode requires aux_data_view"),
+                ),
+            }
+        };
+
         self.bind_groups.sdf = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SDF Bind Group (rebound)"),
             layout: &self.bind_group_layouts.sdf,
@@ -3902,10 +5390,7 @@ impl GpuRenderer {
                     binding: 0,
                     resource: self.buffers.uniforms.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.buffers.primitives.as_entire_binding(),
-                },
+                binding_1,
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(atlas_view),
@@ -3918,10 +5403,7 @@ impl GpuRenderer {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(color_atlas_view),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: self.buffers.aux_data.as_entire_binding(),
-                },
+                binding_5,
             ],
         });
     }
@@ -4216,8 +5698,8 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update primitives buffer (using safe write to prevent overflow)
-        let prim_count = self.write_primitives_safe(&batch.primitives);
+        // Sort and upload primitives
+        let sdf_ranges = self.upload_sorted_primitives(&batch.primitives);
 
         // Update path buffers if we have background path geometry.
         let has_paths = has_path_geometry(&batch.paths);
@@ -4240,6 +5722,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: msaa_target,
                     resolve_target: Some(resolve_target),
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: clear_color[0],
@@ -4255,11 +5738,16 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            // Render SDF primitives
-            if prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf);
+            // Render SDF primitives via split pipelines
+            if !batch.primitives.is_empty() {
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..prim_count as u32);
+                Self::draw_split_sdf(
+                    &mut render_pass,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    false,
+                    self.sdf_vb_buffer(),
+                );
             }
 
             // Render paths
@@ -4310,7 +5798,7 @@ impl GpuRenderer {
         backdrop: &wgpu::TextureView,
         batch: &PrimitiveBatch,
     ) {
-        if batch.glass_primitives.is_empty() {
+        if batch.glass_primitives.is_empty() || !self.has_storage_buffers {
             return;
         }
         self.ensure_glass_pipelines();
@@ -4440,6 +5928,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load, // Keep existing content
                         store: wgpu::StoreOp::Store,
@@ -4499,9 +5988,8 @@ impl GpuRenderer {
             bytemuck::bytes_of(&main_uniforms),
         );
 
-        // Update buffers
-        let prim_count = self.write_primitives_safe(&batch.primitives);
-        let line_count = self.write_line_segments_safe(&batch.line_segments);
+        // Sort and upload primitives
+        let sdf_ranges = self.upload_sorted_primitives(&batch.primitives);
 
         // Create command encoder
         let mut encoder = self
@@ -4517,6 +6005,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: backdrop,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
@@ -4527,17 +6016,14 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            if prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf);
-                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..prim_count as u32);
-            }
-
-            if line_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.lines);
-                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-                render_pass.draw(0..6, 0..line_count as u32);
-            }
+            render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+            Self::draw_split_sdf(
+                &mut render_pass,
+                &self.pipelines,
+                &sdf_ranges,
+                false,
+                self.sdf_vb_buffer(),
+            );
         }
 
         // Submit commands
@@ -4559,6 +6045,13 @@ impl GpuRenderer {
         _backdrop_size: (u32, u32), // Not used - we render with full viewport coords
         batch: &PrimitiveBatch,
     ) {
+        // Glass effects require storage buffers for per-frame primitive data.
+        // On WebGL2 (no storage buffers), skip glass rendering — the glass DT
+        // shader exists but needs a per-frame glass data texture + bind group
+        // plumbing that isn't implemented yet.
+        if !self.has_storage_buffers {
+            return;
+        }
         self.ensure_glass_pipelines();
 
         // Update uniforms for rendering (always use full viewport size)
@@ -4571,9 +6064,8 @@ impl GpuRenderer {
         // Update auxiliary data buffer
         self.update_aux_data_buffer(batch);
 
-        // Update primitives buffer
-        let bg_prim_count = self.write_primitives_safe(&batch.primitives);
-        let bg_line_count = self.write_line_segments_safe(&batch.line_segments);
+        // Sort and upload primitives
+        let sdf_ranges = self.upload_sorted_primitives(&batch.primitives);
 
         // Split glass primitives into simple and liquid for separate rendering
         let mut simple_primitives: Vec<GpuGlassPrimitive> = Vec::new();
@@ -4692,6 +6184,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: backdrop,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -4702,16 +6195,15 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            if bg_prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf);
+            if !batch.primitives.is_empty() {
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..bg_prim_count as u32);
-            }
-
-            if bg_line_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.lines);
-                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-                render_pass.draw(0..6, 0..bg_line_count as u32);
+                Self::draw_split_sdf(
+                    &mut render_pass,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    false,
+                    self.sdf_vb_buffer(),
+                );
             }
         }
 
@@ -4728,6 +6220,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
@@ -4738,16 +6231,15 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            if bg_prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf);
+            if !batch.primitives.is_empty() {
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..bg_prim_count as u32);
-            }
-
-            if bg_line_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.lines);
-                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-                render_pass.draw(0..6, 0..bg_line_count as u32);
+                Self::draw_split_sdf(
+                    &mut render_pass,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    false,
+                    self.sdf_vb_buffer(),
+                );
             }
         }
 
@@ -4766,6 +6258,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -4797,12 +6290,118 @@ impl GpuRenderer {
         // Submit background and glass passes first
         self.queue.submit(std::iter::once(encoder.finish()));
 
+        // Pass 3b: Render nested glass primitives (glass inside glass)
+        // These are glass elements that are children of other glass elements.
+        // They render after parent glass, sampling from the same backdrop.
+        if !batch.nested_glass_primitives.is_empty() {
+            // Split nested glass into simple and liquid
+            let mut nested_simple: Vec<GpuGlassPrimitive> = Vec::new();
+            let mut nested_liquid: Vec<GpuGlassPrimitive> = Vec::new();
+            for prim in &batch.nested_glass_primitives {
+                if prim.type_info[0] == GlassType::Simple as u32 {
+                    nested_simple.push(*prim);
+                } else {
+                    nested_liquid.push(*prim);
+                }
+            }
+            let nested_simple_count = nested_simple.len();
+            let nested_liquid_count = nested_liquid.len();
+
+            // Combine: simple first, then liquid
+            let mut ordered_nested = nested_simple;
+            ordered_nested.extend(nested_liquid);
+
+            // Upload nested glass primitives to buffer
+            self.queue.write_buffer(
+                &self.buffers.glass_primitives,
+                0,
+                bytemuck::cast_slice(&ordered_nested),
+            );
+
+            // Recreate bind group since glass_primitives buffer contents changed
+            {
+                let cached_glass = self.cached_glass.as_ref().unwrap();
+                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Nested Glass Bind Group"),
+                    layout: &self.bind_group_layouts.glass,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.buffers.glass_uniforms.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: self.buffers.glass_primitives.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(backdrop),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::Sampler(&cached_glass.sampler),
+                        },
+                    ],
+                });
+                if let Some(ref mut cached) = self.cached_glass {
+                    cached.bind_group = Some(bind_group);
+                }
+            }
+
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Blinc Nested Glass Encoder"),
+                });
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Nested Glass Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            let nested_bind_group = self
+                .cached_glass
+                .as_ref()
+                .unwrap()
+                .bind_group
+                .as_ref()
+                .unwrap();
+
+            if nested_simple_count > 0 {
+                render_pass.set_pipeline(self.effect_pipelines.simple_glass.as_ref().unwrap());
+                render_pass.set_bind_group(0, nested_bind_group, &[]);
+                render_pass.draw(0..6, 0..nested_simple_count as u32);
+            }
+
+            if nested_liquid_count > 0 {
+                render_pass.set_pipeline(self.effect_pipelines.glass.as_ref().unwrap());
+                render_pass.set_bind_group(0, nested_bind_group, &[]);
+                render_pass.draw(
+                    0..6,
+                    nested_simple_count as u32..(nested_simple_count + nested_liquid_count) as u32,
+                );
+            }
+
+            drop(render_pass);
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+
         // Pass 4: Render foreground primitives (on top of glass)
         // This requires a separate submission because we need to overwrite the primitives buffer
-        if !batch.foreground_primitives.is_empty() || !batch.foreground_line_segments.is_empty() {
-            // Upload foreground primitives/lines to the buffers
-            let fg_prim_count = self.write_primitives_safe(&batch.foreground_primitives);
-            let fg_line_count = self.write_line_segments_safe(&batch.foreground_line_segments);
+        if !batch.foreground_primitives.is_empty() {
+            // Sort and upload foreground primitives
+            let fg_ranges = self.upload_sorted_primitives(&batch.foreground_primitives);
 
             let mut encoder = self
                 .device
@@ -4815,6 +6414,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -4825,17 +6425,14 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            if fg_prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf);
-                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..fg_prim_count as u32);
-            }
-
-            if fg_line_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.lines);
-                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-                render_pass.draw(0..6, 0..fg_line_count as u32);
-            }
+            render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+            Self::draw_split_sdf(
+                &mut render_pass,
+                &self.pipelines,
+                &fg_ranges,
+                false,
+                self.sdf_vb_buffer(),
+            );
 
             drop(render_pass);
             self.queue.submit(std::iter::once(encoder.finish()));
@@ -4859,6 +6456,7 @@ impl GpuRenderer {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: target,
                         resolve_target: None,
+                        depth_slice: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
@@ -4940,8 +6538,8 @@ impl GpuRenderer {
         // Update auxiliary data buffer
         self.update_aux_data_buffer(batch);
 
-        // Update primitives buffer (bounded by buffer capacity)
-        let prim_count = self.write_primitives_safe(&batch.primitives);
+        // Sort and upload primitives
+        let sdf_ranges = self.upload_sorted_primitives(&batch.primitives);
 
         // Update line segments buffer
         let line_count = self.write_line_segments_safe(&batch.line_segments);
@@ -4969,6 +6567,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None, // No MSAA resolve needed for overlay
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load, // Keep existing content
                         store: wgpu::StoreOp::Store,
@@ -4992,63 +6591,15 @@ impl GpuRenderer {
                 render_pass.draw(0..6, 0..line_count as u32);
             }
 
-            // Render SDF primitives using overlay pipeline
-            if prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf_overlay);
+            // Render SDF primitives using split overlay pipelines
+            if !batch.primitives.is_empty() {
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..prim_count as u32);
-            }
-        }
-
-        // Foreground overlay pass (`set_foreground_layer(true)` inside this overlay batch).
-        if has_foreground_primitives || has_foreground_lines || has_foreground_paths {
-            let fg_prim_count = if has_foreground_primitives {
-                self.write_primitives_safe(&batch.foreground_primitives)
-            } else {
-                0
-            };
-            let fg_line_count = if has_foreground_lines {
-                self.write_line_segments_safe(&batch.foreground_line_segments)
-            } else {
-                0
-            };
-            if has_foreground_paths {
-                self.update_path_buffers(&batch.foreground_paths);
-            }
-
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc Foreground Overlay Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            if fg_line_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.lines_overlay);
-                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-                render_pass.draw(0..6, 0..fg_line_count as u32);
-            }
-
-            if fg_prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf_overlay);
-                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..fg_prim_count as u32);
-            }
-
-            if has_foreground_paths {
-                render_pass.set_pipeline(&self.pipelines.path_overlay);
-                self.draw_path_batch(
+                Self::draw_split_sdf(
                     &mut render_pass,
-                    &batch.foreground_paths,
-                    &self.bind_groups.path,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    true,
+                    self.sdf_vb_buffer(),
                 );
             }
         }
@@ -5254,14 +6805,8 @@ impl GpuRenderer {
             self.update_path_buffers(&batch.paths);
         }
 
-        // Write filtered primitives
-        if !included_primitives.is_empty() {
-            self.queue.write_buffer(
-                &self.buffers.primitives,
-                0,
-                bytemuck::cast_slice(&included_primitives),
-            );
-        }
+        // Sort and upload filtered primitives
+        let sdf_ranges = self.upload_sorted_primitives(&included_primitives);
 
         let mut encoder = self
             .device
@@ -5275,6 +6820,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -5298,11 +6844,16 @@ impl GpuRenderer {
                 }
             }
 
-            // Render filtered SDF primitives
+            // Render filtered SDF primitives via split overlay pipelines
             if !included_primitives.is_empty() {
-                render_pass.set_pipeline(&self.pipelines.sdf_overlay);
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..included_primitives.len() as u32);
+                Self::draw_split_sdf(
+                    &mut render_pass,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    true,
+                    self.sdf_vb_buffer(),
+                );
             }
         }
 
@@ -5319,8 +6870,8 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update primitives buffer (bounded by buffer capacity)
-        let prim_count = self.write_primitives_safe(&batch.primitives);
+        // Sort and upload primitives
+        let sdf_ranges = self.upload_sorted_primitives(&batch.primitives);
 
         // Update line segments buffer
         let line_count = self.write_line_segments_safe(&batch.line_segments);
@@ -5348,6 +6899,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -5371,63 +6923,15 @@ impl GpuRenderer {
                 render_pass.draw(0..6, 0..line_count as u32);
             }
 
-            // Render SDF primitives
-            if prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf_overlay);
+            // Render SDF primitives via split overlay pipelines
+            if !batch.primitives.is_empty() {
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..prim_count as u32);
-            }
-        }
-
-        // Foreground overlay pass (`set_foreground_layer(true)` inside this overlay batch).
-        if has_foreground_primitives || has_foreground_lines || has_foreground_paths {
-            let fg_prim_count = if has_foreground_primitives {
-                self.write_primitives_safe(&batch.foreground_primitives)
-            } else {
-                0
-            };
-            let fg_line_count = if has_foreground_lines {
-                self.write_line_segments_safe(&batch.foreground_line_segments)
-            } else {
-                0
-            };
-            if has_foreground_paths {
-                self.update_path_buffers(&batch.foreground_paths);
-            }
-
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc Foreground Overlay Simple Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            if fg_line_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.lines_overlay);
-                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-                render_pass.draw(0..6, 0..fg_line_count as u32);
-            }
-
-            if fg_prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf_overlay);
-                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..fg_prim_count as u32);
-            }
-
-            if has_foreground_paths {
-                render_pass.set_pipeline(&self.pipelines.path_overlay);
-                self.draw_path_batch(
+                Self::draw_split_sdf(
                     &mut render_pass,
-                    &batch.foreground_paths,
-                    &self.bind_groups.path,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    true,
+                    self.sdf_vb_buffer(),
                 );
             }
         }
@@ -5459,8 +6963,8 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update primitives buffer (bounded by buffer capacity)
-        let prim_count = self.write_primitives_safe(primitives);
+        // Sort and upload primitives
+        let sdf_ranges = self.upload_sorted_primitives(primitives);
 
         // Create command encoder
         let mut encoder = self
@@ -5476,6 +6980,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -5486,10 +6991,15 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            // Render SDF primitives
-            render_pass.set_pipeline(&self.pipelines.sdf_overlay);
+            // Render SDF primitives via split overlay pipelines
             render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-            render_pass.draw(0..6, 0..prim_count as u32);
+            Self::draw_split_sdf(
+                &mut render_pass,
+                &self.pipelines,
+                &sdf_ranges,
+                true,
+                self.sdf_vb_buffer(),
+            );
         }
 
         // Submit commands
@@ -5588,6 +7098,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -5685,6 +7196,8 @@ impl GpuRenderer {
                 &self.bind_group_layouts,
                 self.texture_format,
                 sample_count,
+                self.has_vertex_storage,
+                self.has_storage_buffers,
             ));
         }
 
@@ -5799,16 +7312,36 @@ impl GpuRenderer {
             });
         }
 
-        // Update uniforms
+        // Update uniforms. `_padding.x = 1.0` signals the SDF fragment
+        // shader that hardware multisample coverage is driving
+        // silhouette AA for this pass — see `render_primitives_overlay_msaa`
+        // for the longer rationale on why stacking the shader's
+        // per-edge fade on top of MSAA resolve under-fills every
+        // partially-covered pixel. The flag is only honoured by the
+        // mesh-primitive branch inside `sdf_core`; every other branch
+        // ignores `_padding`.
+        let msaa_flag = if sample_count > 1 { 1.0 } else { 0.0 };
         let uniforms = Uniforms {
             viewport_size: [width as f32, height as f32],
-            _padding: [0.0; 2],
+            _padding: [msaa_flag, 0.0],
         };
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update primitives buffer (bounded by buffer capacity)
-        let prim_count = self.write_primitives_safe(&batch.primitives);
+        // Sort and upload primitives
+        let sdf_ranges = self.upload_sorted_primitives(&batch.primitives);
+
+        // Upload auxiliary data buffer so PRIM_MESH triangle corners and
+        // polygon-clip vertices resolve to live GPU data. The
+        // single-sampled overlay path piggybacks on the upload that
+        // `render_with_clear_simple` does at the top of the frame, but
+        // callers that enter this MSAA path *in place of*
+        // `render_with_clear` skip that upload and the GPU buffer then
+        // carries stale data from the previous frame — every mesh
+        // triangle indexes into random `aux_data` and either renders as
+        // nothing or as a degenerate sliver. Updating here keeps the
+        // MSAA overlay self-sufficient.
+        self.update_aux_data_buffer(batch);
 
         // Update path buffers (background only; foreground may be rendered in a second MSAA pass).
         let has_paths = has_path_geometry(&batch.paths);
@@ -5823,18 +7356,46 @@ impl GpuRenderer {
                 label: Some("Overlay MSAA Render Encoder"),
             });
 
-        // Pass 1: Render to MSAA texture with resolve
-        // Use cached MSAA pipelines for sample_count > 1, otherwise fall back to base pipelines
+        // Pass 1: Render paths + SDF primitives to an offscreen texture.
+        //
+        // WebGPU spec: `resolveTarget` MUST be None when the color
+        // attachment's sample_count is 1. Chrome/Dawn silently accept
+        // a stray `resolve_target: Some(...)` on a single-sampled
+        // view, but Safari/WebKit rejects the render pass entirely —
+        // which is why every path draw (notches, SVG strokes, custom
+        // paths) was invisible on Safari.
+        //
+        // Fix: when sample_count == 1, render directly into
+        // `resolve_view` (a single-sampled texture with both
+        // RENDER_ATTACHMENT and TEXTURE_BINDING usage) and pass
+        // `resolve_target: None`. When sample_count > 1, use the
+        // multisampled `msaa_view` with a resolve into `resolve_view`
+        // as before.
+        let (pass1_view, pass1_resolve, pass1_store) = if sample_count > 1 {
+            // Multisampled: keep the resolved single-sample texture,
+            // discard the MSAA texture (we only wanted its resolved
+            // output, not the per-sample content).
+            (
+                &cached.msaa_view,
+                Some(&cached.resolve_view),
+                wgpu::StoreOp::Discard,
+            )
+        } else {
+            // Single-sampled: render directly into the resolve_view
+            // and keep the content so pass 2 can sample from it.
+            (&cached.resolve_view, None, wgpu::StoreOp::Store)
+        };
         {
             let cached = self.cached_msaa.as_ref().unwrap();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Overlay MSAA Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &cached.msaa_view,
-                    resolve_target: Some(&cached.resolve_view),
+                    view: pass1_view,
+                    resolve_target: pass1_resolve,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Discard, // MSAA texture discarded after resolve
+                        store: pass1_store,
                     },
                 })],
                 depth_stencil_attachment: None,
@@ -5842,16 +7403,15 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            // Get the appropriate pipelines for the sample count
-            let (path_pipeline, sdf_pipeline) = if sample_count > 1 {
+            // Get the appropriate path pipeline for the sample count
+            let path_pipeline = if sample_count > 1 {
                 if let Some(ref msaa) = self.msaa_pipelines {
-                    (&msaa.path, &msaa.sdf)
+                    &msaa.path
                 } else {
-                    // Fallback (shouldn't happen due to creation above)
-                    (&self.pipelines.path, &self.pipelines.sdf)
+                    &self.pipelines.path
                 }
             } else {
-                (&self.pipelines.path, &self.pipelines.sdf)
+                &self.pipelines.path
             };
 
             // Render paths using MSAA pipeline
@@ -5860,11 +7420,35 @@ impl GpuRenderer {
                 self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
             }
 
-            // Render SDF primitives using MSAA pipeline
-            if prim_count > 0 {
-                render_pass.set_pipeline(sdf_pipeline);
+            // Render SDF primitives using split MSAA pipelines
+            if !batch.primitives.is_empty() {
                 render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..prim_count as u32);
+                if sample_count > 1 {
+                    if let Some(ref msaa) = self.msaa_pipelines {
+                        Self::draw_split_sdf_msaa(
+                            &mut render_pass,
+                            msaa,
+                            &sdf_ranges,
+                            self.sdf_vb_buffer(),
+                        );
+                    } else {
+                        Self::draw_split_sdf(
+                            &mut render_pass,
+                            &self.pipelines,
+                            &sdf_ranges,
+                            false,
+                            self.sdf_vb_buffer(),
+                        );
+                    }
+                } else {
+                    Self::draw_split_sdf(
+                        &mut render_pass,
+                        &self.pipelines,
+                        &sdf_ranges,
+                        false,
+                        self.sdf_vb_buffer(),
+                    );
+                }
             }
         }
 
@@ -5876,6 +7460,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load, // Keep existing content
                         store: wgpu::StoreOp::Store,
@@ -5998,6 +7583,8 @@ impl GpuRenderer {
                 &self.bind_group_layouts,
                 self.texture_format,
                 sample_count,
+                self.has_vertex_storage,
+                self.has_storage_buffers,
             ));
         }
 
@@ -6132,16 +7719,31 @@ impl GpuRenderer {
                 label: Some("Path MSAA Render Encoder"),
             });
 
-        // Pass 1: Render paths to MSAA texture with resolve
+        // Pass 1: Render paths to an offscreen texture.
+        //
+        // See the longer comment in `render_overlay_msaa` — the key
+        // constraint is that `resolveTarget` must be None when the
+        // color attachment is single-sampled (WebGPU spec). Safari
+        // enforces this; Chrome accepts a stray `Some(...)` silently.
+        let (pass1_view, pass1_resolve, pass1_store) = if sample_count > 1 {
+            (
+                &cached.msaa_view,
+                Some(&cached.resolve_view),
+                wgpu::StoreOp::Discard,
+            )
+        } else {
+            (&cached.resolve_view, None, wgpu::StoreOp::Store)
+        };
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Path MSAA Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &cached.msaa_view,
-                    resolve_target: Some(&cached.resolve_view),
+                    view: pass1_view,
+                    resolve_target: pass1_resolve,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Discard,
+                        store: pass1_store,
                     },
                 })],
                 depth_stencil_attachment: None,
@@ -6171,6 +7773,279 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipelines.composite_overlay);
+            render_pass.set_bind_group(0, &cached.composite_bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Render a slice of SDF primitives with MSAA anti-aliasing.
+    ///
+    /// Mirrors [`Self::render_primitives_overlay`] but dispatches through
+    /// the MSAA-enabled split SDF pipelines so mesh primitives
+    /// (`PRIM_MESH` — tessellated path solid fills) and the other SDF
+    /// categories get the same hardware-resolved smoothing that paths
+    /// and gradients already receive via
+    /// [`Self::render_paths_overlay_msaa`].
+    ///
+    /// Without this, unified-text mode routed solid path fills through
+    /// `render_unified` (single-sampled) and only the gradient / stroke
+    /// paths took the MSAA overlay, which left vector animation output
+    /// visibly rougher than the rasterized-SVG path even though both
+    /// tessellate cubic Beziers at the same tolerance.
+    ///
+    /// Pattern matches `render_paths_overlay_msaa`: render into the
+    /// cached MSAA texture (or directly into the single-sampled resolve
+    /// view when `sample_count == 1`, required by WebGPU spec so Safari
+    /// doesn't reject the pass), then blend the resolved texture onto
+    /// `target` via the composite overlay pipeline.
+    pub fn render_primitives_overlay_msaa(
+        &mut self,
+        target: &wgpu::TextureView,
+        primitives: &[GpuPrimitive],
+        sample_count: u32,
+    ) {
+        if primitives.is_empty() {
+            return;
+        }
+
+        // Ensure MSAA pipelines exist at the requested sample count.
+        let need_new_pipelines = match &self.msaa_pipelines {
+            Some(p) => p.sample_count != sample_count,
+            None => true,
+        };
+        if need_new_pipelines && sample_count > 1 {
+            self.msaa_pipelines = Some(Self::create_msaa_pipelines(
+                &self.device,
+                &self.bind_group_layouts,
+                self.texture_format,
+                sample_count,
+                self.has_vertex_storage,
+                self.has_storage_buffers,
+            ));
+        }
+
+        let (width, height) = self.viewport_size;
+
+        // Reuse the shared MSAA texture cache used by the paths / overlay
+        // MSAA paths. When the viewport or sample count changes we rebuild
+        // it; otherwise every MSAA pass this frame shares the same
+        // texture pair + composite bind group.
+        let need_new_textures = match &self.cached_msaa {
+            Some(cached) => {
+                cached.width != width
+                    || cached.height != height
+                    || cached.sample_count != sample_count
+            }
+            None => true,
+        };
+
+        if need_new_textures {
+            let msaa_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Primitives MSAA Texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.texture_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let msaa_view = msaa_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let resolve_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Primitives Resolve Texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.texture_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let resolve_view = resolve_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Primitives Blend Sampler"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            });
+
+            #[repr(C)]
+            #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+            struct CompositeUniforms {
+                opacity: f32,
+                blend_mode: u32,
+                _padding: [f32; 2],
+            }
+            let composite_uniforms = CompositeUniforms {
+                opacity: 1.0,
+                blend_mode: 0,
+                _padding: [0.0; 2],
+            };
+            let composite_uniform_buffer =
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Primitives Composite Uniforms Buffer"),
+                        contents: bytemuck::bytes_of(&composite_uniforms),
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    });
+
+            let composite_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Primitives Composite Bind Group"),
+                layout: &self.bind_group_layouts.composite,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: composite_uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&resolve_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+
+            self.cached_msaa = Some(CachedMsaaTextures {
+                msaa_texture,
+                msaa_view,
+                resolve_texture,
+                resolve_view,
+                width,
+                height,
+                sample_count,
+                sampler,
+                composite_uniform_buffer,
+                composite_bind_group,
+            });
+        }
+
+        // Update viewport uniform for this pass.
+        //
+        // `_padding.x` carries an MSAA flag: 1.0 here tells the SDF
+        // fragment shader that hardware multisample coverage is driving
+        // silhouette AA, so the mesh-primitive branch should skip its
+        // own per-edge barycentric fade. The fade works well on
+        // single-sampled targets (web fallback) but stacks with MSAA
+        // resolve to under-fill partially-covered pixels — a pixel with
+        // 50 % coverage resolves to ~0.05 alpha instead of 0.5 because
+        // each rendered sample already carries a faded-down value
+        // before the average. Removing the redundant shader fade
+        // restores the resolve to hardware-accurate coverage.
+        let msaa_flag = if sample_count > 1 { 1.0 } else { 0.0 };
+        let uniforms = Uniforms {
+            viewport_size: [width as f32, height as f32],
+            _padding: [msaa_flag, 0.0],
+        };
+        self.queue
+            .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
+
+        // Sort + upload primitives into the shared instance / aux buffers
+        // exactly the way `render_primitives_overlay` does.
+        let sdf_ranges = self.upload_sorted_primitives(primitives);
+
+        let cached = self.cached_msaa.as_ref().unwrap();
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Primitives MSAA Render Encoder"),
+            });
+
+        // Pass 1: draw into MSAA (or single-sampled resolve) texture.
+        // WebGPU: `resolve_target` must be None when the color
+        // attachment is single-sampled, so branch on `sample_count`.
+        let (pass1_view, pass1_resolve, pass1_store) = if sample_count > 1 {
+            (
+                &cached.msaa_view,
+                Some(&cached.resolve_view),
+                wgpu::StoreOp::Discard,
+            )
+        } else {
+            (&cached.resolve_view, None, wgpu::StoreOp::Store)
+        };
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Primitives MSAA Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: pass1_view,
+                    resolve_target: pass1_resolve,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: pass1_store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+            if sample_count > 1 {
+                if let Some(ref msaa) = self.msaa_pipelines {
+                    Self::draw_split_sdf_msaa(
+                        &mut render_pass,
+                        msaa,
+                        &sdf_ranges,
+                        self.sdf_vb_buffer(),
+                    );
+                } else {
+                    Self::draw_split_sdf(
+                        &mut render_pass,
+                        &self.pipelines,
+                        &sdf_ranges,
+                        true,
+                        self.sdf_vb_buffer(),
+                    );
+                }
+            } else {
+                Self::draw_split_sdf(
+                    &mut render_pass,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    true,
+                    self.sdf_vb_buffer(),
+                );
+            }
+        }
+
+        // Pass 2: composite the resolved MSAA texture over `target`,
+        // preserving existing content (LoadOp::Load).
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Primitives Blend Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -6217,9 +8092,34 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Update glyphs buffer
-        self.queue
-            .write_buffer(&self.buffers._glyphs, 0, bytemuck::cast_slice(glyphs));
+        // Update glyphs: storage buffer or data texture
+        if self.has_storage_buffers {
+            self.queue
+                .write_buffer(&self.buffers.glyphs, 0, bytemuck::cast_slice(glyphs));
+        } else if let Some(ref tex) = self.buffers.glyph_data_texture {
+            if !glyphs.is_empty() {
+                let bytes = bytemuck::cast_slice(glyphs);
+                self.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    bytes,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(6 * 16), // 6 texels × 16 bytes per Rgba32Float = 96 bytes = sizeof(GpuGlyph)
+                        rows_per_image: None,
+                    },
+                    wgpu::Extent3d {
+                        width: 6,
+                        height: glyphs.len() as u32,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
 
         // Check if we need to recreate the text bind group
         // Invalidate if either atlas view pointer changed (texture was recreated)
@@ -6244,7 +8144,13 @@ impl GpuRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: self.buffers._glyphs.as_entire_binding(),
+                        resource: if self.has_storage_buffers {
+                            self.buffers.glyphs.as_entire_binding()
+                        } else {
+                            wgpu::BindingResource::TextureView(
+                                self.buffers.glyph_data_view.as_ref().unwrap(),
+                            )
+                        },
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -6283,6 +8189,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load, // Keep existing content
                         store: wgpu::StoreOp::Store,
@@ -6843,18 +8750,29 @@ impl GpuRenderer {
             return;
         }
 
+        let glass_source = if self.has_storage_buffers {
+            GLASS_SHADER
+        } else {
+            GLASS_DT_SHADER
+        };
+        let simple_glass_source = if self.has_storage_buffers {
+            SIMPLE_GLASS_SHADER
+        } else {
+            SIMPLE_GLASS_DT_SHADER
+        };
+
         let glass_shader = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Glass Shader"),
-                source: wgpu::ShaderSource::Wgsl(GLASS_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(glass_source.into()),
             });
 
         let simple_glass_shader = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Simple Glass Shader"),
-                source: wgpu::ShaderSource::Wgsl(SIMPLE_GLASS_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(simple_glass_source.into()),
             });
 
         let layout = self
@@ -6952,6 +8870,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(color),
                         store: wgpu::StoreOp::Store,
@@ -7034,6 +8953,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load, // Preserve existing content
                         store: wgpu::StoreOp::Store,
@@ -7056,6 +8976,186 @@ impl GpuRenderer {
     // ─────────────────────────────────────────────────────────────────────────
     // Layer Texture Cache Accessors
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// Render dynamic RGBA images (video frames, camera preview, etc.)
+    ///
+    /// Uploads each image as a temporary GPU texture and renders it
+    /// to the destination rect using the image pipeline.
+    pub fn render_dynamic_images(
+        &mut self,
+        target: &wgpu::TextureView,
+        images: &[crate::primitives::DynamicImage],
+    ) {
+        for img in images {
+            if img.data.len() != (img.width * img.height * 4) as usize {
+                continue; // Invalid RGBA data
+            }
+
+            // Create temporary GPU texture from RGBA data
+            let gpu_image = crate::image::GpuImage::from_rgba(
+                &self.device,
+                &self.queue,
+                &img.data,
+                img.width,
+                img.height,
+                Some("dynamic_image"),
+            );
+
+            // Create an instance for the image pipeline
+            let instance = GpuImageInstance::new(
+                img.dest.x(),
+                img.dest.y(),
+                img.dest.width(),
+                img.dest.height(),
+            )
+            .with_opacity(img.opacity)
+            .with_border_radius(img.corner_radius);
+
+            // Render using the existing image pipeline
+            self.render_images(target, gpu_image.view(), &[instance]);
+        }
+    }
+
+    // ─── Custom Render Pass API ────────────────────────────────────────────
+
+    /// Register a custom render pass.
+    ///
+    /// The pass will be initialized immediately and executed each frame
+    /// at the stage returned by `pass.stage()`.
+    pub fn register_custom_pass(
+        &mut self,
+        mut pass: Box<dyn crate::custom_pass::CustomRenderPass>,
+    ) {
+        pass.initialize(&self.device, &self.queue, self.texture_format);
+        self.custom_passes.register(pass);
+    }
+
+    /// Remove a custom render pass by label.
+    pub fn remove_custom_pass(&mut self, label: &str) -> bool {
+        self.custom_passes.remove(label)
+    }
+
+    /// Execute all custom passes for a given stage.
+    pub fn execute_custom_passes(
+        &mut self,
+        stage: crate::custom_pass::RenderStage,
+        target: &wgpu::TextureView,
+        scale_factor: f64,
+    ) {
+        if !self.custom_passes.has_passes(stage) {
+            return;
+        }
+        let ctx = crate::custom_pass::RenderPassContext {
+            device: &self.device,
+            queue: &self.queue,
+            target,
+            viewport_width: self.viewport_size.0,
+            viewport_height: self.viewport_size.1,
+            texture_format: self.texture_format,
+            scale_factor,
+            view_proj: None,
+            inv_view_proj: None,
+            camera_pos: None,
+            viewport: None,
+        };
+        self.custom_passes.execute_stage(stage, &ctx);
+    }
+
+    /// Execute Scene3D custom passes with camera context.
+    pub fn execute_scene3d_passes(
+        &mut self,
+        target: &wgpu::TextureView,
+        scale_factor: f64,
+        view_proj: &[f32; 16],
+        inv_view_proj: &[f32; 16],
+        camera_pos: [f32; 3],
+        viewport: Option<[f32; 4]>,
+    ) {
+        let stage = crate::custom_pass::RenderStage::Scene3D;
+        if !self.custom_passes.has_passes(stage) {
+            return;
+        }
+        let ctx = crate::custom_pass::RenderPassContext {
+            device: &self.device,
+            queue: &self.queue,
+            target,
+            viewport_width: self.viewport_size.0,
+            viewport_height: self.viewport_size.1,
+            texture_format: self.texture_format,
+            scale_factor,
+            view_proj: Some(*view_proj),
+            inv_view_proj: Some(*inv_view_proj),
+            camera_pos: Some(camera_pos),
+            viewport,
+        };
+        self.custom_passes.execute_stage(stage, &ctx);
+    }
+
+    /// Notify custom passes of a viewport resize.
+    pub fn resize_custom_passes(&mut self, width: u32, height: u32) {
+        self.custom_passes.resize(&self.device, width, height);
+    }
+
+    // ─── GPU Memory Budget ─────────────────────────────────────────────────
+
+    /// Enforce the GPU memory budget by evicting cached textures.
+    ///
+    /// Call once per frame (e.g., at frame start) to keep memory in check.
+    /// Evicts largest pooled textures first, then trims mask image cache
+    /// if still over budget.
+    pub fn enforce_memory_budget(&mut self) {
+        self.memory_budget.reset_transient();
+
+        if self.memory_budget.budget() == 0 {
+            return; // unlimited
+        }
+
+        let layer_bytes = self.layer_texture_cache.stats().total_memory_bytes();
+        if !self.memory_budget.is_over_budget(layer_bytes) {
+            return;
+        }
+
+        // Phase 1: evict pooled layer textures (largest first)
+        let target = self
+            .memory_budget
+            .budget()
+            .saturating_sub(self.memory_budget.mask_image_bytes);
+        let freed = self.layer_texture_cache.evict_to_budget(target);
+        if freed > 0 {
+            self.memory_budget.record_eviction();
+        }
+
+        // Phase 2: if still over, trim mask image cache (drop oldest entries)
+        let layer_bytes = self.layer_texture_cache.stats().total_memory_bytes();
+        if self.memory_budget.is_over_budget(layer_bytes) && !self.mask_image_cache.is_empty() {
+            // Remove one entry at a time until under budget
+            let keys: Vec<String> = self.mask_image_cache.keys().cloned().collect();
+            for key in keys {
+                if !self
+                    .memory_budget
+                    .is_over_budget(self.layer_texture_cache.stats().total_memory_bytes())
+                {
+                    break;
+                }
+                if let Some(img) = self.mask_image_cache.remove(&key) {
+                    let (w, h) = img.dimensions();
+                    self.memory_budget.untrack_mask_image(w, h);
+                    self.memory_budget.record_eviction();
+                }
+            }
+        }
+    }
+
+    /// Get the current GPU memory budget tracker.
+    pub fn memory_budget(&self) -> &GpuMemoryBudget {
+        &self.memory_budget
+    }
+
+    /// Get estimated total GPU texture memory usage in bytes.
+    pub fn estimated_texture_memory(&self) -> u64 {
+        let layer_bytes = self.layer_texture_cache.stats().total_memory_bytes();
+        self.memory_budget.total_tracked_bytes(layer_bytes)
+    }
 
     /// Get a reference to the layer texture cache
     pub fn layer_texture_cache(&self) -> &LayerTextureCache {
@@ -7192,6 +9292,7 @@ impl GpuRenderer {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load, // Preserve existing content
                     store: wgpu::StoreOp::Store,
@@ -7272,6 +9373,7 @@ impl GpuRenderer {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -7327,13 +9429,13 @@ impl GpuRenderer {
                     label: Some("Blur Copy Encoder"),
                 });
             encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &input.texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &output.texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
@@ -7425,6 +9527,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: output_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -7523,6 +9626,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: output,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -7609,6 +9713,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: output,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -7690,6 +9795,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: output,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -7861,13 +9967,39 @@ impl GpuRenderer {
         if self.mask_image_cache.contains_key(url) {
             return;
         }
-        let gpu_img = crate::image::GpuImage::from_rgba(
+        // Mask images are loaded once and sampled every frame the
+        // masked element is visible — a textbook case for BC. The
+        // auto encoder picks BC1 when the mask is effectively
+        // opaque (rare for masks but cheap to check) and BC3
+        // otherwise to preserve the alpha channel the mask depends
+        // on. Falls back to uncompressed upload on devices without
+        // BC support or in builds without the `bc-encode` feature.
+        //
+        // The 256-px floor matches the 2D image cache's
+        // `bc_eligible` heuristic: BC's 4×4 block quantization
+        // puts visible banding into small alpha ramps, which is
+        // exactly the signal a mask carries. Large masks
+        // (full-viewport gradient overlays, photo-style alpha
+        // cutouts) still compress.
+        // Same alignment + size floor as the `bc_eligible` helper in
+        // blinc_app: BC formats need multiple-of-4 dimensions (wgpu
+        // validation), and sub-256 masks produce visible block
+        // banding in alpha ramps.
+        let bc_ok = self.has_texture_compression_bc
+            && width % 4 == 0
+            && height % 4 == 0
+            && width >= 256
+            && height >= 256;
+        let label = format!("mask:{}", url);
+        let gpu_img = crate::image::GpuImage::from_rgba_maybe_compressed(
             &self.device,
             &self.queue,
             pixels,
             width,
             height,
-            Some(&format!("mask:{}", url)),
+            false,
+            bc_ok,
+            Some(&label),
         );
         self.mask_image_cache.insert(url.to_string(), gpu_img);
     }
@@ -7943,6 +10075,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: output,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -7983,13 +10116,13 @@ impl GpuRenderer {
                     label: Some("Layer Effect Copy Encoder"),
                 });
             encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &input.texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &output.texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
@@ -8121,13 +10254,13 @@ impl GpuRenderer {
                     label: Some("Layer Effect Fallback Copy"),
                 });
             encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &input.texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &output.texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
@@ -8207,6 +10340,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: output,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -8239,6 +10373,7 @@ impl GpuRenderer {
         }
 
         // Extract the primitive range
+        let _primitive_count = end_idx - start_idx;
         let primitives = &batch.primitives[start_idx..end_idx];
 
         if primitives.is_empty() {
@@ -8253,11 +10388,8 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Write primitive range to buffer (bounded by buffer capacity)
-        let primitive_count = self.write_primitives_safe(primitives) as u32;
-        if primitive_count == 0 {
-            return;
-        }
+        // Sort and upload primitive range
+        let sdf_ranges = self.upload_sorted_primitives(primitives);
 
         // Create command encoder
         let mut encoder = self
@@ -8273,6 +10405,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: clear_color[0],
@@ -8288,9 +10421,14 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.pipelines.sdf);
             render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-            render_pass.draw(0..6, 0..primitive_count);
+            Self::draw_split_sdf(
+                &mut render_pass,
+                &self.pipelines,
+                &sdf_ranges,
+                false,
+                self.sdf_vb_buffer(),
+            );
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -8303,6 +10441,7 @@ impl GpuRenderer {
     ///
     /// Returns the texture AND the actual content size (which may differ from
     /// texture.size due to pool bucket rounding).
+    #[allow(clippy::too_many_arguments)]
     fn render_primitive_range_tight(
         &mut self,
         batch: &PrimitiveBatch,
@@ -8311,6 +10450,43 @@ impl GpuRenderer {
         layer_pos: (f32, f32),
         layer_size: (f32, f32),
         effect_expansion: (f32, f32, f32, f32), // (left, top, right, bottom)
+    ) -> (LayerTexture, (u32, u32)) {
+        // Forward to the path-aware variant with an empty path range.
+        self.render_layer_range_tight(
+            batch,
+            start_idx,
+            end_idx,
+            0,
+            0,
+            0,
+            0,
+            layer_pos,
+            layer_size,
+            effect_expansion,
+        )
+    }
+
+    /// Path-aware variant of `render_primitive_range_tight` — also
+    /// renders a slice of `batch.paths` (vertices `[pv_start..pv_end)`,
+    /// indices `[pi_start..pi_end)`) into the tight texture, with
+    /// vertex positions offset to the layer-local origin. Lottie
+    /// shapes go through the path pipeline (lyon-tessellated
+    /// triangles), so a layer that contains only paths needs this
+    /// variant — the primitive-only one would render an empty
+    /// offscreen even though the paths exist in the batch.
+    #[allow(clippy::too_many_arguments)]
+    fn render_layer_range_tight(
+        &mut self,
+        batch: &PrimitiveBatch,
+        start_idx: usize,
+        end_idx: usize,
+        pv_start: usize,
+        pv_end: usize,
+        pi_start: usize,
+        pi_end: usize,
+        layer_pos: (f32, f32),
+        layer_size: (f32, f32),
+        effect_expansion: (f32, f32, f32, f32),
     ) -> (LayerTexture, (u32, u32)) {
         // Calculate tight texture size including effect expansion
         let texture_width = (layer_size.0 + effect_expansion.0 + effect_expansion.2)
@@ -8333,13 +10509,23 @@ impl GpuRenderer {
             .layer_texture_cache
             .acquire(&self.device, content_size, false);
 
-        if start_idx >= end_idx {
-            return (layer_texture, content_size);
-        }
+        let primitives = if start_idx < end_idx {
+            &batch.primitives[start_idx..end_idx]
+        } else {
+            &[][..]
+        };
+        let path_verts = if pv_end > pv_start && pv_end <= batch.paths.vertices.len() {
+            &batch.paths.vertices[pv_start..pv_end]
+        } else {
+            &[][..]
+        };
+        let path_indices = if pi_end > pi_start && pi_end <= batch.paths.indices.len() {
+            &batch.paths.indices[pi_start..pi_end]
+        } else {
+            &[][..]
+        };
 
-        // Extract primitives and offset their positions
-        let primitives = &batch.primitives[start_idx..end_idx];
-        if primitives.is_empty() {
+        if primitives.is_empty() && path_verts.is_empty() {
             return (layer_texture, content_size);
         }
 
@@ -8355,8 +10541,6 @@ impl GpuRenderer {
                 op.bounds[0] -= offset_x;
                 op.bounds[1] -= offset_y;
                 // Also offset clip bounds if they're valid (not the "no clip" default)
-                // Default "no clip" is [-10000.0, -10000.0, 100000.0, 100000.0]
-                // A real clip has x > -5000 AND width < 90000 (reasonable viewport sizes)
                 let has_real_clip = op.clip_bounds[0] > -5000.0 && op.clip_bounds[2] < 90000.0;
                 if has_real_clip {
                     op.clip_bounds[0] -= offset_x;
@@ -8364,6 +10548,61 @@ impl GpuRenderer {
                 }
                 op
             })
+            .collect();
+
+        // Mesh primitives (`type_info[0] == 9`) read their triangle
+        // vertex positions from `aux_data[aux_offset..aux_offset + 2]`,
+        // not from `bounds`. Those positions are screen-space at push
+        // time, so the `bounds` offset above doesn't translate them
+        // into the tight texture's coordinate frame — vertices land
+        // outside the texture viewport and the rasteriser clips the
+        // triangle, leaving the tight texture empty. Build a translated
+        // copy of `aux_data` for this pass: clone the original, then
+        // subtract the offset from the position vec4s of every mesh
+        // primitive in the layer range. The optional per-vertex colour
+        // entries that follow (when `type_info[3] == 1`) stay unchanged.
+        let mut tight_aux_data: Vec<[f32; 4]> = batch.aux_data.clone();
+        let mut needs_aux_upload = false;
+        for op in &offset_primitives {
+            if op.type_info[0] != 9 {
+                continue;
+            }
+            let aux_off = op.border[2] as usize;
+            if aux_off + 1 >= tight_aux_data.len() {
+                continue;
+            }
+            tight_aux_data[aux_off][0] -= offset_x;
+            tight_aux_data[aux_off][1] -= offset_y;
+            tight_aux_data[aux_off][2] -= offset_x;
+            tight_aux_data[aux_off][3] -= offset_y;
+            tight_aux_data[aux_off + 1][0] -= offset_x;
+            tight_aux_data[aux_off + 1][1] -= offset_y;
+            // pack1.zw is unused (padding) — leave alone.
+            needs_aux_upload = true;
+        }
+
+        // Build the offset PathVertex slice + rebased index buffer.
+        // Indices in the source batch reference vertices in
+        // `batch.paths.vertices` directly; after slicing, the local
+        // vertex array starts at 0, so each index needs `pv_start`
+        // subtracted to point at the right vertex inside the slice.
+        let offset_path_vertices: Vec<crate::path::PathVertex> = path_verts
+            .iter()
+            .map(|v| {
+                let mut nv = *v;
+                nv.position[0] -= offset_x;
+                nv.position[1] -= offset_y;
+                let has_real_clip = nv.clip_bounds[0] > -5000.0 && nv.clip_bounds[2] < 90000.0;
+                if has_real_clip {
+                    nv.clip_bounds[0] -= offset_x;
+                    nv.clip_bounds[1] -= offset_y;
+                }
+                nv
+            })
+            .collect();
+        let offset_path_indices: Vec<u32> = path_indices
+            .iter()
+            .map(|&i| i.saturating_sub(pv_start as u32))
             .collect();
 
         // Update uniforms with content size (the viewport for this tight render)
@@ -8374,12 +10613,72 @@ impl GpuRenderer {
         self.queue
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
-        // Write offset primitives to buffer and capture count for draw call
-        let primitive_count = self.write_primitives_safe(&offset_primitives) as u32;
-        if primitive_count == 0 {
-            return (layer_texture, content_size);
+        // Sort and upload offset primitives
+        let sdf_ranges = self.upload_sorted_primitives(&offset_primitives);
+        drop(offset_primitives);
+
+        // Upload the offset-translated `aux_data` if any mesh
+        // primitive needed translation. Same `self.buffers.aux_data`
+        // the main pass uses — we restore it after `queue.submit`
+        // so subsequent passes see the original screen-space data.
+        // The buffer is already sized for `batch.aux_data`'s length
+        // (the main pass uploaded the same vec earlier), so the
+        // write fits without resizing or rebinding.
+        if needs_aux_upload {
+            if self.has_storage_buffers {
+                self.queue.write_buffer(
+                    &self.buffers.aux_data,
+                    0,
+                    bytemuck::cast_slice(&tight_aux_data),
+                );
+            } else {
+                self.update_aux_data_texture(&tight_aux_data);
+            }
         }
-        drop(offset_primitives); // Free Vec immediately - data is now on GPU
+
+        // Upload offset path geometry to a transient buffer pair so
+        // the shared `path_vertices` / `path_indices` buffers used by
+        // the main pass aren't clobbered.
+        use wgpu::util::DeviceExt;
+        let path_vb = (!offset_path_vertices.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Tight Path VB"),
+                    contents: bytemuck::cast_slice(&offset_path_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+        });
+        let path_ib = (!offset_path_indices.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Tight Path IB"),
+                    contents: bytemuck::cast_slice(&offset_path_indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                })
+        });
+        let path_index_count = offset_path_indices.len() as u32;
+        drop(offset_path_vertices);
+        drop(offset_path_indices);
+
+        // Path uniforms: full opacity (the blit applies the layer's
+        // opacity), no clip, standard fill. CRITICAL — the path
+        // shader reads `uniforms.viewport_size` to convert the
+        // vertex position into NDC. The SDF-path `self.buffers.uniforms`
+        // we just wrote is a DIFFERENT binding; paths see
+        // `self.buffers.path_uniforms`. If we left it at the
+        // Default (`[800, 600]`) while rendering into a, say,
+        // 192×192 tight texture, the path would end up NDC-scaled
+        // by the wrong viewport and land off-centre at massive
+        // scale (visible as an oversized, drifted glass body).
+        let path_uniforms = crate::primitives::PathUniforms {
+            viewport_size: [content_size.0 as f32, content_size.1 as f32],
+            ..crate::primitives::PathUniforms::default()
+        };
+        self.queue.write_buffer(
+            &self.buffers.path_uniforms,
+            0,
+            bytemuck::bytes_of(&path_uniforms),
+        );
 
         // Create command encoder
         let mut encoder = self
@@ -8395,6 +10694,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &layer_texture.view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -8405,9 +10705,24 @@ impl GpuRenderer {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.pipelines.sdf);
-            render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-            render_pass.draw(0..6, 0..primitive_count);
+            if !primitives.is_empty() {
+                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
+                Self::draw_split_sdf(
+                    &mut render_pass,
+                    &self.pipelines,
+                    &sdf_ranges,
+                    false,
+                    self.sdf_vb_buffer(),
+                );
+            }
+
+            if let (Some(vb), Some(ib)) = (&path_vb, &path_ib) {
+                render_pass.set_pipeline(&self.pipelines.path);
+                render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                render_pass.set_vertex_buffer(0, vb.slice(..));
+                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..path_index_count, 0, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -8422,6 +10737,22 @@ impl GpuRenderer {
             0,
             bytemuck::bytes_of(&restore_uniforms),
         );
+
+        // Restore the screen-space `aux_data` so subsequent passes
+        // (next layer's tight render, post-effect overlays, etc.)
+        // see the original mesh vertex positions instead of the
+        // tight-translated copy we wrote above.
+        if needs_aux_upload {
+            if self.has_storage_buffers {
+                self.queue.write_buffer(
+                    &self.buffers.aux_data,
+                    0,
+                    bytemuck::cast_slice(&batch.aux_data),
+                );
+            } else {
+                self.update_aux_data_texture(&batch.aux_data);
+            }
+        }
 
         (layer_texture, content_size)
     }
@@ -8602,13 +10933,13 @@ impl GpuRenderer {
                             label: Some("Tight Blit Blend Dest Copy"),
                         });
                 copy_encoder.copy_texture_to_texture(
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: target_texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
                     },
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: &temp.texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
@@ -8657,6 +10988,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -8732,13 +11064,13 @@ impl GpuRenderer {
                             label: Some("Blend Dest Copy Encoder"),
                         });
                 copy_encoder.copy_texture_to_texture(
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: target_texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
                     },
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: &temp.texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
@@ -8821,6 +11153,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         // Load existing content - we're blending on top
                         load: wgpu::LoadOp::Load,
@@ -8941,6 +11274,7 @@ impl GpuRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -9175,6 +11509,7 @@ impl GpuRenderer {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: target,
                         resolve_target: None,
+                        depth_slice: None,
                         ops: wgpu::Operations {
                             // Don't clear - we're rendering on top of existing content
                             load: wgpu::LoadOp::Load,
@@ -9212,6 +11547,13 @@ impl GpuRenderer {
         use std::hash::{Hash, Hasher};
 
         if viewports.is_empty() {
+            return;
+        }
+
+        // Particles require compute shaders (for the simulation pass) and
+        // storage buffers (for the particle buffer). WebGL2 has neither,
+        // so skip particle rendering entirely in DT/Tier-3 mode.
+        if !self.has_storage_buffers {
             return;
         }
 
@@ -9283,6 +11625,7 @@ impl GpuRenderer {
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: target,
                             resolve_target: None,
+                            depth_slice: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Load, // Don't clear, draw on top
                                 store: wgpu::StoreOp::Store,
@@ -9319,6 +11662,86 @@ impl Default for GpuRenderer {
         pollster::block_on(Self::new(RendererConfig::default()))
             .expect("Failed to create default renderer")
     }
+}
+
+/// Inverse of a column-major 4×4 matrix (GLU-style cofactor expansion).
+pub(crate) fn mat4_inverse_flat(m: &[f32; 16]) -> [f32; 16] {
+    let mut inv = [0.0f32; 16];
+    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15]
+        + m[9] * m[7] * m[14]
+        + m[13] * m[6] * m[11]
+        - m[13] * m[7] * m[10];
+    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15]
+        - m[8] * m[7] * m[14]
+        - m[12] * m[6] * m[11]
+        + m[12] * m[7] * m[10];
+    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15]
+        + m[8] * m[7] * m[13]
+        + m[12] * m[5] * m[11]
+        - m[12] * m[7] * m[9];
+    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14]
+        - m[8] * m[6] * m[13]
+        - m[12] * m[5] * m[10]
+        + m[12] * m[6] * m[9];
+    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15]
+        - m[9] * m[3] * m[14]
+        - m[13] * m[2] * m[11]
+        + m[13] * m[3] * m[10];
+    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15]
+        + m[8] * m[3] * m[14]
+        + m[12] * m[2] * m[11]
+        - m[12] * m[3] * m[10];
+    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15]
+        - m[8] * m[3] * m[13]
+        - m[12] * m[1] * m[11]
+        + m[12] * m[3] * m[9];
+    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14]
+        + m[8] * m[2] * m[13]
+        + m[12] * m[1] * m[10]
+        - m[12] * m[2] * m[9];
+    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15]
+        + m[5] * m[3] * m[14]
+        + m[13] * m[2] * m[7]
+        - m[13] * m[3] * m[6];
+    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15]
+        - m[4] * m[3] * m[14]
+        - m[12] * m[2] * m[7]
+        + m[12] * m[3] * m[6];
+    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15]
+        + m[4] * m[3] * m[13]
+        + m[12] * m[1] * m[7]
+        - m[12] * m[3] * m[5];
+    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14]
+        - m[4] * m[2] * m[13]
+        - m[12] * m[1] * m[6]
+        + m[12] * m[2] * m[5];
+    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11]
+        - m[5] * m[3] * m[10]
+        - m[9] * m[2] * m[7]
+        + m[9] * m[3] * m[6];
+    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11]
+        + m[4] * m[3] * m[10]
+        + m[8] * m[2] * m[7]
+        - m[8] * m[3] * m[6];
+    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11]
+        - m[4] * m[3] * m[9]
+        - m[8] * m[1] * m[7]
+        + m[8] * m[3] * m[5];
+    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10]
+        + m[4] * m[2] * m[9]
+        + m[8] * m[1] * m[6]
+        - m[8] * m[2] * m[5];
+    let det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+    if det.abs() < 1e-12 {
+        return [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+    }
+    let id = 1.0 / det;
+    for v in &mut inv {
+        *v *= id;
+    }
+    inv
 }
 
 #[cfg(test)]
@@ -9379,7 +11802,7 @@ mod tests {
 
     /// Helper to create a test wgpu device
     async fn create_test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
@@ -9390,10 +11813,11 @@ mod tests {
                 force_fallback_adapter: false,
                 compatible_surface: None,
             })
-            .await?;
+            .await
+            .ok()?;
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .ok()?;
 

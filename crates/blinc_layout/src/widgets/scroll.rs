@@ -251,9 +251,15 @@ impl Default for ScrollConfig {
             // Critical damping = 2 * sqrt(stiffness * mass) = 2 * sqrt(3000) ≈ 109.5
             // Using damping = 110 (slightly overdamped) for fast snap with no rebound
             bounce_spring: SpringConfig::new(3000.0, 110.0, 1.0),
-            deceleration: 1500.0,     // Decelerate at 1500 px/s²
-            velocity_threshold: 10.0, // Stop when below 10 px/s
-            max_overscroll: 0.3,      // 30% of viewport for visible elastic effect
+            deceleration: 1500.0,    // Decelerate at 1500 px/s²
+            velocity_threshold: 3.0, // Stop when below 3 px/s
+            // Safety cap on visible overscroll as a fraction of viewport.
+            // The apparent-stretch curve in `apply_scroll_delta` tapers
+            // sub-linearly and reaches the cap only under sustained
+            // dragging; 12 % matches native desktop feel (macOS / iOS
+            // trackpad scroll stretches less than a sixth of the viewport
+            // under normal use).
+            max_overscroll: 0.12,
             direction: ScrollDirection::Vertical,
             scrollbar: ScrollbarConfig::default(),
         }
@@ -342,8 +348,18 @@ pub struct ScrollPhysics {
     pub thumb_drag_start_scroll_x: f32,
     /// Spring ID for scrollbar opacity animation
     scrollbar_opacity_spring: Option<SpringId>,
-    /// Last scroll event time in milliseconds (for velocity calculation)
+    /// Last scroll event time in milliseconds (for velocity calculation and
+    /// the idle-based rebound trigger in `check_idle_bounce`).
     last_scroll_time: Option<f64>,
+    /// Marks the window between finger-lift and the matching momentum-
+    /// cycle end. Platforms with OS momentum (notably macOS trackpads)
+    /// deliver two scroll-end signals per gesture: the first at finger-
+    /// lift, the second when the post-release momentum has finished.
+    /// `on_scroll_end` uses this flag to tell them apart. Also gates the
+    /// mid-momentum rebound trigger: a stretched-past-edge delta only
+    /// fires the spring while `in_momentum_mode` is set (i.e. during the
+    /// post-release momentum stream, not during active user drag).
+    in_momentum_mode: bool,
 }
 
 impl Default for ScrollPhysics {
@@ -374,6 +390,7 @@ impl Default for ScrollPhysics {
             thumb_drag_start_scroll_x: 0.0,
             scrollbar_opacity_spring: None,
             last_scroll_time: None,
+            in_momentum_mode: false,
         }
     }
 }
@@ -499,8 +516,12 @@ impl ScrollPhysics {
     /// When bouncing, we ignore momentum scroll events - the spring animation
     /// takes over and drives the position back to bounds.
     pub fn apply_scroll_delta(&mut self, delta_x: f32, delta_y: f32) {
-        // If bouncing, ignore momentum scroll events - let spring drive the animation
-        // The spring will snap back to bounds; momentum events would fight against it
+        // While the rebound spring is still animating, drop the delta —
+        // the spring is driving the return and we don't want momentum
+        // events to fight it. Once the spring settles (state → Idle), we
+        // let deltas through but `in_momentum_mode` forces strict bounds
+        // clamping in the clamp branches below so residual momentum
+        // can't re-overscroll the just-rebounded edge.
         if self.state == ScrollState::Bouncing {
             return;
         }
@@ -523,25 +544,43 @@ impl ScrollPhysics {
             let pulling_back =
                 (overscroll > 0.0 && delta_y < 0.0) || (overscroll < 0.0 && delta_y > 0.0);
 
-            // If overscrolling and delta is trying to pull us back (momentum),
-            // ignore it - let the spring handle the return animation instead.
-            // This prevents momentum from fighting with the bounce animation.
+            // While the user is still dragging, content follows the delta
+            // directly (with rubber-band resistance when pushing further past
+            // the edge). On release, the `on_scroll_end` spring drives the
+            // rebound back to the edge — we ignore any platform-generated
+            // pull-back momentum deltas so the spring is the sole source of
+            // return motion. That keeps the behaviour identical on every
+            // platform regardless of whether the OS emits its own momentum.
             if self.is_overscrolling_y() && self.config.bounce_enabled && pulling_back {
-                // Ignore momentum deltas that would pull back - spring will handle it
+                // Platform-generated pull-back momentum — let the spring
+                // handle the return. Applying these deltas would race the
+                // spring and cause a double-rebound.
             } else if self.is_overscrolling_y() && self.config.bounce_enabled && pushing_further {
-                // Resistance increases as we stretch further - creates natural rubber-band feel
-                let overscroll_amount = overscroll.abs();
-                let max_over = self.viewport_height * self.config.max_overscroll;
-                let stretch_ratio = (overscroll_amount / max_over).min(1.0);
-                // Start at 55% effect, decrease to 10% at max stretch
-                let resistance = 0.55 - (stretch_ratio * 0.45);
+                // Asymptotic rubber-band resistance. The rate at which
+                // additional overscroll is accepted falls off as the
+                // current stretch grows, so the first delta past the
+                // edge feels light but sustained dragging plateaus.
+                // Equivalent (via the instantaneous slope of
+                // `b(x) = (1 - 1/(x·c/d + 1)) · d`) to d/dx b(x) =
+                // c / (1 + x·c/d)². With c = 0.55 the initial
+                // resistance matches the old linear curve; beyond that
+                // the taper is much gentler.
+                const C: f32 = 0.55;
+                let d = self.viewport_height.max(1.0);
+                let x = overscroll.abs();
+                let k = 1.0 + x * C / d;
+                let resistance = C / (k * k);
                 self.offset_y += delta_y * resistance;
             } else {
                 self.offset_y += delta_y;
             }
 
-            // Clamp to bounds (or max overscroll if bounce enabled)
-            if !self.config.bounce_enabled {
+            // Clamp to bounds (or max overscroll if bounce enabled).
+            // `in_momentum_mode` forces strict clamping so residual OS
+            // momentum that streams after a rebound can't stretch the
+            // content again — user scrolls into the content area still
+            // go through because they don't need the overscroll region.
+            if !self.config.bounce_enabled || self.in_momentum_mode {
                 self.offset_y = self
                     .offset_y
                     .clamp(self.max_offset_y(), self.min_offset_y());
@@ -571,23 +610,25 @@ impl ScrollPhysics {
             let pulling_back =
                 (overscroll > 0.0 && delta_x < 0.0) || (overscroll < 0.0 && delta_x > 0.0);
 
-            // If overscrolling and delta is trying to pull us back (momentum),
-            // ignore it - let the spring handle the return animation instead.
+            // Pull-back deltas are ignored — spring drives the rebound. See
+            // Y-axis branch for the full rationale.
             if self.is_overscrolling_x() && self.config.bounce_enabled && pulling_back {
-                // Ignore momentum deltas that would pull back - spring will handle it
+                // Ignored — spring handles return.
             } else if self.is_overscrolling_x() && self.config.bounce_enabled && pushing_further {
-                // Resistance increases as we stretch further
-                let overscroll_amount = overscroll.abs();
-                let max_over = self.viewport_width * self.config.max_overscroll;
-                let stretch_ratio = (overscroll_amount / max_over).min(1.0);
-                let resistance = 0.55 - (stretch_ratio * 0.45);
+                // Asymptotic rubber-band resistance — see Y-axis branch.
+                const C: f32 = 0.55;
+                let d = self.viewport_width.max(1.0);
+                let x = overscroll.abs();
+                let k = 1.0 + x * C / d;
+                let resistance = C / (k * k);
                 self.offset_x += delta_x * resistance;
             } else {
                 self.offset_x += delta_x;
             }
 
-            // Clamp to bounds (or max overscroll if bounce enabled)
-            if !self.config.bounce_enabled {
+            // Clamp to bounds. See Y-axis branch for the rationale on
+            // the `in_momentum_mode` strict-clamp.
+            if !self.config.bounce_enabled || self.in_momentum_mode {
                 self.offset_x = self
                     .offset_x
                     .clamp(self.max_offset_x(), self.min_offset_x());
@@ -598,6 +639,12 @@ impl ScrollPhysics {
                     .clamp(self.max_offset_x() - max_over, max_over);
             }
         }
+
+        // No mid-momentum rebound — when `in_momentum_mode` is set the
+        // clamp branches above strip any overscroll directly, so residual
+        // momentum simply stops the content at the edge without triggering
+        // a second spring. The finger-lift rebound in `on_scroll_end` is
+        // the sole source of return motion.
     }
 
     /// Apply scroll delta from touch input with velocity tracking
@@ -607,6 +654,19 @@ impl ScrollPhysics {
     ///
     /// `current_time` is in milliseconds (from elapsed_ms()).
     pub fn apply_touch_scroll_delta(&mut self, delta_x: f32, delta_y: f32, current_time: f64) {
+        // New-gesture safety clear. If there's been a pause since the last
+        // scroll event, treat this as the start of a fresh user gesture —
+        // drop any lingering momentum flags that might still be set from a
+        // prior cycle whose end signal never arrived. Without this, a
+        // momentum-ended event that winit/the OS neglects to deliver (or
+        // a momentum stream interrupted by a new gesture) leaves
+        // `in_momentum_mode` latched and subsequent scrolls are clamped
+        // to zero overscroll forever.
+        if let Some(last_time) = self.last_scroll_time {
+            if current_time - last_time > 100.0 && self.in_momentum_mode {
+                self.in_momentum_mode = false;
+            }
+        }
         // Calculate velocity from delta and time since last event
         if let Some(last_time) = self.last_scroll_time {
             let dt_seconds = ((current_time - last_time) / 1000.0) as f32;
@@ -629,25 +689,82 @@ impl ScrollPhysics {
         self.apply_scroll_delta(delta_x, delta_y);
     }
 
-    /// Called when scroll gesture ends - start momentum/bounce
+    /// Record that a scroll event just arrived. Used by `check_idle_bounce`
+    /// to detect when the user has stopped scrolling on inputs that don't
+    /// deliver an explicit "end" signal (classic mouse wheel, many Windows /
+    /// Linux trackpad drivers). Touch and macOS-trackpad paths update
+    /// `last_scroll_time` themselves via `apply_touch_scroll_delta` /
+    /// `on_scroll_end`, so this is a no-op in those flows.
+    pub fn note_scroll_event(&mut self, current_time_ms: f64) {
+        self.last_scroll_time = Some(current_time_ms);
+    }
+
+    /// Fire a bounce-back if the user has been idle past the threshold
+    /// while the content is overscrolled. Called once per frame from
+    /// `RenderTree::tick_scroll_physics`.
+    ///
+    /// Inputs that emit an explicit `ScrollPhase::Ended` (macOS trackpad,
+    /// touch) already call `on_scroll_end` / `on_gesture_end` synchronously;
+    /// this covers the mouse-wheel / no-phase inputs that would otherwise
+    /// leave the content stretched forever.
+    pub fn check_idle_bounce(&mut self, current_time_ms: f64) {
+        // Fallback rebound trigger for inputs that don't emit an explicit
+        // end phase — classic mouse wheels, Windows/Linux trackpad drivers
+        // that never send `TouchPhase::Ended`. On trackpads that DO emit
+        // it, `apply_scroll_delta` rejects these checks by short-circuiting
+        // via the `Bouncing` state before we reach here.
+        if self.state != ScrollState::Scrolling {
+            return;
+        }
+        if !self.is_overscrolling() || !self.config.bounce_enabled {
+            return;
+        }
+        let Some(last) = self.last_scroll_time else {
+            return;
+        };
+        if current_time_ms - last > 200.0 {
+            self.on_scroll_end();
+        }
+    }
+
+    /// Called on scroll-end. Platforms with OS momentum (notably macOS
+    /// trackpads) deliver this twice per gesture — once at finger-lift,
+    /// once at the end of the separate momentum cycle. `in_momentum_mode`
+    /// distinguishes them:
+    /// - First call (`in_momentum_mode == false`): finger-lift. If content
+    ///   is stretched, fire the rebound spring. Set `in_momentum_mode = true`
+    ///   so the overscroll clamp goes strict for the follow-on momentum.
+    /// - Second call (`in_momentum_mode == true`): momentum phase is done.
+    ///   Clear `in_momentum_mode` so follow-up gestures can overscroll again.
     pub fn on_scroll_end(&mut self) {
+        if self.in_momentum_mode {
+            // Momentum phase ended — re-enable the rubber-band for the
+            // next gesture.
+            self.in_momentum_mode = false;
+            self.last_scroll_time = None;
+            return;
+        }
+
+        // Finger-lift. Transition out of the active scroll state.
         if let Some(new_state) = self
             .state
             .on_event(blinc_core::events::event_types::SCROLL_END)
         {
             self.state = new_state;
         }
-
-        // Clear scroll time tracking
         self.last_scroll_time = None;
+        self.in_momentum_mode = true;
 
-        // If overscrolling, start bounce immediately
+        // If stretched, fire the spring. Subsequent momentum deltas
+        // (drops when state == Bouncing, clamped at edge when the spring
+        // settles and state flips back to Idle) can't fight the rebound.
         if self.is_overscrolling() && self.config.bounce_enabled {
             self.start_bounce();
             return;
         }
 
-        // If we have significant velocity, start momentum scrolling
+        // No stretch — if the touch path left us with real velocity, let
+        // the Decelerating state run the momentum.
         let has_velocity = self.velocity_x.abs() > self.config.velocity_threshold
             || self.velocity_y.abs() > self.config.velocity_threshold;
         if has_velocity {
@@ -657,7 +774,6 @@ impl ScrollPhysics {
             {
                 self.state = new_state;
             }
-            // State should now be Decelerating - tick() will apply momentum
         }
     }
 
@@ -671,6 +787,24 @@ impl ScrollPhysics {
         if self.is_overscrolling() && self.config.bounce_enabled {
             self.start_bounce();
         }
+    }
+
+    /// Stop any active scroll animation — momentum deceleration, bounce
+    /// spring, rebound — and pin the offset where it currently is.
+    ///
+    /// Intended for the pointer-down handler: when the user taps on a
+    /// scrolling list that's still coasting, the expected behaviour
+    /// (iOS / every native toolkit) is that the tap cancels the
+    /// deceleration so the user can grab and re-scroll immediately.
+    /// Without this, a tap lands on whatever is under the cursor a
+    /// few frames later (after the list has coasted further) — feels
+    /// unresponsive.
+    pub fn cancel_active_animation(&mut self) {
+        self.cancel_springs();
+        self.velocity_x = 0.0;
+        self.velocity_y = 0.0;
+        self.in_momentum_mode = false;
+        self.state = ScrollState::Idle;
     }
 
     /// Cancel any active bounce springs
@@ -760,9 +894,14 @@ impl ScrollPhysics {
 
         drop(scheduler); // Release lock before state transition
 
-        if let Some(new_state) = self.state.on_event(scroll_events::HIT_EDGE) {
-            self.state = new_state;
-        }
+        // Transition directly to `Bouncing`. The state machine only has
+        // `Scrolling`/`Decelerating → HIT_EDGE → Bouncing` mappings; firing
+        // `HIT_EDGE` from `Idle` would be a no-op, leaving us with a live
+        // spring but the tick returning `false` for Idle — content would sit
+        // permanently at the overscrolled offset with no animation driving
+        // it back. That happened on macOS where the momentum-phase `Ended`
+        // can arrive after our cooldown has already expired to `Idle`.
+        self.state = ScrollState::Bouncing;
     }
 
     /// Update scroll offsets from animation scheduler springs
@@ -795,18 +934,27 @@ impl ScrollPhysics {
                 let new_offset_y = self.offset_y + dy;
                 let new_offset_x = self.offset_x + dx;
 
-                // Apply deceleration (friction)
-                let decel = self.config.deceleration * dt;
-                if self.velocity_x > 0.0 {
-                    self.velocity_x = (self.velocity_x - decel).max(0.0);
-                } else if self.velocity_x < 0.0 {
-                    self.velocity_x = (self.velocity_x + decel).min(0.0);
-                }
-                if self.velocity_y > 0.0 {
-                    self.velocity_y = (self.velocity_y - decel).max(0.0);
-                } else if self.velocity_y < 0.0 {
-                    self.velocity_y = (self.velocity_y + decel).min(0.0);
-                }
+                // Exponential decay — matches the real-world feel of a
+                // flick coasting to a stop. The previous implementation
+                // subtracted a constant rate `deceleration * dt` every
+                // frame, which felt draggy near the end (same absolute
+                // slowdown at 20 px/s as at 2000 px/s). Exponential decay
+                // instead removes a *fraction* of velocity per frame, so
+                // the tail glides out smoothly while high velocities still
+                // shed quickly.
+                //
+                // The config's `deceleration` field (px/s²) is kept as the
+                // single knob — reinterpreted here as a decay-rate driver.
+                // `k = deceleration / V_REF` is the 1/τ of the exponential
+                // (s⁻¹); `V_REF = 500 px/s` is the reference velocity
+                // chosen so the default `deceleration = 1500` produces a
+                // friction factor of ≈0.95 per 60Hz frame (iOS-like
+                // momentum). Higher deceleration values decay faster.
+                const V_REF: f32 = 500.0;
+                let k = self.config.deceleration / V_REF;
+                let friction = (-k * dt).exp();
+                self.velocity_x *= friction;
+                self.velocity_y *= friction;
 
                 // Check if we've hit edge bounds
                 let hit_edge_y =
@@ -863,13 +1011,25 @@ impl ScrollPhysics {
                 let scheduler = scheduler_arc.lock().unwrap();
                 let mut still_bouncing = false;
 
+                // Settle when value is within a pixel of target regardless
+                // of the spring's internal velocity — the spring's
+                // `is_settled` guard requires both |value-target|<ε AND
+                // |velocity|<ε, which can fail the second check even once
+                // the pixel-space effect is indistinguishable from target
+                // (numerical residue, tick-rate mismatch between the bg
+                // scheduler thread and the main tick). Without this
+                // override the scroll state stays latched in Bouncing,
+                // which drops subsequent scroll deltas.
+                const SETTLE_EPS: f32 = 0.5;
+
                 // Read vertical spring value
                 if let Some(spring_id) = self.spring_y {
                     if let Some(spring) = scheduler.get_spring(spring_id) {
-                        self.offset_y = spring.value();
-                        if spring.is_settled() {
+                        let at_target = (spring.value() - spring.target()).abs() < SETTLE_EPS;
+                        if spring.is_settled() || at_target {
                             self.offset_y = spring.target();
                         } else {
+                            self.offset_y = spring.value();
                             still_bouncing = true;
                         }
                     }
@@ -878,10 +1038,11 @@ impl ScrollPhysics {
                 // Read horizontal spring value
                 if let Some(spring_id) = self.spring_x {
                     if let Some(spring) = scheduler.get_spring(spring_id) {
-                        self.offset_x = spring.value();
-                        if spring.is_settled() {
+                        let at_target = (spring.value() - spring.target()).abs() < SETTLE_EPS;
+                        if spring.is_settled() || at_target {
                             self.offset_x = spring.target();
                         } else {
+                            self.offset_x = spring.value();
                             still_bouncing = true;
                         }
                     }
@@ -890,11 +1051,8 @@ impl ScrollPhysics {
                 drop(scheduler);
 
                 if !still_bouncing {
-                    // Clean up springs
                     self.cancel_springs();
-                    if let Some(new_state) = self.state.on_event(scroll_events::SETTLED) {
-                        self.state = new_state;
-                    }
+                    self.state = ScrollState::Idle;
                     return false;
                 }
 
@@ -2376,9 +2534,84 @@ impl ElementBuilder for Scroll {
 // Convenience Constructor
 // ============================================================================
 
-/// Create a new scroll container with default bounce physics
+/// Per-call-site registry of `SharedScrollPhysics` keyed by
+/// [`InstanceKey`]. Each `scroll()` / `scroll_no_bounce()` call site
+/// gets its own slot, identified by the source location of the call
+/// (file/line/column + per-frame call index — see [`InstanceKey`] for
+/// the exact key format).
 ///
-/// The scroll container inherits ALL Div methods, so you have full layout control.
+/// This is what makes `scroll()` survive tree rebuilds without the
+/// caller having to reach for `ctx.use_state_keyed("scroll_physics",
+/// …) + Scroll::with_physics(…)`. On each rebuild, the same call
+/// site looks up the same key and gets back the same physics —
+/// scroll position, momentum, and bounce state are all preserved.
+///
+/// Resize is the canonical case: when the window resizes, the runner
+/// re-runs the user's UI builder so width/height-dependent layout
+/// (e.g. `scroll().w_full().h(ctx.height - 96.0)`) reflects the new
+/// dimensions, but the underlying physics has to survive that
+/// rebuild or the user sees their scroll position snap back to 0
+/// every time they grab the window edge.
+///
+/// **Threading**: `thread_local!` is correct on both desktop and
+/// wasm32. Desktop's UI builder runs on the main thread; wasm32's
+/// runs on the browser main thread (the only thread that exists).
+/// We never share scroll physics between threads.
+///
+/// **Cleanup**: entries here are *not* garbage-collected when the
+/// associated scroll widget disappears from the tree. The leak is
+/// bounded by the number of distinct scroll-call sites in the user's
+/// source, which is small in practice. If a future workload turns
+/// up many short-lived dynamic scroll containers, gate cleanup on
+/// the `reset_call_counters()` boundary.
+thread_local! {
+    static SCROLL_PHYSICS_REGISTRY: std::cell::RefCell<
+        std::collections::HashMap<String, SharedScrollPhysics>
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Look up (or insert) the `SharedScrollPhysics` for a given
+/// [`InstanceKey`]. The first call at a given source location
+/// allocates fresh physics; every subsequent call (across rebuilds)
+/// returns the same `Arc<Mutex<…>>`.
+fn physics_for_key(key: &crate::key::InstanceKey) -> SharedScrollPhysics {
+    let id = key.get().to_string();
+    SCROLL_PHYSICS_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        reg.entry(id)
+            .or_insert_with(|| Arc::new(Mutex::new(ScrollPhysics::default())))
+            .clone()
+    })
+}
+
+/// Same lookup as [`physics_for_key`] but seeds fresh entries with a
+/// caller-provided [`ScrollConfig`] instead of the default.
+fn physics_for_key_with_config(
+    key: &crate::key::InstanceKey,
+    config: ScrollConfig,
+) -> SharedScrollPhysics {
+    let id = key.get().to_string();
+    SCROLL_PHYSICS_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        reg.entry(id)
+            .or_insert_with(|| Arc::new(Mutex::new(ScrollPhysics::new(config))))
+            .clone()
+    })
+}
+
+/// Create a new scroll container with default bounce physics.
+///
+/// The scroll container inherits ALL Div methods, so you have full
+/// layout control.
+///
+/// **Physics persists across rebuilds.** Each `scroll()` call site
+/// gets its own [`crate::InstanceKey`]-derived slot in a thread-local
+/// registry, so window resizes, theme changes, and other rebuild
+/// triggers no longer reset the scroll position. If you need
+/// explicit control of the physics object (e.g. to share one
+/// physics across multiple Scroll widgets, or to read the current
+/// offset from outside the scroll), use [`Scroll::with_physics`]
+/// directly with your own `SharedScrollPhysics`.
 ///
 /// # Example
 ///
@@ -2391,16 +2624,51 @@ impl ElementBuilder for Scroll {
 ///     .shadow_sm()
 ///     .child(div().flex_col().gap(8.0));
 /// ```
+#[track_caller]
 pub fn scroll() -> Scroll {
-    Scroll::new()
+    let key = crate::key::InstanceKey::new("scroll");
+    // On wasm32, default `scroll()` to **bounce-disabled**.
+    //
+    // The desktop runner gets reliable `ScrollPhase::Ended` events
+    // from winit when a trackpad gesture lifts, so the bounce
+    // animation knows exactly when to fire. Browser DOM wheel events
+    // have no equivalent phase, *and* macOS layers ~800ms of
+    // OS-level momentum-scroll events on top of the user's actual
+    // gesture — every workaround for "when did the user finish
+    // scrolling?" introduces a new problem (1s delay before bounce,
+    // wobble from spring restarts as momentum events arrive after
+    // the spring settled, false-positive bounces when the user
+    // grazes the edge by a single pixel of rubber-band, …).
+    //
+    // Native HTML scrolling has no rubber-band either, except for
+    // iOS / macOS Safari at the *page* level — and that bounce is
+    // owned by the OS, not by anything inside a `<canvas>`. So
+    // disabling bounce inside Blinc canvases on the web matches
+    // what users already expect.
+    //
+    // Bounce machinery is still fully wired and works on desktop;
+    // web users who want it can opt in via
+    // `Scroll::with_config(ScrollConfig::default())` or supply
+    // their own `SharedScrollPhysics` to `Scroll::with_physics`.
+    #[cfg(not(target_arch = "wasm32"))]
+    let physics = physics_for_key(&key);
+    #[cfg(target_arch = "wasm32")]
+    let physics = physics_for_key_with_config(&key, ScrollConfig::no_bounce());
+    Scroll::with_physics(physics)
 }
 
-/// Create a scroll container with bounce disabled
+/// Create a scroll container with bounce disabled.
+///
+/// Same auto-persistence semantics as [`scroll`] — each call site
+/// gets its own slot in the per-call-site physics registry.
+#[track_caller]
 pub fn scroll_no_bounce() -> Scroll {
-    Scroll::with_config(ScrollConfig::no_bounce())
+    let key = crate::key::InstanceKey::new("scroll_no_bounce");
+    Scroll::with_physics(physics_for_key_with_config(&key, ScrollConfig::no_bounce()))
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 

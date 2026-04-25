@@ -21,8 +21,7 @@ blinc_core = { path = "../../crates/blinc_core" }
 blinc_layout = { path = "../../crates/blinc_layout" }
 blinc_platform = { path = "../../crates/blinc_platform" }
 tracing = "0.1"
-tracing-subscriber = "0.3"
-serde_json = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 blinc_app = { path = "../../crates/blinc_app", default-features = false, features = ["android"] }

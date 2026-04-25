@@ -11,6 +11,11 @@ use winit::window::{Window as WinitWindow, WindowAttributes};
 pub struct DesktopWindow {
     window: Arc<WinitWindow>,
     focused: AtomicBool,
+    /// Whether this window was configured as transparent. Cached at
+    /// creation time because winit doesn't expose a way to query it
+    /// back, and the GPU runner needs it to pick the wgpu
+    /// `CompositeAlphaMode` at surface-config time.
+    transparent: bool,
 }
 
 impl DesktopWindow {
@@ -29,12 +34,36 @@ impl DesktopWindow {
         if config.fullscreen {
             attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
         }
+        if let Some((min_w, min_h)) = config.min_size {
+            attrs = attrs.with_min_inner_size(LogicalSize::new(min_w, min_h));
+        }
+        if let Some((max_w, max_h)) = config.max_size {
+            attrs = attrs.with_max_inner_size(LogicalSize::new(max_w, max_h));
+        }
+        if let Some((x, y)) = config.position {
+            attrs = attrs.with_position(winit::dpi::LogicalPosition::new(x, y));
+        }
 
         let window = event_loop.create_window(attrs)?;
+
+        // Center window on screen if requested
+        if config.center {
+            if let Some(monitor) = window.current_monitor() {
+                let screen = monitor.size();
+                let win_size = window.outer_size();
+                let x = (screen.width.saturating_sub(win_size.width)) / 2;
+                let y = (screen.height.saturating_sub(win_size.height)) / 2;
+                window.set_outer_position(winit::dpi::PhysicalPosition::new(x as i32, y as i32));
+            }
+        }
+
+        // Enable IME (Input Method Editor) for international text input
+        window.set_ime_allowed(true);
 
         Ok(Self {
             window: Arc::new(window),
             focused: AtomicBool::new(true),
+            transparent: config.transparent,
         })
     }
 
@@ -48,6 +77,11 @@ impl DesktopWindow {
         Arc::clone(&self.window)
     }
 
+    /// Whether this window was configured with a transparent surface.
+    pub fn is_transparent(&self) -> bool {
+        self.transparent
+    }
+
     /// Set focus state (called by event loop)
     pub(crate) fn set_focused(&self, focused: bool) {
         self.focused.store(focused, Ordering::Relaxed);
@@ -55,6 +89,14 @@ impl DesktopWindow {
 }
 
 impl Window for DesktopWindow {
+    fn id(&self) -> blinc_platform::WindowId {
+        // Use winit's WindowId hash as our platform-agnostic ID
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.window.id().hash(&mut hasher);
+        blinc_platform::WindowId(hasher.finish())
+    }
+
     fn size(&self) -> (u32, u32) {
         let size = self.window.inner_size();
         (size.width, size.height)
@@ -113,6 +155,51 @@ impl Window for DesktopWindow {
 
     fn is_visible(&self) -> bool {
         self.window.is_visible().unwrap_or(true)
+    }
+
+    fn set_position(&self, x: i32, y: i32) {
+        self.window
+            .set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+    }
+
+    fn center_on_screen(&self) {
+        if let Some(monitor) = self.window.current_monitor() {
+            let screen = monitor.size();
+            let win_size = self.window.outer_size();
+            let x = (screen.width.saturating_sub(win_size.width)) / 2;
+            let y = (screen.height.saturating_sub(win_size.height)) / 2;
+            self.window
+                .set_outer_position(winit::dpi::PhysicalPosition::new(x as i32, y as i32));
+        }
+    }
+
+    fn set_size(&self, width: u32, height: u32) {
+        let _ = self
+            .window
+            .request_inner_size(LogicalSize::new(width, height));
+    }
+
+    fn drag_window(&self) {
+        let _ = self.window.drag_window();
+    }
+
+    fn minimize(&self) {
+        self.window.set_minimized(true);
+    }
+
+    fn maximize(&self) {
+        self.window.set_maximized(!self.window.is_maximized());
+    }
+
+    fn close(&self) {
+        // winit doesn't have a close method — we request the event loop to close
+        // by not requesting redraws. The actual close is handled by the event loop
+        // when it receives CloseRequested.
+        self.window.set_visible(false);
+    }
+
+    fn is_transparent(&self) -> bool {
+        self.transparent
     }
 }
 

@@ -2,6 +2,76 @@
 
 All notable changes to `blinc_layout` will be documented in this file.
 
+## [0.5.1] - 2026-04-13
+
+### Added
+- `video_player()` widget with signal-driven media controls (play/pause, seek, time, volume)
+- `VideoControlsBuilder` lazy-built Stateful driven by player signals
+- `AudioPlayerWidget` with optional waveform visualization
+
+### Fixed
+- Video seek bar wrapped in own Stateful with position/duration signal deps (was invisible until volume clicked)
+- Video volume slider bar colors swapped (active/inactive were reversed)
+
+## [0.5.0] - 2026-04-10
+
+### Added
+
+- `RenderTree::has_overscrolling_scroll()` for web scroll bounce-back debounce
+- `FontRegistry::invalidate_generic_cache()` clears negative lookups after font loads
+
+### Fixed
+
+- Code editor `std::time::SystemTime` → `web_time::SystemTime` for wasm32 compatibility
+- SVG color tint applied via post-rasterization `apply_tint()` for non-`currentColor` sources
+
+## [Unreleased]
+
+### Added
+
+#### Lazy Image Loading (Complete)
+
+- Image placeholder rendering for type 2 (image source) — uses cached preloaded thumbnail/blur-hash
+- Skeleton shimmer placeholder (type 3) — animated gradient sweep with auto-redraw
+- Fade-in animation when image loads (configurable `fade_duration_ms`)
+- CSS `loading: lazy | eager` property
+- CSS `image-placeholder-color`, `image-placeholder-image`, `image-placeholder-type`, `fade-duration` properties
+- ElementStyle/RenderProps fields for full CSS-driven lazy loading
+- `placeholder_image` and `fade_duration_ms` now flow through `ImageData` to renderer
+- Placeholder images preloaded eagerly so they're ready when type 2 placeholder renders
+
+## [0.4.0] - 2026-04-05
+
+### Added
+
+#### Flow Shader 3D Targets
+- CSS parser: `target: vertex` and `target: material` in `@flow` blocks
+- Output target parsing for 3D: `position`, `world_normal`, `world_position`, `albedo`, `metallic`, `roughness`, `emissive`, `surface_normal`, `alpha_out`
+- `parse_output_target()` helper for unified output name resolution
+
+#### Code Editor Enhancements
+
+- VS Code-style search bar via overlay (Cmd+F)
+  - Find with case sensitive, whole word, regex toggles
+  - Replace with replace current / replace all
+  - Match highlighting with active match indicator
+  - Signal-driven Stateful overlay (no deadlocks, no infinite rebuilds)
+- Code folding with SVG chevron icons in gutter
+- Bracket matching highlight (cursor adjacent to brace)
+- Indentation guides (vertical lines at indent levels)
+- Current line highlight
+- Minimap (scaled-down code overview sidebar)
+- Gutter: separate fold column, line numbers, separator with proper alignment
+
+### Fixed
+
+- Gutter line numbers vertically centered instead of top-aligned
+- Fold toggle click not reaching correct line when lines folded
+- Cursor X offset due to gutter width not subtracted from click coordinates
+- Editor expanding vertically instead of scrolling on new lines
+- Hover artifacts on sidebar, nav, and menubar components
+- Checkbox background not updating on check/uncheck state change
+
 ## [0.1.15] - 2026-03-22
 
 ### Added

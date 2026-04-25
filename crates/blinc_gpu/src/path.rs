@@ -21,9 +21,15 @@ pub struct PathVertex {
     pub gradient_params: [f32; 4], // 16 bytes, offset 48, gradient parameters (linear: x1,y1,x2,y2; radial: cx,cy,r,0)
     pub gradient_type: u32,        // 4 bytes, offset 64, 0 = solid, 1 = linear, 2 = radial
     pub edge_distance: f32,        // 4 bytes, offset 68, distance to nearest edge for AA
-    pub _padding: [u32; 2],        // 8 bytes, offset 72, Padding for 16-byte alignment
+    /// Per-vertex clip bounds (x, y, width, height) — see push_path_with_brush_info
+    pub clip_bounds: [f32; 4], // 16 bytes, offset 72
+    /// Per-vertex clip corner radii (or shape data for circle/ellipse)
+    pub clip_radius: [f32; 4], // 16 bytes, offset 88
+    /// Per-vertex clip type: 0=none, 1=rect, 2=circle, 3=ellipse
+    pub clip_type: u32, // 4 bytes, offset 104
+    pub _padding: [u32; 3],        // 12 bytes, offset 108, Padding for 16-byte alignment
 }
-// Total: 80 bytes
+// Total: 120 bytes
 
 /// Tessellated path geometry ready for GPU rendering
 #[derive(Default)]
@@ -640,7 +646,31 @@ pub fn extract_brush_info(brush: &Brush) -> PathBrushInfo {
             let stops = gradient.stops();
             let start_color = gradient.first_color();
             let end_color = gradient.last_color();
-            let needs_texture = stops.len() > 2;
+            // Force the 2-stop vertex-interpolation path for every
+            // gradient. The texture-backed multi-stop route is
+            // globally shared — one 1D texture slot on the GPU that
+            // every `push_path_with_brush_info` overwrites — so in
+            // any frame containing more than one distinct multi-stop
+            // gradient, all but the last one render against the
+            // wrong stops. Depending on how `use_gradient_texture`
+            // ends up latched across submissions, those earlier
+            // gradients can also sample the placeholder texture,
+            // rendering as transparent and effectively disappearing
+            // (which is what happens in the volume scene: head /
+            // BG / seeker gradients all vanish while the music
+            // notes + hat / airpods / collar solid fills stay).
+            //
+            // The 2-stop path interpolates `mix(color, end_color, t)`
+            // per fragment with `t` derived from the authored
+            // gradient direction — it loses the mid-stop curve
+            // shape but reproduces the overall colour transition
+            // from first → last, which is what authored Lottie
+            // gradients visually care about (most gradients in the
+            // wild are 2- or 3-stop with nearly-linear mid stops).
+            // The proper fix is a gradient atlas with per-vertex
+            // row indexing; tracked as a follow-up.
+            let needs_texture = false;
+            let _ = stops;
 
             match gradient {
                 Gradient::Linear {
@@ -752,6 +782,137 @@ fn extract_gradient_info(brush: &Brush) -> (u32, Color, Color, [f32; 4]) {
     )
 }
 
+/// Convert path-space gradient parameters into the object-bounding-box
+/// (OBB) space the path shader expects.
+///
+/// The path fragment shader compares `gradient_params` against `in.uv`,
+/// which is per-vertex `(pos - bounds_min) / bounds_size` — so the
+/// gradient descriptor must live in the same normalized space. Before
+/// this conversion the tessellator stored raw Lottie coordinates on
+/// every vertex and the shader's `length(uv - center) / radius` collapsed
+/// to values near zero for every fragment, making a multi-stop gradient
+/// sample only its first stop (what made Flair's radial halo render as
+/// a solid disc instead of a fading glow).
+///
+/// Layouts:
+/// - gradient_type == 1 (linear): `[x1, y1, x2, y2]` are both endpoints,
+///   each shifted and divided per-axis.
+/// - gradient_type == 2 (radial/conic): `[cx, cy, radius, unused]` is
+///   centre + scalar radius. The radius is packed twice — once divided
+///   by `bounds_width` and once by `bounds_height` — so the fragment
+///   shader can rescale x/y independently and the visible isoline stays
+///   a true circle in path-space even when the bounding box isn't
+///   square. The `.w` slot therefore stops being "unused" and now
+///   carries `ry`.
+/// - other types fall through unchanged; solids don't read
+///   gradient_params and the conic code still uses `.w` as start angle,
+///   but conic is currently rasterized as a radial, so treating its
+///   params the same is correct.
+fn normalize_gradient_params_to_obb(
+    gradient_type: u32,
+    raw: [f32; 4],
+    min_x: f32,
+    min_y: f32,
+    bounds_width: f32,
+    bounds_height: f32,
+) -> [f32; 4] {
+    match gradient_type {
+        1 => [
+            (raw[0] - min_x) / bounds_width,
+            (raw[1] - min_y) / bounds_height,
+            (raw[2] - min_x) / bounds_width,
+            (raw[3] - min_y) / bounds_height,
+        ],
+        2 => [
+            (raw[0] - min_x) / bounds_width,
+            (raw[1] - min_y) / bounds_height,
+            raw[2] / bounds_width,
+            raw[2] / bounds_height,
+        ],
+        _ => raw,
+    }
+}
+
+/// Sample the authored multi-stop gradient at a single vertex's
+/// OBB-space UV. Mirrors the path fragment shader's linear / radial
+/// projection math so pre-baked per-vertex colours match what the
+/// shader would have produced had the texture path been usable.
+#[allow(dead_code)]
+fn sample_gradient_at_uv(
+    gradient_type: u32,
+    gradient_params: [f32; 4],
+    stops: &[blinc_core::GradientStop],
+    u: f32,
+    v: f32,
+) -> Color {
+    let t = match gradient_type {
+        1 => {
+            // Linear: project UV onto the (start, end) line in OBB
+            // space. `gradient_params` = [x1, y1, x2, y2].
+            let sx = gradient_params[0];
+            let sy = gradient_params[1];
+            let ex = gradient_params[2];
+            let ey = gradient_params[3];
+            let dx = ex - sx;
+            let dy = ey - sy;
+            let len_sq = dx * dx + dy * dy;
+            if len_sq < 1e-6 {
+                0.0
+            } else {
+                (((u - sx) * dx + (v - sy) * dy) / len_sq).clamp(0.0, 1.0)
+            }
+        }
+        2 => {
+            // Radial: normalized distance from centre, per-axis
+            // radii. `gradient_params` = [cx, cy, rx, ry].
+            let cx = gradient_params[0];
+            let cy = gradient_params[1];
+            let rx = gradient_params[2].max(1e-5);
+            let ry = gradient_params[3].max(1e-5);
+            let du = (u - cx) / rx;
+            let dv = (v - cy) / ry;
+            (du * du + dv * dv).sqrt().clamp(0.0, 1.0)
+        }
+        _ => 0.0,
+    };
+    sample_gradient_stops(stops, t)
+}
+
+/// Sample a sorted stop list at parameter `t` in `[0, 1]`. Matches
+/// the CPU rasterizer's `sample_gradient` so CPU-rasterized and
+/// per-vertex paths agree pixel-for-pixel at the stop offsets.
+/// Linear between adjacent stops, clamp at the ends.
+fn sample_gradient_stops(stops: &[blinc_core::GradientStop], t: f32) -> Color {
+    if stops.is_empty() {
+        return Color::TRANSPARENT;
+    }
+    if t <= stops[0].offset {
+        return stops[0].color;
+    }
+    let last = stops.len() - 1;
+    if t >= stops[last].offset {
+        return stops[last].color;
+    }
+    for i in 0..last {
+        let s0 = &stops[i];
+        let s1 = &stops[i + 1];
+        if t >= s0.offset && t <= s1.offset {
+            let range = s1.offset - s0.offset;
+            if range < 1e-6 {
+                return s0.color;
+            }
+            let local = (t - s0.offset) / range;
+            return Color {
+                r: s0.color.r + (s1.color.r - s0.color.r) * local,
+                g: s0.color.g + (s1.color.g - s0.color.g) * local,
+                b: s0.color.b + (s1.color.b - s0.color.b) * local,
+                a: s0.color.a + (s1.color.a - s0.color.a) * local,
+            };
+        }
+    }
+    stops[last].color
+}
+
 /// Tessellate a path for filling
 pub fn tessellate_fill(path: &Path, brush: &Brush) -> TessellatedPath {
     let events = path_to_lyon_events(path);
@@ -760,20 +921,49 @@ pub fn tessellate_fill(path: &Path, brush: &Brush) -> TessellatedPath {
         return TessellatedPath::new();
     }
 
-    let (gradient_type, start_color, end_color, gradient_params) = extract_gradient_info(brush);
+    let (gradient_type, start_color, end_color, raw_gradient_params) = extract_gradient_info(brush);
     let (min_x, min_y, max_x, max_y) = compute_path_bounds(path);
     let bounds_width = (max_x - min_x).max(1.0);
     let bounds_height = (max_y - min_y).max(1.0);
+    // Normalize gradient params from path-space to the object-bounding-box
+    // space the shader compares against `in.uv`. Without this, `uv - center`
+    // mixes a [0,1] UV with raw path coords, `t` lands near zero everywhere,
+    // and a multi-stop gradient collapses to its first stop — the "solid
+    // disc instead of soft halo" symptom visible in Dark Mode Button's
+    // Flair layer. Linear: both endpoints shift to OBB; radial: centre
+    // shifts and the single radius splits into per-axis (rx, ry) so
+    // non-square bounds keep the gradient circular in path-space.
+    let gradient_params = normalize_gradient_params_to_obb(
+        gradient_type,
+        raw_gradient_params,
+        min_x,
+        min_y,
+        bounds_width,
+        bounds_height,
+    );
 
     // Build edge segments for anti-aliasing edge distance computation
     // Use same tolerance as tessellation for accurate edge distances
-    let edges = PathEdges::from_path(path, 0.025);
+    let edges = PathEdges::from_path(path, 0.2);
 
     let mut geometry: VertexBuffers<PathVertex, u32> = VertexBuffers::new();
     let mut tessellator = FillTessellator::new();
 
-    // Lower tolerance = more triangles = smoother curves (at cost of more vertices)
-    let options = FillOptions::default().with_tolerance(0.025);
+    // Tolerance is the max distance (in source pixels) between the
+    // true curve and its flattened polyline. 0.2 keeps curves visually
+    // smooth on 2× retina (≈ 0.4 screen-px deviation — below the
+    // perceptibility threshold) while staying ~5× coarser than the
+    // old 0.025 default, which used to explode triangle counts on
+    // curve-heavy paths.
+    let mut options = FillOptions::default().with_tolerance(0.2);
+    // Debug toggle: `BLINC_FILL_RULE_EVENODD=1` switches from the
+    // Lottie-default non-zero rule to even-odd. Useful for diagnosing
+    // authored self-intersecting shapes (e.g. Dark Mode Button's
+    // `Crease`) whose non-zero interior doesn't match the reference
+    // render's expected crescent/ring silhouette.
+    if std::env::var("BLINC_FILL_RULE_EVENODD").ok().as_deref() == Some("1") {
+        options = options.with_fill_rule(lyon::tessellation::FillRule::EvenOdd);
+    }
 
     let result = tessellator.tessellate(
         events.iter().cloned(),
@@ -789,8 +979,6 @@ pub fn tessellate_fill(path: &Path, brush: &Brush) -> TessellatedPath {
             let u = (pos.x - min_x) / bounds_width;
             let v = (pos.y - min_y) / bounds_height;
 
-            // For gradients, we pass start/end colors and gradient params
-            // The shader computes the gradient based on UV and gradient direction
             PathVertex {
                 position: pos.to_array(),
                 color: [start_color.r, start_color.g, start_color.b, start_color.a],
@@ -799,7 +987,10 @@ pub fn tessellate_fill(path: &Path, brush: &Brush) -> TessellatedPath {
                 gradient_params,
                 gradient_type,
                 edge_distance,
-                _padding: [0, 0],
+                clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
+                clip_radius: [0.0; 4],
+                clip_type: 0,
+                _padding: [0, 0, 0],
             }
         }),
     );
@@ -823,19 +1014,28 @@ pub fn tessellate_stroke(path: &Path, stroke: &Stroke, brush: &Brush) -> Tessell
         return TessellatedPath::new();
     }
 
-    let (gradient_type, start_color, end_color, gradient_params) = extract_gradient_info(brush);
+    let (gradient_type, start_color, end_color, raw_gradient_params) = extract_gradient_info(brush);
     let (min_x, min_y, max_x, max_y) = compute_path_bounds(path);
     let bounds_width = (max_x - min_x).max(1.0);
     let bounds_height = (max_y - min_y).max(1.0);
+    let gradient_params = normalize_gradient_params_to_obb(
+        gradient_type,
+        raw_gradient_params,
+        min_x,
+        min_y,
+        bounds_width,
+        bounds_height,
+    );
 
     let mut geometry: VertexBuffers<PathVertex, u32> = VertexBuffers::new();
     let mut tessellator = StrokeTessellator::new();
 
     let half_width = stroke.width * 0.5;
 
+    // See `tessellate_fill` for the rationale on 0.2 tolerance.
     let mut options = StrokeOptions::default()
         .with_line_width(stroke.width)
-        .with_tolerance(0.025);
+        .with_tolerance(0.2);
 
     // Convert line cap
     options = options.with_line_cap(match stroke.cap {
@@ -873,7 +1073,6 @@ pub fn tessellate_stroke(path: &Path, stroke: &Stroke, brush: &Brush) -> Tessell
             let u = (pos.x - min_x) / bounds_width;
             let v = (pos.y - min_y) / bounds_height;
 
-            // For gradients, we pass start/end colors and gradient params
             PathVertex {
                 position: pos.to_array(),
                 color: [start_color.r, start_color.g, start_color.b, start_color.a],
@@ -882,7 +1081,10 @@ pub fn tessellate_stroke(path: &Path, stroke: &Stroke, brush: &Brush) -> Tessell
                 gradient_params,
                 gradient_type,
                 edge_distance,
-                _padding: [0, 0],
+                clip_bounds: [-10000.0, -10000.0, 100000.0, 100000.0],
+                clip_radius: [0.0; 4],
+                clip_type: 0,
+                _padding: [0, 0, 0],
             }
         }),
     );

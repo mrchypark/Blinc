@@ -135,6 +135,18 @@ impl TextRenderingContext {
             .preload_generic_styles(generic, weights, italic);
     }
 
+    /// Clear cached negative lookups for generic fonts so the next
+    /// `preload_generic_styles` retries resolution against newly-
+    /// loaded font data. Without this, fonts loaded after the first
+    /// preload are invisible to the generic family resolver.
+    pub fn invalidate_generic_font_cache(&mut self) {
+        self.renderer
+            .font_registry()
+            .lock()
+            .unwrap()
+            .invalidate_generic_cache();
+    }
+
     /// Load the default font from data
     pub fn load_font_data(&mut self, data: Vec<u8>) -> Result<(), blinc_text::TextError> {
         self.renderer.load_default_font_data(data)
@@ -422,16 +434,23 @@ impl TextRenderingContext {
             }
         };
 
-        // Calculate x offset based on alignment
-        // When max_width is set, the layout engine already aligns glyphs within that width.
-        // We just need to add the container's x position as base offset.
-        // When no width is provided, we manually apply alignment offset.
-        let x_offset = if options.max_width.is_some() {
-            // Layout engine already aligned within max_width, just offset by container x
+        // Calculate x offset based on alignment.
+        // When `max_width` is set, the layout engine has already
+        // aligned glyphs within that width — just position by `x`.
+        // When no width is provided, fall back to shifting by the
+        // prepared text's measured width so `Center` / `Right`
+        // actually align the text around / past the anchor `x`
+        // instead of silently left-aligning. This matches HTML5
+        // Canvas semantics where `ctx.textAlign = 'center'` centres
+        // the measured string around the anchor.
+        let x_offset = if width.is_some() {
             x
         } else {
-            // No container width - just position at x (left-aligned)
-            x
+            match alignment {
+                TextAlignment::Left => x,
+                TextAlignment::Center => x - prepared.width / 2.0,
+                TextAlignment::Right => x - prepared.width,
+            }
         };
 
         // Convert to GPU glyphs with position offset
@@ -701,14 +720,14 @@ impl TextRenderingContext {
         // Upload pixel data
         if let Some(texture) = &self.atlas_texture {
             self.queue.write_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
                 pixels,
-                wgpu::ImageDataLayout {
+                wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(width),
                     rows_per_image: Some(height),
@@ -757,14 +776,14 @@ impl TextRenderingContext {
         // Upload pixel data (RGBA = 4 bytes per pixel)
         if let Some(texture) = &self.color_atlas_texture {
             self.queue.write_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
                 pixels,
-                wgpu::ImageDataLayout {
+                wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(width * 4), // 4 bytes per pixel for RGBA
                     rows_per_image: Some(height),

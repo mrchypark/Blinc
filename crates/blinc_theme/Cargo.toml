@@ -11,8 +11,8 @@ keywords = ["ui", "gui", "theme", "design", "blinc"]
 categories = ["gui"]
 
 [dependencies]
-blinc_core = { path = "../blinc_core", version = "0.1.14" }
-blinc_animation = { path = "../blinc_animation", version = "0.1.14" }
+blinc_core = { path = "../blinc_core", version = "0.5.1" }
+blinc_animation = { path = "../blinc_animation", version = "0.5.1" }
 
 # Utilities
 tracing = { workspace = true }
@@ -26,6 +26,12 @@ rustc-hash = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true, optional = true }
 objc2-foundation = { workspace = true, optional = true }
+
+# Web color-scheme detection — `window.matchMedia(...)` lives in
+# `web_sys::Window`. Pulled in only on wasm32 so non-web builds don't
+# carry the web-sys dep tree.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "MediaQueryList"] }
 
 [features]
 default = []

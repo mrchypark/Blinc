@@ -88,6 +88,7 @@ impl BlincApp {
             sample_count: 1, // SDF pipelines always use single-sampled textures
             texture_format: None,
             unified_text_rendering: true,
+            ..RendererConfig::default()
         };
 
         let renderer = pollster::block_on(GpuRenderer::new(renderer_config))
@@ -237,6 +238,16 @@ impl BlincApp {
             .render_tree_with_motion(tree, render_state, width, height, target)
     }
 
+    /// Set the alpha used when clearing the main render target.
+    ///
+    /// The desktop runner calls this before each window's render so that
+    /// transparent windows (whose wgpu surface is configured with a
+    /// premultiplied/postmultiplied alpha mode) get a fully clear
+    /// surface. Default is `1.0` (opaque).
+    pub fn set_clear_alpha(&mut self, alpha: f32) {
+        self.ctx.set_clear_alpha(alpha);
+    }
+
     /// Render an overlay tree on top of existing content (no clear)
     ///
     /// This is used for rendering modal/dialog/toast overlays on top of the main UI.
@@ -257,6 +268,38 @@ impl BlincApp {
     /// Get the render context for advanced usage
     pub fn context(&mut self) -> &mut RenderContext {
         &mut self.ctx
+    }
+
+    /// Re-run generic font family preloading (sans-serif, monospace)
+    /// so the family→weight mapping binds to any fonts loaded since
+    /// the last call. On web, fonts are loaded after `with_canvas`
+    /// creates the text context, so the initial `preload_generic_styles`
+    /// runs against an empty registry. This method re-runs the same
+    /// calls so `.monospace()` / `.serif()` / `.sans_serif()` resolve
+    /// to the correct loaded font bytes.
+    pub fn refresh_generic_font_styles(&mut self) {
+        // Clear cached negative lookups from before fonts were loaded.
+        // Without this, the first preload attempt (which ran against an
+        // empty registry in `with_canvas`) caches "not found" for every
+        // generic family+weight combo, and subsequent preload calls hit
+        // the cache and return the stale "not found" without retrying.
+        self.ctx.text_ctx.invalidate_generic_font_cache();
+
+        self.ctx.text_ctx.preload_generic_styles(
+            blinc_gpu::GenericFont::SansSerif,
+            &[100, 200, 300, 400, 500, 600, 700, 800, 900],
+            false,
+        );
+        self.ctx.text_ctx.preload_generic_styles(
+            blinc_gpu::GenericFont::SansSerif,
+            &[100, 200, 300, 400, 500, 600, 700, 800, 900],
+            true,
+        );
+        self.ctx.text_ctx.preload_generic_styles(
+            blinc_gpu::GenericFont::Monospace,
+            &[400, 700],
+            false,
+        );
     }
 
     /// Update the current cursor position in physical pixels (for @flow pointer input)
@@ -292,6 +335,29 @@ impl BlincApp {
     /// Get the wgpu queue
     pub fn queue(&self) -> &Arc<wgpu::Queue> {
         self.ctx.queue()
+    }
+
+    /// Whether the GPU adapter supports storage buffers.
+    pub fn has_storage_buffers(&self) -> bool {
+        self.ctx.has_storage_buffers()
+    }
+
+    /// Create a new wgpu surface for an additional window.
+    ///
+    /// Uses the existing GPU instance to create a surface that shares
+    /// the device and queue with the primary renderer. For multi-window support.
+    pub fn create_surface_for_window<W>(
+        &self,
+        window: std::sync::Arc<W>,
+    ) -> std::result::Result<wgpu::Surface<'static>, blinc_gpu::RendererError>
+    where
+        W: raw_window_handle::HasWindowHandle
+            + raw_window_handle::HasDisplayHandle
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.ctx.create_surface(window)
     }
 
     /// Get the texture format used by the renderer's pipelines
@@ -358,6 +424,7 @@ impl BlincApp {
             sample_count: 1,
             texture_format: None,
             unified_text_rendering: true,
+            ..RendererConfig::default()
         };
 
         let (renderer, surface) =
@@ -404,6 +471,73 @@ impl BlincApp {
         text_ctx.preload_generic_styles(
             blinc_gpu::GenericFont::SansSerif,
             &[400, 600, 700, 800, 900],
+            true,
+        );
+        text_ctx.preload_generic_styles(blinc_gpu::GenericFont::Monospace, &[400, 700], false);
+
+        let ctx = RenderContext::new(renderer, text_ctx, device, queue, config.sample_count);
+        let app = Self { ctx, config };
+
+        Ok((app, surface))
+    }
+
+    /// Async sibling of [`Self::with_window`] for the web target.
+    ///
+    /// `with_window` blocks on `pollster::block_on(GpuRenderer::with_surface(...))`,
+    /// which cannot run on the browser main thread — wasm-bindgen-futures
+    /// requires the entire async chain to be `await`ed back into the JS
+    /// event loop. This sibling preserves the same shape but is `async`
+    /// the whole way through, calling [`GpuRenderer::with_canvas`] from
+    /// `blinc_gpu` instead of `with_surface`.
+    ///
+    /// **No system-font loading.** On the web there's no filesystem to
+    /// scan for `.ttf` paths. Apps must call
+    /// [`Self::load_font_data_to_registry`] explicitly with bundled or
+    /// fetched font bytes after `with_canvas` returns. The Phase 6
+    /// rollout adds an async preload helper in `blinc_platform_web`.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    pub async fn with_canvas(
+        canvas: web_sys::HtmlCanvasElement,
+        config: Option<BlincConfig>,
+    ) -> Result<(Self, wgpu::Surface<'static>)> {
+        let config = config.unwrap_or_default();
+
+        let renderer_config = RendererConfig {
+            max_primitives: config.max_primitives,
+            max_glass_primitives: config.max_glass_primitives,
+            max_glyphs: config.max_glyphs,
+            sample_count: 1,
+            texture_format: None,
+            unified_text_rendering: true,
+            ..RendererConfig::default()
+        };
+
+        let (renderer, surface) = GpuRenderer::with_canvas(canvas, renderer_config)
+            .await
+            .map_err(|e| BlincError::GpuInit(e.to_string()))?;
+
+        let device = renderer.device_arc();
+        let queue = renderer.queue_arc();
+
+        let mut text_ctx = TextRenderingContext::new(device.clone(), queue.clone());
+
+        // Generic-font preload mirrors the desktop path so common
+        // weights are cached before the first frame. The actual font
+        // bytes have to be supplied separately by the caller via
+        // `load_font_data()` — these calls only register the
+        // generic-family → weight mappings so the shaper knows
+        // which families to resolve `font-family: sans-serif` /
+        // `monospace` to. Without them, CSS `font-family: monospace`
+        // falls back to the first registered font (usually Arial)
+        // instead of the intended monospace font.
+        text_ctx.preload_generic_styles(
+            blinc_gpu::GenericFont::SansSerif,
+            &[100, 200, 300, 400, 500, 600, 700, 800, 900],
+            false,
+        );
+        text_ctx.preload_generic_styles(
+            blinc_gpu::GenericFont::SansSerif,
+            &[100, 200, 300, 400, 500, 600, 700, 800, 900],
             true,
         );
         text_ctx.preload_generic_styles(blinc_gpu::GenericFont::Monospace, &[400, 700], false);

@@ -12,7 +12,7 @@ use blinc_platform::{ViewportInsets, WindowMetrics};
 #[cfg(target_os = "ios")]
 use objc2_foundation::MainThreadMarker;
 #[cfg(target_os = "ios")]
-use objc2_ui_kit::{UIApplication, UIApplicationState, UIScreen, UIUserInterfaceStyle, UIWindow};
+use objc2_ui_kit::{UIApplication, UIScreen, UIWindowScene};
 
 #[cfg(target_os = "ios")]
 use tracing::info;
@@ -95,11 +95,21 @@ impl IOSPlatform {
     /// Get the main screen's scale factor
     #[allow(deprecated)]
     fn get_screen_scale() -> f64 {
-        // On iOS, UIScreen::mainScreen() requires MainThreadMarker
-        // We assume this is called from the main thread
+        // On iOS, UIScreen::mainScreen() requires MainThreadMarker.
+        // We assume this is called from the main thread.
+        //
+        // `mainScreen` is technically deprecated in modern iOS (Apple
+        // recommends `view.window.windowScene.screen` instead) but at
+        // platform-init time we don't have a view / window / scene to
+        // hand — those don't exist until the UIApplicationDelegate
+        // boots up. The deprecated form continues to work for
+        // single-screen apps, which is the only configuration Blinc's
+        // iOS runner currently supports.
+        #[allow(deprecated)]
         let mtm = MainThreadMarker::new().expect("Must be called from main thread");
+        #[allow(deprecated)]
         let screen = UIScreen::mainScreen(mtm);
-        screen.scale() as f64
+        screen.scale()
     }
 }
 
@@ -212,12 +222,65 @@ pub fn is_dark_mode() -> bool {
     resolve_dark_mode(None)
 }
 
-/// Get the safe area insets for the main screen
+/// Get the safe area insets for the key window.
 ///
-/// Returns (top, left, bottom, right) insets in logical points.
+/// Returns `(top, right, bottom, left)` in logical points, matching the
+/// [`Window::safe_area_insets`](blinc_platform::Window::safe_area_insets)
+/// contract. Reads `UIWindow.safeAreaInsets` from the first key window of
+/// the first foreground-active `UIWindowScene` — the same lookup
+/// `BlincNativeBridge.swift` uses for its `device.has_notch` handler.
+///
+/// Must be called from the main thread. Returns zeros if no scene has a
+/// key window yet (e.g. before `application(_:didFinishLaunchingWithOptions:)`
+/// completes).
 #[cfg(target_os = "ios")]
 pub fn get_safe_area_insets() -> (f32, f32, f32, f32) {
-    resolve_safe_area_insets(query_safe_area_insets())
+    let Some(mtm) = MainThreadMarker::new() else {
+        return (0.0, 0.0, 0.0, 0.0);
+    };
+
+    let app = UIApplication::sharedApplication(mtm);
+    let scenes = app.connectedScenes();
+
+    // Pick the key window from the first scene that has one; otherwise
+    // fall back to the first window of the first scene — mirrors the
+    // Swift template's `?? first` pattern for pre-first-responder
+    // launches.
+    let mut insets: Option<objc2_ui_kit::UIEdgeInsets> = None;
+    'scenes: for scene in scenes.iter() {
+        let Ok(window_scene) = scene.downcast::<UIWindowScene>() else {
+            continue;
+        };
+        let windows = window_scene.windows();
+        let mut first_insets: Option<objc2_ui_kit::UIEdgeInsets> = None;
+        for window in windows.iter() {
+            if first_insets.is_none() {
+                first_insets = Some(window.safeAreaInsets());
+            }
+            if window.isKeyWindow() {
+                insets = Some(window.safeAreaInsets());
+                break 'scenes;
+            }
+        }
+        if let Some(fallback) = first_insets {
+            insets = Some(fallback);
+            break;
+        }
+    }
+
+    let Some(insets) = insets else {
+        return (0.0, 0.0, 0.0, 0.0);
+    };
+
+    // UIEdgeInsets is (top, left, bottom, right); the blinc Window trait
+    // exposes (top, right, bottom, left). Reorder here so every call site
+    // sees the same tuple shape.
+    (
+        insets.top as f32,
+        insets.right as f32,
+        insets.bottom as f32,
+        insets.left as f32,
+    )
 }
 
 /// Placeholder for non-iOS builds

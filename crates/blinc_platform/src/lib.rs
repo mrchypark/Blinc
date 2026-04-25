@@ -45,9 +45,7 @@
 pub mod accessibility;
 pub mod app;
 pub mod assets;
-pub mod ble;
-pub mod clipboard;
-pub mod environment;
+pub mod deep_link;
 mod error;
 mod event;
 pub mod haptics;
@@ -75,7 +73,7 @@ pub use input::{
     KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
 };
 pub use platform::Platform;
-pub use window::{Cursor, Window, WindowConfig};
+pub use window::{Cursor, Window, WindowConfig, WindowId};
 
 // Re-export commonly used asset types
 pub use accessibility::{
@@ -109,7 +107,8 @@ pub mod prelude {
     };
     pub use crate::app;
     pub use crate::assets::{
-        asset_exists, load_asset, load_asset_string, AssetLoader, AssetPath, FilesystemAssetLoader,
+        asset_exists, asset_url, load_asset, load_asset_string, preload_settled, AssetLoader,
+        AssetPath, FilesystemAssetLoader,
     };
     pub use crate::ble::{
         BleBackend, BleBatchSummary, BleClient, BleProbeState, BleRuntimeController, BleScanConfig,
@@ -132,11 +131,5 @@ pub mod prelude {
     };
     pub use crate::permissions::{PermissionKind, PermissionStatus};
     pub use crate::platform::Platform;
-    pub use crate::sensors::{
-        NativeBridgePermissionBackend, SensorAccuracy, SensorBackend, SensorBatchSummary,
-        SensorClient, SensorConfig, SensorError, SensorFrame, SensorKind, SensorPermissionBackend,
-        SensorPermissionService, SensorPermissionState, SensorProbeState, SensorRuntimeController,
-        SensorStatus,
-    };
-    pub use crate::window::{Cursor, Window, WindowConfig};
+    pub use crate::window::{Cursor, Window, WindowConfig, WindowId};
 }

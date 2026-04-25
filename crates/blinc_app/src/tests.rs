@@ -66,7 +66,10 @@ fn create_test_texture(
 fn padded_bytes_per_row(width: u32) -> u32 {
     let unpadded = width * 4;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    unpadded.div_ceil(align) * align
+    #[allow(clippy::manual_div_ceil)]
+    {
+        ((unpadded + align - 1) / align) * align
+    }
 }
 
 /// Read back a rendered texture into an RGBA image (BGRA->RGBA conversion).
@@ -92,15 +95,15 @@ fn read_to_rgba_image(
     });
 
     encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        wgpu::ImageCopyBuffer {
+        wgpu::TexelCopyBufferInfo {
             buffer: &buffer,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(height),
@@ -120,7 +123,7 @@ fn read_to_rgba_image(
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
         tx.send(result).unwrap();
     });
-    device.poll(wgpu::Maintain::Wait);
+    let _ = device.poll(wgpu::PollType::Wait);
     rx.recv().unwrap().expect("Failed to map buffer");
 
     let data = buffer_slice.get_mapped_range();

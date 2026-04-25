@@ -986,6 +986,14 @@ impl StateTransitions for TextFieldState {
             // Idle transitions
             (TextFieldState::Idle, POINTER_ENTER) => Some(TextFieldState::Hovered),
             (TextFieldState::Idle, FOCUS) => Some(TextFieldState::Focused),
+            // POINTER_DOWN on Idle → Focused. This handles
+            // touchscreens where there's no POINTER_ENTER before
+            // POINTER_DOWN (a finger tap goes straight from "no
+            // contact" to "contact" without any hover phase). On
+            // desktop the existing `(Hovered, POINTER_DOWN)`
+            // arm catches the hover-then-click path, and on
+            // touch this arm catches the tap-without-hover path.
+            (TextFieldState::Idle, POINTER_DOWN) => Some(TextFieldState::Focused),
             // Hovered transitions
             (TextFieldState::Hovered, POINTER_LEAVE) => Some(TextFieldState::Idle),
             (TextFieldState::Hovered, POINTER_DOWN) => Some(TextFieldState::Focused),
@@ -1131,6 +1139,17 @@ pub struct StatefulInner<S: StateTransitions> {
     /// or only visual props (transform, opacity, bg). When structure is unchanged,
     /// we skip the expensive subtree rebuild and use the fast visual-only update path.
     pub(crate) previous_structural_hash: Option<crate::diff::DivHash>,
+
+    /// Container-level CSS classes set via `.class()` on the Stateful itself
+    /// (not from the on_state callback). These must survive subtree rebuilds
+    /// because the rebuild path replaces the parent node's classes/style with
+    /// whatever the on_state callback returned — and that callback has no way
+    /// to know about classes the user attached to the outer Stateful.
+    pub(crate) base_classes: Vec<String>,
+
+    /// Container-level element id set via `.id()` on the Stateful itself.
+    /// Mirrors `base_classes` for the same reason.
+    pub(crate) base_element_id: Option<String>,
 }
 
 impl<S: StateTransitions> StatefulInner<S> {
@@ -1149,6 +1168,8 @@ impl<S: StateTransitions> StatefulInner<S> {
             refresh_callback: None,
             animation_keys: Vec::new(),
             previous_structural_hash: None,
+            base_classes: Vec::new(),
+            base_element_id: None,
         }
     }
 }
@@ -2380,6 +2401,8 @@ impl<S: StateTransitions> Stateful<S> {
                 refresh_callback: None,
                 animation_keys: Vec::new(),
                 previous_structural_hash: None,
+                base_classes: Vec::new(),
+                base_element_id: None,
             })),
             children_cache: RefCell::new(Vec::new()),
             event_handlers_cache: RefCell::new(crate::event_handler::EventHandlers::new()),
@@ -2784,19 +2807,31 @@ impl<S: StateTransitions> Stateful<S> {
         guard.current_event = None;
 
         // Need node_id and callback to refresh
-        let (callback, state_copy, cached_node_id, base_props, base_style, refresh_callback) =
-            match (guard.state_callback.as_ref(), guard.node_id) {
-                (Some(cb), Some(nid)) => {
-                    let callback = Arc::clone(cb);
-                    let state = guard.state;
-                    let base = guard.base_render_props.clone();
-                    let style = guard.base_style.clone();
-                    let refresh_cb = guard.refresh_callback.clone();
-                    drop(guard);
-                    (callback, state, nid, base, style, refresh_cb)
-                }
-                _ => return,
-            };
+        let (
+            callback,
+            state_copy,
+            cached_node_id,
+            base_props,
+            base_style,
+            refresh_callback,
+            base_classes,
+            base_element_id,
+        ) = match (guard.state_callback.as_ref(), guard.node_id) {
+            (Some(cb), Some(nid)) => {
+                let callback = Arc::clone(cb);
+                let state = guard.state;
+                let base = guard.base_render_props.clone();
+                let style = guard.base_style.clone();
+                let refresh_cb = guard.refresh_callback.clone();
+                let classes = guard.base_classes.clone();
+                let elt_id = guard.base_element_id.clone();
+                drop(guard);
+                (
+                    callback, state, nid, base, style, refresh_cb, classes, elt_id,
+                )
+            }
+            _ => return,
+        };
 
         // Create temp div with base style to preserve container properties (overflow, etc.)
         // Then apply callback to get state-specific changes
@@ -2807,6 +2842,24 @@ impl<S: StateTransitions> Stateful<S> {
             Div::new()
         };
         callback(&state_copy, &mut temp_div);
+
+        // Re-seed container-level classes/id from the Stateful's builder methods.
+        // The on_state callback returns its own Div which becomes temp_div, but it
+        // has no knowledge of `.class()` / `.id()` calls made on the outer Stateful
+        // (those live on `self.inner`, not in shared_state). Without this, the
+        // subtree rebuild path in process_pending_subtree_rebuilds clears classes
+        // and breaks CSS class-based selectors / layout overrides on every refresh.
+        for cls in &base_classes {
+            if !temp_div.classes.contains(cls) {
+                temp_div.classes.push(cls.clone());
+            }
+        }
+        if temp_div.element_id.is_none() {
+            if let Some(id) = base_element_id {
+                temp_div.element_id = Some(id);
+            }
+        }
+
         let callback_props = temp_div.render_props();
 
         // Start from base props and merge callback changes on top
@@ -2919,12 +2972,26 @@ impl<S: StateTransitions> Stateful<S> {
 
     pub fn id(self, id: &str) -> Self {
         self.merge_into_inner(Div::new().id(id));
+        // Mirror into shared_state so refresh_props_internal can re-seed temp_div
+        // on subtree rebuild — otherwise the rebuild path replaces parent classes
+        // and id with whatever the on_state callback returned (which is unaware
+        // of container-level metadata set via builder methods).
+        self.shared_state.lock().unwrap().base_element_id = Some(id.to_string());
         self
     }
 
     /// Add a CSS class name for selector matching
     pub fn class(self, name: &str) -> Self {
         self.inner.borrow_mut().classes.push(name.to_string());
+        // Mirror into shared_state so refresh_props_internal can re-seed temp_div
+        // on subtree rebuild. Without this, classes set on the Stateful container
+        // are wiped from the element_registry the first time the on_state callback
+        // re-runs, breaking CSS class-based selectors (layout overrides included).
+        self.shared_state
+            .lock()
+            .unwrap()
+            .base_classes
+            .push(name.to_string());
         self
     }
 
@@ -3442,6 +3509,22 @@ impl<S: StateTransitions> Stateful<S> {
         F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
     {
         self.event_handlers_cache.borrow_mut().on_key_up(handler);
+        self
+    }
+
+    /// Register a text-input (printable character) handler.
+    ///
+    /// Fires after IME composition completes — the EventContext's
+    /// `key_char` carries the resolved character. Use this for typing
+    /// behaviour; use `on_key_down` for control keys (Backspace, arrows,
+    /// shortcuts).
+    pub fn on_text_input<F>(self, handler: F) -> Self
+    where
+        F: Fn(&crate::event_handler::EventContext) + Send + Sync + 'static,
+    {
+        self.event_handlers_cache
+            .borrow_mut()
+            .on_text_input(handler);
         self
     }
 

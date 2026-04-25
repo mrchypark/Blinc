@@ -20,6 +20,196 @@ pub enum PrimitiveType {
     CircleInnerShadow = 6,
     /// Text glyph - samples from atlas texture using gradient_params as UV bounds
     Text = 7,
+    /// Notch: rounded rect with concave corners and optional top/bottom edge
+    /// modifiers (scoop, bulge, v-cut, v-peak). SDF-composed in the fragment
+    /// shader so notches inherit free AA, transforms, layer clipping, and
+    /// shadow from the primary pipeline — no tessellation required.
+    ///
+    /// Repurposed fields (only valid when prim_type == Notch):
+    ///
+    /// - `perspective` → top modifier [type, width, height_or_depth, corner_radius]
+    /// - `sdf_3d`      → bottom modifier [type, width, height_or_depth, corner_radius]
+    /// - `light`       → per-corner type flags [TL, TR, BR, BL]
+    ///   (0.0 = sharp/convex, 1.0 = concave)
+    ///
+    /// Modifier type codes (stored in the `type` slot as f32):
+    ///   0 = none   1 = scoop   2 = bulge   3 = v-cut   4 = v-peak
+    ///
+    /// Notches cannot use the 3D pipeline (they reuse those slots); if you
+    /// need 3D rotation on a notched shape, fall back to `Path` for that
+    /// draw call.
+    Notch = 8,
+    /// Mesh triangle. Used to route tessellated path fills through
+    /// the SDF primitive stream so their submission order interleaves
+    /// naturally with text and other SDF primitives — text rendered
+    /// after a shape fill paints on top, matching the caller's draw
+    /// order instead of ending up behind every path draw (which is
+    /// what the separate tessellated-path pipeline does on its own).
+    ///
+    /// Each primitive represents ONE triangle. The three corners live
+    /// in the shared `aux_data` storage buffer starting at
+    /// `border[2]` (the same `aux_offset` slot the 3D compound shape
+    /// primitives reuse), packed as:
+    ///
+    /// - `aux_data[offset + 0] = (v0.x, v0.y, v1.x, v1.y)`
+    /// - `aux_data[offset + 1] = (v2.x, v2.y, 0, 0)`
+    ///
+    /// `bounds` is pre-computed to the triangle AABB so the vertex
+    /// shader still emits a tight quad and the fragment shader's
+    /// point-in-triangle test only runs over covered pixels.
+    Mesh = 9,
+}
+
+/// Corner style for notch primitives — matches `blinc_layout::notch::CornerStyle`
+/// but lives here so the GPU side can encode it without depending on layout.
+pub const NOTCH_CORNER_SHARP_OR_CONVEX: f32 = 0.0;
+pub const NOTCH_CORNER_CONCAVE: f32 = 1.0;
+
+/// Top/bottom edge modifier codes for notch primitives.
+pub const NOTCH_MOD_NONE: f32 = 0.0;
+pub const NOTCH_MOD_SCOOP: f32 = 1.0;
+pub const NOTCH_MOD_BULGE: f32 = 2.0;
+pub const NOTCH_MOD_CUT: f32 = 3.0;
+pub const NOTCH_MOD_PEAK: f32 = 4.0;
+
+/// Pipeline category for multi-pipeline SDF dispatch.
+///
+/// Primitives are sorted by category before GPU upload so each
+/// specialized pipeline draws a contiguous range of instances.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SdfPipelineCategory {
+    /// Rect, Circle, Ellipse — 2D shapes with borders, gradients, filters
+    Core = 0,
+    /// Shadow, InnerShadow, CircleShadow, CircleInnerShadow
+    Shadow = 1,
+    /// 3D raymarched shapes (shape_type > 0 in perspective.w)
+    Sdf3D = 2,
+    /// Notch (prim_type 8) — concave corners + edge modifiers
+    Notch = 3,
+    /// Text (prim_type 7) — handled by TEXT_SHADER pipeline
+    Text = 4,
+}
+
+impl GpuPrimitive {
+    /// Determine which SDF pipeline should render this primitive.
+    /// 3D is detected by shape_type in `perspective[3]`, but only promotes
+    /// *core* prim types (rect/circle/ellipse). Shadows, text, and notches
+    /// stay on their own pipelines even when `perspective[3]` is non-zero —
+    /// `current_perspective_params()` bleeds the active element's
+    /// `set_3d_shape` state onto every primitive built during that element's
+    /// render, and we don't want a shadow to be raymarched as a solid 3D
+    /// shape or have sdf_core overwrite it.
+    pub fn pipeline_category(&self) -> SdfPipelineCategory {
+        let prim_type = self.type_info[0];
+        let shape_3d_type = self.perspective[3] as u32;
+        match prim_type {
+            0..=2 => {
+                if shape_3d_type > 0 {
+                    SdfPipelineCategory::Sdf3D
+                } else {
+                    SdfPipelineCategory::Core
+                }
+            }
+            3..=6 => SdfPipelineCategory::Shadow,
+            7 => SdfPipelineCategory::Text,
+            8 => SdfPipelineCategory::Notch,
+            // Mesh triangles share the Core pipeline — they reuse the
+            // same fragment-shader branching as rects / circles, just
+            // with a point-in-triangle check instead of an SDF.
+            9 => SdfPipelineCategory::Core,
+            _ => SdfPipelineCategory::Core, // fallback
+        }
+    }
+}
+
+/// Vertex-shader-required fields for the SDF pipeline, packed into an
+/// instance-stepped vertex buffer. Used as a fallback when the GPU
+/// adapter does not support `VERTEX_STORAGE` (storage buffers in vertex
+/// shaders). The fragment shader still reads the full `GpuPrimitive`
+/// from the storage buffer — only the vertex stage needs this.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SdfVertexInstance {
+    pub bounds: [f32; 4],
+    pub shadow: [f32; 4],
+    pub rotation: [f32; 4],
+    pub perspective: [f32; 4],
+    pub sdf_3d: [f32; 4],
+    pub local_affine: [f32; 4],
+    pub corner_radius: [f32; 4],
+    pub light: [f32; 4],
+}
+
+impl SdfVertexInstance {
+    /// Extract vertex-shader-needed fields from a full primitive.
+    pub fn from_primitive(p: &GpuPrimitive) -> Self {
+        Self {
+            bounds: p.bounds,
+            shadow: p.shadow,
+            rotation: p.rotation,
+            perspective: p.perspective,
+            sdf_3d: p.sdf_3d,
+            local_affine: p.local_affine,
+            corner_radius: p.corner_radius,
+            light: p.light,
+        }
+    }
+
+    /// Vertex buffer layout for instance-stepped SDF vertex data.
+    pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<SdfVertexInstance>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &[
+            // @location(0) bounds
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 0,
+                shader_location: 0,
+            },
+            // @location(1) shadow
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 16,
+                shader_location: 1,
+            },
+            // @location(2) rotation
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 32,
+                shader_location: 2,
+            },
+            // @location(3) perspective
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 48,
+                shader_location: 3,
+            },
+            // @location(4) sdf_3d
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 64,
+                shader_location: 4,
+            },
+            // @location(5) local_affine
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 80,
+                shader_location: 5,
+            },
+            // @location(6) corner_radius
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 96,
+                shader_location: 6,
+            },
+            // @location(7) light
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 112,
+                shader_location: 7,
+            },
+        ],
+    };
 }
 
 /// Fill types (must match shader constants)
@@ -1429,6 +1619,31 @@ pub enum LayerCommand {
 pub struct LayerCommandEntry {
     /// The primitive index when this command was recorded
     pub primitive_index: usize,
+    /// The foreground primitive index when this command was recorded.
+    /// Needed so an effect layer composed of foreground primitives
+    /// can be ranged the same way background primitives are.
+    pub foreground_primitive_index: usize,
+    /// The path-vertex index when this command was recorded. Each
+    /// tessellated `fill_path` / `stroke_path` appends to
+    /// `PathBatch.vertices`; ranging by this index lets the effect
+    /// pipeline pull the exact path chunk that belongs to the
+    /// current layer into its offscreen texture. Without it, path
+    /// content (all of Lottie's shapes) bypassed the offscreen
+    /// composite and rendered directly onto the final framebuffer
+    /// — so layer-level opacity on a Lottie layer was visually
+    /// indistinguishable from per-fill alpha multiplication.
+    pub path_vertex_index: usize,
+    /// The path-index count (triangle-list index buffer position)
+    /// when this command was recorded. Paired with
+    /// `path_vertex_index` so the renderer can pull both the vertex
+    /// range and the index range for an effect layer without
+    /// scanning the index buffer to find which triangles reference
+    /// a given vertex window.
+    pub path_index_count: usize,
+    /// Foreground path-vertex index.
+    pub foreground_path_vertex_index: usize,
+    /// Foreground path-index count.
+    pub foreground_path_index_count: usize,
     /// The layer command
     pub command: LayerCommand,
 }
@@ -1464,6 +1679,26 @@ pub struct PrimitiveBatch {
     /// Auxiliary data buffer (`vec4<f32>` array) for variable-length per-primitive data.
     /// Used for 3D group shape descriptors and polygon clip vertices.
     pub aux_data: Vec<[f32; 4]>,
+    /// Dynamic RGBA images to upload and render this frame
+    /// (video frames, camera preview, procedural textures)
+    pub dynamic_images: Vec<DynamicImage>,
+}
+
+/// An RGBA image to upload to the GPU and render in a single frame
+#[derive(Clone)]
+pub struct DynamicImage {
+    /// RGBA pixel data (4 bytes per pixel)
+    pub data: Vec<u8>,
+    /// Image width in pixels
+    pub width: u32,
+    /// Image height in pixels
+    pub height: u32,
+    /// Destination rectangle (layout coordinates)
+    pub dest: blinc_core::Rect,
+    /// Opacity
+    pub opacity: f32,
+    /// Corner radius
+    pub corner_radius: f32,
 }
 
 impl PrimitiveBatch {
@@ -1484,6 +1719,7 @@ impl PrimitiveBatch {
             viewports_3d: Vec::new(),
             particle_viewports: Vec::new(),
             aux_data: Vec::new(),
+            dynamic_images: Vec::new(),
         }
     }
 
@@ -1503,6 +1739,7 @@ impl PrimitiveBatch {
         self.viewports_3d.clear();
         self.particle_viewports.clear();
         self.aux_data.clear();
+        self.dynamic_images.clear();
     }
 
     /// Push a 3D viewport for SDF raymarching
@@ -1529,6 +1766,11 @@ impl PrimitiveBatch {
     pub fn push_layer_command(&mut self, command: LayerCommand) {
         self.layer_commands.push(LayerCommandEntry {
             primitive_index: self.primitives.len(),
+            foreground_primitive_index: self.foreground_primitives.len(),
+            path_vertex_index: self.paths.vertices.len(),
+            path_index_count: self.paths.indices.len(),
+            foreground_path_vertex_index: self.foreground_paths.vertices.len(),
+            foreground_path_index_count: self.foreground_paths.indices.len(),
             command,
         });
     }
@@ -1814,7 +2056,7 @@ impl PrimitiveBatch {
     /// Add tessellated path geometry with clip data and brush info to the batch
     pub fn push_path_with_brush_info(
         &mut self,
-        tessellated: crate::path::TessellatedPath,
+        mut tessellated: crate::path::TessellatedPath,
         clip_bounds: [f32; 4],
         clip_radius: [f32; 4],
         clip_type: ClipType,
@@ -1843,6 +2085,24 @@ impl PrimitiveBatch {
         if tessellated.is_empty() {
             return;
         }
+
+        // Stamp clip data onto each new vertex. Path primitives share a single
+        // VBO + uniform buffer, so the legacy "batch-level" clip would get
+        // clobbered every time a new path with a different clip was submitted —
+        // making the LAST notch's clip apply to ALL paths in the batch.
+        // Carrying clip per-vertex lets multiple canvases coexist in one draw.
+        let clip_type_u = clip_type as u32;
+        for v in &mut tessellated.vertices {
+            v.clip_bounds = clip_bounds;
+            v.clip_radius = clip_radius;
+            v.clip_type = clip_type_u;
+        }
+
+        // Update batch-level clip too (kept for legacy uniform binding fallback,
+        // though the shader now reads from the per-vertex attributes).
+        self.paths.clip_bounds = clip_bounds;
+        self.paths.clip_radius = clip_radius;
+        self.paths.clip_type = clip_type_u;
 
         // Update brush metadata
         self.paths.use_gradient_texture = brush_info.needs_gradient_texture;
@@ -1882,7 +2142,7 @@ impl PrimitiveBatch {
     /// Add tessellated path geometry with clip data and brush info to the foreground batch
     pub fn push_foreground_path_with_brush_info(
         &mut self,
-        tessellated: crate::path::TessellatedPath,
+        mut tessellated: crate::path::TessellatedPath,
         clip_bounds: [f32; 4],
         clip_radius: [f32; 4],
         clip_type: ClipType,
@@ -1911,6 +2171,20 @@ impl PrimitiveBatch {
         if tessellated.is_empty() {
             return;
         }
+
+        // Stamp clip data onto each new vertex (see push_path_with_brush_info
+        // for the rationale — same shared-batch problem applies here).
+        let clip_type_u = clip_type as u32;
+        for v in &mut tessellated.vertices {
+            v.clip_bounds = clip_bounds;
+            v.clip_radius = clip_radius;
+            v.clip_type = clip_type_u;
+        }
+
+        // Update clip data
+        self.foreground_paths.clip_bounds = clip_bounds;
+        self.foreground_paths.clip_radius = clip_radius;
+        self.foreground_paths.clip_type = clip_type_u;
 
         // Update brush metadata
         self.foreground_paths.use_gradient_texture = brush_info.needs_gradient_texture;

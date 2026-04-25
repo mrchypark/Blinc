@@ -1,0 +1,66 @@
+[package]
+name = "blinc_app_examples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Example apps for the Blinc framework — not published to crates.io"
+publish = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("fuchsia", "ohos"))', 'cfg(target_env, values("ohos"))'] }
+
+[dependencies]
+blinc_app = { path = "../../crates/blinc_app", features = ["windowed"] }
+blinc_core = { path = "../../crates/blinc_core" }
+blinc_layout = { path = "../../crates/blinc_layout" }
+blinc_theme = { path = "../../crates/blinc_theme" }
+blinc_gpu = { path = "../../crates/blinc_gpu" }
+blinc_svg = { path = "../../crates/blinc_svg" }
+blinc_text = { path = "../../crates/blinc_text" }
+blinc_animation = { path = "../../crates/blinc_animation" }
+blinc_paint = { path = "../../crates/blinc_paint" }
+blinc_router = { path = "../../crates/blinc_router" }
+blinc_cn = { path = "../../crates/blinc_cn" }
+blinc_image = { path = "../../crates/blinc_image" }
+blinc_icons = { path = "../../crates/blinc_icons" }
+blinc_tabler_icons = { path = "../../crates/blinc_tabler_icons" }
+blinc_canvas_kit = { path = "../../crates/blinc_canvas_kit" }
+blinc_media = { path = "../../crates/blinc_media" }
+blinc_platform = { path = "../../crates/blinc_platform" }
+blinc_platform_desktop = { path = "../../extensions/blinc_platform_desktop" }
+
+# Downstream packages — each lives in its own upstream repo under the
+# `project-blinc` org, colocated locally under the gitignored `/packages/`
+# directory during development. Pinned to current `main` commits so CI
+# (which doesn't have the path-only checkout) can resolve them. Swap
+# these for `version = "..."` crates.io entries once the packages ship
+# stable releases.
+blinc_gltf = { git = "https://github.com/project-blinc/blinc_gltf.git", rev = "e510f26f627b9e7a3c4455e889a041940a530975", features = ["platform-assets", "bc-encode"] }
+blinc_skeleton = { git = "https://github.com/project-blinc/blinc_skeleton.git", rev = "33d4fbd9655fe4cfd38d8e18004c978d020ed6e2" }
+blinc_input = { git = "https://github.com/project-blinc/blinc_input.git", rev = "3e94941bd59bafcd23ad59e8db504a44fa85b4f5" }
+
+image.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Cross-target monotonic clock. `std::time::Instant` panics on
+# `wasm32-unknown-unknown`; `web_time::Instant` is the same API
+# backed by `performance.now()` on web, `Instant::now()` elsewhere.
+# Used by `gltf_animation_demo` to advance playback time on the
+# main thread in sync with the render closure (not the scheduler
+# bg thread, whose cadence doesn't line up with vsync).
+web-time = "1.1"
+
+# Wasm-only deps used by the `gltf_animation_demo` for its
+# `sleep_ms`-based background loader loop. The demo spawns
+# `wasm_bindgen_futures::spawn_local` which polls
+# `SceneState::try_load` until the `WebAssetLoader` cache is
+# populated; between retries it needs a `setTimeout`-backed
+# `JsFuture` to yield back to the browser. Gated behind the wasm
+# cfg so desktop builds don't pull any of these in.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window"] }
