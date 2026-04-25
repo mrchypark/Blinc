@@ -36,19 +36,4 @@ class MainActivity : NativeActivity() {
         // a non-translucent layout before the NDK code starts.
         window.setFormat(PixelFormat.OPAQUE)
     }
-
-    override fun onResume() {
-        super.onResume()
-        BlincNativeBridge.setForegroundActivity(this)
-    }
-
-    override fun onPause() {
-        BlincNativeBridge.setForegroundActivity(null)
-        super.onPause()
-    }
-
-    override fun onDestroy() {
-        BlincNativeBridge.setForegroundActivity(null)
-        super.onDestroy()
-    }
 }
