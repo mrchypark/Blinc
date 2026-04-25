@@ -4,7 +4,7 @@
 //! shelf-packing (skyline algorithm). Eliminates per-icon GPU textures and
 //! enables single-draw-call rendering for all SVG instances in a frame.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Region allocated in the SVG atlas
 #[derive(Debug, Clone, Copy)]
@@ -48,6 +48,13 @@ pub struct SvgAtlas {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     dirty: bool,
+    /// Cache keys accessed since the last `end_frame()` call.
+    /// Used by the mark-and-sweep eviction: when the atlas is full,
+    /// `evict_unused()` clears entries that weren't accessed this
+    /// frame and repacks the atlas from scratch. Without this,
+    /// animated SVGs (each frame producing unique cache keys) fill
+    /// the atlas permanently and all subsequent insertions fail.
+    used_this_frame: HashSet<u64>,
 }
 
 impl SvgAtlas {
@@ -62,6 +69,7 @@ impl SvgAtlas {
             texture,
             view,
             dirty: false,
+            used_this_frame: HashSet::new(),
         }
     }
 
@@ -86,8 +94,23 @@ impl SvgAtlas {
         self.entries.get(&cache_key)
     }
 
+    /// Mark a cache key as "used this frame" for eviction tracking.
+    /// Call this for every SVG that actually gets rendered.
+    pub fn mark_used(&mut self, cache_key: u64) {
+        self.used_this_frame.insert(cache_key);
+    }
+
     /// Allocate space, write pixels, and insert a cache entry. Returns the region.
-    /// Returns None if the atlas is completely full (even after growing).
+    ///
+    /// Returns `None` if the atlas is full at the maximum size — callers
+    /// should either fall back to a per-icon texture or simply skip the
+    /// element for this frame. We deliberately do *not* `clear()` and
+    /// retry on overflow at MAX_SIZE: that turns the atlas into a
+    /// thrashing cache where every overflowing frame wipes valid entries
+    /// and re-rasterizes them on the next frame, churning the GPU and
+    /// keeping the texture pinned at the maximum 4096×4096 footprint
+    /// (~67 MB CPU + ~67 MB GPU) forever. If repeated overflow happens,
+    /// the warning surfaces it instead of silently degrading.
     pub fn insert(
         &mut self,
         cache_key: u64,
@@ -96,21 +119,30 @@ impl SvgAtlas {
         rgba_pixels: &[u8],
         device: &wgpu::Device,
     ) -> Option<SvgAtlasRegion> {
-        // Try to allocate
+        // Try to allocate — grow if needed, but never repack mid-frame.
+        // Eviction runs in `begin_frame()` at the top of the render
+        // pass so UV coordinates stay stable for the entire loop.
         let region = match self.allocate(width, height) {
             Some(r) => r,
             None => {
-                // Try growing
                 if self.grow(device) {
                     self.allocate(width, height)?
                 } else {
-                    // At max size, clear and retry
-                    self.clear();
-                    self.allocate(width, height)?
+                    tracing::warn!(
+                        "SVG atlas at max size {}x{} could not fit {}x{} ({} entries, {:.1}% used) — skipping insertion",
+                        self.width,
+                        self.height,
+                        width,
+                        height,
+                        self.entries.len(),
+                        self.utilization() * 100.0,
+                    );
+                    return None;
                 }
             }
         };
 
+        self.used_this_frame.insert(cache_key);
         self.write_pixels(&region, rgba_pixels);
         self.entries.insert(cache_key, region);
         Some(region)
@@ -122,14 +154,14 @@ impl SvgAtlas {
             return;
         }
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &self.pixels,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(self.width * 4),
                 rows_per_image: Some(self.height),
@@ -148,7 +180,105 @@ impl SvgAtlas {
         self.entries.clear();
         self.shelves.clear();
         self.pixels.fill(0);
+        self.used_this_frame.clear();
         self.dirty = true;
+    }
+
+    /// Call at the **start** of each SVG render pass, before any
+    /// `get()` / `insert()` calls. Evicts entries from the previous
+    /// frame that won't be needed, then resets the tracking set for
+    /// the new frame.
+    ///
+    /// Eviction runs here — not reactively inside `insert()` — so
+    /// that all UV coordinates computed during the frame stay stable.
+    /// A mid-loop repack would move surviving entries to new shelf
+    /// positions, invalidating UVs already pushed into the instance
+    /// buffer and producing a visible blink.
+    pub fn begin_frame(&mut self, device: &wgpu::Device) {
+        // Only evict if the atlas is ≥75% full and there are entries
+        // from the previous frame that weren't used.
+        if self.utilization() >= 0.75 {
+            let stale_count = self
+                .entries
+                .keys()
+                .filter(|k| !self.used_this_frame.contains(k))
+                .count();
+            if stale_count > 0 {
+                self.evict_unused(device);
+            }
+        }
+        self.used_this_frame.clear();
+    }
+
+    /// Evict entries that weren't accessed this frame, then reset the
+    /// allocator so new insertions can reuse the freed space. Returns
+    /// `true` if any entries were evicted.
+    ///
+    /// This is the escape hatch for animated SVGs that produce unique
+    /// cache keys every frame (e.g. rotating icons with per-frame
+    /// tint changes). Without eviction the atlas fills up permanently
+    /// and all subsequent insertions fail.
+    fn evict_unused(&mut self, device: &wgpu::Device) -> bool {
+        let before = self.entries.len();
+        // Keep only entries that were accessed this frame
+        self.entries
+            .retain(|key, _| self.used_this_frame.contains(key));
+        let evicted = before - self.entries.len();
+        if evicted == 0 {
+            return false;
+        }
+
+        tracing::info!(
+            "SVG atlas: evicted {} stale entries ({} remain), repacking",
+            evicted,
+            self.entries.len(),
+        );
+
+        // Repack: save the pixel data for surviving entries, clear
+        // the atlas, then re-insert them. This reclaims fragmented
+        // space from the shelf packer.
+        let surviving: Vec<(u64, Vec<u8>, u32, u32)> = self
+            .entries
+            .iter()
+            .map(|(&key, region)| {
+                let row_bytes = region.width as usize * 4;
+                let mut px = vec![0u8; row_bytes * region.height as usize];
+                for y in 0..region.height {
+                    let src =
+                        ((region.y + y) as usize * self.width as usize + region.x as usize) * 4;
+                    let dst = y as usize * row_bytes;
+                    if src + row_bytes <= self.pixels.len() {
+                        px[dst..dst + row_bytes]
+                            .copy_from_slice(&self.pixels[src..src + row_bytes]);
+                    }
+                }
+                (key, px, region.width, region.height)
+            })
+            .collect();
+
+        // Full reset of the packing state
+        self.shelves.clear();
+        self.entries.clear();
+        self.pixels.fill(0);
+
+        // Re-insert surviving entries
+        for (key, px, w, h) in surviving {
+            if let Some(region) = self.allocate(w, h) {
+                self.write_pixels(&region, &px);
+                self.entries.insert(key, region);
+            } else {
+                // Atlas shrunk below surviving set — try growing
+                if self.grow(device) {
+                    if let Some(region) = self.allocate(w, h) {
+                        self.write_pixels(&region, &px);
+                        self.entries.insert(key, region);
+                    }
+                }
+            }
+        }
+
+        self.dirty = true;
+        true
     }
 
     /// Calculate atlas utilization (0.0 to 1.0)

@@ -21,7 +21,7 @@ use tracing::{info, warn};
 fn managed_event_sequence() -> [Event; 2] {
     [
         Event::Lifecycle(blinc_platform::LifecycleEvent::Resumed),
-        Event::Frame,
+        Event::Frame(blinc_platform::WindowId(0)),
     ]
 }
 
@@ -33,6 +33,13 @@ fn managed_event_sequence() -> [Event; 2] {
 pub struct IOSWakeProxy {
     /// Flag indicating a wake was requested
     wake_requested: Arc<AtomicBool>,
+}
+
+#[cfg(target_os = "ios")]
+impl Default for IOSWakeProxy {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -83,6 +90,13 @@ impl IOSWakeProxy {
 pub struct IOSEventLoop {
     /// Wake proxy for animation thread
     wake_proxy: IOSWakeProxy,
+}
+
+#[cfg(target_os = "ios")]
+impl Default for IOSEventLoop {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -171,6 +185,6 @@ mod tests {
             events[0],
             Event::Lifecycle(LifecycleEvent::Resumed)
         ));
-        assert!(matches!(events[1], Event::Frame));
+        assert!(matches!(events[1], Event::Frame(_)));
     }
 }

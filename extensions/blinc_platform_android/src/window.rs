@@ -69,6 +69,10 @@ impl AndroidWindow {
 
 #[cfg(target_os = "android")]
 impl Window for AndroidWindow {
+    fn id(&self) -> blinc_platform::WindowId {
+        blinc_platform::WindowId::PRIMARY
+    }
+
     fn size(&self) -> (u32, u32) {
         (
             self.native_window.width() as u32,
@@ -132,6 +136,10 @@ impl AndroidWindow {
 
 #[cfg(not(target_os = "android"))]
 impl Window for AndroidWindow {
+    fn id(&self) -> blinc_platform::WindowId {
+        blinc_platform::WindowId::PRIMARY
+    }
+
     fn size(&self) -> (u32, u32) {
         (0, 0)
     }

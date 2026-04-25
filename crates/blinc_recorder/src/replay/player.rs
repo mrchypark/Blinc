@@ -434,7 +434,6 @@ mod tests {
     use crate::{Modifiers, MouseButton, MouseEvent, Point, RecordedEvent, RecordingConfig};
 
     fn create_test_export() -> RecordingExport {
-        // Add some test events at different timestamps.
         let events = vec![
             TimestampedEvent::new(
                 Timestamp::from_micros(0),

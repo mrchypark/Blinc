@@ -232,6 +232,10 @@ pub struct ImageData {
     pub placeholder_type: u8,
     /// Placeholder color [r, g, b, a]
     pub placeholder_color: [f32; 4],
+    /// Placeholder image source (only used when placeholder_type == 2)
+    pub placeholder_image: Option<String>,
+    /// Fade-in duration in milliseconds (0 = no fade)
+    pub fade_duration_ms: u32,
 }
 
 /// Node data for rendering
@@ -391,6 +395,14 @@ pub struct RenderTree {
     /// Active scroll refs (persists across rebuilds, keyed by inner pointer address)
     /// Maps inner pointer -> ScrollRef for persistence across rebuilds
     active_scroll_refs: Vec<ScrollRef>,
+    /// Node most recently targeted by a scroll event, plus the wall-clock
+    /// millis at which it received that event. When the next scroll arrives
+    /// within a short window, we keep routing to this node even if its
+    /// physics report it "can't consume" — this is the desktop-browser
+    /// behaviour that prevents inner-scrolls from suddenly handing off to
+    /// the parent mid-gesture as soon as the inner reaches an edge, which
+    /// looks like the scroll "jumps" across the container boundary.
+    last_scroll_target: Option<(LayoutNodeId, f64)>,
     /// On-ready callbacks for elements (fires once after first layout)
     /// Maps string_id to callback entry for stable tracking across rebuilds.
     on_ready_callbacks: HashMap<String, OnReadyEntry>,
@@ -519,6 +531,7 @@ impl RenderTree {
             element_registry: Arc::new(ElementRegistry::new()),
             scroll_refs: HashMap::new(),
             active_scroll_refs: Vec::new(),
+            last_scroll_target: None,
             on_ready_callbacks: HashMap::new(),
             stylesheet: None,
             base_styles: HashMap::new(),
@@ -1372,6 +1385,8 @@ impl RenderTree {
                         loading_strategy: info.loading_strategy,
                         placeholder_type: info.placeholder_type,
                         placeholder_color: info.placeholder_color,
+                        placeholder_image: info.placeholder_image,
+                        fade_duration_ms: info.fade_duration_ms,
                     })
                 } else {
                     ElementType::Div
@@ -1670,6 +1685,8 @@ impl RenderTree {
                         loading_strategy: info.loading_strategy,
                         placeholder_type: info.placeholder_type,
                         placeholder_color: info.placeholder_color,
+                        placeholder_image: info.placeholder_image,
+                        fade_duration_ms: info.fade_duration_ms,
                     })
                 } else {
                     ElementType::Div
@@ -1839,6 +1856,8 @@ impl RenderTree {
                         loading_strategy: info.loading_strategy,
                         placeholder_type: info.placeholder_type,
                         placeholder_color: info.placeholder_color,
+                        placeholder_image: info.placeholder_image,
+                        fade_duration_ms: info.fade_duration_ms,
                     })
                 } else {
                     ElementType::Div
@@ -1957,6 +1976,8 @@ impl RenderTree {
                         loading_strategy: info.loading_strategy,
                         placeholder_type: info.placeholder_type,
                         placeholder_color: info.placeholder_color,
+                        placeholder_image: info.placeholder_image,
+                        fade_duration_ms: info.fade_duration_ms,
                     })
                 } else {
                     ElementType::Div
@@ -2926,10 +2947,20 @@ impl RenderTree {
             self.element_registry.mark_on_ready_triggered(string_id);
         }
 
-        // Invoke callbacks with bounds after a delay
-        // The delay allows window resize/fullscreen animations to complete
-        // so that triggered animations are visible to the user
+        // Invoke callbacks with bounds after a short delay so any
+        // window-resize / fullscreen animation has settled and the
+        // bounds are stable when the user's animation kicks off.
+        //
+        // wasm32 has no `std::thread::spawn` (the stdlib path
+        // panics with `operation not supported on this platform`),
+        // so on the web target we just fire the callbacks
+        // synchronously inline. The 200ms delay was a stability
+        // workaround for desktop window-manager redraw races that
+        // doesn't apply in the browser — there's no separate
+        // window-resize animation; the rAF tick that mutated the
+        // tree IS the resize completion.
         if !to_trigger.is_empty() {
+            #[cfg(not(target_arch = "wasm32"))]
             std::thread::spawn(move || {
                 // Magic delay to let the window settle
                 std::thread::sleep(std::time::Duration::from_millis(200));
@@ -2939,6 +2970,12 @@ impl RenderTree {
                     callback(bounds);
                 }
             });
+
+            #[cfg(target_arch = "wasm32")]
+            for (string_id, callback, bounds) in to_trigger {
+                tracing::trace!("on_ready callback invoked for '{}'", string_id);
+                callback(bounds);
+            }
         }
     }
 
@@ -3535,120 +3572,126 @@ impl RenderTree {
         mut delta_x: f32,
         mut delta_y: f32,
     ) -> ScrollDispatchOutcome {
-        // Build the chain from leaf to root (hit_node first, then ancestors in reverse)
-        // ancestors is root to leaf, so we iterate in reverse and include hit_node
+        // Routing rule: the scroll goes to whichever scrollable the
+        // cursor is *over*. No chaining to ancestors when the inner
+        // container reaches its edge — that behaviour (CSS-style scroll
+        // chaining) reads as the parent "stealing" the gesture
+        // mid-scroll, especially with high-rate wheel events where the
+        // handoff happens in a single tick. If the user wants to scroll
+        // the parent, they move the cursor off the inner container.
+        //
+        // Find the first node in the hit chain (leaf → root) that has a
+        // scroll handler or physics. That's the sole target.
         let mut chain: Vec<LayoutNodeId> = vec![hit_node];
         for &ancestor in ancestors.iter().rev() {
             if ancestor != hit_node {
                 chain.push(ancestor);
             }
         }
+        let now_ms = crate::widgets::text_input::elapsed_ms() as f64;
 
-        let mut outcome = ScrollDispatchOutcome::default();
-
-        // Dispatch to each node in the chain
-        for node_id in chain {
-            // Skip if no remaining delta
-            if delta_x.abs() < 0.001 && delta_y.abs() < 0.001 {
-                break;
-            }
-
-            // Check if this node has a scroll handler or registered scroll physics
+        let mut target: Option<LayoutNodeId> = None;
+        for &node_id in &chain {
             let has_handler = self
                 .handler_registry
                 .has_handler(node_id, blinc_core::events::event_types::SCROLL);
             let has_registered_physics = self.scroll_physics.contains_key(&node_id);
-
-            if !has_handler && !has_registered_physics {
-                continue;
-            }
-
-            // Get direction and check what this scroll can consume
-            let direction = self.get_scroll_direction(node_id);
-            let (can_consume_x, can_consume_y) = self.can_consume_scroll(node_id, delta_x, delta_y);
-
-            // Determine if this scroll handles each axis (based on direction)
-            // If no direction (custom scroll handler like TextArea), dispatch full delta
-            let has_scroll_physics = direction.is_some();
-            let handles_x = direction.map_or(true, |d| {
-                matches!(
-                    d,
-                    crate::scroll::ScrollDirection::Horizontal
-                        | crate::scroll::ScrollDirection::Both
-                )
-            });
-            let handles_y = direction.map_or(true, |d| {
-                matches!(
-                    d,
-                    crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both
-                )
-            });
-
-            // Dispatch the remaining delta for axes this scroll handles
-            let dispatch_x = if handles_x { delta_x } else { 0.0 };
-            let dispatch_y = if handles_y { delta_y } else { 0.0 };
-
-            tracing::trace!(
-                "scroll_disp node={:?} dir={:?} handles=({},{}) can_consume=({},{}) dispatch=({:.1},{:.1})",
-                node_id, direction, handles_x, handles_y, can_consume_x, can_consume_y, dispatch_x, dispatch_y
-            );
-
-            // Dispatch if there's delta for this scroll's direction
-            if dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001 {
-                if has_handler {
-                    let ctx = crate::event_handler::EventContext::new(
-                        blinc_core::events::event_types::SCROLL,
-                        node_id,
-                    )
-                    .with_mouse_pos(mouse_x, mouse_y)
-                    .with_scroll_delta(dispatch_x, dispatch_y);
-
-                    tracing::trace!(
-                        "    dispatching to {:?}: delta=({:.1}, {:.1})",
-                        node_id,
-                        dispatch_x,
-                        dispatch_y
-                    );
-                    outcome.dispatched = true;
-                    self.handler_registry.dispatch(&ctx);
-                }
-
-                if has_scroll_physics {
-                    // Keep existing handler dispatch semantics when a node owns a custom
-                    // scroll handler. Fall back to registered physics only for nodes that
-                    // expose physics without a handler, avoiding stale captured Arcs.
-                    if !has_handler {
-                        if let Some(physics) = self.scroll_physics.get(&node_id) {
-                            let mut p = physics.lock().unwrap();
-                            p.apply_scroll_delta(dispatch_x, dispatch_y);
-                            p.on_scroll_activity();
-                        }
-                    }
-
-                    if can_consume_x && handles_x {
-                        delta_x = 0.0;
-                        outcome.physics_consumed_x = true;
-                    }
-                    if can_consume_y && handles_y {
-                        delta_y = 0.0;
-                        outcome.physics_consumed_y = true;
-                    }
-                } else if has_handler {
-                    if handles_x {
-                        delta_x = 0.0;
-                        outcome.custom_consumed_x = true;
-                    }
-                    if handles_y {
-                        delta_y = 0.0;
-                        outcome.custom_consumed_y = true;
-                    }
-                }
+            if has_handler || has_registered_physics {
+                target = Some(node_id);
+                break;
             }
         }
 
-        outcome.remaining_x = delta_x;
-        outcome.remaining_y = delta_y;
-        outcome
+        let Some(node_id) = target else {
+            return ScrollDispatchOutcome {
+                remaining_x: delta_x,
+                remaining_y: delta_y,
+                ..Default::default()
+            };
+        };
+
+        let direction = self.get_scroll_direction(node_id);
+        let has_scroll_physics = direction.is_some();
+        let handles_x = direction.map_or(true, |d| {
+            matches!(
+                d,
+                crate::scroll::ScrollDirection::Horizontal | crate::scroll::ScrollDirection::Both
+            )
+        });
+        let handles_y = direction.map_or(true, |d| {
+            matches!(
+                d,
+                crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both
+            )
+        });
+
+        let dispatch_x = if handles_x { delta_x } else { 0.0 };
+        let dispatch_y = if handles_y { delta_y } else { 0.0 };
+
+        tracing::trace!(
+            "scroll_disp node={:?} dir={:?} handles=({},{}) dispatch=({:.1},{:.1})",
+            node_id,
+            direction,
+            handles_x,
+            handles_y,
+            dispatch_x,
+            dispatch_y
+        );
+
+        let dispatched = dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001;
+        if dispatched {
+            let has_handler = self
+                .handler_registry
+                .has_handler(node_id, blinc_core::events::event_types::SCROLL);
+
+            if has_handler {
+                let ctx = crate::event_handler::EventContext::new(
+                    blinc_core::events::event_types::SCROLL,
+                    node_id,
+                )
+                .with_mouse_pos(mouse_x, mouse_y)
+                .with_scroll_delta(dispatch_x, dispatch_y);
+                self.handler_registry.dispatch(&ctx);
+            }
+
+            if has_scroll_physics {
+                // Nodes with a scroll handler own their scroll state update through
+                // that handler. Direct physics is only for physics-only targets.
+                if !has_handler {
+                    if let Some(physics) = self.scroll_physics.get(&node_id) {
+                        let mut p = physics.lock().unwrap();
+                        p.apply_touch_scroll_delta(dispatch_x, dispatch_y, now_ms);
+                        p.on_scroll_activity();
+                    }
+                }
+                self.last_scroll_target = Some((node_id, now_ms));
+            } else {
+                self.last_scroll_target = Some((node_id, now_ms));
+            }
+        }
+
+        // If the target didn't handle an axis (direction mismatch), let
+        // that axis return as unconsumed so a caller that cares about
+        // "nothing handled this wheel event" (e.g. a horizontal-only
+        // inner over a vertical parent — classic case) can still do
+        // something with it. We *don't* apply to anyone else in the
+        // chain; cross-axis passthrough is the only allowed handoff.
+        if handles_x {
+            delta_x = 0.0;
+        }
+        if handles_y {
+            delta_y = 0.0;
+        }
+
+        ScrollDispatchOutcome {
+            remaining_x: delta_x,
+            remaining_y: delta_y,
+            physics_consumed_x: has_scroll_physics && handles_x,
+            physics_consumed_y: has_scroll_physics && handles_y,
+            custom_consumed_x: !has_scroll_physics && handles_x,
+            custom_consumed_y: !has_scroll_physics && handles_y,
+            dispatched,
+        }
     }
 
     /// Dispatch scroll with time for touch velocity tracking (mobile)
@@ -3673,82 +3716,81 @@ impl RenderTree {
             }
         }
 
-        let mut remaining_dx = delta_x;
-        let mut remaining_dy = delta_y;
-
-        for node_id in chain {
-            if remaining_dx.abs() < 0.001 && remaining_dy.abs() < 0.001 {
-                break;
-            }
-
+        // See `dispatch_scroll_chain` for the routing rationale: the
+        // cursor's current scrollable gets the delta, with no chaining.
+        let mut target: Option<LayoutNodeId> = None;
+        for &node_id in &chain {
             let has_handler = self
                 .handler_registry
                 .has_handler(node_id, blinc_core::events::event_types::SCROLL);
             let has_registered_physics = self.scroll_physics.contains_key(&node_id);
+            if has_handler || has_registered_physics {
+                target = Some(node_id);
+                break;
+            }
+        }
 
-            if !has_handler && !has_registered_physics {
-                continue;
+        let Some(node_id) = target else {
+            return (delta_x, delta_y);
+        };
+
+        let direction = self.get_scroll_direction(node_id);
+        let has_scroll_physics = direction.is_some();
+        let handles_x = direction.map_or(true, |d| {
+            matches!(
+                d,
+                crate::scroll::ScrollDirection::Horizontal | crate::scroll::ScrollDirection::Both
+            )
+        });
+        let handles_y = direction.map_or(true, |d| {
+            matches!(
+                d,
+                crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both
+            )
+        });
+
+        let dispatch_x = if handles_x { delta_x } else { 0.0 };
+        let dispatch_y = if handles_y { delta_y } else { 0.0 };
+
+        let mut remaining_dx = delta_x;
+        let mut remaining_dy = delta_y;
+
+        if dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001 {
+            let has_handler = self
+                .handler_registry
+                .has_handler(node_id, blinc_core::events::event_types::SCROLL);
+
+            if has_handler {
+                let ctx = crate::event_handler::EventContext::new(
+                    blinc_core::events::event_types::SCROLL,
+                    node_id,
+                )
+                .with_mouse_pos(mouse_x, mouse_y)
+                .with_scroll_delta(dispatch_x, dispatch_y)
+                .with_scroll_time(scroll_time);
+                self.handler_registry.dispatch(&ctx);
             }
 
-            let direction = self.get_scroll_direction(node_id);
-            let (can_consume_x, can_consume_y) =
-                self.can_consume_scroll(node_id, remaining_dx, remaining_dy);
-
-            let has_scroll_physics = direction.is_some();
-            let handles_x = direction.map_or(true, |d| {
-                matches!(
-                    d,
-                    crate::scroll::ScrollDirection::Horizontal
-                        | crate::scroll::ScrollDirection::Both
-                )
-            });
-            let handles_y = direction.map_or(true, |d| {
-                matches!(
-                    d,
-                    crate::scroll::ScrollDirection::Vertical | crate::scroll::ScrollDirection::Both
-                )
-            });
-
-            let dispatch_x = if handles_x { remaining_dx } else { 0.0 };
-            let dispatch_y = if handles_y { remaining_dy } else { 0.0 };
-
-            if dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001 {
-                if has_handler {
-                    let ctx = crate::event_handler::EventContext::new(
-                        blinc_core::events::event_types::SCROLL,
-                        node_id,
-                    )
-                    .with_mouse_pos(mouse_x, mouse_y)
-                    .with_scroll_delta(dispatch_x, dispatch_y)
-                    .with_scroll_time(scroll_time);
-
-                    self.handler_registry.dispatch(&ctx);
-                }
-
-                if has_scroll_physics {
-                    if !has_handler {
-                        if let Some(physics) = self.scroll_physics.get(&node_id) {
-                            let mut p = physics.lock().unwrap();
-                            p.apply_touch_scroll_delta(dispatch_x, dispatch_y, scroll_time);
-                            p.on_scroll_activity();
-                        }
-                    }
-
-                    if can_consume_x && handles_x {
-                        remaining_dx = 0.0;
-                    }
-                    if can_consume_y && handles_y {
-                        remaining_dy = 0.0;
-                    }
-                } else if has_handler {
-                    if handles_x {
-                        remaining_dx = 0.0;
-                    }
-                    if handles_y {
-                        remaining_dy = 0.0;
+            if has_scroll_physics {
+                if !has_handler {
+                    if let Some(physics) = self.scroll_physics.get(&node_id) {
+                        let mut p = physics.lock().unwrap();
+                        p.apply_touch_scroll_delta(dispatch_x, dispatch_y, scroll_time);
+                        p.on_scroll_activity();
                     }
                 }
+                self.last_scroll_target = Some((node_id, scroll_time));
+            } else {
+                self.last_scroll_target = Some((node_id, scroll_time));
             }
+        }
+
+        // Mark handled axes consumed; cross-axis falls through unchanged.
+        if handles_x {
+            remaining_dx = 0.0;
+        }
+        if handles_y {
+            remaining_dy = 0.0;
         }
 
         (remaining_dx, remaining_dy)
@@ -3808,7 +3850,8 @@ impl RenderTree {
                 0.0,
                 scale,
             );
-            return;
+
+            break;
         }
     }
 
@@ -3948,6 +3991,164 @@ impl RenderTree {
     /// Set the scroll offset for a node
     pub fn set_scroll_offset(&mut self, node_id: LayoutNodeId, offset_x: f32, offset_y: f32) {
         self.scroll_offsets.insert(node_id, (offset_x, offset_y));
+    }
+
+    /// Scroll the currently-focused text input (or text area) into view above
+    /// the soft keyboard.
+    ///
+    /// Called by mobile platform runners (`blinc_app::android`,
+    /// `blinc_app::ios`) whenever the soft-keyboard inset changes — usually
+    /// in response to `UIKeyboardWillChangeFrameNotification` (iOS) or a
+    /// `WindowInsets.Type.ime()` callback (Android).
+    ///
+    /// Behavior:
+    ///
+    /// 1. Look up the currently focused text input via the global focus
+    ///    tracker in `widgets::text_input` (or `widgets::text_area`). If
+    ///    nothing is focused, return without doing anything.
+    /// 2. Walk the focused node's ancestors looking for the nearest enclosing
+    ///    scroll container. If none is found, return — there's no scroll
+    ///    surface to adjust.
+    /// 3. Compute how much the input is currently obscured by the keyboard:
+    ///    `obstruction = max(0, input.bottom + margin - (viewport.height - keyboard_inset))`
+    ///    where `viewport.height` is the full window logical height. The
+    ///    margin (default 16 px) keeps a comfortable gap between the input
+    ///    and the keyboard top edge.
+    /// 4. If `obstruction > 0`, scroll the container up by that amount,
+    ///    clamping to the container's content size so we don't over-scroll.
+    ///    Scroll offsets in Blinc are negative for "content moved up" so
+    ///    we subtract from the current y offset.
+    /// 5. If the keyboard hides (`keyboard_inset == 0`), do not auto-scroll
+    ///    back — the user can keep their current position. The original
+    ///    position would require remembering pre-keyboard scroll state per
+    ///    container, which is fragile across rebuilds.
+    ///
+    /// `viewport_height` is the **logical** window height in the same units
+    /// the layout tree uses (UIKit points on iOS, density-independent
+    /// pixels on Android). `keyboard_inset` is the keyboard's height in
+    /// the same units. Both come from `WindowedContext`.
+    ///
+    /// Returns `true` if any scroll offset was updated (so the caller knows
+    /// to request a redraw); `false` otherwise.
+    pub fn scroll_focused_text_input_above_keyboard(
+        &mut self,
+        viewport_height: f32,
+        keyboard_inset: f32,
+    ) -> bool {
+        if keyboard_inset <= 0.0 {
+            // Nothing to scroll above — the keyboard is hidden.
+            return false;
+        }
+
+        // Find the focused text-editable node.
+        //
+        // The generic `focused_editable_node_id` is the modern lookup —
+        // every text-editable widget (`text_input`, `text_area`,
+        // `code_editor`, `rich_text_editor`) writes its layout node id
+        // there on focus, so a single lookup covers all of them. The
+        // typed `focused_text_input_node_id` / `focused_text_area_node_id`
+        // calls are kept as fallbacks in case any widget grows a focus
+        // path that bypasses the generic atomic (or for older code that
+        // sets the typed trackers but not the generic one).
+        let focused_node = crate::widgets::text_input::focused_editable_node_id()
+            .or_else(crate::widgets::text_input::focused_text_input_node_id)
+            .or_else(crate::widgets::text_input::focused_text_area_node_id);
+
+        let Some(focused_node) = focused_node else {
+            return false;
+        };
+
+        // Walk ancestors to find the nearest scroll container.
+        let scroll_container = self
+            .layout_tree
+            .ancestors(focused_node)
+            .into_iter()
+            .find(|&ancestor| self.is_scroll_container(ancestor));
+
+        let Some(scroll_container) = scroll_container else {
+            // The focused input isn't inside any scroll container — there's
+            // no surface to scroll. Caller falls back to other strategies
+            // (e.g. shrinking the safe area or letting the keyboard cover
+            // the input).
+            return false;
+        };
+
+        // Get absolute bounds for the focused input. `get_absolute_bounds`
+        // already accounts for ancestor scroll offsets, so the returned
+        // y is the input's actual on-screen position right now.
+        let Some(input_bounds) = self.get_absolute_bounds(focused_node) else {
+            return false;
+        };
+
+        // Visible bottom edge of the screen — anything below this is
+        // covered by the soft keyboard.
+        const MARGIN: f32 = 16.0;
+        let visible_bottom = viewport_height - keyboard_inset;
+        let input_bottom = input_bounds.y + input_bounds.height;
+        let obstruction = (input_bottom + MARGIN) - visible_bottom;
+
+        if obstruction <= 0.0 {
+            // Already fully visible above the keyboard.
+            return false;
+        }
+
+        // Apply the scroll. Blinc scroll offsets are negative for
+        // "content moved up", so we subtract `obstruction` from the
+        // current Y offset.
+        let (current_x, current_y) = self.get_scroll_offset(scroll_container);
+        let target_y = current_y - obstruction;
+
+        // Clamp to the container's max scroll. The viewport / content
+        // sizes come from the layout tree directly so the calculation
+        // matches `dispatch_scroll_chain_with_time`'s clamping logic.
+        let scroll_bounds = self.layout_tree.get_bounds(scroll_container, (0.0, 0.0));
+        let scroll_viewport_h = scroll_bounds.map(|b| b.height).unwrap_or(viewport_height);
+        let (_content_w, content_h) = self
+            .layout_tree
+            .get_content_size(scroll_container)
+            .unwrap_or((0.0, scroll_viewport_h));
+        let max_offset_y = if content_h > scroll_viewport_h {
+            -(content_h - scroll_viewport_h)
+        } else {
+            0.0
+        };
+        let clamped_y = target_y.clamp(max_offset_y, 0.0);
+
+        if (clamped_y - current_y).abs() < 0.5 {
+            // Effectively unchanged.
+            return false;
+        }
+
+        tracing::debug!(
+            "scroll_focused_text_input_above_keyboard: container={:?} \
+             input_bottom={:.1} visible_bottom={:.1} obstruction={:.1} \
+             current_y={:.1} -> {:.1}",
+            scroll_container,
+            input_bottom,
+            visible_bottom,
+            obstruction,
+            current_y,
+            clamped_y,
+        );
+
+        // Write through both the legacy `scroll_offsets` map AND the
+        // physics state if it exists, so the next frame samples the
+        // updated value via `get_scroll_offset` regardless of which
+        // path is active.
+        self.scroll_offsets
+            .insert(scroll_container, (current_x, clamped_y));
+        if let Some(physics) = self.scroll_physics.get(&scroll_container) {
+            if let Ok(mut p) = physics.try_lock() {
+                p.offset_x = current_x;
+                p.offset_y = clamped_y;
+                // Snap velocity to zero so the scroll doesn't keep
+                // drifting after we set the offset programmatically.
+                p.velocity_x = 0.0;
+                p.velocity_y = 0.0;
+            }
+        }
+
+        true
     }
 
     /// Get the scroll offset for a node
@@ -4245,98 +4446,106 @@ impl RenderTree {
         }
     }
 
-    /// Transfer scroll offsets and physics using stable bindings where possible.
+    /// Cancel any running scroll animation (momentum deceleration,
+    /// bounce spring, rebound) on the first scrollable in the hit
+    /// chain. Intended for the pointer-down / touch-down path so a tap
+    /// on a coasting list halts it immediately, matching the native
+    /// "grab-to-stop" affordance on every major toolkit.
     ///
-    /// Unlike the raw node-id transfer helpers above, this method matches scroll
-    /// containers by their string ID first and then falls back to bound
-    /// `ScrollRef` identity. That makes it safe to use after rebuilding a fresh
-    /// tree whose internal node IDs may have changed.
-    pub fn transfer_scroll_state_from(&mut self, other: &RenderTree) {
-        let mut node_ids = self.scroll_physics.keys().copied().collect::<Vec<_>>();
-        node_ids.extend(
-            self.scroll_refs
-                .keys()
-                .copied()
-                .filter(|node_id| !self.scroll_physics.contains_key(node_id)),
-        );
-        for node_id in node_ids {
-            let old_node_id = self
-                .element_registry
-                .get_id(node_id)
-                .as_deref()
-                .and_then(|element_id| other.element_registry.get(element_id))
-                .or_else(|| {
-                    let scroll_ref = self.scroll_refs.get(&node_id)?;
-                    let inner = scroll_ref.inner();
-                    let inner_ptr = Arc::as_ptr(&inner);
-                    other
-                        .scroll_refs
-                        .iter()
-                        .find_map(|(other_node_id, other_scroll_ref)| {
-                            let other_inner = other_scroll_ref.inner();
-                            (Arc::as_ptr(&other_inner) == inner_ptr).then_some(*other_node_id)
-                        })
-                });
-
-            let Some(old_node_id) = old_node_id else {
-                continue;
-            };
-
-            if let Some(offset) = other.scroll_offsets.get(&old_node_id).copied() {
-                self.scroll_offsets.insert(node_id, offset);
-            }
-            if let Some(physics) = other.scroll_physics.get(&old_node_id) {
-                self.scroll_physics.insert(node_id, physics.clone());
+    /// Walks leaf → root and cancels the first scroll container found
+    /// that is actively animating. No-op if nothing under the cursor
+    /// is animating.
+    pub fn cancel_scroll_animation_in_chain(
+        &mut self,
+        hit_node: LayoutNodeId,
+        ancestors: &[LayoutNodeId],
+    ) {
+        let mut chain: Vec<LayoutNodeId> = vec![hit_node];
+        for &ancestor in ancestors.iter().rev() {
+            if ancestor != hit_node {
+                chain.push(ancestor);
             }
         }
-
-        self.restore_bound_scroll_ref_offsets();
-    }
-
-    /// Restore bound ScrollRef offsets onto the current scroll physics state.
-    ///
-    /// This is useful after constructing a replacement tree so bound scroll refs
-    /// keep their observed offsets even when the scroll container node instances
-    /// were recreated.
-    pub fn restore_bound_scroll_ref_offsets(&mut self) {
-        let node_ids = self.scroll_refs.keys().copied().collect::<Vec<_>>();
-        for node_id in node_ids {
-            let Some(scroll_ref) = self.scroll_refs.get(&node_id).cloned() else {
-                continue;
-            };
-            let Some(physics) = self.scroll_physics.get(&node_id) else {
-                continue;
-            };
-
-            let (offset_x, offset_y) = scroll_ref.offset();
-            let mut physics = physics.lock().unwrap();
-            physics.offset_x = -offset_x;
-            physics.offset_y = -offset_y;
-            scroll_ref.update_state(
-                (physics.offset_x.abs(), physics.offset_y.abs()),
-                (physics.content_width, physics.content_height),
-                (physics.viewport_width, physics.viewport_height),
-            );
+        for node_id in chain {
+            if let Some(physics) = self.scroll_physics.get(&node_id) {
+                let mut p = physics.lock().unwrap();
+                if p.is_animating() {
+                    p.cancel_active_animation();
+                    // Clear capture so the halted container doesn't
+                    // keep absorbing subsequent scrolls as the "active"
+                    // target after the tap cancelled its animation.
+                    self.last_scroll_target = None;
+                    return;
+                }
+            }
         }
     }
 
-    /// Notify all scroll physics that scrolling has ended
+    /// Notify the most recently scrolled container that scrolling has
+    /// ended.
     ///
-    /// Call this when a SCROLL_END event is received to start bounce-back animations.
-    pub fn on_scroll_end(&self) {
-        for physics in self.scroll_physics.values() {
+    /// Fires only on the last scroll target (stored by `dispatch_scroll_chain`
+    /// on each wheel/touch event) rather than every registered scroll
+    /// physics in the tree. Broadcasting to all physics was the old
+    /// behaviour and meant every scroll container in the app got its
+    /// rebound spring kicked the instant the user released the mouse,
+    /// which made untouched siblings / ancestors visibly spring from
+    /// their offset — the "it springs on as soon as I release" bug.
+    /// Clears the stored target after firing so subsequent gestures
+    /// start fresh.
+    pub fn on_scroll_end(&mut self) {
+        let Some((node_id, _)) = self.last_scroll_target.take() else {
+            return;
+        };
+        if let Some(physics) = self.scroll_physics.get(&node_id) {
             physics.lock().unwrap().on_scroll_end();
         }
     }
 
-    /// Notify all scroll physics that the scroll gesture has ended (finger lifted)
+    /// Notify the most recently scrolled container that the scroll
+    /// gesture has ended (finger lifted).
     ///
-    /// Call this when `ScrollPhase::Ended` is detected to start bounce-back
-    /// animations immediately, without waiting for momentum scroll to finish.
-    pub fn on_gesture_end(&self) {
-        for physics in self.scroll_physics.values() {
+    /// Same target-scoped behaviour as [`Self::on_scroll_end`] — this
+    /// used to iterate over every physics in the tree, which fired
+    /// rebound springs on scrolls the user never touched.
+    pub fn on_gesture_end(&mut self) {
+        let Some((node_id, _)) = self.last_scroll_target.take() else {
+            return;
+        };
+        if let Some(physics) = self.scroll_physics.get(&node_id) {
             physics.lock().unwrap().on_gesture_end();
         }
+    }
+
+    /// Returns `true` if any registered scroll physics is currently in
+    /// the `Bouncing` state — i.e. an edge bounce-back spring is
+    /// actively animating.
+    ///
+    /// Used by the web runner to absorb the macOS trackpad's ~800ms
+    /// of OS-level momentum-scroll wheel events that arrive *after*
+    /// a bounce has started: instead of letting them re-trigger
+    /// `start_bounce` (which restarts the spring with a new initial
+    /// position and produces a wobble), the runner drops the wheel
+    /// event entirely while this returns true.
+    pub fn has_bouncing_scroll(&self) -> bool {
+        self.scroll_physics
+            .values()
+            .any(|p| p.lock().unwrap().state == crate::stateful::ScrollState::Bouncing)
+    }
+
+    /// Returns `true` if any registered scroll physics is currently
+    /// past its scroll bounds (rubber-band overscroll).
+    ///
+    /// Used by the web runner to shorten the wheel-end debounce when
+    /// the user is staring at a stuck rubber-band stretch — there is
+    /// nothing more to scroll past the edge, so the bounce-back can
+    /// fire after only a couple of frames of wheel-event silence
+    /// instead of the full debounce window the runner uses to absorb
+    /// gaps between adjacent in-bounds wheel events.
+    pub fn has_overscrolling_scroll(&self) -> bool {
+        self.scroll_physics
+            .values()
+            .any(|p| p.lock().unwrap().is_overscrolling())
     }
 
     /// Tick all scroll physics and return true if any are animating
@@ -4365,6 +4574,12 @@ impl RenderTree {
             };
 
             let mut physics = physics_arc.lock().unwrap();
+
+            // Detect "scroll ended" for inputs without an explicit end phase
+            // (mouse wheel, Windows/Linux trackpad drivers). If the user has
+            // been idle past the threshold while overscrolled, synthesise an
+            // `on_scroll_end` so the spring rebounds.
+            physics.check_idle_bounce(current_time_ms as f64);
 
             // Tick the physics
             if physics.tick(dt_secs) {
@@ -5039,6 +5254,21 @@ impl RenderTree {
         }
         if let Some(op) = style.object_position {
             props.object_position = Some(op);
+        }
+        if let Some(ls) = style.loading_strategy {
+            props.loading_strategy = Some(ls);
+        }
+        if let Some(pt) = style.image_placeholder_type {
+            props.placeholder_type = Some(pt);
+        }
+        if let Some(pc) = style.image_placeholder_color {
+            props.placeholder_color = Some(pc);
+        }
+        if let Some(ref pi) = style.image_placeholder_image {
+            props.placeholder_image = Some(pi.clone());
+        }
+        if let Some(fd) = style.fade_duration_ms {
+            props.fade_duration_ms = Some(fd);
         }
         // Pointer events
         if let Some(pe) = style.pointer_events {
@@ -10975,21 +11205,45 @@ impl RenderTree {
                 ctx.set_foreground_layer(false);
             }
 
-            // Handle canvas elements
-            // Push clip to ensure canvas content respects parent bounds (e.g., scroll containers)
+            // Handle canvas elements.
+            //
+            // Only push a clip if the element explicitly opts into
+            // overflow clipping (via `overflow_clip`). Unconditionally
+            // clipping to the element's bbox breaks elements like the
+            // notch, whose custom render emits primitives whose vertex
+            // bounds LEGITIMATELY extend past the layout box (concave
+            // corner expansion for the flares, blur expansion for a
+            // drop shadow, etc.). Parent clips (e.g. scroll containers)
+            // still apply via the clip stack, so honouring the
+            // element's own overflow setting is enough.
             if let ElementType::Canvas(canvas_data) = &render_node.element_type {
                 if let Some(render_fn) = &canvas_data.render_fn {
-                    // Push clip for canvas bounds - this ensures content doesn't render outside
-                    let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
-                    ctx.push_clip(ClipShape::rect(clip_rect));
+                    let should_clip = render_node.props.clips_content;
+                    if should_clip {
+                        let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
+                        ctx.push_clip(ClipShape::rect(clip_rect));
+                    }
 
+                    // `bounds.x` / `bounds.y` are already translated
+                    // onto the DrawContext by the `push_transform` at
+                    // the top of `render_node`, so in canvas-local
+                    // space the origin is (0, 0). Surfacing the
+                    // pre-translate offset to the callback is a
+                    // diagnostic breadcrumb, not a correction; forward
+                    // zero for x/y so `Rect::new(bounds.x, bounds.y,
+                    // …)` in callback code resolves to the canvas's
+                    // actual origin without double-offsetting.
                     let canvas_bounds = crate::canvas::CanvasBounds {
+                        x: 0.0,
+                        y: 0.0,
                         width: bounds.width,
                         height: bounds.height,
                     };
                     render_fn(ctx, canvas_bounds);
 
-                    ctx.pop_clip();
+                    if should_clip {
+                        ctx.pop_clip();
+                    }
                 }
             }
         }
@@ -11882,7 +12136,18 @@ impl RenderTree {
                     let clip_rect = Rect::new(0.0, 0.0, bounds.width, bounds.height);
                     ctx.push_clip(ClipShape::rect(clip_rect));
 
+                    // `bounds.x` / `bounds.y` are already translated
+                    // onto the DrawContext by the `push_transform` at
+                    // the top of `render_node`, so in canvas-local
+                    // space the origin is (0, 0). Surfacing the
+                    // pre-translate offset to the callback is a
+                    // diagnostic breadcrumb, not a correction; forward
+                    // zero for x/y so `Rect::new(bounds.x, bounds.y,
+                    // …)` in callback code resolves to the canvas's
+                    // actual origin without double-offsetting.
                     let canvas_bounds = crate::canvas::CanvasBounds {
+                        x: 0.0,
+                        y: 0.0,
                         width: bounds.width,
                         height: bounds.height,
                     };
@@ -11995,9 +12260,41 @@ impl RenderTree {
     /// Get absolute bounds for a node (traversing up the tree, accounting for scroll)
     pub fn get_absolute_bounds(&self, node: LayoutNodeId) -> Option<ElementBounds> {
         let mut bounds = self.layout_tree.get_absolute_bounds(node)?;
-        // Walk up ancestors and apply scroll offsets from scroll containers
+        // Walk up ancestors and apply scroll offsets from scroll containers.
+        //
+        // Touch scrolling on mobile (and momentum / bounce on desktop)
+        // updates the per-container `scroll_physics` state, which is the
+        // SOURCE OF TRUTH for "where this container is currently
+        // scrolled to". The legacy `scroll_offsets` HashMap is only
+        // written for code paths that don't use physics
+        // (`set_scroll_offset`, immediate scroll commands). Reading
+        // only the HashMap here would return stale offsets after a
+        // touch scroll, which silently broke
+        // `scroll_focused_text_input_above_keyboard` — the helper
+        // saw the focused input's *original* on-screen position
+        // (pre-scroll) and concluded it was already visible above the
+        // keyboard, even though the user had scrolled it under the
+        // keyboard.
+        //
+        // We mirror `get_scroll_offset`'s precedence: physics first,
+        // HashMap fallback. The `try_lock` is intentional — under
+        // contention we'd rather get a slightly-stale value than
+        // block on a paint thread; the next frame catches up.
         for ancestor in self.layout_tree.ancestors(node) {
-            let (sx, sy) = self.get_scroll_offset(ancestor);
+            let (sx, sy) = if let Some(physics) = self.scroll_physics.get(&ancestor) {
+                if let Ok(p) = physics.try_lock() {
+                    (p.offset_x, p.offset_y)
+                } else {
+                    self.scroll_offsets
+                        .get(&ancestor)
+                        .copied()
+                        .unwrap_or((0.0, 0.0))
+                }
+            } else if let Some(&offset) = self.scroll_offsets.get(&ancestor) {
+                offset
+            } else {
+                continue;
+            };
             bounds.x += sx;
             bounds.y += sy;
         }
@@ -12430,6 +12727,8 @@ impl RenderTree {
                         ctx.push_clip(ClipShape::rect(clip_rect));
 
                         let canvas_bounds = crate::canvas::CanvasBounds {
+                            x: 0.0,
+                            y: 0.0,
                             width: bounds.width,
                             height: bounds.height,
                         };

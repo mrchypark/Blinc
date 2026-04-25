@@ -1,5 +1,10 @@
 #!/bin/bash
 # Build script for Android mobile example
+#
+# Usage:
+#   bash build-android.sh                  # auto-pick first authorized device
+#   ANDROID_SERIAL=emulator-5554 bash …    # target a specific device
+#   bash build-android.sh -s <serial>      # ditto, via positional arg
 
 set -euo pipefail
 
@@ -111,6 +116,26 @@ if [ -n "${BLINC_ANDROID_KEYSTORE_PATH:-}" ]; then
     echo "Configured Android signing inputs from BLINC_ANDROID_* environment variables."
 fi
 
+# Pin NDK to r29: NDK r28+ links arm64-v8a .so files with 16 KB ELF
+# segment alignment by default, which is required for installs on
+# Android 16 / Pixel 10 Pro. r27 still uses 4 KB segments and produces
+# APKs that fail with "Uncompressed library not aligned" on those
+# devices. cargo-ndk auto-discovers the *highest* NDK under
+# `$ANDROID_HOME/ndk/`, but pinning explicitly avoids accidents when
+# new NDKs land.
+if [ -z "$ANDROID_NDK_HOME" ]; then
+    if [ -d "$ANDROID_HOME/ndk/29.0.14206865" ]; then
+        export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
+    fi
+fi
+export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+export NDK_HOME="$ANDROID_NDK_HOME"
+
+# Allow `-s <serial>` override on the command line
+if [ "${1:-}" = "-s" ] && [ -n "${2:-}" ]; then
+    export ANDROID_SERIAL="$2"
+fi
+
 # Step 1: Build Rust library for Android
 echo "Building Rust library for Android ABIs: ${DEFAULT_ABIS} (${MODE})..."
 ABI_ARGS=()
@@ -140,21 +165,28 @@ echo "  $ARTIFACT_DIR/$ARTIFACT_NAME"
 
 # Step 3: Install APK (debug only)
 if [ "$INSTALL_ON_DEVICE" -eq 1 ]; then
-    DEVICE_SERIAL="$($ADB devices | awk 'NR>1 && $2=="device" {print $1; exit}')"
+    # Resolve target device:
+    #   1. ANDROID_SERIAL env var if set
+    #   2. Otherwise the first authorized `device` entry from `adb devices`
+    DEVICE_SERIAL="${ANDROID_SERIAL:-}"
+    if [ -z "$DEVICE_SERIAL" ]; then
+        DEVICE_SERIAL="$($ADB devices | awk 'NR>1 && $2=="device" {print $1; exit}')"
+    fi
+
     if [ -n "$DEVICE_SERIAL" ]; then
-        echo "Installing APK..."
+        echo "Installing APK to $DEVICE_SERIAL..."
         "$ADB" -s "$DEVICE_SERIAL" install -r "$OUTPUT_PATH"
         grant_runtime_permissions "$DEVICE_SERIAL"
 
-        echo "Starting app..."
+        echo "Starting app on $DEVICE_SERIAL..."
         "$ADB" -s "$DEVICE_SERIAL" shell am start -n "${PACKAGE_NAME}/${ACTIVITY_NAME}"
 
         echo "Showing logs (Ctrl+C to exit)..."
         "$ADB" -s "$DEVICE_SERIAL" logcat -c
-        "$ADB" -s "$DEVICE_SERIAL" logcat | grep --line-buffered -E "Sensor permissions requested|Supported mobile sensors|Sensor batch #|Mobile sensors started|Mobile sensors stopped|Blinc|RustStdoutStderr"
+        "$ADB" -s "$DEVICE_SERIAL" logcat -s Blinc:D RustStdoutStderr:D AndroidRuntime:E DEBUG:F BlincNativeBridge:D
     else
-        echo "No device connected. Debug APK is at:"
-        echo "  $ARTIFACT_DIR/$(basename "$OUTPUT_PATH")"
+        echo "No authorized device connected. Debug APK is at:"
+        echo "  $ARTIFACT_DIR/$ARTIFACT_NAME"
         echo "Verify with: $ADB devices -l"
     fi
 elif [ "$MODE" = "release" ] || [ "$MODE" = "bundle-release" ]; then

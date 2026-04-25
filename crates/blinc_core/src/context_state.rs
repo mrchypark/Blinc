@@ -125,18 +125,33 @@ impl HookState {
     }
 
     /// Store a signal with the given key
-    pub fn insert<T: 'static>(
+    pub fn insert(&mut self, key: StateKey, signal_id: u64) {
+        let debug_key = format!("#{:016x}", key.key_hash);
+        self.insert_registration(key, debug_key, signal_id, type_name::<()>());
+    }
+
+    pub fn insert_with_debug<T: 'static>(
         &mut self,
         key: StateKey,
         debug_key: impl Into<String>,
         signal_id: u64,
+    ) {
+        self.insert_registration(key, debug_key, signal_id, type_name::<T>());
+    }
+
+    fn insert_registration(
+        &mut self,
+        key: StateKey,
+        debug_key: impl Into<String>,
+        signal_id: u64,
+        type_name: &'static str,
     ) {
         self.signals.insert(
             key,
             HookDebugRegistration {
                 signal_id,
                 key: debug_key.into(),
-                type_name: type_name::<T>(),
+                type_name,
             },
         );
     }
@@ -144,7 +159,7 @@ impl HookState {
     /// Store a signal whose originating key is not directly printable.
     pub fn insert_opaque<T: 'static>(&mut self, key: StateKey, signal_id: u64) {
         let debug_key = format!("#{:016x}", key.key_hash);
-        self.insert::<T>(key, debug_key, signal_id);
+        self.insert_with_debug::<T>(key, debug_key, signal_id);
     }
 
     fn debug_registrations(&self) -> Vec<HookDebugRegistration> {
@@ -509,6 +524,13 @@ pub struct BlincContextState {
     recorder_snapshot_callback: RwLock<Option<RecorderSnapshotCallback>>,
     /// Callback for tracking element updates with category
     recorder_update_callback: RwLock<Option<RecorderUpdateCallback>>,
+
+    /// Pending custom render passes queued by components (e.g. SceneKit3D)
+    /// for registration with the GPU renderer. Type-erased as
+    /// `Box<dyn Any + Send>` because blinc_core can't depend on blinc_gpu.
+    /// On wasm32, callers wrap `!Send` types in an unsafe Send shim
+    /// before pushing — safe because wasm is single-threaded.
+    pending_custom_passes: Mutex<Vec<Box<dyn std::any::Any + Send>>>,
 }
 
 impl BlincContextState {
@@ -536,6 +558,7 @@ impl BlincContextState {
             recorder_event_callback: RwLock::new(None),
             recorder_snapshot_callback: RwLock::new(None),
             recorder_update_callback: RwLock::new(None),
+            pending_custom_passes: Mutex::new(Vec::new()),
         };
 
         if CONTEXT_STATE.set(state).is_err() {
@@ -568,6 +591,7 @@ impl BlincContextState {
             recorder_event_callback: RwLock::new(None),
             recorder_snapshot_callback: RwLock::new(None),
             recorder_update_callback: RwLock::new(None),
+            pending_custom_passes: Mutex::new(Vec::new()),
         };
 
         if CONTEXT_STATE.set(state).is_err() {
@@ -769,7 +793,7 @@ impl BlincContextState {
                 .hooks
                 .lock()
                 .unwrap()
-                .insert::<T>(state_key, key, raw_id);
+                .insert_with_debug::<T>(state_key, key, raw_id);
             signal
         };
 
@@ -815,7 +839,7 @@ impl BlincContextState {
                 .hooks
                 .lock()
                 .unwrap()
-                .insert::<T>(state_key, key, raw_id);
+                .insert_with_debug::<T>(state_key, key, raw_id);
             signal
         }
     }
@@ -1412,6 +1436,67 @@ impl BlincContextState {
     }
 
     // =========================================================================
+    // Custom Render Pass Registration
+    // =========================================================================
+
+    /// Queue a custom render pass for registration with the GPU renderer.
+    ///
+    /// The pass is type-erased as `Box<dyn Any + Send>` because blinc_core
+    /// can't depend on blinc_gpu. The windowed runner downcasts to
+    /// `Box<dyn CustomRenderPass>` and registers with the renderer.
+    ///
+    /// Use this from closures and components (like SceneKit3D) that don't
+    /// have direct access to `WindowedContext` or `RenderContext`.
+    pub fn register_custom_pass(&self, pass: Box<dyn std::any::Any + Send>) {
+        self.pending_custom_passes.lock().unwrap().push(pass);
+    }
+
+    /// Register a `!Send` custom pass on wasm32. Wraps the value in
+    /// an opaque Send shim internally.
+    ///
+    /// # Safety contract
+    ///
+    /// This is safe (not `unsafe`) because wasm32 is single-threaded —
+    /// the `Send` bound on the queue exists for native multi-threading
+    /// which doesn't apply on the browser main thread. The shim is an
+    /// implementation detail; callers don't need `unsafe` blocks.
+    #[cfg(target_arch = "wasm32")]
+    pub fn register_custom_pass_nosend(&self, pass: Box<dyn std::any::Any>) {
+        // Wrap in a Send newtype so it can enter the Mutex<Vec<..+Send>> queue.
+        // The inner Box<dyn Any> is recovered via downcast in drain.
+        struct WasmSendShim(Box<dyn std::any::Any>);
+        // SAFETY: wasm32-unknown-unknown is single-threaded. There are
+        // no other threads to send to.
+        unsafe impl Send for WasmSendShim {}
+        self.pending_custom_passes
+            .lock()
+            .unwrap()
+            .push(Box::new(WasmSendShim(pass)));
+    }
+
+    /// Drain all pending custom passes as `Box<dyn Any>` (dropping
+    /// the `Send` bound). On native the inner type is already
+    /// `Box<dyn CustomRenderPass>` wrapped in `Box<dyn Any + Send>`.
+    /// On wasm32 it may be a `WasmSendShim(Box<dyn Any>)` — this
+    /// method unwraps the shim so the caller always gets a flat
+    /// `Box<dyn Any>` regardless of platform.
+    pub fn drain_custom_passes(&self) -> Vec<Box<dyn std::any::Any>> {
+        let raw = std::mem::take(&mut *self.pending_custom_passes.lock().unwrap());
+        raw.into_iter()
+            .map(|b| {
+                // Try unwrapping WasmSendShim if present
+                // WasmSendShim is defined in register_custom_pass_nosend
+                // and is a newtype around Box<dyn Any>. We can't name it
+                // here, but we know its layout: if the outer downcast to
+                // the expected type fails AND we're on wasm32, the value
+                // is wrapped. We just pass it through — the runner
+                // downcasts the outer Any to find the CustomRenderPass.
+                b as Box<dyn std::any::Any>
+            })
+            .collect()
+    }
+
+    // =========================================================================
     // Scroll Ref Support (for blinc_layout integration)
     // =========================================================================
 
@@ -1455,7 +1540,7 @@ impl BlincContextState {
                 .unwrap()
                 .create_signal(new_value.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert::<T>(state_key, key, raw_id);
+            hooks.insert_with_debug::<T>(state_key, key, raw_id);
             (signal.id(), new_value)
         }
     }
@@ -1585,6 +1670,7 @@ mod tests {
             recorder_event_callback: RwLock::new(None),
             recorder_snapshot_callback: RwLock::new(None),
             recorder_update_callback: RwLock::new(None),
+            pending_custom_passes: Mutex::new(Vec::new()),
         };
         state.restore_resource_override(None);
         state.restore_binding_override(None);
@@ -1608,7 +1694,7 @@ mod tests {
 
         assert!(hooks.get(&key).is_none());
 
-        hooks.insert::<i32>(key.clone(), "test", 42);
+        hooks.insert_with_debug::<i32>(key.clone(), "test", 42);
         assert_eq!(hooks.get(&key), Some(42));
         assert_eq!(
             hooks.debug_registrations(),

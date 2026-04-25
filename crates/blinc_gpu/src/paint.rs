@@ -43,26 +43,44 @@
 
 use blinc_core::{
     Affine2D, BillboardFacing, BlendMode, Brush, Camera, ClipShape, Color, CornerRadius,
-    DrawCommand, DrawContext, Environment, ImageId, ImageOptions, LayerConfig, LayerId, Light,
-    Mat4, MaterialId, MeshId, MeshInstance, ParticleBlendMode, ParticleEmitterShape, ParticleForce,
-    ParticleSystemData, Path, Point, Rect, Sdf3DViewport, SdfBuilder, Shadow, ShapeId, Size,
-    Stroke, TextStyle, Transform,
+    CubemapData, DrawCommand, DrawContext, Environment, ImageId, ImageOptions, LayerConfig,
+    LayerId, Light, Mat4, MaterialId, MeshData, MeshId, MeshInstance, ParticleBlendMode,
+    ParticleEmitterShape, ParticleForce, ParticleSystemData, Path, Point, Rect, Sdf3DViewport,
+    SdfBuilder, Shadow, ShapeId, Size, Stroke, TextStyle, Transform,
 };
 
 use crate::path::{extract_brush_info, tessellate_fill, tessellate_stroke};
 use crate::primitives::{
-    ClipType, FillType, GlassType, GpuGlassPrimitive, GpuLineSegment, GpuPrimitive, ImageDraw,
-    ImageOp, PrimitiveBatch, PrimitiveType, Sdf3DUniform, Viewport3D,
+    ClipType, FillType, GlassType, GpuGlassPrimitive, GpuPrimitive, PrimitiveBatch, PrimitiveType,
+    Sdf3DUniform, Viewport3D,
 };
 use crate::text::TextRenderingContext;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
-static DEBUG_POLYLINE_LOGS: AtomicU32 = AtomicU32::new(0);
-static DEBUG_WARM_PRIM_LOGS: AtomicU32 = AtomicU32::new(0);
-const NO_CLIP_BOUNDS: [f32; 4] = [-10000.0, -10000.0, 100000.0, 100000.0];
-const NO_CLIP_RADIUS: [f32; 4] = [0.0; 4];
+// ─────────────────────────────────────────────────────────────────────────────
+// Transform Stack
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Combined 2D transform state (for future optimization)
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct TransformState {
+    /// Combined affine transform
+    affine: Affine2D,
+    /// Combined opacity
+    opacity: f32,
+    /// Current blend mode
+    blend_mode: BlendMode,
+}
+
+impl Default for TransformState {
+    fn default() -> Self {
+        Self {
+            affine: Affine2D::IDENTITY,
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        }
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Layer Stack
@@ -74,12 +92,68 @@ const NO_CLIP_RADIUS: [f32; 4] = [0.0; 4];
 /// so it can be properly restored when the layer is popped.
 #[derive(Clone, Debug)]
 struct LayerState {
+    /// The layer configuration
+    config: LayerConfig,
+    /// Starting primitive index when this layer was pushed
+    primitive_start: usize,
+    /// Starting foreground primitive index
+    foreground_primitive_start: usize,
+    /// Starting path vertex index
+    path_start: usize,
+    /// Starting foreground path vertex index
+    foreground_path_start: usize,
     /// Parent state stack indices (transform, opacity, blend, clip)
     parent_state_indices: (usize, usize, usize, usize),
 }
 
 /// Clip stack entry: (shape, optional polygon aux_data metadata (aux_offset, vertex_count), overflow_fade)
 type ClipStackEntry = (ClipShape, Option<(u32, u32)>, [f32; 4]);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pending 3D Mesh Draw
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A 3D mesh draw captured inside a canvas callback.
+///
+/// `GpuPaintContext` can't invoke `GpuRenderer::render_mesh_data` directly
+/// from inside `DrawContext::draw_mesh_data` — the paint context is a
+/// batch builder and has no handle to the renderer. So instead the
+/// override records the call (mesh data, model transform, a snapshot of
+/// the active camera + lights) and the outer render loop drains the list
+/// after `take_batch` and dispatches to `renderer.render_mesh_data` with
+/// the frame's real target. See `GpuPaintContext::take_pending_meshes`.
+///
+/// Fields are `pub` so the caller in `blinc_app::context` can read them
+/// without going through accessors. Don't construct these directly —
+/// go through `DrawContext::draw_mesh_data`.
+#[derive(Clone, Debug)]
+pub struct PendingMesh {
+    /// Mesh geometry + PBR material. `Arc` so the capture is cheap and
+    /// the same mesh can be drawn at multiple transforms without cloning
+    /// the vertex/index buffers each time.
+    pub mesh: std::sync::Arc<MeshData>,
+    /// Model transform (world-space placement of this instance).
+    pub transform: Mat4,
+    /// Snapshot of the active camera at draw time. The outer render
+    /// loop turns this into a view-projection matrix using the frame's
+    /// actual viewport size so aspect stays correct under resizes.
+    pub camera: Camera,
+    /// Snapshot of the active lights at draw time. For MVP, only the
+    /// first `Light::Directional` contributes (shadow pass disabled);
+    /// point / spot / ambient lights are ignored until the mesh
+    /// pipeline grows support for them.
+    pub lights: Vec<Light>,
+    /// Screen-space viewport rect in physical pixels [x, y, w, h].
+    /// When `Some`, the renderer applies `set_viewport` + `set_scissor_rect`
+    /// to clip the mesh to this region. When `None`, the mesh renders to
+    /// the full frame target.
+    pub viewport: Option<[f32; 4]>,
+    /// Pre-generated environment cubemap for IBL reflections. When `Some`,
+    /// the renderer uploads this data to the cubemap texture (if it differs
+    /// from what is currently bound). When `None`, the renderer's default
+    /// neutral gray fallback is used.
+    pub env_cubemap: Option<std::sync::Arc<CubemapData>>,
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GPU Paint Context
@@ -116,10 +190,6 @@ pub struct GpuPaintContext<'a> {
     z_layer: u32,
     /// Stack of active layers for offscreen rendering
     layer_stack: Vec<LayerState>,
-    /// Known image sizes created in this context
-    image_sizes: HashMap<ImageId, (u32, u32)>,
-    /// Monotonic order for image ops/draws to preserve call sequence.
-    image_order: u64,
     // 3D transform transient fields (set per-element, reset after)
     current_3d_sin_ry: f32,
     current_3d_cos_ry: f32,
@@ -143,6 +213,18 @@ pub struct GpuPaintContext<'a> {
     current_corner_shape: [f32; 4], // superellipse n per corner (default [1.0; 4] = round)
     // Overflow fade: pending value consumed by next push_clip
     pending_overflow_fade: [f32; 4], // [top, right, bottom, left] in CSS pixels
+    /// 3D mesh draws captured during this frame. `draw_mesh_data` pushes
+    /// here; the outer render loop drains with `take_pending_meshes`
+    /// after `take_batch` and dispatches each to
+    /// `GpuRenderer::render_mesh_data` against the frame's target.
+    pending_meshes: Vec<PendingMesh>,
+    /// 3D viewport bounds (logical pixels). Set by SceneKit3D before
+    /// `draw_mesh_data` so the viewport rect can be computed from the
+    /// transform stack position + these bounds.
+    mesh_viewport_bounds: Option<(f32, f32)>,
+    /// Environment cubemap data set by `set_environment_cubemap`. Captured
+    /// into each `PendingMesh` so the renderer can upload it.
+    pending_env: Option<std::sync::Arc<CubemapData>>,
 }
 
 impl<'a> GpuPaintContext<'a> {
@@ -162,8 +244,6 @@ impl<'a> GpuPaintContext<'a> {
             is_foreground: false,
             z_layer: 0,
             layer_stack: Vec::new(),
-            image_sizes: HashMap::new(),
-            image_order: 0,
             current_3d_sin_ry: 0.0,
             current_3d_cos_ry: 1.0,
             current_3d_sin_rx: 0.0,
@@ -182,6 +262,9 @@ impl<'a> GpuPaintContext<'a> {
             current_mask_info: [0.0; 4],
             current_corner_shape: [1.0; 4],
             pending_overflow_fade: [0.0; 4],
+            pending_meshes: Vec::new(),
+            mesh_viewport_bounds: None,
+            pending_env: None,
         }
     }
 
@@ -213,8 +296,6 @@ impl<'a> GpuPaintContext<'a> {
             is_foreground: false,
             z_layer: 0,
             layer_stack: Vec::new(),
-            image_sizes: HashMap::new(),
-            image_order: 0,
             current_3d_sin_ry: 0.0,
             current_3d_cos_ry: 1.0,
             current_3d_sin_rx: 0.0,
@@ -233,6 +314,9 @@ impl<'a> GpuPaintContext<'a> {
             current_mask_info: [0.0; 4],
             current_corner_shape: [1.0; 4],
             pending_overflow_fade: [0.0; 4],
+            pending_meshes: Vec::new(),
+            mesh_viewport_bounds: None,
+            pending_env: None,
         }
     }
 
@@ -820,27 +904,6 @@ impl<'a> GpuPaintContext<'a> {
         }
     }
 
-    fn enqueue_image_create(
-        &mut self,
-        width: u32,
-        height: u32,
-        label: &str,
-        pixels: Option<Vec<u8>>,
-    ) -> ImageId {
-        let id = ImageId(NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed));
-        let order = self.next_image_order();
-        self.batch.push_image_op(ImageOp::Create {
-            order,
-            image: id,
-            width,
-            height,
-            label: Some(label.to_string()),
-            pixels,
-        });
-        self.image_sizes.insert(id, (width, height));
-        id
-    }
-
     /// Get clip data from the current clip stack
     /// Returns (clip_bounds, clip_radius, clip_type)
     ///
@@ -853,7 +916,11 @@ impl<'a> GpuPaintContext<'a> {
     fn get_clip_data(&self) -> ([f32; 4], [f32; 4], ClipType) {
         if self.clip_stack.is_empty() {
             // No clip - use large bounds
-            return (NO_CLIP_BOUNDS, NO_CLIP_RADIUS, ClipType::None);
+            return (
+                [-10000.0, -10000.0, 100000.0, 100000.0],
+                [0.0; 4],
+                ClipType::None,
+            );
         }
 
         // Try to compute intersection of all rect clips
@@ -898,6 +965,9 @@ impl<'a> GpuPaintContext<'a> {
             ), // bottom_left
         ];
 
+        // Track whether the topmost clip is a plain Rect (not rounded)
+        let mut topmost_is_plain_rect = false;
+
         for (clip, _poly_meta, _fade) in &self.clip_stack {
             match clip {
                 ClipShape::Rect(rect) => {
@@ -907,6 +977,7 @@ impl<'a> GpuPaintContext<'a> {
                     intersect_max_x = intersect_max_x.min(rect.x() + rect.width());
                     intersect_max_y = intersect_max_y.min(rect.y() + rect.height());
                     has_rect_clips = true;
+                    topmost_is_plain_rect = true;
                 }
                 ClipShape::RoundedRect {
                     rect,
@@ -939,27 +1010,41 @@ impl<'a> GpuPaintContext<'a> {
                     }
 
                     has_rect_clips = true;
+                    topmost_is_plain_rect = false;
                 }
                 // For non-rect clips, fall back to topmost-only behavior
                 ClipShape::Circle { .. }
                 | ClipShape::Ellipse { .. }
                 | ClipShape::Path(_)
-                | ClipShape::Polygon(_) => {}
+                | ClipShape::Polygon(_) => {
+                    // Can't easily intersect with circles/ellipses/paths/polygons
+                    // Fall through to use the topmost clip
+                    topmost_is_plain_rect = false;
+                }
             }
         }
 
-        // Check if the topmost clip is non-rect (circle, ellipse, polygon).
-        // If so, the topmost non-rect clip takes priority over rect clip intersection,
-        // since the GPU shader can only evaluate one clip type per primitive.
-        let topmost_is_non_rect = matches!(
-            self.clip_stack.last().map(|(c, _, _)| c),
-            Some(
+        // Find the topmost non-rect clip anywhere in the stack (circle,
+        // ellipse, polygon, path). When one exists it becomes the shape
+        // clip for the primitive and any rect clips contribute only to
+        // the scissor bounds. Previously this scanned only
+        // `clip_stack.last()`, so pushing a rect clip on top of a
+        // polygon (e.g. a precomp's inner canvas rect stacked on a
+        // matte polygon) silently dropped the polygon — which is what
+        // made `blinc_lottie`'s track mattes look unclipped when the
+        // matted layer was a precomp. The GPU still only evaluates one
+        // non-rect shape per primitive, so we stop at the first one
+        // found walking top-down.
+        let topmost_non_rect_idx = self.clip_stack.iter().rposition(|(c, _, _)| {
+            matches!(
+                c,
                 ClipShape::Circle { .. }
                     | ClipShape::Ellipse { .. }
                     | ClipShape::Polygon(_)
                     | ClipShape::Path(_)
             )
-        );
+        });
+        let topmost_is_non_rect = topmost_non_rect_idx.is_some();
 
         // If we have rect clips AND the topmost clip is rect-based, use the intersection
         if has_rect_clips && !topmost_is_non_rect {
@@ -1036,7 +1121,14 @@ impl<'a> GpuPaintContext<'a> {
             [-10000.0, -10000.0, 100000.0, 100000.0]
         };
 
-        let (clip, poly_meta, _fade) = self.clip_stack.last().unwrap();
+        // Prefer the topmost non-rect clip (if any) for the shape
+        // entry; otherwise fall back to the topmost clip outright
+        // (which will be a rect / rounded-rect and lands in the rect-
+        // intersection branches below). Scanning instead of just
+        // `last()` is what lets a rect clip stacked on top of a
+        // polygon matte still resolve to the polygon as the shape.
+        let shape_idx = topmost_non_rect_idx.unwrap_or(self.clip_stack.len() - 1);
+        let (clip, poly_meta, _fade) = &self.clip_stack[shape_idx];
         match clip {
             ClipShape::Rect(rect) => (
                 [rect.x(), rect.y(), rect.width(), rect.height()],
@@ -1079,7 +1171,11 @@ impl<'a> GpuPaintContext<'a> {
             }
             ClipShape::Path(_) => {
                 // Path clipping not supported in GPU - fall back to no clip
-                (NO_CLIP_BOUNDS, NO_CLIP_RADIUS, ClipType::None)
+                (
+                    [-10000.0, -10000.0, 100000.0, 100000.0],
+                    [0.0; 4],
+                    ClipType::None,
+                )
             }
         }
     }
@@ -1087,6 +1183,19 @@ impl<'a> GpuPaintContext<'a> {
     /// Take the accumulated batch for rendering
     pub fn take_batch(&mut self) -> PrimitiveBatch {
         std::mem::take(&mut self.batch)
+    }
+
+    /// Take the accumulated 3D mesh draws captured during this frame.
+    ///
+    /// Every call to [`DrawContext::draw_mesh_data`] inside a canvas
+    /// callback pushes one [`PendingMesh`] here. The outer render loop
+    /// drains this list after `take_batch`, computes a
+    /// view-projection matrix from each entry's captured camera against
+    /// the frame's real target size, and dispatches to
+    /// `GpuRenderer::render_mesh_data`. See `blinc_app::context` for
+    /// the dispatch site.
+    pub fn take_pending_meshes(&mut self) -> Vec<PendingMesh> {
+        std::mem::take(&mut self.pending_meshes)
     }
 
     /// Get a reference to the current batch
@@ -1109,17 +1218,107 @@ impl<'a> GpuPaintContext<'a> {
         self.layer_stack.clear();
         self.is_3d = false;
         self.camera = None;
-        self.image_sizes.clear();
-        self.image_order = 0;
-    }
-
-    fn next_image_order(&mut self) -> u64 {
-        let order = self.image_order;
-        self.image_order = self.image_order.wrapping_add(1);
-        order
     }
 
     /// Apply opacity to a brush by modifying the color's alpha channel
+    /// Pre-sample a multi-stop gradient at every tessellated vertex's
+    /// path-local position. Returns `None` for solids, 2-stop
+    /// gradients (the SDF shader's `mix(color, color2, t)` path
+    /// handles them precisely per-fragment), or non-gradient
+    /// brushes. Output aligns with `tessellated.vertices`.
+    fn sample_per_vertex_gradient(
+        tessellated: &crate::path::TessellatedPath,
+        brush: &Brush,
+    ) -> Option<Vec<blinc_core::Color>> {
+        let Brush::Gradient(gradient) = brush else {
+            return None;
+        };
+        let stops = gradient.stops();
+        if stops.len() <= 2 {
+            return None;
+        }
+        // Multi-stop per-vertex sampling is gated behind an opt-in
+        // env flag until the layer-ordering regression it introduced
+        // in the interactive_volume scene is root-caused. Without
+        // this gate, the default 2-stop `mix(first, last, t)`
+        // fallback keeps rendering order identical to the
+        // known-working baseline.
+        if std::env::var("BLINC_MULTISTOP_VERTEX").ok().as_deref() != Some("1") {
+            return None;
+        }
+        let sample = |p: [f32; 2]| -> blinc_core::Color {
+            let t = match gradient {
+                blinc_core::Gradient::Linear { start, end, .. } => {
+                    let dx = end.x - start.x;
+                    let dy = end.y - start.y;
+                    let len_sq = dx * dx + dy * dy;
+                    if len_sq > 1e-6 {
+                        (((p[0] - start.x) * dx + (p[1] - start.y) * dy) / len_sq).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    }
+                }
+                blinc_core::Gradient::Radial { center, radius, .. } => {
+                    let dx = p[0] - center.x;
+                    let dy = p[1] - center.y;
+                    let d = (dx * dx + dy * dy).sqrt();
+                    (d / radius.max(1e-5)).clamp(0.0, 1.0)
+                }
+                blinc_core::Gradient::Conic { center, .. } => {
+                    // Approximate conic as radial until we add conic shader
+                    // support — mirrors `extract_brush_info`'s handling.
+                    let dx = p[0] - center.x;
+                    let dy = p[1] - center.y;
+                    let d = (dx * dx + dy * dy).sqrt();
+                    (d / 100.0).clamp(0.0, 1.0)
+                }
+            };
+            Self::sample_stops(stops, t)
+        };
+        Some(
+            tessellated
+                .vertices
+                .iter()
+                .map(|v| sample(v.position))
+                .collect(),
+        )
+    }
+
+    /// Piecewise-linear interpolation through a sorted gradient stop
+    /// list at parameter `t`. Clamps outside the first/last stop
+    /// offsets. Mirrors `blinc_gpu::path::sample_gradient_stops`
+    /// without re-exporting it.
+    fn sample_stops(stops: &[blinc_core::GradientStop], t: f32) -> blinc_core::Color {
+        if stops.is_empty() {
+            return blinc_core::Color::TRANSPARENT;
+        }
+        if t <= stops[0].offset {
+            return stops[0].color;
+        }
+        let last = stops.len() - 1;
+        if t >= stops[last].offset {
+            return stops[last].color;
+        }
+        for i in 0..last {
+            let s0 = &stops[i];
+            let s1 = &stops[i + 1];
+            if t >= s0.offset && t <= s1.offset {
+                let range = s1.offset - s0.offset;
+                if range < 1e-6 {
+                    return s0.color;
+                }
+                let local = (t - s0.offset) / range;
+                return blinc_core::Color {
+                    r: s0.color.r + (s1.color.r - s0.color.r) * local,
+                    g: s0.color.g + (s1.color.g - s0.color.g) * local,
+                    b: s0.color.b + (s1.color.b - s0.color.b) * local,
+                    a: s0.color.a + (s1.color.a - s0.color.a) * local,
+                };
+            }
+        }
+        stops[last].color
+    }
+
     fn apply_opacity_to_brush(brush: Brush, opacity: f32) -> Brush {
         if opacity >= 1.0 {
             return brush;
@@ -1428,13 +1627,70 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let opacity = self.combined_opacity();
         let brush = Self::apply_opacity_to_brush(brush, opacity);
 
-        // Extract brush info for advanced features (multi-stop gradients, images, glass)
+        // Solid-color fills route through the SDF primitive stream so
+        // they interleave with text (and any other SDF draws) in
+        // submission order. The tessellated-path pipeline sits in its
+        // own draw call after every SDF pipeline, so a shape filled
+        // through it would paint on top of text submitted earlier —
+        // Lottie layers whose stack put text on top of a shape came
+        // out with the text behind the shape. The SDF-stream route
+        // avoids that entirely by sharing the primitive dispatch.
+        //
+        // Gradients take the same SDF-stream route via the PRIM_MESH
+        // fill_type path: the SDF core shader already rasterises
+        // linear and radial gradients per-fragment; routing them
+        // through `push_mesh_primitives_brush` keeps gradient fills
+        // in submission order with solids. Previously gradients went
+        // to the path pipeline which drew in a single batch AFTER
+        // every SDF primitive, so solids authored later in the
+        // Lottie stack covered gradients authored earlier — the
+        // "brown face / purple BG / seeker invisible" symptom on
+        // the interactive_volume scene.
+        if matches!(brush, Brush::Solid(_) | Brush::Gradient(_)) {
+            let mut tessellated = tessellate_fill(path, &brush);
+            let affine = self.current_affine();
+            // Pre-sample per-vertex colours for multi-stop gradients
+            // BEFORE the affine transform — gradient stops are
+            // defined in the path's local coordinate space, so
+            // sampling has to happen there. The SDF shader's built-in
+            // linear / radial math only handles 2 stops (color +
+            // color2); per-vertex sampling + barycentric interpolation
+            // reproduces the authored multi-stop ramp at a fidelity
+            // that tracks tessellation density (lyon's 0.2 px
+            // tolerance keeps triangles small enough that per-vertex
+            // Gouraud-style colour is visually close to true
+            // multi-stop).
+            let per_vertex_colors = Self::sample_per_vertex_gradient(&tessellated, &brush);
+            for vertex in &mut tessellated.vertices {
+                let x = vertex.position[0];
+                let y = vertex.position[1];
+                vertex.position[0] =
+                    affine.elements[0] * x + affine.elements[2] * y + affine.elements[4];
+                vertex.position[1] =
+                    affine.elements[1] * x + affine.elements[3] * y + affine.elements[5];
+            }
+            if !tessellated.is_empty() {
+                let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+                self.push_mesh_primitives_brush(
+                    &tessellated,
+                    &brush,
+                    &affine,
+                    per_vertex_colors.as_deref(),
+                    clip_bounds,
+                    clip_radius,
+                    clip_type,
+                );
+            }
+            return;
+        }
+
+        // Glass / image / other brush types: fall back to the
+        // tessellated-path pipeline. These are rare in Lottie and
+        // the path pipeline handles them today.
         let brush_info = extract_brush_info(&brush);
 
-        // Tessellate the path using lyon
         let mut tessellated = tessellate_fill(path, &brush);
 
-        // Transform vertices by current transform stack
         let affine = self.current_affine();
         for vertex in &mut tessellated.vertices {
             let x = vertex.position[0];
@@ -1446,12 +1702,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
 
         if !tessellated.is_empty() {
-            // Capture current clip state for paths
             let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
             if self.is_foreground {
-                self.batch.push_foreground_path_with_brush_info_at_z(
-                    self.z_layer(),
+                self.batch.push_foreground_path_with_brush_info(
                     tessellated,
                     clip_bounds,
                     clip_radius,
@@ -1459,8 +1713,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                     &brush_info,
                 );
             } else {
-                self.batch.push_path_with_brush_info_at_z(
-                    self.z_layer(),
+                self.batch.push_path_with_brush_info(
                     tessellated,
                     clip_bounds,
                     clip_radius,
@@ -1476,13 +1729,40 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         let opacity = self.combined_opacity();
         let brush = Self::apply_opacity_to_brush(brush, opacity);
 
-        // Extract brush info for advanced features (multi-stop gradients, images, glass)
+        // Solid + gradient strokes share the SDF-stream route so
+        // submission order lines up with text. See `fill_path` for
+        // the rationale.
+        if matches!(brush, Brush::Solid(_) | Brush::Gradient(_)) {
+            let mut tessellated = tessellate_stroke(path, stroke, &brush);
+            let affine = self.current_affine();
+            let per_vertex_colors = Self::sample_per_vertex_gradient(&tessellated, &brush);
+            for vertex in &mut tessellated.vertices {
+                let x = vertex.position[0];
+                let y = vertex.position[1];
+                vertex.position[0] =
+                    affine.elements[0] * x + affine.elements[2] * y + affine.elements[4];
+                vertex.position[1] =
+                    affine.elements[1] * x + affine.elements[3] * y + affine.elements[5];
+            }
+            if !tessellated.is_empty() {
+                let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+                self.push_mesh_primitives_brush(
+                    &tessellated,
+                    &brush,
+                    &affine,
+                    per_vertex_colors.as_deref(),
+                    clip_bounds,
+                    clip_radius,
+                    clip_type,
+                );
+            }
+            return;
+        }
+
         let brush_info = extract_brush_info(&brush);
 
-        // Tessellate the stroke using lyon
         let mut tessellated = tessellate_stroke(path, stroke, &brush);
 
-        // Transform vertices by current transform stack
         let affine = self.current_affine();
         for vertex in &mut tessellated.vertices {
             let x = vertex.position[0];
@@ -1494,12 +1774,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
 
         if !tessellated.is_empty() {
-            // Capture current clip state for paths
             let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
 
             if self.is_foreground {
-                self.batch.push_foreground_path_with_brush_info_at_z(
-                    self.z_layer(),
+                self.batch.push_foreground_path_with_brush_info(
                     tessellated,
                     clip_bounds,
                     clip_radius,
@@ -1507,8 +1785,7 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                     &brush_info,
                 );
             } else {
-                self.batch.push_path_with_brush_info_at_z(
-                    self.z_layer(),
+                self.batch.push_path_with_brush_info(
                     tessellated,
                     clip_bounds,
                     clip_radius,
@@ -1763,46 +2040,135 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             ],
         };
 
-        if std::env::var_os("BLINC_DEBUG_WARM_PRIMS").is_some() {
-            let is_warm = primitive.color[0] > 0.7
-                && (primitive.color[0] - primitive.color[2]) > 0.3
-                && primitive.color[3] > 0.5;
-            if is_warm {
-                let n = DEBUG_WARM_PRIM_LOGS.fetch_add(1, Ordering::Relaxed);
-                if n < 12 {
-                    tracing::info!(
-                        "warm_prim[{n}]: fg={} z={} rect=({:.2},{:.2},{:.2},{:.2}) tx=({:.2},{:.2},{:.2},{:.2}) color=({:.3},{:.3},{:.3},{:.3}) clip_type={:?} clip=({:.2},{:.2},{:.2},{:.2}) filter_a=({:.2},{:.2},{:.2},{:.2}) filter_b=({:.2},{:.2},{:.2},{:.2})",
-                        self.is_foreground,
-                        self.z_layer,
-                        rect.x(),
-                        rect.y(),
-                        rect.width(),
-                        rect.height(),
-                        transformed.x(),
-                        transformed.y(),
-                        transformed.width(),
-                        transformed.height(),
-                        primitive.color[0],
-                        primitive.color[1],
-                        primitive.color[2],
-                        primitive.color[3],
-                        clip_type,
-                        clip_bounds[0],
-                        clip_bounds[1],
-                        clip_bounds[2],
-                        clip_bounds[3],
-                        self.current_filter_a[0],
-                        self.current_filter_a[1],
-                        self.current_filter_a[2],
-                        self.current_filter_a[3],
-                        self.current_filter_b[0],
-                        self.current_filter_b[1],
-                        self.current_filter_b[2],
-                        self.current_filter_b[3],
-                    );
-                }
-            }
+        if self.is_foreground {
+            self.batch.push_foreground(primitive);
+        } else {
+            self.batch.push(primitive);
         }
+    }
+
+    fn fill_notch(
+        &mut self,
+        rect: Rect,
+        corner_radii: [f32; 4],
+        corner_types: [f32; 4],
+        top_mod: [f32; 4],
+        bottom_mod: [f32; 4],
+        border: Option<(f32, Color)>,
+        shadow: Option<Shadow>,
+        brush: Brush,
+    ) {
+        let transformed = self.transform_rect(rect);
+
+        // DPI-scale the per-corner radii. `scale_corner_radius` wants a
+        // `CornerRadius` struct, so we route through that — the magnitudes
+        // match field-for-field.
+        let scaled_radii = self.scale_corner_radius(CornerRadius {
+            top_left: corner_radii[0],
+            top_right: corner_radii[1],
+            bottom_right: corner_radii[2],
+            bottom_left: corner_radii[3],
+        });
+        let scaled_radii_arr = [
+            scaled_radii.top_left,
+            scaled_radii.top_right,
+            scaled_radii.bottom_right,
+            scaled_radii.bottom_left,
+        ];
+
+        // Top/bottom edge modifiers: (type, width, height_or_depth, corner_r).
+        // Scale the geometric dimensions uniformly by the current DPI +
+        // element scale, leaving the modifier type untouched. Non-uniform
+        // scale / rotation / skew is already applied via `local_affine` in
+        // the fragment shader, so we only need the isotropic scale here.
+        let dpi_scale = self.current_dpi_scale();
+        let scale_mod = |m: [f32; 4]| -> [f32; 4] {
+            [m[0], m[1] * dpi_scale, m[2] * dpi_scale, m[3] * dpi_scale]
+        };
+        let scaled_top_mod = scale_mod(top_mod);
+        let scaled_bottom_mod = scale_mod(bottom_mod);
+
+        let (color, color2, gradient_params, fill_type) = self.brush_to_colors(&brush);
+        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+
+        // Transform gradient params into rect-local then screen space, just
+        // like `fill_rect` does.
+        let gradient_params = Self::obb_to_rect_coords(&brush, gradient_params, rect, fill_type);
+        let is_radial = fill_type == FillType::RadialGradient;
+        let transformed_gradient_params = if fill_type != FillType::Solid {
+            self.transform_gradient_params(gradient_params, is_radial)
+        } else {
+            gradient_params
+        };
+
+        // Shadow (DPI-scaled). The shader's PRIM_NOTCH shadow path
+        // traces the notch's actual outline via `sd_notch` so the
+        // drop shadow follows the shape's outer edge (including
+        // concave arcs, bulges, scoops, cuts, peaks) rather than the
+        // rectangular bbox. The notch's element-level canvas clip is
+        // now opt-in (via `overflow_clip`), so the shadow's blur
+        // expansion can render past the element's layout box.
+        let shadow_vec = if let Some(sh) = shadow {
+            [
+                sh.offset_x * dpi_scale,
+                sh.offset_y * dpi_scale,
+                sh.blur * dpi_scale,
+                sh.spread * dpi_scale,
+            ]
+        } else {
+            [0.0; 4]
+        };
+        let shadow_color_vec = shadow
+            .map(|s| [s.color.r, s.color.g, s.color.b, s.color.a])
+            .unwrap_or([0.0; 4]);
+
+        // Border (DPI-scaled).
+        let (border_vec, border_color_vec) = if let Some((width, color)) = border {
+            (
+                [width * dpi_scale, 0.0, 0.0, 0.0],
+                [color.r, color.g, color.b, color.a],
+            )
+        } else {
+            ([0.0; 4], [0.0; 4])
+        };
+
+        let primitive = GpuPrimitive {
+            bounds: [
+                transformed.x(),
+                transformed.y(),
+                transformed.width(),
+                transformed.height(),
+            ],
+            corner_radius: scaled_radii_arr,
+            color,
+            color2,
+            border: border_vec,
+            border_color: border_color_vec,
+            shadow: shadow_vec,
+            shadow_color: shadow_color_vec,
+            clip_bounds,
+            clip_radius,
+            gradient_params: transformed_gradient_params,
+            rotation: self.current_rotation_sincos(),
+            local_affine: self.current_local_affine(),
+            // 3D slots repurposed for notch parameters — see `PrimitiveType::Notch`
+            // doc comment in blinc_gpu::primitives for the contract.
+            perspective: scaled_top_mod,
+            sdf_3d: scaled_bottom_mod,
+            light: corner_types,
+            filter_a: self.current_filter_a,
+            filter_b: self.current_filter_b,
+            mask_params: self.current_mask_params,
+            mask_info: self.current_mask_info,
+            corner_shape: self.current_corner_shape,
+            clip_fade: self.get_clip_fade(),
+            type_info: [
+                PrimitiveType::Notch as u32,
+                fill_type as u32,
+                clip_type as u32,
+                self.z_layer,
+            ],
+        };
 
         if self.is_foreground {
             self.batch.push_foreground(primitive);
@@ -2140,99 +2506,6 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
         }
     }
 
-    fn stroke_polyline(&mut self, points: &[Point], stroke: &Stroke, brush: Brush) {
-        if points.len() < 2 {
-            return;
-        }
-
-        // Fast path: solid color only. Other brushes fall back to path tessellation.
-        let Brush::Solid(color) = brush else {
-            let mut path = Path::new().move_to(points[0].x, points[0].y);
-            for &p in &points[1..] {
-                path = path.line_to(p.x, p.y);
-            }
-            self.stroke_path(&path, stroke, brush);
-            return;
-        };
-
-        // Reject dash/cap/join features for now (charts typically use solid strokes).
-        if !stroke.dash.is_empty() {
-            let mut path = Path::new().move_to(points[0].x, points[0].y);
-            for &p in &points[1..] {
-                path = path.line_to(p.x, p.y);
-            }
-            self.stroke_path(&path, stroke, Brush::Solid(color));
-            return;
-        }
-
-        let opacity = self.combined_opacity();
-        let a = (color.a * opacity).clamp(0.0, 1.0);
-        if a <= 0.0 {
-            return;
-        }
-
-        let half_width = (stroke.width * 0.5).max(0.0);
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
-
-        // The compact line segment shader currently supports rectangular clipping only.
-        // If we have rounded rect clips or non-rect clip types, fall back to path
-        // tessellation so we preserve correct masking (e.g., rounded containers).
-        let has_rounded = clip_type == ClipType::Rect && clip_radius.iter().any(|&r| r > 0.0);
-        let needs_fallback =
-            has_rounded || matches!(clip_type, ClipType::Circle | ClipType::Ellipse);
-        if needs_fallback {
-            let mut path = Path::new().move_to(points[0].x, points[0].y);
-            for &p in &points[1..] {
-                path = path.line_to(p.x, p.y);
-            }
-            self.stroke_path(&path, stroke, Brush::Solid(color));
-            return;
-        }
-
-        if std::env::var_os("BLINC_DEBUG_POLYLINE").is_some() {
-            let n = DEBUG_POLYLINE_LOGS.fetch_add(1, Ordering::Relaxed);
-            if n < 3 {
-                let p0 = points[0];
-                let p1 = points[points.len() - 1];
-                let tp0 = self.transform_point(p0);
-                let tp1 = self.transform_point(p1);
-                tracing::info!(
-                    "stroke_polyline: fg={} n_points={} half_width={} alpha={} clip_bounds={:?} p0={:?} pN={:?} tp0={:?} tpN={:?}",
-                    self.is_foreground,
-                    points.len(),
-                    half_width,
-                    a,
-                    clip_bounds,
-                    p0,
-                    p1,
-                    tp0,
-                    tp1
-                );
-            }
-        }
-
-        // Transform points to screen space once.
-        // Note: We intentionally avoid allocations by pushing segments directly.
-        let mut prev = self.transform_point(points[0]);
-        for &p in &points[1..] {
-            let cur = self.transform_point(p);
-            let seg = GpuLineSegment::new(prev.x, prev.y, cur.x, cur.y)
-                .with_clip_bounds(clip_bounds)
-                .with_half_width(half_width)
-                .with_z_layer(self.z_layer)
-                // Premultiply RGB
-                .with_premul_color(color.r * a, color.g * a, color.b * a, a);
-
-            if self.is_foreground {
-                self.batch.push_foreground_line_segment(seg);
-            } else {
-                self.batch.push_line_segment(seg);
-            }
-
-            prev = cur;
-        }
-    }
-
     fn draw_text(&mut self, text: &str, origin: Point, style: &TextStyle) {
         use blinc_core::{TextAlign, TextBaseline};
         use blinc_text::{TextAlignment, TextAnchor};
@@ -2242,14 +2515,31 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             return;
         }
 
-        // Transform origin by current transform
+        // Transform origin by current transform (includes DPI scale
+        // + any CSS / scroll translation from ancestors).
         let transformed_origin = self.transform_point(origin);
+
+        // Extract uniform scale (DPI + container scale) so the glyph
+        // rasterisation matches the post-transform size on screen.
+        // Without this the text_ctx rasterises at CSS-pixel size
+        // while the vertex shader places the quad at physical-pixel
+        // coordinates — text renders at roughly half-size on 2×
+        // retina and is horizontally offset because the glyph
+        // advances don't keep up with the transformed origin.
+        let uniform_scale = self.current_uniform_scale();
+        let scaled_size = style.size * uniform_scale;
 
         // Get current opacity
         let opacity = self.combined_opacity();
 
-        // Get clip data before borrowing text_ctx
-        let (clip_bounds, _, _) = self.get_clip_data();
+        // Resolve the current rect clip (if any) so glyphs outside
+        // the active scissor get clipped. `get_clip_data` returns a
+        // large default bound when the stack is empty; when a rect
+        // clip is active the third element carries its `ClipType`,
+        // and we propagate that onto each glyph so the shader's
+        // `PRIM_TEXT` branch gates `clip_edge_alpha` properly.
+        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
+        let clip_kind_u32 = clip_type as u32;
 
         // Convert TextStyle color to [f32; 4] with opacity applied
         let color = [
@@ -2274,95 +2564,47 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             TextBaseline::Bottom => TextAnchor::Baseline, // Approximate with baseline
         };
 
-        // Map TextStyle font family to (font_name, generic fallback).
-        //
-        // `TextStyle.family` is a single string and often uses CSS-like lists, e.g.
-        // "Fira Code, monospace". Preserve the generic fallback instead of discarding it.
-        let family_raw = style.family.trim();
-
-        let mut first_named: Option<&str> = None;
-        let mut fallback_generic: Option<blinc_text::GenericFont> = None;
-        let mut first_was_generic: Option<blinc_text::GenericFont> = None;
-
-        for token in family_raw.split(',') {
-            let t = token.trim().trim_matches('"').trim_matches('\'');
-            if t.is_empty() {
-                continue;
-            }
-
-            let token_generic = match t.to_ascii_lowercase().as_str() {
-                "system-ui" => Some(blinc_text::GenericFont::System),
-                "sans-serif" => Some(blinc_text::GenericFont::SansSerif),
-                "serif" => Some(blinc_text::GenericFont::Serif),
-                "monospace" => Some(blinc_text::GenericFont::Monospace),
-                "emoji" => Some(blinc_text::GenericFont::Emoji),
-                "symbol" => Some(blinc_text::GenericFont::Symbol),
-                _ => None,
-            };
-
-            if first_named.is_none() && first_was_generic.is_none() {
-                // First available entry wins. If the list starts with a generic family,
-                // respect that and ignore later named families.
-                if let Some(g) = token_generic {
-                    first_was_generic = Some(g);
-                    break;
-                }
-                first_named = Some(t);
-                continue;
-            }
-
-            if fallback_generic.is_none() {
-                if let Some(g) = token_generic {
-                    fallback_generic = Some(g);
-                }
-            }
-        }
-
-        let (font_name, generic) = if let Some(g) = first_was_generic {
-            (None, g)
-        } else if let Some(name) = first_named {
-            (
-                Some(name),
-                fallback_generic.unwrap_or(blinc_text::GenericFont::System),
-            )
+        // Map `TextStyle::family` onto the font name that
+        // `prepare_text_with_style` passes into
+        // `blinc_text::Renderer::resolve_font_with_style`. The
+        // previous `prepare_text_with_options` route always passed
+        // `font_name=None`, so any caller-set family on `TextStyle`
+        // (e.g. a Lottie text layer asking for "Cal Sans") silently
+        // dropped through to the default SansSerif fallback. Treat
+        // the blinc_core default "system-ui" as "no preference" so
+        // Blinc's own generic-font routing still kicks in.
+        let family_opt = if style.family == "system-ui" || style.family.is_empty() {
+            None
         } else {
-            (None, blinc_text::GenericFont::System)
+            Some(style.family.as_str())
         };
-
-        // Map blinc_core::FontWeight to numeric weight (100..900).
-        let weight: u16 = match style.weight {
-            blinc_core::FontWeight::Thin => 100,
-            blinc_core::FontWeight::Light => 300,
-            blinc_core::FontWeight::Regular => 400,
-            blinc_core::FontWeight::Medium => 500,
-            blinc_core::FontWeight::Bold => 700,
-            blinc_core::FontWeight::Black => 900,
-        };
-
-        // Build full layout options so canvas text honors letter spacing and line height.
-        let layout_options = blinc_text::LayoutOptions {
-            anchor,
-            alignment,
-            line_break: blinc_text::LineBreakMode::None, // no wrap for canvas text
-            letter_spacing: style.letter_spacing,
-            line_height: style.line_height,
-            ..Default::default()
+        let (weight_u16, italic_flag) = match style.weight {
+            blinc_core::FontWeight::Thin => (100u16, false),
+            blinc_core::FontWeight::Light => (300u16, false),
+            blinc_core::FontWeight::Regular => (400u16, false),
+            blinc_core::FontWeight::Medium => (500u16, false),
+            blinc_core::FontWeight::Bold => (700u16, false),
+            blinc_core::FontWeight::Black => (900u16, false),
         };
 
         // Now borrow text_ctx and prepare glyphs
         let text_ctx = self.text_ctx.as_mut().unwrap();
-        if let Ok(mut glyphs) = text_ctx.prepare_text_with_layout_options_and_style(
+        if let Ok(mut glyphs) = text_ctx.prepare_text_with_style(
             text,
             transformed_origin.x,
             transformed_origin.y,
-            style.size,
+            scaled_size,
             color,
-            &layout_options,
-            font_name,
-            generic,
-            weight,
-            false, // italic (not yet exposed on TextStyle)
-            None,  // layout_height
+            anchor,
+            alignment,
+            None,  // No width constraint
+            false, // No wrap for canvas text
+            family_opt,
+            blinc_text::GenericFont::SansSerif,
+            weight_u16,
+            italic_flag,
+            None,
+            style.letter_spacing,
         ) {
             // Apply current clip bounds and fade to all glyphs
             let glyph_clip_fade = self.get_clip_fade();
@@ -2371,98 +2613,54 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
                 glyph.clip_fade = glyph_clip_fade;
             }
 
-            // Add glyphs to batch
+            // Route each glyph straight into the primitive stream
+            // instead of the `batch.glyphs` vec. That vec is only
+            // drained by `convert_glyphs_to_primitives` /
+            // `get_unified_foreground_primitives` on the *foreground*
+            // batch — canvas elements render in the background layer
+            // by default, so pushing into `glyphs` would silently
+            // drop their text. `GpuPrimitive::from_glyph` carries
+            // the glyph's texture coords + colour so the SDF
+            // pipeline that consumes `primitives` renders identical
+            // output. We also stamp the active clip onto each prim
+            // so the shader's PRIM_TEXT branch respects scroll /
+            // overflow-clip boundaries (canvas text used to spill
+            // past its element because the default was
+            // `ClipType::None` regardless of stack state).
             for glyph in glyphs {
-                self.batch.push_glyph(glyph);
+                let mut prim = GpuPrimitive::from_glyph(&glyph);
+                prim.type_info[2] = clip_kind_u32;
+                prim.clip_bounds = clip_bounds;
+                prim.clip_radius = clip_radius;
+                if self.is_foreground {
+                    self.batch.push_foreground(prim);
+                } else {
+                    self.batch.push(prim);
+                }
             }
         }
     }
 
-    fn measure_text(&mut self, text: &str, style: &TextStyle) -> Option<Size> {
-        let text_ctx = self.text_ctx.as_mut()?;
-        let (width, height) = text_ctx.measure_text(text, style.size);
-        Some(Size::new(width, height))
+    fn draw_image(&mut self, _image: ImageId, _rect: Rect, _options: &ImageOptions) {
+        // Image rendering would require:
+        // 1. Texture loading and caching
+        // 2. A separate image rendering pipeline
+        // This is a placeholder for now
     }
 
-    fn draw_image(&mut self, image: ImageId, rect: Rect, options: &ImageOptions) {
-        if image.0 == 0 {
-            return;
-        }
-
-        let transformed = self.transform_rect(rect);
-        let (clip_bounds, clip_radius, clip_type) = self.get_clip_data();
-        let (clip_bounds, clip_radius, clip_type) = if clip_type == ClipType::Rect {
-            (clip_bounds, clip_radius, clip_type)
-        } else {
-            (NO_CLIP_BOUNDS, NO_CLIP_RADIUS, ClipType::None)
-        };
-
-        let opacity = self.combined_opacity() * options.opacity;
-        let tint = if let Some(color) = options.tint {
-            [color.r, color.g, color.b, color.a]
-        } else {
-            [1.0, 1.0, 1.0, 1.0]
-        };
-
-        let draw = ImageDraw {
-            order: self.next_image_order(),
-            image,
-            dst_rect: transformed,
-            source_rect: options.source_rect,
-            tint,
-            opacity,
-            clip_bounds,
-            clip_radius,
-            clip_type,
-        };
-
-        if self.is_foreground {
-            self.batch.push_foreground_image_draw(draw);
-        } else {
-            self.batch.push_image_draw(draw);
-        }
-    }
-
-    fn create_image_rgba(
-        &mut self,
-        pixels: &[u8],
-        width: u32,
-        height: u32,
-        label: &str,
-    ) -> ImageId {
-        self.enqueue_image_create(width, height, label, Some(pixels.to_vec()))
-    }
-
-    fn create_image_empty(&mut self, width: u32, height: u32, label: &str) -> ImageId {
-        self.enqueue_image_create(width, height, label, None)
-    }
-
-    fn write_image_rgba(
-        &mut self,
-        image: ImageId,
-        x: u32,
-        y: u32,
-        width: u32,
-        height: u32,
-        pixels: &[u8],
-    ) {
-        if image.0 == 0 {
-            return;
-        }
-        let order = self.next_image_order();
-        self.batch.push_image_op(ImageOp::Write {
-            order,
-            image,
-            x,
-            y,
-            width,
-            height,
-            pixels: pixels.to_vec(),
-        });
-    }
-
-    fn image_dimensions(&self, image: ImageId) -> Option<(u32, u32)> {
-        self.image_sizes.get(&image).copied()
+    fn draw_rgba_pixels(&mut self, data: &[u8], width: u32, height: u32, dest: Rect) {
+        let transformed = self.transform_rect(dest);
+        let opacity = self.current_opacity();
+        self.batch
+            .dynamic_images
+            .push(crate::primitives::DynamicImage {
+                data: data.to_vec(),
+                width,
+                height,
+                dest: transformed,
+                opacity,
+                corner_radius: 0.0,
+            });
     }
 
     fn draw_shadow(&mut self, rect: Rect, corner_radius: CornerRadius, shadow: Shadow) {
@@ -2721,12 +2919,46 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
     }
 
     fn draw_mesh(&mut self, _mesh: MeshId, _material: MaterialId, _transform: Mat4) {
-        // 3D mesh rendering is not yet implemented
-        // Would require a full 3D rendering pipeline
+        // Cached-mesh path (MeshId / MaterialId pair). Not wired —
+        // `draw_mesh_data` below is the direct path and the one the
+        // canvas widget uses.
     }
 
     fn draw_mesh_instanced(&mut self, _mesh: MeshId, _instances: &[MeshInstance]) {
-        // 3D mesh rendering is not yet implemented
+        // Cached-mesh instanced path. Not wired — see `draw_mesh`.
+    }
+
+    fn set_3d_viewport_bounds(&mut self, width: f32, height: f32) {
+        self.mesh_viewport_bounds = Some((width, height));
+    }
+
+    fn draw_mesh_data(&mut self, mesh: std::sync::Arc<MeshData>, transform: Mat4) {
+        let camera = self.camera.clone().unwrap_or_default();
+
+        let viewport = self.mesh_viewport_bounds.map(|(lw, lh)| {
+            let tl = self.transform_point(blinc_core::Point::new(0.0, 0.0));
+            let br = self.transform_point(blinc_core::Point::new(lw, lh));
+            [tl.x, tl.y, (br.x - tl.x).abs(), (br.y - tl.y).abs()]
+        });
+        // Keep the bounds live for the rest of this canvas render.
+        // Clearing them after the first draw made single-mesh demos
+        // work but silently broke multi-mesh scenes: subsequent meshes
+        // received `viewport: None`, and their tonemap passes rendered
+        // to the FULL FRAME instead of the canvas rect — each mesh
+        // overwriting the previous output, leaving only the last-drawn
+        // mesh visible. `set_3d_viewport_bounds` is called once per
+        // canvas render, so overwriting here is redundant; next
+        // canvas's bounds will overwrite on their own.
+
+        // No clone — just Arc::clone (pointer bump, not 81.5 MB copy)
+        self.pending_meshes.push(PendingMesh {
+            mesh,
+            transform,
+            camera,
+            lights: self.lights.clone(),
+            viewport,
+            env_cubemap: self.pending_env.clone(),
+        });
     }
 
     fn add_light(&mut self, light: Light) {
@@ -2735,6 +2967,10 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
 
     fn set_environment(&mut self, _env: &Environment) {
         // 3D environment is not yet implemented
+    }
+
+    fn set_environment_cubemap(&mut self, data: std::sync::Arc<CubemapData>) {
+        self.pending_env = Some(data);
     }
 
     fn billboard_draw(
@@ -3057,6 +3293,11 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
     fn push_layer(&mut self, config: LayerConfig) {
         // Record current state indices for restoration on pop
         let state = LayerState {
+            config: config.clone(),
+            primitive_start: self.batch.primitive_count(),
+            foreground_primitive_start: self.batch.foreground_primitive_count(),
+            path_start: self.batch.path_vertex_count(),
+            foreground_path_start: self.batch.foreground_path_vertex_count(),
             parent_state_indices: (
                 self.transform_stack.len(),
                 self.opacity_stack.len(),
@@ -3136,6 +3377,225 @@ impl<'a> DrawContext for GpuPaintContext<'a> {
             .last()
             .copied()
             .unwrap_or(BlendMode::Normal)
+    }
+}
+
+impl<'a> GpuPaintContext<'a> {
+    /// Emit one `GpuPrimitive` per tessellated triangle. Each
+    /// primitive's three corners live at `aux_data[off+0].xy`,
+    /// `aux_data[off+0].zw`, `aux_data[off+1].xy`; the SDF vertex
+    /// shader pulls them directly for `vertex_index` 0..2 and
+    /// collapses 3..5 to a zero-area degenerate so the underlying
+    /// 6-vertex quad draw still works. Hardware rasterises each
+    /// triangle the same way the old tessellated-path pipeline did,
+    /// so the fragment shader only needs solid fill + silhouette AA
+    /// — no per-pixel triangle walk.
+    ///
+    /// For anti-aliasing, each triangle also carries which of its
+    /// three edges lie on the mesh silhouette (edges that appear in
+    /// exactly one triangle, identified here via a shared-edge
+    /// count pass). The vertex shader emits a per-vertex barycentric
+    /// varying; hardware interpolates it across the triangle, and
+    /// the fragment shader uses `fwidth` on the relevant barycentric
+    /// component to produce a 1-pixel smoothstep at each silhouette
+    /// edge. Interior tessellation seams carry a zero flag, so the
+    /// fragment keeps full alpha across them and adjacent triangles
+    /// don't leave visible bands.
+    #[allow(clippy::too_many_arguments)]
+    fn push_mesh_primitives_brush(
+        &mut self,
+        tessellated: &crate::path::TessellatedPath,
+        brush: &Brush,
+        affine: &blinc_core::Affine2D,
+        per_vertex_colors: Option<&[blinc_core::Color]>,
+        clip_bounds: [f32; 4],
+        clip_radius: [f32; 4],
+        clip_type: ClipType,
+    ) {
+        use crate::primitives::PrimitiveType;
+        use std::collections::HashMap;
+        let indices = &tessellated.indices;
+        let vertices = &tessellated.vertices;
+        if indices.len() < 3 {
+            return;
+        }
+
+        // Edge-occurrence count: (low_index, high_index) → count.
+        // Silhouette edges appear exactly once across the whole
+        // tessellation; interior edges appear twice.
+        let mut edge_counts: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut i = 0;
+        while i + 2 < indices.len() {
+            let i0 = indices[i];
+            let i1 = indices[i + 1];
+            let i2 = indices[i + 2];
+            i += 3;
+            for (a, b) in [(i0, i1), (i1, i2), (i2, i0)] {
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edge_counts.entry(key).or_insert(0) += 1;
+            }
+        }
+        let is_silhouette = |a: u32, b: u32| -> f32 {
+            let key = if a < b { (a, b) } else { (b, a) };
+            match edge_counts.get(&key).copied().unwrap_or(0) {
+                1 => 1.0,
+                _ => 0.0,
+            }
+        };
+
+        // Encode brush into gradient fields shared across every
+        // triangle emitted for this fill. The SDF core shader reads
+        // `color` + `color2` + `gradient_params` via `fill_type`
+        // (PRIM_MESH honours the same fill_type branches as rect /
+        // circle / ellipse), so we transform gradient endpoints from
+        // path-local to screen space once and reuse them per
+        // triangle.
+        let apply = |pt: [f32; 2]| -> [f32; 2] {
+            [
+                affine.elements[0] * pt[0] + affine.elements[2] * pt[1] + affine.elements[4],
+                affine.elements[1] * pt[0] + affine.elements[3] * pt[1] + affine.elements[5],
+            ]
+        };
+        let scale = {
+            let a = affine.elements[0];
+            let b = affine.elements[1];
+            let c = affine.elements[2];
+            let d = affine.elements[3];
+            let sx = (a * a + b * b).sqrt();
+            let sy = (c * c + d * d).sqrt();
+            (sx + sy) * 0.5
+        };
+        let (fill_type, color_arr, color2_arr, grad_params) = match brush {
+            Brush::Solid(c) => (
+                0u32,
+                [c.r, c.g, c.b, c.a],
+                [c.r, c.g, c.b, c.a],
+                [0.0, 0.0, 0.0, 0.0],
+            ),
+            Brush::Gradient(g) => {
+                let first = g.first_color();
+                let last = g.last_color();
+                match g {
+                    blinc_core::Gradient::Linear { start, end, .. } => {
+                        let s = apply([start.x, start.y]);
+                        let e = apply([end.x, end.y]);
+                        (
+                            1u32,
+                            [first.r, first.g, first.b, first.a],
+                            [last.r, last.g, last.b, last.a],
+                            [s[0], s[1], e[0], e[1]],
+                        )
+                    }
+                    blinc_core::Gradient::Radial { center, radius, .. } => {
+                        let c = apply([center.x, center.y]);
+                        (
+                            2u32,
+                            [first.r, first.g, first.b, first.a],
+                            [last.r, last.g, last.b, last.a],
+                            [c[0], c[1], radius * scale, 0.0],
+                        )
+                    }
+                    blinc_core::Gradient::Conic { center, .. } => {
+                        let c = apply([center.x, center.y]);
+                        (
+                            2u32,
+                            [first.r, first.g, first.b, first.a],
+                            [last.r, last.g, last.b, last.a],
+                            [c[0], c[1], 100.0 * scale, 0.0],
+                        )
+                    }
+                }
+            }
+            _ => (
+                0u32,
+                [1.0, 1.0, 1.0, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+                [0.0, 0.0, 0.0, 0.0],
+            ),
+        };
+        let clip_type_u = clip_type as u32;
+
+        let mut i = 0;
+        while i + 2 < indices.len() {
+            let i0 = indices[i];
+            let i1 = indices[i + 1];
+            let i2 = indices[i + 2];
+            i += 3;
+
+            let v0 = vertices[i0 as usize].position;
+            let v1 = vertices[i1 as usize].position;
+            let v2 = vertices[i2 as usize].position;
+
+            let ax = v1[0] - v0[0];
+            let ay = v1[1] - v0[1];
+            let bx = v2[0] - v0[0];
+            let by = v2[1] - v0[1];
+            let area2 = ax * by - ay * bx;
+            if area2.abs() < 1e-4 {
+                continue;
+            }
+
+            let aux_offset = self.batch.aux_data.len() as u32;
+            self.batch.aux_data.push([v0[0], v0[1], v1[0], v1[1]]);
+            self.batch.aux_data.push([v2[0], v2[1], 0.0, 0.0]);
+            // Multi-stop gradient: append 3 per-vertex colours right
+            // after the triangle positions. The shader reads them at
+            // `aux_data[aux_offset + 2..+5]` when
+            // `type_info.w == 1u` and does barycentric interpolation
+            // via `mesh_bary`, bypassing the fill_type switch so the
+            // authored ramp is reproduced smoothly across the
+            // triangle.
+            if let Some(colors) = per_vertex_colors {
+                let c0 = colors[i0 as usize];
+                let c1 = colors[i1 as usize];
+                let c2 = colors[i2 as usize];
+                self.batch.aux_data.push([c0.r, c0.g, c0.b, c0.a]);
+                self.batch.aux_data.push([c1.r, c1.g, c1.b, c1.a]);
+                self.batch.aux_data.push([c2.r, c2.g, c2.b, c2.a]);
+            }
+
+            let min_x = v0[0].min(v1[0]).min(v2[0]);
+            let min_y = v0[1].min(v1[1]).min(v2[1]);
+            let max_x = v0[0].max(v1[0]).max(v2[0]);
+            let max_y = v0[1].max(v1[1]).max(v2[1]);
+
+            // Silhouette flags per edge. `corner_radius` is otherwise
+            // unused for mesh primitives (no rounded corners on a
+            // raw triangle), so repurpose its three spare slots:
+            //   [0] = edge v0→v1 (bary.z == 0)
+            //   [1] = edge v1→v2 (bary.x == 0)
+            //   [2] = edge v2→v0 (bary.y == 0)
+            let s01 = is_silhouette(i0, i1);
+            let s12 = is_silhouette(i1, i2);
+            let s20 = is_silhouette(i2, i0);
+
+            let mesh_flag: u32 = if per_vertex_colors.is_some() { 1 } else { 0 };
+
+            let mut prim = GpuPrimitive {
+                bounds: [min_x, min_y, max_x - min_x, max_y - min_y],
+                color: color_arr,
+                color2: color2_arr,
+                gradient_params: grad_params,
+                border: [0.0, 0.0, aux_offset as f32, 0.0],
+                corner_radius: [s01, s12, s20, 0.0],
+                clip_bounds,
+                clip_radius,
+                type_info: [
+                    PrimitiveType::Mesh as u32,
+                    fill_type,
+                    clip_type_u,
+                    mesh_flag,
+                ],
+                ..GpuPrimitive::default()
+            };
+            prim.local_affine = [1.0, 0.0, 0.0, 1.0];
+
+            if self.is_foreground {
+                self.batch.push_foreground(prim);
+            } else {
+                self.batch.push(prim);
+            }
+        }
     }
 }
 
@@ -3405,32 +3865,6 @@ mod tests {
         ctx.execute_commands(&commands);
 
         assert_eq!(ctx.batch().primitive_count(), 1);
-    }
-
-    #[test]
-    fn test_canvas_image_command_order() {
-        let mut ctx = GpuPaintContext::new(800.0, 600.0);
-
-        let image = ctx.create_image_empty(4, 4, "test-image");
-        ctx.draw_image(
-            image,
-            Rect::new(10.0, 10.0, 20.0, 20.0),
-            &ImageOptions::default(),
-        );
-        ctx.write_image_rgba(image, 0, 0, 1, 1, &[255, 0, 0, 255]);
-        ctx.draw_image(
-            image,
-            Rect::new(30.0, 10.0, 20.0, 20.0),
-            &ImageOptions::default(),
-        );
-
-        let batch = ctx.take_batch();
-        assert_eq!(batch.image_ops.len(), 2);
-        assert_eq!(batch.image_draws.len(), 2);
-        assert_eq!(batch.image_ops[0].order(), 0);
-        assert_eq!(batch.image_draws[0].order, 1);
-        assert_eq!(batch.image_ops[1].order(), 2);
-        assert_eq!(batch.image_draws[1].order, 3);
     }
 
     #[test]

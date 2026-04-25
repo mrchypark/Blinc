@@ -368,12 +368,12 @@ impl TestHarness {
     pub fn with_config(config: TestHarnessConfig) -> Result<Self> {
         let renderer_config = RendererConfig {
             max_primitives: config.max_primitives,
-            max_line_segments: config.max_primitives.saturating_mul(20),
             max_glass_primitives: config.max_glass_primitives,
             max_glyphs: config.max_glyphs,
             sample_count: config.sample_count,
             texture_format: Some(wgpu::TextureFormat::Rgba8Unorm),
             unified_text_rendering: true,
+            ..RendererConfig::default()
         };
 
         let renderer = pollster::block_on(GpuRenderer::new(renderer_config))
@@ -646,15 +646,15 @@ impl TestHarness {
             });
 
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &copy_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(height),
@@ -675,7 +675,7 @@ impl TestHarness {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::Wait);
         rx.recv()
             .context("Failed to receive buffer map result")?
             .context("Failed to map buffer")?;
@@ -784,13 +784,13 @@ impl TestHarness {
                 });
 
             encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &resolve_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &backdrop_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
@@ -839,15 +839,15 @@ impl TestHarness {
             });
 
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &resolve_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(height),
@@ -868,7 +868,7 @@ impl TestHarness {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::Wait);
         rx.recv()
             .context("Failed to receive buffer map result")?
             .context("Failed to map buffer")?;
@@ -1282,15 +1282,15 @@ impl TestHarness {
             });
 
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &resolve_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(height),
@@ -1311,7 +1311,7 @@ impl TestHarness {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::Wait);
         rx.recv()
             .context("Failed to receive buffer map result")?
             .context("Failed to map buffer")?;

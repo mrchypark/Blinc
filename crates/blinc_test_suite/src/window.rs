@@ -74,15 +74,13 @@ where
         }))
         .expect("Failed to find adapter");
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("Interactive Test Device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::default(),
-            },
-            None,
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("Interactive Test Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::Off,
+        }))
         .expect("Failed to create device");
 
         let size = window.inner_size();
@@ -106,18 +104,16 @@ where
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            WindowEvent::Resized(new_size) => {
-                if new_size.width > 0 && new_size.height > 0 {
-                    if let (Some(surface), Some(device), Some(config)) =
-                        (&self.surface, &self.device, &mut self.config)
-                    {
-                        config.width = new_size.width;
-                        config.height = new_size.height;
-                        surface.configure(device, config);
-                    }
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
+            WindowEvent::Resized(new_size) if new_size.width > 0 && new_size.height > 0 => {
+                if let (Some(surface), Some(device), Some(config)) =
+                    (&self.surface, &self.device, &mut self.config)
+                {
+                    config.width = new_size.width;
+                    config.height = new_size.height;
+                    surface.configure(device, config);
+                }
+                if let Some(window) = &self.window {
+                    window.request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {

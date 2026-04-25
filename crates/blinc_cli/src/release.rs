@@ -70,12 +70,14 @@ pub(crate) fn write_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
         }
 
         manifest.published_at = published_at.clone();
-        match (&mut manifest.notes_url, &args.notes_url) {
-            (slot @ None, Some(notes_url)) => *slot = Some(notes_url.clone()),
-            (Some(existing), Some(notes_url)) if existing != notes_url => {
-                bail!("Existing release manifest notes_url does not match this artifact")
+        if let Some(notes_url) = &args.notes_url {
+            match &manifest.notes_url {
+                None => manifest.notes_url = Some(notes_url.clone()),
+                Some(existing) if existing != notes_url => {
+                    bail!("Existing release manifest notes_url does not match this artifact")
+                }
+                Some(_) => {}
             }
-            _ => {}
         }
 
         manifest.artifacts.retain(|existing| {

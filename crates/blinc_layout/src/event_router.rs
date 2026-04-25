@@ -602,6 +602,17 @@ impl EventRouter {
         self.mouse_x = x;
         self.mouse_y = y;
 
+        // Store button info for EventContext population
+        let button_code = match button {
+            MouseButton::Left => 0u8,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+            MouseButton::Back => 3,
+            MouseButton::Forward => 4,
+            MouseButton::Other(_) => 5,
+        };
+        crate::event_handler::set_current_mouse_button(button_code);
+
         // Initialize drag tracking
         self.drag_start_x = x;
         self.drag_start_y = y;
@@ -642,7 +653,7 @@ impl EventRouter {
                     x,
                     y,
                     button: RecorderMouseButton::from(button),
-                    modifiers: self.recorder_modifiers(),
+                    modifiers: recorder_bridge::RecorderModifiers::default(),
                     target_element: Some(format!("{:?}", hit.node)),
                 });
             }
@@ -715,7 +726,7 @@ impl EventRouter {
                     x,
                     y,
                     button: RecorderMouseButton::from(button),
-                    modifiers: self.recorder_modifiers(),
+                    modifiers: recorder_bridge::RecorderModifiers::default(),
                     target_element: Some(format!("{:?}", target)),
                 });
 
@@ -725,7 +736,7 @@ impl EventRouter {
                         x,
                         y,
                         button: RecorderMouseButton::from(button),
-                        modifiers: self.recorder_modifiers(),
+                        modifiers: recorder_bridge::RecorderModifiers::default(),
                         target_element: Some(format!("{:?}", target)),
                     });
                 }

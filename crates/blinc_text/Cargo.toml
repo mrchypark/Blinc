@@ -1,7 +1,7 @@
 [package]
 name = "blinc_text"
 description = "High-quality text rendering for Blinc UI framework"
-version = "0.1.14"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,7 +11,7 @@ keywords = ["ui", "gui", "text", "font", "blinc"]
 categories = ["gui", "text-processing"]
 
 [dependencies]
-blinc_core = { path = "../blinc_core", version = "0.1.14" }
+blinc_core = { path = "../blinc_core", version = "0.5.1" }
 
 # Font parsing
 ttf-parser = { workspace = true }

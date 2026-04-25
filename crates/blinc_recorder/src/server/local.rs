@@ -62,6 +62,11 @@ impl DebugServerConfig {
         {
             PathBuf::from(format!(r"\\.\pipe\blinc\{}", self.app_name))
         }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            PathBuf::from(format!("blinc-debug://{}", self.app_name))
+        }
     }
 }
 
@@ -335,6 +340,21 @@ impl DebugServer {
         }
 
         Ok(())
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn run_server(
+        &self,
+        _socket_path: &PathBuf,
+        _shutdown: Arc<AtomicBool>,
+        ready_tx: mpsc::Sender<io::Result<()>>,
+    ) -> io::Result<()> {
+        let err = io::Error::new(
+            io::ErrorKind::Unsupported,
+            "local debug server is not available on this target",
+        );
+        let _ = ready_tx.send(Err(io::Error::new(err.kind(), err.to_string())));
+        Err(err)
     }
 }
 

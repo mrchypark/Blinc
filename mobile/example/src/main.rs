@@ -173,6 +173,64 @@ fn counter_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
         )
 }
 
+/// Soft-keyboard test section.
+///
+/// Tap the text field to focus it. On Android the IME pops up via
+/// `app.show_soft_input()` from `android.rs`; on iOS the
+/// `BlincKeyboardHelper.shared.showKeyboard()` Swift bridge is
+/// invoked from `ios.rs` via `dlsym`-resolved
+/// `blinc_ios_show_keyboard`. Tap outside (or call
+/// `clear_focus()`) to dismiss.
+///
+/// **iOS prerequisite for soft keyboard**: copy
+/// `extensions/blinc_platform_ios/templates/BlincNativeBridge.swift`
+/// into your iOS project and add it to the Xcode build target. The
+/// runner falls back to a no-op when the symbol isn't present, so
+/// the link still succeeds without it — text input still works at
+/// the model level (cursor moves, characters insert via hardware
+/// keyboard / Bluetooth keyboard) but the soft keyboard won't pop
+/// up.
+fn keyboard_section(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
+    // Persistent text-input state, keyed so it survives rebuilds.
+    // `text_input_state_with_placeholder` returns a
+    // `SharedTextInputState` (Arc<Mutex<TextInputData>>) which is
+    // cloned into the widget on every rebuild — the underlying
+    // buffer + cursor position + focus flag persist across
+    // rebuilds because the Arc points at the same allocation.
+    let input_state = ctx.use_state_keyed("kbd_test_input", || {
+        text_input_state_with_placeholder("Tap to focus and type…")
+    });
+
+    // Surrounding container is dark, so the input's idle and
+    // focused background colors both need to be dark too —
+    // otherwise the focus state defaults to the theme's
+    // `InputBgFocus` (light, designed for light-mode pages) and
+    // the white text becomes invisible on a white field.
+    let input_bg = Color::rgba(0.20, 0.20, 0.27, 1.0);
+    let input_focus_bg = Color::rgba(0.24, 0.24, 0.32, 1.0);
+
+    section_card("Soft Keyboard Test", theme)
+        .child(
+            text("Tap the field — the OS soft keyboard should pop up on mobile.")
+                .size(13.0)
+                .align(TextAlign::Center)
+                .color(Color::rgba(0.7, 0.7, 0.78, 1.0)),
+        )
+        .child(
+            div().w(300.0).child(
+                text_input(&input_state.get())
+                    .w_full()
+                    .text_color(Color::WHITE)
+                    .placeholder_color(Color::rgba(0.55, 0.55, 0.62, 1.0))
+                    .idle_bg_color(input_bg)
+                    .hover_bg_color(input_bg)
+                    .focused_bg_color(input_focus_bg)
+                    .border_color(Color::rgba(0.32, 0.32, 0.40, 1.0))
+                    .focused_border_color(Color::rgba(0.45, 0.55, 0.95, 1.0)),
+            ),
+        )
+}
+
 /// Demo 1: Spinning loader using rotation keyframes
 fn spinning_loader_demo(ctx: &WindowedContext, theme: ExampleTheme) -> Div {
     let timeline = ctx.use_animated_timeline();
@@ -542,8 +600,8 @@ fn app_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
                     )
                     // Counter section
                     .child(counter_section(ctx, theme))
-                    // Sensor section
-                    .child(sensor_inspector::sensor_section(ctx, section_card, theme))
+                    // Soft-keyboard test section
+                    .child(keyboard_section(ctx, theme))
                     // Animation section
                     .child(animation_section(ctx, theme)),
             ),
@@ -591,6 +649,13 @@ fn android_main(app: AndroidApp) {
 
     log::info!("Starting example on Android");
 
+    // Wire up the JNI bridge to the Kotlin BlincNativeBridge object.
+    // MainActivity.onCreate has already called BlincNativeBridge.registerDefaults
+    // on the JVM side, so this just attaches the platform adapter on the Rust side.
+    if let Err(e) = blinc_platform_android::init_android_native_bridge(&app) {
+        log::warn!("Failed to init Android native bridge: {}", e);
+    }
+
     blinc_app::AndroidApp::run(app, |ctx| app_ui(ctx)).expect("Failed to run Android app");
 }
 
@@ -611,8 +676,25 @@ fn main() {}
 #[cfg(target_os = "ios")]
 #[no_mangle]
 pub extern "C" fn ios_app_init() {
+    use std::io::Write;
+    // Filter out the chatty wgpu/naga shader-compilation crates so the
+    // Xcode console only shows blinc + app traces. Without this filter
+    // every shader compile dumps thousands of lines of `naga::front`
+    // type-resolution debug output which drowns out touch-event traces.
+    let filter = tracing_subscriber::EnvFilter::new(
+        "info,\
+         blinc_layout=debug,\
+         blinc_app=debug,\
+         blinc_animation=debug,\
+         blinc_layout::widgets::text_input=debug,\
+         blinc_layout::widgets::text_edit=debug,\
+         wgpu=warn,\
+         wgpu_core=warn,\
+         wgpu_hal=warn,\
+         naga=warn",
+    );
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .try_init();
 

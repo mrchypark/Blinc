@@ -7,7 +7,7 @@ use blinc_core::{
 };
 use blinc_gpu::{
     FontRegistry, GenericFont as GpuGenericFont, GpuGlyph, GpuImage, GpuImageInstance,
-    GpuPaintContext, GpuPrimitive, GpuRenderer, ImageRenderingContext, PrimitiveBatch,
+    GpuPaintContext, GpuPrimitive, GpuRenderer, ImageRenderingContext, PendingMesh, PrimitiveBatch,
     TextAlignment, TextAnchor, TextRenderingContext,
 };
 use blinc_layout::div::{FontFamily, FontWeight, GenericFont, TextAlign, TextVerticalAlign};
@@ -24,11 +24,53 @@ use std::sync::{Arc, Mutex};
 use crate::error::Result;
 use crate::svg_atlas::SvgAtlas;
 
-/// Maximum number of images to keep in cache (prevents unbounded memory growth)
-const IMAGE_CACHE_CAPACITY: usize = 32;
+/// Maximum number of images to keep in cache (prevents unbounded memory growth).
+///
+/// Sized to comfortably hold the simultaneously-visible image set of typical
+/// content-heavy views (galleries, emoji grids, chat backlogs). Going below
+/// the visible-set size causes scroll-driven thrashing where currently-visible
+/// images are evicted to make room for newly-loaded ones.
+const IMAGE_CACHE_CAPACITY: usize = 256;
 
 /// Maximum number of parsed SVG documents to cache
 const SVG_CACHE_CAPACITY: usize = 128;
+
+/// Decide whether an image entering the cache should be BC-compressed.
+///
+/// BC1/BC3's 4×4 block quantization is designed for large
+/// photographic content where artifacts hide in detail. It's a
+/// visibly bad fit for:
+///
+/// - **Emoji sprites** (`emoji://...`) — tiny color glyphs with
+///   smooth gradients, sharp edges, and feathered alpha. Blocking
+///   artifacts produce obvious banding and ringing.
+/// - **Small icons / logos** — same failure mode at smaller
+///   scale. Anywhere a designer cared about crispness is somewhere
+///   BC will look wrong.
+///
+/// Gate compression behind a minimum dimension floor of 256 px
+/// and a hard skip for the `emoji://` scheme. Large photographic
+/// content (product shots, avatars at reasonable size, wallpaper)
+/// still goes through BC and keeps the VRAM win; small UI sprites
+/// stay lossless.
+fn bc_eligible(source_uri: &str, width: u32, height: u32) -> bool {
+    const MIN_DIM: u32 = 256;
+    if source_uri.starts_with("emoji://") {
+        return false;
+    }
+    // BC blocks are 4×4 — wgpu's `Device::create_texture` rejects
+    // any texture whose dimensions aren't multiples of 4 for the
+    // BC formats. Real photos (camera captures, album art, stock
+    // images) frequently land on odd dimensions like 1920×1201.
+    // Padding the source buffer + adjusting UVs would reclaim
+    // these, but the 2D image pipeline samples `[0,1]` across the
+    // texture with no slop — cheapest correct fix is to fall
+    // through to Rgba8 when the image isn't block-aligned.
+    if width % 4 != 0 || height % 4 != 0 {
+        return false;
+    }
+    width >= MIN_DIM && height >= MIN_DIM
+}
 
 /// Intersect two axis-aligned clip rects [x, y, w, h], returning their overlap.
 fn intersect_clip_rects(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
@@ -61,7 +103,7 @@ fn effective_single_clip(primary: Option<[f32; 4]>, scroll: Option<[f32; 4]>) ->
 /// Internal render context that manages GPU resources and rendering
 pub struct RenderContext {
     renderer: GpuRenderer,
-    text_ctx: TextRenderingContext,
+    pub(crate) text_ctx: TextRenderingContext,
     image_ctx: ImageRenderingContext,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -72,6 +114,8 @@ pub struct RenderContext {
     msaa_texture: Option<CachedTexture>,
     // LRU cache for images (prevents unbounded memory growth)
     image_cache: LruCache<String, GpuImage>,
+    // Tracks when each image first appeared in the cache (for fade-in animation)
+    image_load_times: std::collections::HashMap<String, web_time::Instant>,
     // LRU cache for parsed SVG documents (avoids re-parsing)
     svg_cache: LruCache<u64, SvgDocument>,
     // Texture atlas for rasterized SVGs (single shared GPU texture, shelf-packed)
@@ -87,6 +131,13 @@ pub struct RenderContext {
     has_active_flows: bool,
     // Frame counter for periodic cache stats logging
     frame_count: u64,
+    // Alpha value used when clearing the main render target. 1.0 for
+    // opaque windows (the default); 0.0 when the window surface is
+    // configured for transparent composition. Set via
+    // [`Self::set_clear_alpha`] before each window's render — the
+    // desktop runner updates it per-window so a mix of opaque and
+    // transparent windows can share the same RenderContext.
+    clear_alpha: f32,
 }
 
 struct CachedTexture {
@@ -191,6 +242,10 @@ struct ImageElement {
     placeholder_type: u8,
     /// Placeholder color [r, g, b, a]
     placeholder_color: [f32; 4],
+    /// Placeholder image source (only used when placeholder_type == 2)
+    placeholder_image: Option<String>,
+    /// Fade-in duration in milliseconds (0 = no fade)
+    fade_duration_ms: u32,
     /// Z-layer index for interleaved rendering with primitives
     z_index: u32,
     /// Border width (0 = no border)
@@ -304,6 +359,7 @@ impl RenderContext {
             backdrop_texture: None,
             msaa_texture: None,
             image_cache: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAPACITY).unwrap()),
+            image_load_times: std::collections::HashMap::new(),
             svg_cache: LruCache::new(NonZeroUsize::new(SVG_CACHE_CAPACITY).unwrap()),
             svg_atlas,
             scratch_glyphs: Vec::with_capacity(1024), // Pre-allocate for typical text
@@ -313,10 +369,35 @@ impl RenderContext {
             cursor_pos: [0.0; 2],
             has_active_flows: false,
             frame_count: 0,
+            clear_alpha: 1.0,
         }
     }
 
+    /// Set the alpha component used when clearing the main render target.
+    ///
+    /// 1.0 (default) gives opaque clears — correct for regular windows
+    /// and any surface configured with `CompositeAlphaMode::Opaque`.
+    /// 0.0 is used for windows whose surface was created with a
+    /// premultiplied/postmultiplied alpha mode so the OS compositor
+    /// can see through to whatever is behind the window.
+    pub fn set_clear_alpha(&mut self, alpha: f32) {
+        self.clear_alpha = alpha;
+    }
+
     /// Update the current cursor position in physical pixels (for @flow pointer input)
+    /// Register a custom render pass with the GPU renderer.
+    ///
+    /// Scene3D-stage passes run inside the mesh HDR pipeline with
+    /// camera context (view_proj, inv_view_proj, camera_pos) populated
+    /// on `RenderPassContext`. PreRender/PostProcess stages run at
+    /// their existing points in the frame.
+    pub fn register_custom_pass(
+        &mut self,
+        pass: Box<dyn blinc_gpu::custom_pass::CustomRenderPass>,
+    ) {
+        self.renderer.register_custom_pass(pass);
+    }
+
     pub fn set_cursor_position(&mut self, x: f32, y: f32) {
         self.cursor_pos = [x, y];
     }
@@ -456,6 +537,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 Ok(mut glyphs) => {
                     tracing::trace!(
@@ -513,15 +595,21 @@ impl RenderContext {
 
         self.renderer.resize(width, height);
 
-        // If we have CSS-transformed text, push text prims into the background batch
-        // and bind the real glyph atlas to the SDF pipeline for ALL render paths.
-        if !css_transformed_text_prims.is_empty() {
-            if let (Some(atlas), Some(color_atlas)) =
-                (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
-            {
+        // Bind the real glyph atlas to the SDF pipeline whenever
+        // it's available — `set_glyph_atlas` no-ops on pointer
+        // equality so calling each frame is free. CSS-transformed
+        // text + canvas `draw_text` calls both land glyph-sourced
+        // primitives in `bg_batch.primitives`, and the SDF pipeline
+        // needs the real atlas bound to sample them; the old
+        // "only when CSS text exists" guard silently swallowed
+        // canvas text that reached this path any other way.
+        if let (Some(atlas), Some(color_atlas)) =
+            (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
+        {
+            if !css_transformed_text_prims.is_empty() {
                 bg_batch.primitives.append(&mut css_transformed_text_prims);
-                self.renderer.set_glyph_atlas(atlas, color_atlas);
             }
+            self.renderer.set_glyph_atlas(atlas, color_atlas);
         }
 
         let has_glass = bg_batch.glass_count() > 0;
@@ -549,7 +637,15 @@ impl RenderContext {
                 let backdrop_tex = self.backdrop_texture.take().unwrap();
                 self.renderer
                     .clear_target(&backdrop_tex.view, wgpu::Color::TRANSPARENT);
-                self.renderer.clear_target(target, wgpu::Color::BLACK);
+                self.renderer.clear_target(
+                    target,
+                    wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: self.clear_alpha as f64,
+                    },
+                );
                 self.render_images_ref(&backdrop_tex.view, &bg_images);
                 self.render_images_ref(target, &bg_images);
                 self.backdrop_texture = Some(backdrop_tex);
@@ -564,6 +660,7 @@ impl RenderContext {
                     &backdrop.view,
                     (backdrop.width, backdrop.height),
                     &bg_batch,
+                    has_bg_images,
                 );
             }
 
@@ -582,6 +679,16 @@ impl RenderContext {
             // Step 5: Render glass/foreground-layer images (on top of glass, NOT blurred)
             self.render_images_ref(target, &fg_images);
 
+            // Step 5b: Render dynamic RGBA images (video frames, camera preview)
+            if !bg_batch.dynamic_images.is_empty() {
+                self.renderer
+                    .render_dynamic_images(target, &bg_batch.dynamic_images);
+            }
+            if !fg_batch.dynamic_images.is_empty() {
+                self.renderer
+                    .render_dynamic_images(target, &fg_batch.dynamic_images);
+            }
+
             // Step 6: Render foreground and text
             // Use batch-based rendering when layer effects are present
             let has_layer_effects = fg_batch.has_layer_effects();
@@ -598,8 +705,15 @@ impl RenderContext {
                     self.render_rasterized_svgs(target, &svgs, scale_factor);
                 }
             } else if self.renderer.unified_text_rendering() {
-                // Unified rendering: combine text glyphs with foreground primitives
-                let unified_primitives = fg_batch.get_unified_foreground_primitives();
+                // Unified rendering: combine text glyphs with foreground primitives.
+                // See the simple-path branch below for the rationale on
+                // extending `unified_primitives` with the local
+                // `all_glyphs` — `get_unified_foreground_primitives()`
+                // reads from `fg_batch.glyphs`, which is empty here.
+                let mut unified_primitives = fg_batch.get_unified_foreground_primitives();
+                for glyph in &all_glyphs {
+                    unified_primitives.push(GpuPrimitive::from_glyph(glyph));
+                }
                 if !unified_primitives.is_empty() {
                     self.render_unified(target, &unified_primitives);
                 }
@@ -648,10 +762,15 @@ impl RenderContext {
             // Background uses SDF rendering (no MSAA needed)
             // Foreground uses MSAA for smooth SVG edges
 
-            // Render background directly to target
-            // Use opaque black clear - transparent clear can cause issues with window surfaces
-            self.renderer
-                .render_with_clear(target, &bg_batch, [0.0, 0.0, 0.0, 1.0]);
+            // Render background directly to target. Alpha comes from
+            // `clear_alpha` so transparent windows get a fully clear
+            // surface (0.0) while opaque windows keep the historical
+            // opaque black (1.0) clear.
+            self.renderer.render_with_clear(
+                target,
+                &bg_batch,
+                [0.0, 0.0, 0.0, self.clear_alpha as f64],
+            );
 
             // Render background paths with MSAA for smooth edges on curved shapes like notch
             if use_msaa_overlay && bg_batch.has_paths() {
@@ -681,8 +800,21 @@ impl RenderContext {
                 }
             } else if self.renderer.unified_text_rendering() {
                 // Unified rendering: combine text glyphs with foreground primitives
-                // This ensures text and shapes transform together during animations
-                let unified_primitives = fg_batch.get_unified_foreground_primitives();
+                // This ensures text and shapes transform together during animations.
+                //
+                // `get_unified_foreground_primitives()` reads from
+                // `fg_batch.glyphs`, which is empty here — the glyph
+                // preparation loop above writes into the local
+                // `all_glyphs` vec, not into the batch. We have to
+                // extend the unified primitive list with our local
+                // glyphs ourselves, otherwise the unified path silently
+                // drops every text element. (The `render_tree_with_motion`
+                // variant doesn't hit this because it pushes glyphs
+                // through a different intermediate buffer.)
+                let mut unified_primitives = fg_batch.get_unified_foreground_primitives();
+                for glyph in &all_glyphs {
+                    unified_primitives.push(GpuPrimitive::from_glyph(glyph));
+                }
                 if !unified_primitives.is_empty() {
                     self.render_unified(target, &unified_primitives);
                 }
@@ -873,12 +1005,64 @@ impl RenderContext {
     ///
     /// This ensures text and shapes transform together during animations,
     /// preventing visual lag when parent containers have motion transforms.
+    ///
+    /// **Glyph atlas binding is required.** The unified rendering path
+    /// converts text glyphs into `GpuPrimitive`s with `prim_type =
+    /// PRIM_TEXT`, which the SDF shader's `case PRIM_TEXT:` arm
+    /// samples from `glyph_atlas` / `color_glyph_atlas`. The default
+    /// SDF bind group has 1×1 placeholder textures bound to those
+    /// slots — without explicitly binding the real atlases via
+    /// `render_primitives_overlay_with_glyphs`, every text quad
+    /// samples a transparent placeholder pixel and the text renders
+    /// invisibly.
+    ///
+    /// `render_tree_with_motion` (the desktop / mobile path) handles
+    /// this via the same call. Skipping it was a `render_tree`
+    /// (headless / web) path bug — text was being correctly converted
+    /// to primitives but the placeholder atlas was producing zero
+    /// output for every glyph quad.
     fn render_unified(&mut self, target: &wgpu::TextureView, primitives: &[GpuPrimitive]) {
         if primitives.is_empty() {
             return;
         }
 
-        self.renderer.render_primitives_overlay(target, primitives);
+        // MSAA route: draw the SDF primitive stream (including the
+        // mesh triangles tessellated from solid path fills) through the
+        // MSAA-enabled split pipelines so path fills get the same
+        // hardware-resolved smoothing that gradient and stroke paths
+        // already receive via `render_paths_overlay_msaa`. Without
+        // this, unified-text mode bypassed MSAA for every `PRIM_MESH`
+        // primitive, leaving tessellated vector output visibly rougher
+        // than the rasterized-SVG path.
+        //
+        // The glyph atlas bind group is already attached to
+        // `self.bind_groups.sdf` via `set_glyph_atlas()` at the start
+        // of the frame (the same way
+        // `render_primitives_overlay_with_glyphs` uses it), so
+        // `PRIM_TEXT` primitives in the same stream still sample the
+        // real atlas here.
+        if self.sample_count > 1 {
+            self.renderer
+                .render_primitives_overlay_msaa(target, primitives, self.sample_count);
+            return;
+        }
+
+        if let (Some(atlas_view), Some(color_atlas_view)) =
+            (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
+        {
+            self.renderer.render_primitives_overlay_with_glyphs(
+                target,
+                primitives,
+                atlas_view,
+                color_atlas_view,
+            );
+        } else {
+            // No atlas available — fall back to plain primitive
+            // rendering. Text quads will sample placeholder pixels
+            // and render invisibly, but at least non-text primitives
+            // still render.
+            self.renderer.render_primitives_overlay(target, primitives);
+        }
     }
 
     /// Render text decorations for a specific z-layer
@@ -1045,9 +1229,46 @@ impl RenderContext {
         // Buffer zone: load images that are within 100px of becoming visible
         const VISIBILITY_BUFFER: f32 = 100.0;
 
+        // Eagerly load placeholder images for any lazy element with placeholder_type == 2
+        // (so the placeholder is already in cache when we go to render it).
+        // Use get() instead of contains() so cached placeholders are promoted to
+        // MRU and survive eviction pressure from the main image puts below.
         for image in images {
-            // LruCache::contains also promotes to most-recently-used
-            if self.image_cache.contains(&image.source) {
+            if image.placeholder_type == 2 {
+                if let Some(ref placeholder_src) = image.placeholder_image {
+                    if self.image_cache.get(placeholder_src).is_none() {
+                        let source = blinc_image::ImageSource::from_uri(placeholder_src);
+                        if let Ok(data) = blinc_image::ImageData::load(source) {
+                            // `is_srgb = false` mirrors
+                            // `create_image_labeled`'s existing
+                            // behavior so we don't accidentally
+                            // change sampling here — the 2D image
+                            // pipeline treats bytes as linear.
+                            let has_bc = self.renderer.has_texture_compression_bc()
+                                && bc_eligible(placeholder_src, data.width(), data.height());
+                            let gpu_image = self.image_ctx.create_image_maybe_compressed(
+                                data.pixels(),
+                                data.width(),
+                                data.height(),
+                                false,
+                                has_bc,
+                                placeholder_src,
+                            );
+                            self.image_cache.put(placeholder_src.clone(), gpu_image);
+                        }
+                    }
+                }
+            }
+        }
+
+        for image in images {
+            // Use get() (not contains()) so the cache hit promotes the entry
+            // to MRU. Without this, the LRU order is set entirely by insertion
+            // order, and any new put() during scroll evicts the oldest visible
+            // image first — which is exactly the row at the top of the viewport.
+            // Promoting on hit during preload guarantees the eviction victims
+            // are non-visible entries at the back of the cache.
+            if self.image_cache.get(&image.source).is_some() {
                 continue;
             }
 
@@ -1101,16 +1322,29 @@ impl RenderContext {
                 }
             };
 
-            // Create GPU texture
-            let gpu_image = self.image_ctx.create_image_labeled(
+            // Create GPU texture — compress to BC1/BC3 when the
+            // device supports it so the image cache's VRAM
+            // footprint scales with asset count instead of blowing
+            // past the LRU budget on 4K dashboards. `bc_eligible`
+            // filters out cases where BC's 4×4-block quantization
+            // would be visually unacceptable (emoji sprites, small
+            // icons with smooth gradients).
+            let has_bc = self.renderer.has_texture_compression_bc()
+                && bc_eligible(&image.source, image_data.width(), image_data.height());
+            let gpu_image = self.image_ctx.create_image_maybe_compressed(
                 image_data.pixels(),
                 image_data.width(),
                 image_data.height(),
+                false,
+                has_bc,
                 &image.source,
             );
 
             // LruCache::put evicts oldest entry if at capacity
             self.image_cache.put(image.source.clone(), gpu_image);
+            // Record load time for fade-in animation
+            self.image_load_times
+                .insert(image.source.clone(), web_time::Instant::now());
         }
     }
 
@@ -1265,33 +1499,123 @@ impl RenderContext {
             // Get cached GPU image
             let gpu_image = self.image_cache.get(&image.source);
 
+            // Compute fade-in opacity multiplier from load time + duration
+            // Returns 1.0 if no fade configured or fade complete; <1.0 during fade
+            let fade_factor = if image.fade_duration_ms > 0 && gpu_image.is_some() {
+                if let Some(loaded_at) = self.image_load_times.get(&image.source) {
+                    let elapsed_ms = loaded_at.elapsed().as_secs_f32() * 1000.0;
+                    (elapsed_ms / image.fade_duration_ms as f32).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
+            if fade_factor < 1.0 {
+                // Force continuous redraw while fade is in progress
+                self.has_active_flows = true;
+            }
+
             // If image is not loaded and has a placeholder, render placeholder
             if gpu_image.is_none() && image.placeholder_type != 0 {
-                // Placeholder type 1 = Color
-                if image.placeholder_type == 1 {
-                    // Render a solid color rectangle as placeholder
-                    let color = blinc_core::Color::rgba(
-                        image.placeholder_color[0],
-                        image.placeholder_color[1],
-                        image.placeholder_color[2],
-                        image.placeholder_color[3],
-                    );
-
-                    // Create a simple rectangle for the placeholder
-                    let mut ctx = GpuPaintContext::new(viewport_width, viewport_height);
-
-                    let rect = blinc_core::Rect::new(image.x, image.y, image.width, image.height);
-
-                    ctx.fill_rounded_rect(
-                        rect,
-                        blinc_core::CornerRadius::uniform(image.border_radius),
-                        color,
-                    );
-
-                    let batch = ctx.take_batch();
-                    self.renderer.render_overlay(target, &batch);
+                match image.placeholder_type {
+                    // Type 1: Solid color
+                    1 => {
+                        let color = blinc_core::Color::rgba(
+                            image.placeholder_color[0],
+                            image.placeholder_color[1],
+                            image.placeholder_color[2],
+                            image.placeholder_color[3],
+                        );
+                        let mut ctx = GpuPaintContext::new(viewport_width, viewport_height);
+                        let rect =
+                            blinc_core::Rect::new(image.x, image.y, image.width, image.height);
+                        ctx.fill_rounded_rect(
+                            rect,
+                            blinc_core::CornerRadius::uniform(image.border_radius),
+                            color,
+                        );
+                        let batch = ctx.take_batch();
+                        self.renderer.render_overlay(target, &batch);
+                    }
+                    // Type 2: Image placeholder (e.g., low-res thumbnail or blur hash)
+                    2 => {
+                        if let Some(ref placeholder_src) = image.placeholder_image {
+                            if let Some(placeholder_gpu) = self.image_cache.get(placeholder_src) {
+                                let (src_rect, dst_rect) = calculate_fit_rects(
+                                    placeholder_gpu.width(),
+                                    placeholder_gpu.height(),
+                                    image.width,
+                                    image.height,
+                                    ObjectFit::Cover,
+                                    ObjectPosition::new(0.5, 0.5),
+                                );
+                                let src_uv = src_rect_to_uv(
+                                    src_rect,
+                                    placeholder_gpu.width(),
+                                    placeholder_gpu.height(),
+                                );
+                                let instance = GpuImageInstance::new(
+                                    image.x + dst_rect[0],
+                                    image.y + dst_rect[1],
+                                    dst_rect[2],
+                                    dst_rect[3],
+                                )
+                                .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
+                                .with_border_radius(image.border_radius)
+                                .with_opacity(image.opacity);
+                                self.renderer.render_images(
+                                    target,
+                                    placeholder_gpu.view(),
+                                    &[instance],
+                                );
+                            }
+                        }
+                    }
+                    // Type 3: Skeleton shimmer (animated gradient sweep)
+                    3 => {
+                        let t =
+                            self.frame_count.saturating_mul(16).rem_euclid(2400) as f32 / 2400.0;
+                        let base_a = image.placeholder_color[3].max(0.4);
+                        let base = blinc_core::Color::rgba(
+                            image.placeholder_color[0],
+                            image.placeholder_color[1],
+                            image.placeholder_color[2],
+                            base_a,
+                        );
+                        let highlight_a = (base_a + 0.25).min(1.0);
+                        let highlight = blinc_core::Color::rgba(
+                            (image.placeholder_color[0] + 0.15).min(1.0),
+                            (image.placeholder_color[1] + 0.15).min(1.0),
+                            (image.placeholder_color[2] + 0.15).min(1.0),
+                            highlight_a,
+                        );
+                        let mut ctx = GpuPaintContext::new(viewport_width, viewport_height);
+                        let rect =
+                            blinc_core::Rect::new(image.x, image.y, image.width, image.height);
+                        // Base background
+                        ctx.fill_rounded_rect(
+                            rect,
+                            blinc_core::CornerRadius::uniform(image.border_radius),
+                            base,
+                        );
+                        // Shimmer band — narrow vertical strip swept horizontally
+                        let band_w = (image.width * 0.25).max(40.0);
+                        let band_x = image.x + (image.width + band_w) * t - band_w;
+                        let band_rect =
+                            blinc_core::Rect::new(band_x, image.y, band_w, image.height);
+                        ctx.fill_rounded_rect(
+                            band_rect,
+                            blinc_core::CornerRadius::uniform(image.border_radius),
+                            highlight,
+                        );
+                        let batch = ctx.take_batch();
+                        self.renderer.render_overlay(target, &batch);
+                        // Mark frame as needing redraw for animation
+                        self.has_active_flows = true;
+                    }
+                    _ => {}
                 }
-                // TODO: Placeholder type 2 = Image (thumbnail), 3 = Skeleton (shimmer)
                 continue;
             }
 
@@ -1377,7 +1701,7 @@ impl RenderContext {
                 .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
                 .with_tint(image.tint[0], image.tint[1], image.tint[2], image.tint[3])
                 .with_border_radius(image.border_radius)
-                .with_opacity(image.opacity)
+                .with_opacity(image.opacity * fade_factor)
                 .with_transform(ta, tb, tc, td)
                 .with_filter(image.filter_a, image.filter_b);
 
@@ -1424,6 +1748,21 @@ impl RenderContext {
             let Some(gpu_image) = self.image_cache.get(&image.source) else {
                 continue; // Skip images that failed to load
             };
+
+            // Compute fade-in opacity multiplier
+            let fade_factor = if image.fade_duration_ms > 0 {
+                if let Some(loaded_at) = self.image_load_times.get(&image.source) {
+                    let elapsed_ms = loaded_at.elapsed().as_secs_f32() * 1000.0;
+                    (elapsed_ms / image.fade_duration_ms as f32).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
+            if fade_factor < 1.0 {
+                self.has_active_flows = true;
+            }
 
             // Convert object_fit byte to ObjectFit enum
             let object_fit = match image.object_fit {
@@ -1481,7 +1820,7 @@ impl RenderContext {
                 .with_src_uv(src_uv[0], src_uv[1], src_uv[2], src_uv[3])
                 .with_tint(image.tint[0], image.tint[1], image.tint[2], image.tint[3])
                 .with_border_radius(image.border_radius)
-                .with_opacity(image.opacity)
+                .with_opacity(image.opacity * fade_factor)
                 .with_transform(ta, tb, tc, td)
                 .with_filter(image.filter_a, image.filter_b);
 
@@ -1688,6 +2027,14 @@ impl RenderContext {
         svgs: &[SvgElement],
         scale_factor: f32,
     ) {
+        // Evict stale atlas entries from the previous frame BEFORE
+        // the loop so every UV coordinate computed below stays valid
+        // for the entire render pass. Doing this mid-loop (inside
+        // `insert`) would repack surviving entries to new shelf
+        // positions, invalidating UVs already pushed into the
+        // instance buffer → visible blink on animated SVGs.
+        self.svg_atlas.begin_frame(&self.device);
+
         // Collect all instances for a single batched draw call
         let mut instances: Vec<GpuImageInstance> = Vec::with_capacity(svgs.len());
 
@@ -1713,10 +2060,24 @@ impl RenderContext {
                 }
             }
 
-            // Rasterize at physical pixel resolution for HiDPI displays
-            // svg.width/height are logical sizes, multiply by scale_factor for physical pixels
-            let raster_width = ((svg.width * scale_factor).ceil() as u32).max(1);
-            let raster_height = ((svg.height * scale_factor).ceil() as u32).max(1);
+            // Rasterize at physical pixel resolution.
+            //
+            // `svg.width` / `svg.height` come out of `collect_elements_recursive`
+            // already multiplied by `tree.scale_factor()` (see the SVG branch
+            // around line 3066: `base_width = bounds.width * scale`), so they
+            // are in *physical* pixels, not logical pixels — the same units
+            // the GPU draw quad will be sized in. Multiplying by `scale_factor`
+            // a second time here used to rasterize each icon at 4× its drawn
+            // area on Retina (9× on 3× DPR), bloating the SVG atlas
+            // (`cn_demo` was hitting the 4096×4096 ceiling on the first frame
+            // and burning ~134 MB of CPU+GPU memory between the two mirror
+            // buffers in `svg_atlas.rs`). resvg already does sub-pixel AA at
+            // the target resolution, so 1:1 physical-pixel rasterization is
+            // sharp enough; if a future workload turns up edge cases that
+            // need supersampling, gate it behind an explicit knob rather than
+            // a silent multiply.
+            let raster_width = (svg.width.ceil() as u32).max(1);
+            let raster_height = (svg.height.ceil() as u32).max(1);
 
             // Detect tintable SVGs: simple currentColor icons that can use shader tinting
             // instead of CPU re-rasterization per color variant.
@@ -2073,10 +2434,16 @@ impl RenderContext {
                 // Resolve currentColor references in SVG source.
                 // For tintable SVGs: rasterize as white — color applied via shader tint.
                 // For non-tintable: replace with actual tint color for CPU rasterization.
+                // For SVGs that have a tint but no currentColor at all (e.g.
+                // hard-coded `fill="white"`), the post-rasterize `apply_tint`
+                // path below handles it instead.
+                let has_current_color = effective_source.contains("currentColor");
+                let needs_post_raster_tint =
+                    !is_tintable && svg.tint.is_some() && !has_current_color;
                 let final_source = if is_tintable {
                     std::borrow::Cow::Owned(effective_source.replace("currentColor", "#ffffff"))
                 } else if let Some(tint) = svg.tint {
-                    if effective_source.contains("currentColor") {
+                    if has_current_color {
                         std::borrow::Cow::Owned(
                             effective_source.replace("currentColor", &color_val(tint)),
                         )
@@ -2090,13 +2457,26 @@ impl RenderContext {
                 let rasterized =
                     RasterizedSvg::from_str(&final_source, raster_width, raster_height);
 
-                let rasterized = match rasterized {
+                let mut rasterized = match rasterized {
                     Ok(r) => r,
                     Err(e) => {
                         tracing::warn!("Failed to rasterize SVG: {}", e);
                         continue;
                     }
                 };
+
+                // When a tint color is set but the SVG source doesn't
+                // use `currentColor` (e.g. hard-coded `fill="white"`),
+                // the currentColor replacement above was a no-op and
+                // the rasterized pixels still carry the original fill.
+                // Apply the tint as a post-rasterization color replace:
+                // every non-transparent pixel gets its RGB replaced
+                // with the tint color while preserving the original
+                // alpha. This makes `.color(Color::RED)` work on any
+                // SVG regardless of how its fills are authored.
+                if needs_post_raster_tint {
+                    rasterized.apply_tint(svg.tint.unwrap());
+                }
 
                 // Insert into atlas (handles grow/clear internally)
                 if self
@@ -2124,6 +2504,7 @@ impl RenderContext {
                 continue;
             };
             let src_uv = region.uv_bounds(self.svg_atlas.width(), self.svg_atlas.height());
+            self.svg_atlas.mark_used(cache_key);
 
             // Apply CSS affine transform to SVG bounds if present.
             // Pass full 2x2 affine to shader for rotation, scale, and skew support.
@@ -2998,6 +3379,29 @@ impl RenderContext {
                         .object_position
                         .unwrap_or(image_data.object_position);
 
+                    // CSS overrides for lazy loading properties
+                    let final_loading_strategy = render_node
+                        .props
+                        .loading_strategy
+                        .unwrap_or(image_data.loading_strategy);
+                    let final_placeholder_type = render_node
+                        .props
+                        .placeholder_type
+                        .unwrap_or(image_data.placeholder_type);
+                    let final_placeholder_color = render_node
+                        .props
+                        .placeholder_color
+                        .unwrap_or(image_data.placeholder_color);
+                    let final_placeholder_image = render_node
+                        .props
+                        .placeholder_image
+                        .clone()
+                        .or_else(|| image_data.placeholder_image.clone());
+                    let final_fade_duration = render_node
+                        .props
+                        .fade_duration_ms
+                        .unwrap_or(image_data.fade_duration_ms);
+
                     // Mask: prefer own, fall back to parent
                     let own_mask = render_node.props.mask_image.as_ref();
                     let parent_mask = parent_props.and_then(|p| p.mask_image.as_ref());
@@ -3018,9 +3422,11 @@ impl RenderContext {
                         clip_bounds: scaled_clip,
                         clip_radius: scaled_clip_radius,
                         layer: effective_layer,
-                        loading_strategy: image_data.loading_strategy,
-                        placeholder_type: image_data.placeholder_type,
-                        placeholder_color: image_data.placeholder_color,
+                        loading_strategy: final_loading_strategy,
+                        placeholder_type: final_placeholder_type,
+                        placeholder_color: final_placeholder_color,
+                        placeholder_image: final_placeholder_image,
+                        fade_duration_ms: final_fade_duration,
                         z_index: *z_layer,
                         border_width,
                         border_color,
@@ -3083,6 +3489,8 @@ impl RenderContext {
                             loading_strategy: 0, // Eager
                             placeholder_type: 0, // None
                             placeholder_color: [0.0; 4],
+                            placeholder_image: None,
+                            fade_duration_ms: 0,
                             z_index: *z_layer,
                             border_width: 0.0,
                             border_color: blinc_core::Color::TRANSPARENT,
@@ -3440,6 +3848,12 @@ impl RenderContext {
         &self.queue
     }
 
+    /// Whether the GPU adapter supports storage buffers.
+    /// False on WebGL2 (GL adapter) — the renderer uses data textures instead.
+    pub fn has_storage_buffers(&self) -> bool {
+        self.renderer.has_storage_buffers()
+    }
+
     /// Get the shared font registry
     ///
     /// This can be used to share fonts between text measurement and rendering,
@@ -3451,6 +3865,21 @@ impl RenderContext {
     /// Get the texture format used by the renderer
     pub fn texture_format(&self) -> wgpu::TextureFormat {
         self.renderer.texture_format()
+    }
+
+    /// Create a new wgpu surface for an additional window (multi-window support)
+    pub fn create_surface<W>(
+        &self,
+        window: Arc<W>,
+    ) -> std::result::Result<wgpu::Surface<'static>, blinc_gpu::RendererError>
+    where
+        W: raw_window_handle::HasWindowHandle
+            + raw_window_handle::HasDisplayHandle
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.renderer.create_surface(window)
     }
 
     /// Render a layout tree with dynamic render state overlays
@@ -3506,6 +3935,15 @@ impl RenderContext {
 
         // Take the batch (mutable so CSS-transformed text primitives can be added)
         let mut batch = ctx.take_batch();
+
+        // Take any 3D mesh draws captured via `ctx.draw_mesh_data(...)`
+        // inside canvas callbacks. These are dispatched after all 2D
+        // content lands so the mesh composites on top of the UI — see
+        // the `render_mesh_data` dispatch loop near the end of this
+        // function. Drained here (not at the dispatch site) so
+        // `ctx` can drop right after `take_batch`/`take_pending_meshes`
+        // and the rest of the frame runs without holding onto it.
+        let pending_meshes = ctx.take_pending_meshes();
 
         // Collect text, SVG, image, and flow elements WITH motion state
         let (all_texts, all_svgs, all_images, flow_elements) =
@@ -3674,6 +4112,7 @@ impl RenderContext {
                     font_weight,
                     text.italic,
                     layout_height,
+                    text.letter_spacing,
                 ) {
                     if let Some(clip) = text.clip_bounds {
                         for glyph in &mut shadow_glyphs {
@@ -3724,6 +4163,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 Ok(mut glyphs) => {
                     tracing::trace!(
@@ -3855,6 +4295,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 if let Some(clip) = text.clip_bounds {
                     for glyph in &mut glyphs {
@@ -3864,6 +4305,13 @@ impl RenderContext {
                 fg_glyphs.extend(glyphs);
             }
         }
+
+        // Generate decoration primitives for foreground text once so the
+        // three render paths below can each render them after their
+        // `render_text(target, &fg_glyphs)` call. Without this, any
+        // strikethrough / underline on a `.foreground()` element is
+        // silently dropped.
+        let fg_decorations_by_layer = generate_text_decoration_primitives_by_layer(&fg_texts);
 
         tracing::trace!(
             "render_tree_with_motion: {} texts, {} fg texts, {} z-layers with glyphs, {} css-transformed",
@@ -3878,15 +4326,21 @@ impl RenderContext {
 
         self.renderer.resize(width, height);
 
-        // If we have CSS-transformed text, push text prims into the main batch
-        // and bind the real glyph atlas to the SDF pipeline for ALL render paths.
-        if !css_transformed_text_prims.is_empty() {
-            if let (Some(atlas), Some(color_atlas)) =
-                (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
-            {
+        // Bind the real glyph atlas to the SDF pipeline whenever
+        // it's available — `set_glyph_atlas` no-ops on pointer
+        // equality so calling each frame is free. CSS-transformed
+        // text + canvas `draw_text` calls both land glyph-sourced
+        // primitives in `batch.primitives`, and the SDF pipeline
+        // needs the real atlas bound to sample them; the old
+        // "only when CSS text exists" guard silently swallowed
+        // canvas text that reached this path any other way.
+        if let (Some(atlas), Some(color_atlas)) =
+            (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
+        {
+            if !css_transformed_text_prims.is_empty() {
                 batch.primitives.append(&mut css_transformed_text_prims);
-                self.renderer.set_glyph_atlas(atlas, color_atlas);
             }
+            self.renderer.set_glyph_atlas(atlas, color_atlas);
         }
 
         let has_glass = batch.glass_count() > 0;
@@ -3910,7 +4364,15 @@ impl RenderContext {
                 let backdrop_tex = self.backdrop_texture.take().unwrap();
                 self.renderer
                     .clear_target(&backdrop_tex.view, wgpu::Color::TRANSPARENT);
-                self.renderer.clear_target(target, wgpu::Color::BLACK);
+                self.renderer.clear_target(
+                    target,
+                    wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: self.clear_alpha as f64,
+                    },
+                );
                 self.render_images_ref(&backdrop_tex.view, &bg_images);
                 self.render_images_ref(target, &bg_images);
                 self.backdrop_texture = Some(backdrop_tex);
@@ -3928,12 +4390,22 @@ impl RenderContext {
                         &backdrop.view,
                         (backdrop.width, backdrop.height),
                         &batch,
+                        has_bg_images,
                     );
                 }
 
                 // Then use render_with_clear which handles layer effects
-                self.renderer
-                    .render_with_clear(target, &batch, [0.0, 0.0, 0.0, 1.0]);
+                self.renderer.render_with_clear(
+                    target,
+                    &batch,
+                    [0.0, 0.0, 0.0, self.clear_alpha as f64],
+                );
+
+                // Render dynamic images (video frames from draw_rgba_pixels)
+                if !batch.dynamic_images.is_empty() {
+                    self.renderer
+                        .render_dynamic_images(target, &batch.dynamic_images);
+                }
 
                 // Render background images to target after clear (so they're visible behind glass)
                 if has_bg_images {
@@ -3953,6 +4425,7 @@ impl RenderContext {
                     &backdrop.view,
                     (backdrop.width, backdrop.height),
                     &batch,
+                    has_bg_images,
                 );
             }
 
@@ -4029,6 +4502,11 @@ impl RenderContext {
             if !fg_glyphs.is_empty() {
                 self.render_text(target, &fg_glyphs);
             }
+            // Render foreground text decorations (strikethrough / underline)
+            // for every z-layer present in the foreground decoration index.
+            for &z in fg_decorations_by_layer.keys() {
+                self.render_text_decorations_for_layer(target, &fg_decorations_by_layer, z);
+            }
         } else {
             // Simple path (no glass)
             // Pre-generate text decorations grouped by layer for interleaved rendering
@@ -4053,23 +4531,26 @@ impl RenderContext {
 
                 // First pass: render z_layer=0 primitives with clear
                 let z0_primitives = batch.primitives_for_layer(0);
-                // Create a temporary batch for z=0 primitives only.
-                // Paths are rendered per z-layer below to preserve Stack z-ordering.
+                // Create a temporary batch for z=0 (include paths - they don't have z-layer support)
                 let mut z0_batch = PrimitiveBatch::new();
                 z0_batch.primitives = z0_primitives;
-                self.renderer
-                    .render_with_clear(target, &z0_batch, [0.0, 0.0, 0.0, 1.0]);
+                z0_batch.paths = batch.paths.clone();
+                self.renderer.render_with_clear(
+                    target,
+                    &z0_batch,
+                    [0.0, 0.0, 0.0, self.clear_alpha as f64],
+                );
 
-                let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
-                if has_paths {
-                    // Render paths per z-layer so high-z paths are not occluded by later primitive overlays.
-                    // Note: in this interleaved branch we prioritize layer ordering correctness.
-                    self.renderer.prepare_path_batch(&batch.paths);
-                    self.renderer.render_path_batch_overlay_for_layer_prepared(
-                        target,
-                        &batch.paths,
-                        0,
-                    );
+                // Render dynamic images (video frames)
+                if !batch.dynamic_images.is_empty() {
+                    self.renderer
+                        .render_dynamic_images(target, &batch.dynamic_images);
+                }
+
+                // Render paths with MSAA for smooth edges on curved shapes like notch
+                if use_msaa_overlay && z0_batch.has_paths() {
+                    self.renderer
+                        .render_paths_overlay_msaa(target, &z0_batch, self.sample_count);
                 }
 
                 // Render z=0 images
@@ -4087,20 +4568,24 @@ impl RenderContext {
 
                 // Render subsequent layers interleaved (primitives, images, text per layer)
                 for z in 1..=max_layer {
-                    // Render primitives for this layer
+                    // Render primitives for this layer. MSAA route for
+                    // silhouette smoothing on stacked vector content
+                    // (scroll overlays, stacked components, etc.). The
+                    // z=0 batch still flows through `render_with_clear`
+                    // below — wiring that one up takes a different
+                    // helper because it fuses clearing with drawing.
                     let layer_primitives = batch.primitives_for_layer(z);
                     if !layer_primitives.is_empty() {
-                        self.renderer
-                            .render_primitives_overlay(target, &layer_primitives);
-                    }
-
-                    // Render paths for this layer (interleaved with primitives for proper z-order)
-                    if has_paths {
-                        self.renderer.render_path_batch_overlay_for_layer_prepared(
-                            target,
-                            &batch.paths,
-                            z,
-                        );
+                        if use_msaa_overlay {
+                            self.renderer.render_primitives_overlay_msaa(
+                                target,
+                                &layer_primitives,
+                                self.sample_count,
+                            );
+                        } else {
+                            self.renderer
+                                .render_primitives_overlay(target, &layer_primitives);
+                        }
                     }
 
                     // Render images for this layer
@@ -4132,13 +4617,51 @@ impl RenderContext {
                 if !fg_glyphs.is_empty() {
                     self.render_text(target, &fg_glyphs);
                 }
+                for &z in fg_decorations_by_layer.keys() {
+                    self.render_text_decorations_for_layer(target, &fg_decorations_by_layer, z);
+                }
             } else {
-                // Fast path: render full batch (handles layer effects like backdrop-filter)
-                self.renderer
-                    .render_with_clear(target, &batch, [0.0, 0.0, 0.0, 1.0]);
+                // Fast path: render the full batch through
+                // `render_with_clear`, which dispatches into
+                // `render_with_layer_effects` when the batch carries
+                // any `LayerCommand::Push { effects: !empty }` and
+                // falls through to the simple SDF path otherwise.
+                //
+                // This branch used to flip between
+                // `render_overlay_msaa` (when no layer effects) and
+                // `render_with_clear` (when effects were present),
+                // which gave mesh primitives hardware-coverage AA on
+                // the no-effect frames. The flip ran per frame, so an
+                // animated effect — e.g. ruffle's `breathe-blur`
+                // sweeping radius 0 → 32 → 0 — toggled the rendering
+                // path twice per cycle. Mesh primitives' silhouette AA
+                // shifts subtly between hardware-MSAA and the SDF
+                // shader's barycentric ramp, and the toggle reads as
+                // a flash on the affected node. Pinning the path to
+                // `render_with_clear` keeps the visual stable, and
+                // the path overlay below still applies hardware MSAA
+                // to actual `Path` geometry. Mesh primitives lose the
+                // hardware-coverage refinement on no-effect frames,
+                // but the shader-side edge AA they fall back to is
+                // already 1 px wide and is the same path that runs
+                // when effects DO exist — no per-frame discontinuity.
+                self.renderer.render_with_clear(
+                    target,
+                    &batch,
+                    [0.0, 0.0, 0.0, self.clear_alpha as f64],
+                );
 
-                // Render paths with MSAA for smooth edges on curved shapes like notch
-                if use_msaa_overlay && batch.has_paths() {
+                // Render dynamic images (video frames)
+                if !batch.dynamic_images.is_empty() {
+                    self.renderer
+                        .render_dynamic_images(target, &batch.dynamic_images);
+                }
+
+                // Path overlay MSAA. The main pass above is always
+                // single-sampled now, so this runs whenever MSAA is
+                // configured — no more conditional skip for the
+                // (previously) MSAA main path.
+                if batch.has_paths() && self.sample_count > 1 {
                     self.renderer
                         .render_paths_overlay_msaa(target, &batch, self.sample_count);
                 }
@@ -4193,6 +4716,9 @@ impl RenderContext {
                 if !fg_glyphs.is_empty() {
                     self.render_text(target, &fg_glyphs);
                 }
+                for &z in fg_decorations_by_layer.keys() {
+                    self.render_text_decorations_for_layer(target, &fg_decorations_by_layer, z);
+                }
             }
         }
 
@@ -4219,8 +4745,8 @@ impl RenderContext {
             let stylesheet = tree.stylesheet();
 
             // Use monotonic time for smooth animation
-            static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-            let start = START_TIME.get_or_init(std::time::Instant::now);
+            static START_TIME: std::sync::OnceLock<web_time::Instant> = std::sync::OnceLock::new();
+            let start = START_TIME.get_or_init(web_time::Instant::now);
             let elapsed_secs = start.elapsed().as_secs_f32();
 
             for flow_el in &flow_elements {
@@ -4265,6 +4791,23 @@ impl RenderContext {
 
         // Poll the device to free completed command buffers
         self.renderer.poll();
+
+        // Dispatch 3D mesh draws captured during `tree.render_with_motion`.
+        // Each `PendingMesh` carries a snapshot of the camera and lights
+        // active when `canvas(|ctx, bounds| ctx.draw_mesh_data(...))` fired,
+        // so the mesh pipeline renders at the correct pose even if the
+        // closure's camera was transient. View-projection is computed
+        // from the captured camera + the actual frame viewport so aspect
+        // stays correct under window resizes.
+        //
+        // MVP scope: meshes render to the full frame target (no scissor
+        // to the canvas bounds yet), composite on top of the 2D UI, and
+        // sit under `render_overlays` so overlay panels still clip
+        // cleanly over them. Per-canvas viewport clipping is a
+        // follow-up once the first end-to-end demo proves the path.
+        if !pending_meshes.is_empty() {
+            dispatch_pending_meshes(&mut self.renderer, target, width, height, &pending_meshes);
+        }
 
         // Render overlays from RenderState
         self.render_overlays(render_state, width, height, target);
@@ -4384,6 +4927,7 @@ impl RenderContext {
                     font_weight,
                     text.italic,
                     layout_height,
+                    text.letter_spacing,
                 ) {
                     // Offset clip bounds to layer-local coords
                     if let Some(clip) = text.clip_bounds {
@@ -4550,6 +5094,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 let mut glyphs = glyphs;
                 if let Some(clip) = text.clip_bounds {
@@ -4594,15 +5139,18 @@ impl RenderContext {
 
         self.renderer.resize(width, height);
 
-        // If we have CSS-transformed text, push text prims into the main batch
-        // and bind the real glyph atlas to the SDF pipeline.
-        if !css_transformed_text_prims.is_empty() {
-            if let (Some(atlas), Some(color_atlas)) =
-                (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
-            {
+        // Bind the real glyph atlas to the SDF pipeline whenever
+        // it's available. See the same block in `render_tree` for
+        // the rationale — canvas `draw_text` calls route glyph
+        // primitives through `batch.primitives`, which need the
+        // real atlas bound for the PRIM_TEXT shader path.
+        if let (Some(atlas), Some(color_atlas)) =
+            (self.text_ctx.atlas_view(), self.text_ctx.color_atlas_view())
+        {
+            if !css_transformed_text_prims.is_empty() {
                 batch.primitives.append(&mut css_transformed_text_prims);
-                self.renderer.set_glyph_atlas(atlas, color_atlas);
             }
+            self.renderer.set_glyph_atlas(atlas, color_atlas);
         }
 
         // For overlay rendering, we DON'T have glass effects (overlays are simple)
@@ -5105,4 +5653,472 @@ fn scale_and_translate_path(
         .collect();
 
     blinc_core::Path::from_commands(new_commands)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3D mesh dispatch
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Dispatch every `PendingMesh` captured by `GpuPaintContext` to
+/// `GpuRenderer::render_mesh_data` against the frame target.
+///
+/// Computes a view-projection matrix from each pending mesh's captured
+/// `Camera` against the current viewport size (so aspect stays correct
+/// under window resizes) and extracts the first `Light::Directional`
+/// for the mesh pipeline's sun light. Other light types are ignored
+/// for now — the mesh pipeline only takes a single directional input,
+/// and widening that is follow-up work tracked alongside per-canvas
+/// viewport clipping.
+///
+/// If a mesh's camera is `Camera::default()` the pose is identity /
+/// zero-eye which produces an invisible frame; demos should always
+/// `ctx.set_camera(&cam)` before calling `ctx.draw_mesh_data`. A
+/// `tracing::warn!` surfaces the silent-empty case to avoid
+/// head-scratching during demo authoring.
+fn dispatch_pending_meshes(
+    renderer: &mut GpuRenderer,
+    target: &wgpu::TextureView,
+    width: u32,
+    height: u32,
+    meshes: &[PendingMesh],
+) {
+    if meshes.is_empty() {
+        return;
+    }
+    let aspect = if height > 0 {
+        width as f32 / height as f32
+    } else {
+        1.0
+    };
+
+    // Dedupe environment cubemap uploads by `Arc` identity. Without
+    // this, multi-mesh scenes pay a full cubemap re-upload per
+    // primitive — 39 meshes × 6 faces × ~9 mips = ~2000 redundant
+    // `queue.write_texture` calls per frame on assets like
+    // buster_drone, which dominates frame time. Every `PendingMesh`
+    // from the same `SceneKit3D` shares the same `Arc<CubemapData>`,
+    // so a cheap `Arc::ptr_eq` is enough to skip.
+    let mut last_env: Option<std::sync::Arc<blinc_core::layer::CubemapData>> = None;
+
+    // ── Shadow frustum (first directional light, first scene) ──────────
+    //
+    // Compute ONE light_view_proj for the whole mesh batch. Using the
+    // first scene's camera target as a focus point and scaling the
+    // orthographic frustum off the camera distance keeps the shadow
+    // map sized to roughly what the viewer can see. Good enough for
+    // the single-scene case (the common case); multi-scene frames
+    // with divergent targets would want per-scene shadow maps, which
+    // is out of scope here.
+    let first = &meshes[0];
+    let (light_dir, _light_intensity_0) = first_directional_light(&first.lights);
+    let light_view_proj = compute_shadow_matrix(&first.camera, light_dir);
+
+    // ── Phase 1: shadow depth pass for every caster ────────────────────
+    //
+    // All shadow-caster meshes write into the single shadow_map before
+    // ANY main pass samples it. The first caster clears, the rest
+    // load. Non-casters skip the pass entirely.
+    let mut shadow_index: usize = 0;
+    for pending in meshes {
+        if !pending.mesh.material.casts_shadows {
+            continue;
+        }
+        let model = mat4_to_array(&pending.transform);
+        renderer.render_mesh_shadow_pass(&pending.mesh, &model, &light_view_proj, shadow_index);
+        shadow_index += 1;
+    }
+    // If no casters were drawn, skip shadow sampling entirely so the
+    // main pass doesn't read a stale / uninitialized shadow map.
+    let shadow_matrix: Option<&[f32; 16]> = if shadow_index > 0 {
+        Some(&light_view_proj)
+    } else {
+        None
+    };
+
+    // ── Phase 2: main HDR/tonemap passes for every mesh ────────────────
+    //
+    // Sort OPAQUE + MASK before BLEND before dispatch. Weighted-blended
+    // OIT (the renderer's transparency path) needs every opaque fragment
+    // to have written its depth before any BLEND fragment runs its own
+    // depth test; otherwise a BLEND mesh drawn mid-scene accumulates at
+    // pixels a later-drawn opaque mesh would have occluded, and the OIT
+    // composite washes those opaque pixels out.
+    //
+    // Callers submitting `draw_mesh_data(...)` in scene-graph order
+    // (the most common case — e.g. gltf_animation_demo, cutegirl,
+    // strangler) would otherwise need to sort manually at each call
+    // site. Doing it once here, at the single dispatch seam, keeps
+    // every asset correct without surfacing the OIT ordering invariant
+    // as user-facing knowledge.
+    //
+    // `sort_by_key` is stable so within a mode the caller's submission
+    // order is preserved — matters when a caller is already doing
+    // back-to-front sorting inside the BLEND group.
+    let mut ordered: Vec<&PendingMesh> = meshes.iter().collect();
+    ordered.sort_by_key(|p| {
+        matches!(
+            p.mesh.material.alpha_mode,
+            blinc_core::draw::AlphaMode::Blend
+        ) as u8
+    });
+
+    let batch_count = ordered.len();
+    for (batch_index, &pending) in ordered.iter().enumerate() {
+        // Upload the environment cubemap only when its `Arc` identity
+        // changes. The renderer's texture is overwritten on each real
+        // upload, so only the last distinct environment matters.
+        if let Some(ref env) = pending.env_cubemap {
+            let is_new = last_env
+                .as_ref()
+                .map(|prev| !std::sync::Arc::ptr_eq(prev, env))
+                .unwrap_or(true);
+            if is_new {
+                renderer.upload_environment_cubemap(env);
+                last_env = Some(env.clone());
+            }
+        }
+
+        // Use the canvas viewport aspect when available so the
+        // perspective projection matches the clipped region, not the
+        // full frame. Falls back to the frame aspect for full-viewport
+        // mesh draws (no canvas wrapper).
+        let vp_aspect = pending
+            .viewport
+            .map(|[_, _, w, h]| if h > 0.0 { w / h } else { 1.0 })
+            .unwrap_or(aspect);
+        let view_proj = camera_view_proj(&pending.camera, vp_aspect);
+        let _inv_view_proj = mat4_inverse_flat(&view_proj);
+        let camera_pos = [
+            pending.camera.position.x,
+            pending.camera.position.y,
+            pending.camera.position.z,
+        ];
+        let lights = collect_directional_lights(&pending.lights);
+        let model = mat4_to_array(&pending.transform);
+
+        renderer.render_mesh_data_batched(
+            target,
+            &pending.mesh,
+            &model,
+            &view_proj,
+            camera_pos,
+            &lights,
+            shadow_matrix,
+            pending.viewport,
+            batch_index,
+            batch_count,
+        );
+    }
+}
+
+/// Build a view × projection matrix for a directional light illuminating
+/// the scene the given camera is looking at.
+///
+/// This is a deliberately simple fit: we center the orthographic frustum
+/// on the camera target and scale it off the camera distance. The result
+/// covers roughly what the viewer can see, which is enough for a
+/// single-drone / single-object scene (the main case today). A more
+/// ambitious implementation would fit the frustum to the scene's actual
+/// world-space AABB (or to the view frustum intersected with the scene
+/// bounds), plus use cascaded shadow maps for landscapes.
+///
+/// Up-vector selection avoids the degenerate case where `light_dir` is
+/// parallel to world-Y (makes the look-at cross product collapse).
+fn compute_shadow_matrix(camera: &blinc_core::Camera, light_dir: [f32; 3]) -> [f32; 16] {
+    let target = camera.target;
+    let eye = camera.position;
+    let dx = eye.x - target.x;
+    let dy = eye.y - target.y;
+    let dz = eye.z - target.z;
+    let cam_dist = (dx * dx + dy * dy + dz * dz).sqrt().max(1.0);
+
+    // Ortho frustum half-extent — ~1.0× camera distance covers the
+    // full scene for typical framings (frame_camera multiplies scene
+    // diagonal by 1.1, so camera distance ≈ scene diagonal).
+    let half = cam_dist;
+
+    // Light sits on the opposite side of the target from its direction,
+    // far enough back that the near plane doesn't clip the scene.
+    let ld = blinc_core::Vec3::new(light_dir[0], light_dir[1], light_dir[2]).normalize();
+    let light_pos = blinc_core::Vec3::new(
+        target.x - ld.x * cam_dist * 2.0,
+        target.y - ld.y * cam_dist * 2.0,
+        target.z - ld.z * cam_dist * 2.0,
+    );
+
+    // Pick an up-vector not parallel to the light direction.
+    let up = if ld.y.abs() > 0.95 {
+        blinc_core::Vec3::new(0.0, 0.0, 1.0)
+    } else {
+        blinc_core::Vec3::new(0.0, 1.0, 0.0)
+    };
+
+    let view = mat4_look_at(light_pos, target, up);
+    let proj = mat4_orthographic_rh(-half, half, -half, half, 0.1, cam_dist * 4.0);
+    mat4_mul_flat(&proj, &view)
+}
+
+/// Build a view × projection matrix for the captured `Camera`.
+///
+/// Right-handed coordinate system, +Y up. Matches the convention the
+/// mesh shader expects (see `crates/blinc_gpu/src/shaders/mesh.wgsl`).
+///
+/// For `CameraProjection::Perspective`, the stored `aspect` field on
+/// the projection is overridden by the frame's actual aspect so the
+/// scene doesn't stretch on resize — the stored value is just a
+/// fallback default from `Camera::perspective`.
+fn camera_view_proj(camera: &blinc_core::Camera, frame_aspect: f32) -> [f32; 16] {
+    let view = mat4_look_at(camera.position, camera.target, camera.up);
+    let proj = match camera.projection {
+        blinc_core::CameraProjection::Perspective {
+            fov_y, near, far, ..
+        } => mat4_perspective_rh(fov_y, frame_aspect, near, far),
+        blinc_core::CameraProjection::Orthographic {
+            left,
+            right,
+            bottom,
+            top,
+            near,
+            far,
+        } => mat4_orthographic_rh(left, right, bottom, top, near, far),
+    };
+    mat4_mul_flat(&proj, &view)
+}
+
+/// Extract the first `Light::Directional` from the snapshot, returning
+/// a normalized direction vector and scalar intensity. Falls back to a
+/// soft top-down fill if none is present so the demo never renders
+/// pitch-black.
+fn first_directional_light(lights: &[blinc_core::Light]) -> ([f32; 3], f32) {
+    for light in lights {
+        if let blinc_core::Light::Directional {
+            direction,
+            intensity,
+            ..
+        } = light
+        {
+            let d = direction.normalize();
+            return ([d.x, d.y, d.z], *intensity);
+        }
+    }
+    ([0.0, -1.0, 0.3], 0.8)
+}
+
+/// Collect every directional light for the mesh shader's multi-light
+/// array. Capped at the shader's `MAX_DIR_LIGHTS`; if the scene has
+/// no directional lights we hand back a single soft top-down default
+/// so the mesh never renders pitch-black.
+fn collect_directional_lights(lights: &[blinc_core::Light]) -> Vec<blinc_gpu::DirectionalLight> {
+    let max = blinc_gpu::MAX_DIR_LIGHTS;
+    let mut out: Vec<blinc_gpu::DirectionalLight> = Vec::with_capacity(max);
+    for light in lights {
+        if out.len() >= max {
+            break;
+        }
+        if let blinc_core::Light::Directional {
+            direction,
+            color,
+            intensity,
+            ..
+        } = light
+        {
+            let d = direction.normalize();
+            out.push(blinc_gpu::DirectionalLight {
+                direction: [d.x, d.y, d.z],
+                intensity: *intensity,
+                color: [color.r, color.g, color.b],
+            });
+        }
+    }
+    if out.is_empty() {
+        out.push(blinc_gpu::DirectionalLight::DEFAULT);
+    }
+    out
+}
+
+/// Flatten a column-major `Mat4` to the `[f32; 16]` layout
+/// `GpuRenderer::render_mesh_data` expects.
+fn mat4_to_array(m: &blinc_core::Mat4) -> [f32; 16] {
+    let mut out = [0.0f32; 16];
+    for col in 0..4 {
+        for row in 0..4 {
+            out[col * 4 + row] = m.cols[col][row];
+        }
+    }
+    out
+}
+
+/// Multiply two flat column-major 4×4 matrices (`a * b`), returning a
+/// `[f32; 16]` in the same layout. Used to compose `proj * view` after
+/// both are computed in `Mat4`/array form.
+fn mat4_mul_flat(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+    let mut out = [0.0f32; 16];
+    for col in 0..4 {
+        for row in 0..4 {
+            let mut s = 0.0;
+            for k in 0..4 {
+                s += a[k * 4 + row] * b[col * 4 + k];
+            }
+            out[col * 4 + row] = s;
+        }
+    }
+    out
+}
+
+/// Right-handed look-at view matrix. Produces `[f32; 16]` directly
+/// (column-major) for the downstream multiply.
+fn mat4_look_at(
+    eye: blinc_core::Vec3,
+    target: blinc_core::Vec3,
+    up: blinc_core::Vec3,
+) -> [f32; 16] {
+    let f = blinc_core::Vec3::new(target.x - eye.x, target.y - eye.y, target.z - eye.z).normalize();
+    let r = f.cross(up).normalize();
+    let u = r.cross(f);
+    let tx = -(r.x * eye.x + r.y * eye.y + r.z * eye.z);
+    let ty = -(u.x * eye.x + u.y * eye.y + u.z * eye.z);
+    let tz = f.x * eye.x + f.y * eye.y + f.z * eye.z;
+    // Column-major: col0 = [r.x, u.x, -f.x, 0], col1 = [r.y, u.y, -f.y, 0], ...
+    [
+        r.x, u.x, -f.x, 0.0, r.y, u.y, -f.y, 0.0, r.z, u.z, -f.z, 0.0, tx, ty, tz, 1.0,
+    ]
+}
+
+/// Right-handed perspective projection. Maps view-space Z in `[-far, -near]`
+/// to clip-space depth `[0, 1]` (wgpu convention). `fov_y` is radians.
+fn mat4_perspective_rh(fov_y: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
+    let f = 1.0 / (fov_y * 0.5).tan();
+    let nf = 1.0 / (near - far);
+    [
+        f / aspect,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        f,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        far * nf,
+        -1.0,
+        0.0,
+        0.0,
+        far * near * nf,
+        0.0,
+    ]
+}
+
+/// Right-handed orthographic projection. Uses the same clip-space
+/// depth range `[0, 1]` as the perspective variant so the mesh shader
+/// can stay agnostic of the projection choice.
+fn mat4_orthographic_rh(
+    left: f32,
+    right: f32,
+    bottom: f32,
+    top: f32,
+    near: f32,
+    far: f32,
+) -> [f32; 16] {
+    let rl = 1.0 / (right - left);
+    let tb = 1.0 / (top - bottom);
+    let fnn = 1.0 / (far - near);
+    [
+        2.0 * rl,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0 * tb,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -fnn,
+        0.0,
+        -(right + left) * rl,
+        -(top + bottom) * tb,
+        -near * fnn,
+        1.0,
+    ]
+}
+
+/// Inverse of a column-major 4×4 matrix (GLU-style cofactor expansion).
+fn mat4_inverse_flat(m: &[f32; 16]) -> [f32; 16] {
+    let mut inv = [0.0f32; 16];
+    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15]
+        + m[9] * m[7] * m[14]
+        + m[13] * m[6] * m[11]
+        - m[13] * m[7] * m[10];
+    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15]
+        - m[8] * m[7] * m[14]
+        - m[12] * m[6] * m[11]
+        + m[12] * m[7] * m[10];
+    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15]
+        + m[8] * m[7] * m[13]
+        + m[12] * m[5] * m[11]
+        - m[12] * m[7] * m[9];
+    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14]
+        - m[8] * m[6] * m[13]
+        - m[12] * m[5] * m[10]
+        + m[12] * m[6] * m[9];
+    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15]
+        - m[9] * m[3] * m[14]
+        - m[13] * m[2] * m[11]
+        + m[13] * m[3] * m[10];
+    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15]
+        + m[8] * m[3] * m[14]
+        + m[12] * m[2] * m[11]
+        - m[12] * m[3] * m[10];
+    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15]
+        - m[8] * m[3] * m[13]
+        - m[12] * m[1] * m[11]
+        + m[12] * m[3] * m[9];
+    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14]
+        + m[8] * m[2] * m[13]
+        + m[12] * m[1] * m[10]
+        - m[12] * m[2] * m[9];
+    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15]
+        + m[5] * m[3] * m[14]
+        + m[13] * m[2] * m[7]
+        - m[13] * m[3] * m[6];
+    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15]
+        - m[4] * m[3] * m[14]
+        - m[12] * m[2] * m[7]
+        + m[12] * m[3] * m[6];
+    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15]
+        + m[4] * m[3] * m[13]
+        + m[12] * m[1] * m[7]
+        - m[12] * m[3] * m[5];
+    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14]
+        - m[4] * m[2] * m[13]
+        - m[12] * m[1] * m[6]
+        + m[12] * m[2] * m[5];
+    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11]
+        - m[5] * m[3] * m[10]
+        - m[9] * m[2] * m[7]
+        + m[9] * m[3] * m[6];
+    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11]
+        + m[4] * m[3] * m[10]
+        + m[8] * m[2] * m[7]
+        - m[8] * m[3] * m[6];
+    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11]
+        - m[4] * m[3] * m[9]
+        - m[8] * m[1] * m[7]
+        + m[8] * m[3] * m[5];
+    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10]
+        + m[4] * m[2] * m[9]
+        + m[8] * m[1] * m[6]
+        - m[8] * m[2] * m[5];
+    let det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+    if det.abs() < 1e-12 {
+        return [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+    }
+    let id = 1.0 / det;
+    for v in &mut inv {
+        *v *= id;
+    }
+    inv
 }

@@ -1496,6 +1496,40 @@ impl CodeEditor {
                         request_continuous_redraw_pub();
                     }
 
+                    // Bump the focus-tap generation counter and
+                    // register this node id as the generic focused
+                    // editable so the mobile runner's
+                    // scroll-into-view helper picks this up. See
+                    // `text_input::focus_tap_generation` for the
+                    // rationale and `RenderTree::scroll_focused_text_input_above_keyboard`
+                    // for the consumer.
+                    //
+                    // The blur callback captures `state` so
+                    // `blur_all_text_inputs` (called when the user
+                    // taps outside any editable widget) can flip
+                    // `d.focused = false`, hide the cursor, and
+                    // decrement the focus count — which dismisses
+                    // the soft keyboard. Without this, tapping
+                    // outside the editor would leave it visually
+                    // focused with the keyboard still up.
+                    crate::widgets::text_input::bump_focus_tap_generation();
+                    let blur_state = Arc::clone(&data_for_click);
+                    crate::widgets::text_input::set_focused_editable_node(
+                        ctx.node_id,
+                        Some(Box::new(move || {
+                            if let Ok(mut d) = blur_state.lock() {
+                                if d.focused {
+                                    d.focused = false;
+                                    d.selection_start = None;
+                                    if let Ok(mut cs) = d.cursor_state.lock() {
+                                        cs.visible = false;
+                                    }
+                                    decrement_focus_count();
+                                }
+                            }
+                        })),
+                    );
+
                     // Don't close search on code click — use Escape or close button
 
                     // Account for gutter, padding, and scroll in click coordinates
@@ -1525,14 +1559,16 @@ impl CodeEditor {
                         d.cursor_from_click(adjusted_x, adjusted_y);
 
                         // Double-click detection: select word
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
+                        let now = web_time::SystemTime::now()
+                            .duration_since(web_time::UNIX_EPOCH)
                             .map(|t| t.as_secs_f64() * 1000.0)
                             .unwrap_or(0.0);
                         let is_double_click =
                             (now - d.last_click_time) < 350.0 && d.last_click_pos == d.cursor;
                         d.last_click_time = now;
                         d.last_click_pos = d.cursor;
+
+                        let touch = crate::widgets::text_input::is_touch_input();
 
                         if is_double_click && d.cursor.line < d.lines.len() {
                             let line = &d.lines[d.cursor.line];
@@ -1543,6 +1579,76 @@ impl CodeEditor {
                             d.selection_start = Some(TextPosition::new(d.cursor.line, start));
                             d.cursor.column = end;
                             d.drag_anchor = None;
+                            // On touch: heavier impact + show native
+                            // edit menu over the selected word.
+                            if touch {
+                                crate::widgets::text_edit::haptic_impact_light();
+                                use crate::widgets::text_edit::edit_menu_actions;
+                                crate::widgets::text_edit::show_edit_menu(
+                                    ctx.bounds_x + click_x,
+                                    ctx.bounds_y + click_y,
+                                    ctx.bounds_x + click_x,
+                                    ctx.bounds_y + click_y,
+                                    0.0,
+                                    d.config.font_size * d.config.line_height,
+                                    edit_menu_actions::CUT
+                                        | edit_menu_actions::COPY
+                                        | edit_menu_actions::PASTE
+                                        | edit_menu_actions::SELECT_ALL,
+                                );
+                            }
+                        } else if touch {
+                            // Single touch: position cursor only,
+                            // no drag anchor, light haptic. Also
+                            // arm the long-press timer so a press-
+                            // and-hold of 500 ms selects the word
+                            // under the finger and shows the edit
+                            // menu — matches the iOS UITextField
+                            // long-press UX and stays consistent
+                            // with the double-tap behavior above.
+                            d.drag_anchor = None;
+                            let line_height = d.config.font_size * d.config.line_height;
+                            let captured_cursor = d.cursor;
+                            crate::widgets::text_edit::haptic_selection();
+                            crate::widgets::text_edit::hide_edit_menu();
+                            let data_for_long_press = Arc::clone(&data_for_click);
+                            let shared_for_long_press = Arc::clone(&shared_for_click);
+                            crate::widgets::text_input::arm_long_press_timer(
+                                ctx.bounds_x + click_x,
+                                ctx.bounds_y + click_y,
+                                line_height,
+                                Some(Box::new(move || {
+                                    let did_update = {
+                                        let mut d = match data_for_long_press.lock() {
+                                            Ok(d) => d,
+                                            Err(_) => return,
+                                        };
+                                        if !d.focused || captured_cursor.line >= d.lines.len() {
+                                            return;
+                                        }
+                                        let line = &d.lines[captured_cursor.line];
+                                        let line_chars = line.chars().count();
+                                        if line_chars == 0 {
+                                            return;
+                                        }
+                                        let col = captured_cursor
+                                            .column
+                                            .min(line_chars.saturating_sub(1));
+                                        let (start, end) = text_edit::word_at_position(line, col);
+                                        if start == end {
+                                            return;
+                                        }
+                                        d.selection_start =
+                                            Some(TextPosition::new(captured_cursor.line, start));
+                                        d.cursor = TextPosition::new(captured_cursor.line, end);
+                                        d.drag_anchor = None;
+                                        true
+                                    };
+                                    if did_update {
+                                        refresh_stateful(&shared_for_long_press);
+                                    }
+                                })),
+                            );
                         } else {
                             d.drag_anchor = Some(d.cursor);
                         }
@@ -1595,14 +1701,34 @@ impl CodeEditor {
                         break;
                     }
                 }
-                d.cursor = TextPosition::new(line_idx, best_col);
+                let new_cursor = TextPosition::new(line_idx, best_col);
 
-                // Set selection from drag anchor to current cursor
-                if let Some(anchor) = d.drag_anchor {
-                    if anchor != d.cursor {
-                        d.selection_start = Some(anchor);
-                    } else {
+                if crate::widgets::text_input::is_touch_input() {
+                    // Touch drag = move cursor without starting a
+                    // selection. Each step gets a subtle haptic so
+                    // the user feels the cursor traveling between
+                    // characters / lines, matching the iOS
+                    // UITextField cursor-drag UX.
+                    //
+                    // Also drift-cancel the long-press timer so a
+                    // real cursor drag doesn't also fire the paste
+                    // menu mid-gesture.
+                    crate::widgets::text_input::check_long_press_drift(ctx.mouse_x, ctx.mouse_y);
+                    if new_cursor != d.cursor {
+                        d.cursor = new_cursor;
                         d.selection_start = None;
+                        d.drag_anchor = None;
+                        crate::widgets::text_edit::haptic_selection();
+                    }
+                } else {
+                    d.cursor = new_cursor;
+                    // Set selection from drag anchor to current cursor
+                    if let Some(anchor) = d.drag_anchor {
+                        if anchor != d.cursor {
+                            d.selection_start = Some(anchor);
+                        } else {
+                            d.selection_start = None;
+                        }
                     }
                 }
 
@@ -1759,6 +1885,7 @@ impl CodeEditor {
                                 cs.visible = false;
                             }
                             decrement_focus_count();
+                            crate::widgets::text_input::clear_focused_editable_node();
                         }
                         _ => {
                             // Check for Cmd+key combos

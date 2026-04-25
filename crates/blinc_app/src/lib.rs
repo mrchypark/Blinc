@@ -126,20 +126,48 @@ mod app;
 mod context;
 mod error;
 mod frame_utils;
+mod headless_assert;
+mod headless_report;
+mod headless_runner;
+mod headless_runtime;
+mod headless_scenario;
+mod playbook;
 mod runloop;
 mod svg_atlas;
 mod text_measurer;
 
-// Windowed module is compiled for desktop (windowed feature), Android, iOS, Fuchsia, and HarmonyOS
-// since WindowedContext and shared types are used by all platforms
+// Windowed module is compiled for desktop (windowed feature), Android, iOS, Fuchsia, HarmonyOS,
+// AND web — since `WindowedContext` and the shared scheduler / overlay / registry types are
+// used by every platform runner. The web runner also lives behind a wasm32 cfg gate (see below).
 #[cfg(any(
     feature = "windowed",
     all(feature = "android", target_os = "android"),
     all(feature = "ios", target_os = "ios"),
     all(feature = "fuchsia", target_os = "fuchsia"),
-    all(feature = "harmony", target_env = "ohos")
+    all(feature = "harmony", target_env = "ohos"),
+    all(feature = "web", target_arch = "wasm32")
 ))]
 pub mod windowed;
+
+/// Native file dialogs (open, save, folder picker).
+/// Available on desktop when the `windowed` feature is enabled.
+#[cfg(feature = "rfd")]
+pub mod dialog;
+
+/// Window state persistence (save/restore position, size, maximized).
+pub mod window_state;
+
+/// System tray icon support (desktop only).
+pub mod tray;
+
+/// Native OS desktop notifications.
+pub mod notify;
+
+/// Global keyboard shortcuts.
+pub mod hotkey;
+
+/// Drag and drop support.
+pub mod dnd;
 
 #[cfg(all(feature = "android", target_os = "android"))]
 pub mod android;
@@ -153,6 +181,11 @@ pub mod ios;
 pub mod fuchsia;
 #[cfg(all(feature = "fuchsia", target_os = "fuchsia"))]
 pub use fuchsia::FuchsiaApp;
+
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub mod web;
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub use web::WebApp;
 
 #[cfg(test)]
 mod tests;
@@ -202,6 +235,34 @@ pub use playbook::{run_desktop_harness_playbook, run_headless_playbook};
 pub use playbook::{CompiledPlaybook, CompiledTransition, Playbook, PlaybookTransition};
 pub use text_measurer::{init_text_measurer, init_text_measurer_with_registry, FontTextMeasurer};
 
+/// Register a font face into the process-wide `blinc_text` font
+/// registry. The returned count is the number of faces fontdb
+/// parsed from the bytes — typically `1` for a plain `.ttf` / `.otf`
+/// and higher for a `.ttc` collection. Callable before
+/// `WindowedApp::run` (or any other runner) so the UI can depend on
+/// the font being available from the very first frame.
+///
+/// Thin wrapper over `blinc_text::global_font_registry().lock()`.
+/// `BlincApp` / `WindowedContext` / `TextRenderer::new()` all back
+/// themselves with the same shared registry, so a face registered
+/// here is immediately visible to every text renderer the process
+/// spins up — no further plumbing required.
+///
+/// # Example
+///
+/// ```ignore
+/// fn main() -> blinc_app::Result<()> {
+///     blinc_app::register_font(include_bytes!("assets/Inter.ttf").to_vec());
+///     blinc_app::windowed::WindowedApp::run(config, build_ui)
+/// }
+/// ```
+pub fn register_font(data: Vec<u8>) -> usize {
+    match blinc_text::global_font_registry().lock() {
+        Ok(mut reg) => reg.load_font_data(data),
+        Err(_) => 0,
+    }
+}
+
 // Re-export layout API for convenience
 pub use blinc_layout::prelude::*;
 pub use blinc_layout::RenderTree;
@@ -215,36 +276,9 @@ pub use blinc_macros::BlincComponent;
 /// Prelude module - import everything commonly needed
 pub mod prelude {
     pub use crate::app::{BlincApp, BlincConfig};
-    #[cfg(any(
-        feature = "windowed",
-        all(feature = "android", target_os = "android"),
-        all(feature = "ios", target_os = "ios"),
-        all(feature = "fuchsia", target_os = "fuchsia"),
-        all(feature = "harmony", target_env = "ohos")
-    ))]
-    pub use crate::automation_session::{
-        run_desktop_harness_scenario, run_headless_scenario, AutomationFailure, AutomationLocator,
-        AutomationRun, AutomationRuntimeMode, AutomationSession,
-    };
     pub use crate::context::{DebugMode, RenderContext};
     pub use crate::error::{BlincError, Result};
-    pub use crate::headless_assert::{AssertionResult, DiagnosticsElement, DiagnosticsSnapshot};
-    pub use crate::headless_report::{HeadlessReport, ReportStatus};
-    pub use crate::headless_runner::{
-        run_loaded_scenario_with_owned_probe, run_loaded_scenario_with_probe, run_scenario,
-        run_scenario_with_owned_probe, run_scenario_with_probe, ProbeContext, RunOutcome,
-    };
-    pub use crate::headless_runtime::{HeadlessContext, HeadlessRunConfig, HeadlessRuntime};
-    pub use crate::headless_scenario::{HeadlessScenario, ScenarioStep};
-    #[cfg(any(
-        feature = "windowed",
-        all(feature = "android", target_os = "android"),
-        all(feature = "ios", target_os = "ios"),
-        all(feature = "fuchsia", target_os = "fuchsia"),
-        all(feature = "harmony", target_env = "ohos")
-    ))]
-    pub use crate::playbook::{run_desktop_harness_playbook, run_headless_playbook};
-    pub use crate::playbook::{CompiledPlaybook, CompiledTransition, Playbook, PlaybookTransition};
+    pub use crate::register_font;
     pub use crate::text_measurer::{init_text_measurer, init_text_measurer_with_registry};
 
     // Layout builders
@@ -266,10 +300,3 @@ pub mod prelude {
     // Theme types
     pub use blinc_theme::{ColorScheme, ColorToken, RadiusToken, SpacingToken, ThemeState};
 }
-
-pub mod headless_assert;
-pub mod headless_report;
-pub mod headless_runner;
-pub mod headless_runtime;
-pub mod headless_scenario;
-pub mod playbook;

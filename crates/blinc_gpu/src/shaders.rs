@@ -30,27 +30,25 @@ struct Uniforms {
     _padding: vec2<f32>,
 }
 
-// Primitive types
-const PRIM_RECT: u32 = 0u;
-const PRIM_CIRCLE: u32 = 1u;
-const PRIM_ELLIPSE: u32 = 2u;
-const PRIM_SHADOW: u32 = 3u;
-const PRIM_INNER_SHADOW: u32 = 4u;
-const PRIM_CIRCLE_SHADOW: u32 = 5u;
-const PRIM_CIRCLE_INNER_SHADOW: u32 = 6u;
-const PRIM_TEXT: u32 = 7u;  // Text glyph - samples from atlas texture
-
-// Fill types
-const FILL_SOLID: u32 = 0u;
-const FILL_LINEAR_GRADIENT: u32 = 1u;
-const FILL_RADIAL_GRADIENT: u32 = 2u;
-
-// Clip types
-const CLIP_NONE: u32 = 0u;
-const CLIP_RECT: u32 = 1u;
-const CLIP_CIRCLE: u32 = 2u;
-const CLIP_ELLIPSE: u32 = 3u;
-const CLIP_POLYGON: u32 = 4u;
+// Enum values used throughout this shader. They're inlined as
+// literals at every use site rather than declared as `const` at
+// module scope so naga's WGSL→MSL backend doesn't emit orphaned
+// `constant uint NAME = <value>;` declarations that trip the Metal
+// shader compiler's `-Wunused-const-variable` pass at runtime.
+// naga constant-folds every reference, so the const symbols would
+// have no surviving users in the generated MSL source.
+//
+// Primitive types (field: type_info.x, variable: prim_type)
+//   0u = RECT                 1u = CIRCLE              2u = ELLIPSE
+//   3u = SHADOW               4u = INNER_SHADOW        5u = CIRCLE_SHADOW
+//   6u = CIRCLE_INNER_SHADOW  7u = TEXT (glyph atlas)
+//
+// Fill types (field: type_info.y, variable: fill_type)
+//   0u = SOLID                1u = LINEAR_GRADIENT     2u = RADIAL_GRADIENT
+//
+// Clip types (field: type_info.z, variable: clip_type)
+//   0u = NONE                 1u = RECT                2u = CIRCLE
+//   3u = ELLIPSE              4u = POLYGON
 
 struct Primitive {
     // Bounds (x, y, width, height)
@@ -132,16 +130,23 @@ fn vs_main(
     // Expand bounds for shadow blur
     let blur_expand = prim.shadow.z * 3.0 + abs(prim.shadow.x) + abs(prim.shadow.y);
 
-    // Check for rotation, skew, and 3D transforms
+    // Check for rotation, skew, and 3D transforms. PRIM_NOTCH repurposes
+    // `prim.perspective` / `prim.sdf_3d` / `prim.light` for 2D notch
+    // parameters, so extracting 3D values from those slots would alias the
+    // notch modifier type as `sin_rx`, flip `has_3d` on, and expand the
+    // vertex bounding rect via the 3D projection loop below — producing a
+    // quad that doesn't cover the notch. Treat notches as strictly 2D.
+    let is_notch_vs = prim.type_info.x == 8u;
     let sin_rz = prim.rotation.x;
     let cos_rz = prim.rotation.y;
     let sin_ry = prim.rotation.z;
     let cos_ry = prim.rotation.w;
-    let sin_rx = prim.perspective.x;
-    let cos_rx = prim.perspective.y;
-    let persp_d = prim.perspective.z;
+    let sin_rx = select(prim.perspective.x, 0.0, is_notch_vs);
+    let cos_rx = select(prim.perspective.y, 1.0, is_notch_vs);
+    let persp_d = select(prim.perspective.z, 0.0, is_notch_vs);
     let la = prim.local_affine; // [a, b, c, d] of normalized 2x2 affine
-    let has_3d = abs(sin_ry) > 0.0001 || abs(sin_rx) > 0.0001 || persp_d > 0.001;
+    let has_3d = !is_notch_vs
+        && (abs(sin_ry) > 0.0001 || abs(sin_rx) > 0.0001 || persp_d > 0.001);
     // Check if local_affine is non-identity (rotation, skew, or non-uniform scale)
     let has_local_affine = abs(la.x - 1.0) > 0.0001 || abs(la.y) > 0.0001
                         || abs(la.z) > 0.0001 || abs(la.w - 1.0) > 0.0001;
@@ -202,12 +207,59 @@ fn vs_main(
         let aabb_hh = max(abs(c0y), abs(c1y)) + blur_expand;
         bounds = vec4<f32>(center.x - aabb_hw, center.y - aabb_hh, aabb_hw * 2.0, aabb_hh * 2.0);
     } else {
-        // Original non-rotated, non-skewed path
+        // Notches can reach outside `prim.bounds` via concave corners,
+        // top/bottom bulge, or top/bottom peak modifiers. The SDF in fs_main
+        // returns negative for those exterior pixels, but the fragment shader
+        // only runs on pixels covered by this vertex quad — so if we don't
+        // expand the quad, the protrusion is invisible (every pixel outside
+        // `prim.bounds` is never rasterized in the first place). Compute the
+        // per-edge outward expansion from the notch parameters and fold it
+        // into the quad size here. Scoop/cut modifiers go INWARD so they
+        // don't need any expansion.
+        var notch_left = 0.0;
+        var notch_top = 0.0;
+        var notch_right = 0.0;
+        var notch_bottom = 0.0;
+        if is_notch_vs {
+            let ct = prim.light; // (TL, TR, BR, BL) corner type flags
+            let cr = prim.corner_radius;
+            // Concave corners extend the shape outward by `radius` along the
+            // two edges they touch.
+            if ct.x > 0.5 { // TL concave
+                notch_left = max(notch_left, cr.x);
+                notch_top = max(notch_top, cr.x);
+            }
+            if ct.y > 0.5 { // TR concave
+                notch_right = max(notch_right, cr.y);
+                notch_top = max(notch_top, cr.y);
+            }
+            if ct.z > 0.5 { // BR concave
+                notch_right = max(notch_right, cr.z);
+                notch_bottom = max(notch_bottom, cr.z);
+            }
+            if ct.w > 0.5 { // BL concave
+                notch_left = max(notch_left, cr.w);
+                notch_bottom = max(notch_bottom, cr.w);
+            }
+            // Top / bottom modifiers: bulge (2) and peak (4) both extend the
+            // shape by `height` past the base edge.
+            let top_type = prim.perspective.x;
+            let top_height = prim.perspective.z;
+            if (top_type > 1.5 && top_type < 2.5) || (top_type > 3.5 && top_type < 4.5) {
+                notch_top = max(notch_top, top_height);
+            }
+            let bot_type = prim.sdf_3d.x;
+            let bot_height = prim.sdf_3d.z;
+            if (bot_type > 1.5 && bot_type < 2.5) || (bot_type > 3.5 && bot_type < 4.5) {
+                notch_bottom = max(notch_bottom, bot_height);
+            }
+        }
+
         bounds = vec4<f32>(
-            prim.bounds.x - blur_expand,
-            prim.bounds.y - blur_expand,
-            prim.bounds.z + blur_expand * 2.0,
-            prim.bounds.w + blur_expand * 2.0
+            prim.bounds.x - blur_expand - notch_left,
+            prim.bounds.y - blur_expand - notch_top,
+            prim.bounds.z + blur_expand * 2.0 + notch_left + notch_right,
+            prim.bounds.w + blur_expand * 2.0 + notch_top + notch_bottom
         );
     }
 
@@ -219,16 +271,25 @@ fn vs_main(
     // Triangle 1: 0 → 1 → 3 (TL → TR → BL) - upper-left triangle
     // Triangle 2: 1 → 2 → 3 (TR → BR → BL) - lower-right triangle
     // Shared edge: 1-3 (top-right to bottom-left = / diagonal)
-    let quad_verts = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0), // 0 - top-left
-        vec2<f32>(1.0, 0.0), // 1 - top-right
-        vec2<f32>(0.0, 1.0), // 3 - bottom-left
-        vec2<f32>(1.0, 0.0), // 1 - top-right
-        vec2<f32>(1.0, 1.0), // 2 - bottom-right
-        vec2<f32>(0.0, 1.0), // 3 - bottom-left
-    );
-
-    let uv = quad_verts[vertex_index];
+    //
+    // PowerVR Vulkan codegen bug workaround: dynamic indexing into a
+    // `let array<...>(literal)` produces an `OpConstantComposite` +
+    // `OpAccessChain` pattern that the Pixel 10 Pro / Tensor G5
+    // PowerVR driver compiles incorrectly — vertex_index 0..2 work
+    // but 3..5 silently produce degenerate output, collapsing the
+    // second triangle to a point and leaving every primitive a
+    // half-quad. Replacing the array-literal indexing with an explicit
+    // `switch` forces naga to emit `OpSwitch`, which the driver
+    // handles correctly. Confirmed on Android 16 / driver 25.1@6794074.
+    var uv: vec2<f32>;
+    switch vertex_index {
+        case 0u: { uv = vec2<f32>(0.0, 0.0); } // 0 - top-left
+        case 1u: { uv = vec2<f32>(1.0, 0.0); } // 1 - top-right
+        case 2u: { uv = vec2<f32>(0.0, 1.0); } // 3 - bottom-left
+        case 3u: { uv = vec2<f32>(1.0, 0.0); } // 1 - top-right
+        case 4u: { uv = vec2<f32>(1.0, 1.0); } // 2 - bottom-right
+        default: { uv = vec2<f32>(0.0, 1.0); } // 3 - bottom-left
+    }
     let pos = vec2<f32>(
         bounds.x + uv.x * bounds.z,
         bounds.y + uv.y * bounds.w
@@ -364,6 +425,436 @@ fn sd_ellipse(p: vec2<f32>, center: vec2<f32>, radii: vec2<f32>) -> f32 {
     return (dist - 1.0) * min(radii.x, radii.y);
 }
 
+// ============================================================================
+// Notch SDF helpers
+//
+// Used by `case 8u /* PRIM_NOTCH */` in fs_main to compose rounded rects with
+// concave corners and optional top/bottom edge modifiers (scoop, bulge,
+// v-cut, v-peak). The goal is to approximate blinc_layout's path-based
+// `build_shape_path` output well enough that the notch_demo matches its
+// tessellated counterpart visually, while keeping every notch on the main
+// SDF pipeline (free AA, layer-clip, transforms, shadows).
+//
+// Coordinate convention throughout: `p` is the fragment's position in
+// shader-space pixels; `origin`/`size` describe the outer bounds rect
+// (x, y, width, height) in the same coordinate space.
+// ============================================================================
+
+// Polynomial smooth min (Inigo Quilez). Blends two SDFs over a `k`-pixel
+// transition zone so their union doesn't produce a visible crease at the
+// point where both SDFs are zero. At that point, `smin(0, 0, k) = -k/4`
+// — the crease is pushed into the interior far enough that the pipeline's
+// AA pass (which smoothsteps at `|d| < aa_width`) sees the surface as
+// "solidly inside" there and no hairline surfaces.
+//
+// Returns the min for points far from both surfaces (`|a - b| ≥ k`), so
+// points well inside or well outside either shape are unaffected — only
+// the transition zone near the crease is altered.
+fn smin(a: f32, b: f32, k: f32) -> f32 {
+    let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+// Polynomial smooth max — the dual of `smin`. Used for smooth subtraction
+// (`smax(d, -carve, k)`), which keeps the union of edges where a carve
+// meets the base shape from developing a visible crease line.
+fn smax(a: f32, b: f32, k: f32) -> f32 {
+    return -smin(-a, -b, k);
+}
+
+// 2D triangle SDF (Inigo Quilez's standard formulation).
+// `a`, `b`, `c` are the three vertices; winding doesn't matter — the helper
+// normalizes via `sign(e0 × e2)` so the result is always negative inside.
+fn sd_triangle(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
+    let e0 = b - a; let e1 = c - b; let e2 = a - c;
+    let v0 = p - a; let v1 = p - b; let v2 = p - c;
+    let pq0 = v0 - e0 * clamp(dot(v0, e0) / max(dot(e0, e0), 1e-6), 0.0, 1.0);
+    let pq1 = v1 - e1 * clamp(dot(v1, e1) / max(dot(e1, e1), 1e-6), 0.0, 1.0);
+    let pq2 = v2 - e2 * clamp(dot(v2, e2) / max(dot(e2, e2), 1e-6), 0.0, 1.0);
+    let s = sign(e0.x * e2.y - e0.y * e2.x);
+    let d = min(
+        min(
+            vec2<f32>(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)),
+            vec2<f32>(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x))
+        ),
+        vec2<f32>(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x))
+    );
+    return -sqrt(d.x) * sign(d.y);
+}
+
+// Corner type codes (stored as f32 in `prim.light` for PRIM_NOTCH).
+//   0.0 = sharp or convex (distinguished by corner_radius magnitude)
+//   1.0 = concave
+//
+// Modifier type codes (stored as f32 in `prim.perspective.x` / `prim.sdf_3d.x`).
+//   0.0 = none   1.0 = scoop   2.0 = bulge   3.0 = cut   4.0 = peak
+//
+// All notch geometry is composed via SDF union (`min`) and subtraction
+// (`max(d, -d_sub)`); no CPU tessellation is involved at any point.
+
+// Complete notch SDF — one call, all geometry in the shader.
+//
+// Mirrors `blinc_layout::notch::build_shape_path`: starts from an inner
+// rounded rect that's inset from the outer bounds by the maximum of
+// (concave corner radius, top/bottom modifier height) on each edge, then
+// composes the concave corner quarter-discs and the top/bottom edge
+// modifiers on top of it. The result is a single signed distance — negative
+// inside the shape, positive outside — that the main SDF pipeline can treat
+// exactly like any other primitive for shading, AA, shadows, borders, and
+// layer composition.
+//
+// Parameter pack:
+//   outer_origin, outer_size — the caller's bounds (what the element reserved)
+//   radii                    — per-corner magnitudes (TL, TR, BR, BL)
+//   corner_types             — per-corner flags (0 = sharp/convex, 1 = concave)
+//   top_mod                  — (type, width, height, corner_radius) for the
+//                              top-edge modifier; type 0 = none
+//   bottom_mod               — same layout for the bottom edge
+fn sd_notch(
+    p: vec2<f32>,
+    outer_origin: vec2<f32>,
+    outer_size: vec2<f32>,
+    radii: vec4<f32>,
+    corner_types: vec4<f32>,
+    top_mod: vec4<f32>,
+    bottom_mod: vec4<f32>
+) -> f32 {
+    let tl_concave = corner_types.x > 0.5;
+    let tr_concave = corner_types.y > 0.5;
+    let br_concave = corner_types.z > 0.5;
+    let bl_concave = corner_types.w > 0.5;
+
+    let tl_r = radii.x;
+    let tr_r = radii.y;
+    let br_r = radii.z;
+    let bl_r = radii.w;
+
+    // Modifier height on each edge (only bulge and peak protrude outward;
+    // scoop and cut go inward so they don't reserve space).
+    let top_type = top_mod.x;
+    let top_protrudes = (top_type > 1.5 && top_type < 2.5) || (top_type > 3.5 && top_type < 4.5);
+    let top_mod_h = select(0.0, top_mod.z, top_protrudes);
+    let bot_type = bottom_mod.x;
+    let bot_protrudes = (bot_type > 1.5 && bot_type < 2.5) || (bot_type > 3.5 && bot_type < 4.5);
+    let bot_mod_h = select(0.0, bottom_mod.z, bot_protrudes);
+
+    // Edge offsets — the inner rect is inset on each edge by the max of
+    // (concave radius on adjacent corners, outward modifier height on that
+    // edge). Matches `build_shape_path`'s left/right/top/bottom_offset math.
+    let left_offset = select(
+        0.0,
+        max(select(0.0, tl_r, tl_concave), select(0.0, bl_r, bl_concave)),
+        tl_concave || bl_concave
+    );
+    let right_offset = select(
+        0.0,
+        max(select(0.0, tr_r, tr_concave), select(0.0, br_r, br_concave)),
+        tr_concave || br_concave
+    );
+    let top_offset = max(
+        select(
+            0.0,
+            max(select(0.0, tl_r, tl_concave), select(0.0, tr_r, tr_concave)),
+            tl_concave || tr_concave
+        ),
+        top_mod_h
+    );
+    let bottom_offset = max(
+        select(
+            0.0,
+            max(select(0.0, bl_r, bl_concave), select(0.0, br_r, br_concave)),
+            bl_concave || br_concave
+        ),
+        bot_mod_h
+    );
+
+    // Inner body rect: inset from outer bounds by `left_offset` /
+    // `right_offset` / `top_offset` / `bottom_offset`. For the
+    // `notch_demo` dropdown (`.w(340).concave_top(32).rounded_bottom(16)`),
+    // `left_offset = right_offset = max(tl_r=32, bl_r=16) = 32` and
+    // `top_offset = 32`, so the inner body is `(32, 32)` to `(308, h)` —
+    // 276 wide, matching `build_shape_path`'s shape BELOW the concave
+    // region.
+    //
+    // Concave corners get radius 0 on the inner rect: their curvature
+    // lives in the flare regions added below. Convex and sharp corners
+    // keep their radii so the main body has proper rounded bottom
+    // corners etc.
+    let inner_origin = outer_origin + vec2<f32>(left_offset, top_offset);
+    let inner_size = vec2<f32>(
+        max(outer_size.x - left_offset - right_offset, 0.001),
+        max(outer_size.y - top_offset - bottom_offset, 0.001)
+    );
+    let inner_radii = vec4<f32>(
+        select(tl_r, 0.0, tl_concave),
+        select(tr_r, 0.0, tr_concave),
+        select(br_r, 0.0, br_concave),
+        select(bl_r, 0.0, bl_concave)
+    );
+
+    var d = sd_rounded_rect(p, inner_origin, inner_size, inner_radii);
+
+    // ------------------------------------------------------------------
+    // Concave corner flares.
+    //
+    // Each flare is the region "inside the concave corner box AND OUTSIDE
+    // the concave arc disc". The corner box is an axis-aligned rectangle
+    // that spans from the outer canvas edge to the inner body edge:
+    //
+    //   TL box: (outer.x,           inner_top)    → (inner_left,  inner_top + tl_r)
+    //   TR box: (inner_right,       inner_top)    → (outer.x+w,   inner_top + tr_r)
+    //   BR box: (inner_right,       inner_bottom - br_r) → (outer.x+w, inner_bottom)
+    //   BL box: (outer.x,           inner_bottom - bl_r) → (inner_left, inner_bottom)
+    //
+    // The concave arc is a quarter circle whose center sits on the outer
+    // canvas edge, aligned so the arc meets the top edge with a horizontal
+    // tangent and the inner body's side edge with a vertical tangent. For
+    // the top-left corner that center is `(outer.x, inner_top + tl_r)`,
+    // radius `tl_r`. The arc carves the concave "bite" out of the flare
+    // box — the flare FILLED region is "box AND NOT disc".
+    //
+    // SDF: `flare = max(box_sd, -disc_sd)` gives negative when a point is
+    // inside the box AND outside the disc. The flare is then `min`-unioned
+    // into the overall distance so the inner body and flares combine into
+    // one shape.
+    //
+    // The shape at each y is therefore:
+    //   y < inner_top                      → empty (above top edge)
+    //   y = inner_top                      → only the top edge point of the
+    //                                        flare is tangent; the shape
+    //                                        spans x ∈ [outer.x, outer.x+w]
+    //                                        (full canvas width) as the AA
+    //                                        kernel rounds off the corner
+    //   inner_top < y < inner_top + tl_r   → taper from full canvas width
+    //                                        to inner body width
+    //   y ≥ inner_top + tl_r                → inner body width
+    // ------------------------------------------------------------------
+    let inner_right = inner_origin.x + inner_size.x;
+    let inner_bottom = inner_origin.y + inner_size.y;
+
+    // `k` controls how wide the `smin` blend zone is. Keep it below `2 *
+    // aa_width + 1` (~2 px) — too large and smin's blend region inflates
+    // pixels that are actually just outside both sub-shapes, producing a
+    // visible "halo" along the crease where the concave flare meets the
+    // inner body's side edge. At k=1.5 the crease value drops to -0.375
+    // (≈ 96% alpha after smoothstep, imperceptible seam) while points
+    // one pixel outside both shapes stay on the outside.
+    let smin_k = 1.5;
+
+    // Effective vertical radius for each concave corner. Scales down when
+    // the canvas can't fit the user-requested `tl_r` (or `tr_r`, etc.) on
+    // top of the body — i.e. when the element is mid-animation growing
+    // out from under a parent. At low heights the corner collapses to
+    // just the available space so it "follows" the element's growth
+    // naturally instead of staying at full size and clipping against the
+    // canvas edge.
+    //
+    // Horizontal radius (left_offset / right_offset) stays at the
+    // user's value — the concave curve becomes an ellipse rather than
+    // a quarter circle. At `eff_vertical_r == tl_r` the ellipse
+    // degenerates back to a circle, which is the steady-state shape.
+    let tb_available = max(outer_size.y - top_offset - bottom_offset, 0.0);
+    let eff_tl_ry = select(tl_r, min(tl_r, tb_available), tl_concave);
+    let eff_tr_ry = select(tr_r, min(tr_r, tb_available), tr_concave);
+    let eff_br_ry = select(br_r, min(br_r, tb_available), br_concave);
+    let eff_bl_ry = select(bl_r, min(bl_r, tb_available), bl_concave);
+
+    if tl_concave {
+        let box_origin = vec2<f32>(outer_origin.x, inner_origin.y);
+        let box_size = vec2<f32>(left_offset, eff_tl_ry);
+        let box_sd = sd_rounded_rect(p, box_origin, box_size, vec4<f32>(0.0));
+        // Elliptical arc: center on outer canvas edge, horizontal radius
+        // stays at `left_offset`, vertical radius scales with available
+        // height. At `eff_tl_ry == tl_r` this is the same circle as
+        // before; at smaller `eff_tl_ry` it squishes vertically so the
+        // arc still meets the top edge and inner body tangentially but
+        // over a shorter vertical span.
+        let c = vec2<f32>(outer_origin.x, inner_origin.y + eff_tl_ry);
+        let ell_sd = sd_ellipse(p, c, vec2<f32>(left_offset, eff_tl_ry));
+        let flare = max(box_sd, -ell_sd);
+        d = smin(d, flare, smin_k);
+    }
+    if tr_concave {
+        let right_width = outer_origin.x + outer_size.x - inner_right;
+        let box_origin = vec2<f32>(inner_right, inner_origin.y);
+        let box_size = vec2<f32>(right_width, eff_tr_ry);
+        let box_sd = sd_rounded_rect(p, box_origin, box_size, vec4<f32>(0.0));
+        let c = vec2<f32>(outer_origin.x + outer_size.x, inner_origin.y + eff_tr_ry);
+        let ell_sd = sd_ellipse(p, c, vec2<f32>(right_width, eff_tr_ry));
+        let flare = max(box_sd, -ell_sd);
+        d = smin(d, flare, smin_k);
+    }
+    if br_concave {
+        let right_width = outer_origin.x + outer_size.x - inner_right;
+        let box_origin = vec2<f32>(inner_right, inner_bottom - eff_br_ry);
+        let box_size = vec2<f32>(right_width, eff_br_ry);
+        let box_sd = sd_rounded_rect(p, box_origin, box_size, vec4<f32>(0.0));
+        let c = vec2<f32>(outer_origin.x + outer_size.x, inner_bottom - eff_br_ry);
+        let ell_sd = sd_ellipse(p, c, vec2<f32>(right_width, eff_br_ry));
+        let flare = max(box_sd, -ell_sd);
+        d = smin(d, flare, smin_k);
+    }
+    if bl_concave {
+        let box_origin = vec2<f32>(outer_origin.x, inner_bottom - eff_bl_ry);
+        let box_size = vec2<f32>(left_offset, eff_bl_ry);
+        let box_sd = sd_rounded_rect(p, box_origin, box_size, vec4<f32>(0.0));
+        let c = vec2<f32>(outer_origin.x, inner_bottom - eff_bl_ry);
+        let ell_sd = sd_ellipse(p, c, vec2<f32>(left_offset, eff_bl_ry));
+        let flare = max(box_sd, -ell_sd);
+        d = smin(d, flare, smin_k);
+    }
+
+    // ------------------------------------------------------------------
+    // Top-edge modifier.
+    //
+    // Base line is `inner_origin.y` — the inner rect's top edge, which is
+    // where `build_shape_path` anchors the modifier. Scoop and cut carve
+    // INTO the rect (subtraction); bulge and peak protrude UPWARD out of
+    // the rect (union). The base of bulge/peak sits on the inner edge and
+    // their apex reaches up to `inner_origin.y - height`, which is exactly
+    // `outer_origin.y + top_offset - top_mod_h` — by construction, ≥ the
+    // outer top edge, so the protrusion never leaks outside the caller's
+    // bounds (and outside the canvas clip).
+    // ------------------------------------------------------------------
+    // Scoop / bulge modifiers.
+    //
+    // Bulge uses a (1 − u²)^1.5 dome curve — like the legacy cubic bezier
+    // it has zero slope at u=±1 and u=0 (horizontal tangents at both the
+    // baseline endpoints and the apex), so the "gentle wrap" join is
+    // intentional. Apex curvature radius rx²/(3·h) is noticeably rounder
+    // than a pure cosine, so a shallow bulge reads as a dome rather than
+    // a curvy triangle.
+    //
+    // Scoop uses a half-ellipse bowl (radii half_w × depth) subtracted
+    // from the body via `smax(−ell, k)`. The ellipse has a *vertical*
+    // tangent where it meets the baseline (the 90° corner at the entry),
+    // and the smooth-max rounds that corner into the Dynamic-Island-style
+    // "ears" — fillet size is driven by the user's `corner_radius` param
+    // (`top_mod.w`), so `.center_scoop_top_rounded(w, depth, cr)` behaves
+    // like the legacy path renderer.
+    //
+    // All params come from the user's
+    // `.center_bulge_top(w,h)` / `.center_scoop_top_rounded(w,depth,cr)`
+    // call via `top_mod.{y,z,w}`.
+    let top_w = top_mod.y;
+    let top_h = top_mod.z;
+    let top_cr = top_mod.w;
+    if top_type > 0.5 && top_w > 0.001 && top_h > 0.001 {
+        let cx = outer_origin.x + outer_size.x * 0.5;
+        let base_y = inner_origin.y;
+        let half_w = top_w * 0.5;
+        let rel_x = p.x - cx;
+        let u = clamp(rel_x / half_w, -1.0, 1.0);
+        let dx_col = abs(rel_x) - half_w;
+        let one_minus_u_sq = max(1.0 - u * u, 0.0);
+        let dome = one_minus_u_sq * sqrt(one_minus_u_sq); // (1 − u²)^1.5
+        if top_type < 1.5 { // scoop — rect + half-disk, smooth-max ears
+            // The hollow is a thin rect from the baseline down to the top
+            // of a half-disk, unioned with the half-disk itself. The
+            // half-disk's radius is `min(half_w, depth)` — for depth ≥
+            // half_w we get a true semicircular floor (no flat section),
+            // for shallower scoops the disk shrinks and a residual rect
+            // fills the remaining height.
+            //
+            // The rect has SHARP top corners so the body's 90° convex
+            // corner at the scoop entry gets rounded OUTWARD by
+            // `smax(−hollow, k=cr)` — that produces the Dynamic-Island
+            // "ears" (body edge dipping smoothly from the baseline into
+            // the vertical scoop wall). Hard `max()` would leave visible
+            // 90° corners poking inward; smax's fillet bows outward,
+            // matching the legacy cubic-bezier ear shape.
+            let disk_r = min(half_w, top_h);
+            let disk_cy = base_y + top_h - disk_r;
+            let disk_sd = length(p - vec2<f32>(cx, disk_cy)) - disk_r;
+            let disk_lower = max(disk_sd, disk_cy - p.y);
+            let rect_origin = vec2<f32>(cx - half_w, base_y);
+            let rect_h = max(disk_cy - base_y, 0.001);
+            let rect_sd = sd_rounded_rect(p, rect_origin, vec2<f32>(top_w, rect_h), vec4<f32>(0.0));
+            let hollow_sd = min(rect_sd, disk_lower);
+            d = smax(d, -hollow_sd, max(top_cr, 0.001));
+        } else if top_type < 2.5 { // bulge — circular arc cap with smooth ears
+            // The cap is the segment of a disk passing through
+            // (cx ± half_w, base_y) and (cx, base_y − top_h). Formula:
+            //   r = (half_w² + h²) / (2·h)
+            //   y_c = base_y − h + r   (center below the apex)
+            // The circle meets the baseline at a nonzero angle (not a
+            // horizontal tangent), so the union with the body has a
+            // concave notch on the outside at each endpoint. `smin` adds
+            // a fillet into the notch whose size is the user's
+            // `corner_radius`, producing Dynamic-Island-style ears at
+            // the bulge base.
+            let r_bulge = (half_w * half_w + top_h * top_h) / max(2.0 * top_h, 0.001);
+            let y_c = base_y - top_h + r_bulge;
+            let disk_sd = length(p - vec2<f32>(cx, y_c)) - r_bulge;
+            let bulge_sd = max(disk_sd, p.y - base_y);
+            d = smin(d, bulge_sd, max(top_cr, 0.001));
+        } else if top_type < 3.5 { // cut — subtract a V-triangle
+            d = smax(d, -sd_triangle(
+                p,
+                vec2<f32>(cx - top_w * 0.5, base_y),
+                vec2<f32>(cx, base_y + top_h),
+                vec2<f32>(cx + top_w * 0.5, base_y)
+            ), smin_k);
+        } else { // peak — union a V-triangle protrusion
+            d = smin(d, sd_triangle(
+                p,
+                vec2<f32>(cx - top_w * 0.5, base_y),
+                vec2<f32>(cx, base_y - top_h),
+                vec2<f32>(cx + top_w * 0.5, base_y)
+            ), smin_k);
+        }
+    }
+
+    // Bottom-edge modifier — mirror of top, anchored at
+    // `inner_origin.y + inner_size.y`.
+    let bot_w = bottom_mod.y;
+    let bot_h = bottom_mod.z;
+    let bot_cr = bottom_mod.w;
+    if bot_type > 0.5 && bot_w > 0.001 && bot_h > 0.001 {
+        let cx = outer_origin.x + outer_size.x * 0.5;
+        let base_y = inner_origin.y + inner_size.y;
+        let half_w = bot_w * 0.5;
+        let rel_x = p.x - cx;
+        let u = clamp(rel_x / half_w, -1.0, 1.0);
+        let dx_col = abs(rel_x) - half_w;
+        let one_minus_u_sq = max(1.0 - u * u, 0.0);
+        let dome = one_minus_u_sq * sqrt(one_minus_u_sq);
+        if bot_type < 1.5 { // scoop — mirror of top: rect + half-disk above bottom baseline
+            let disk_r = min(half_w, bot_h);
+            let disk_cy = base_y - bot_h + disk_r;
+            let disk_sd = length(p - vec2<f32>(cx, disk_cy)) - disk_r;
+            let disk_upper = max(disk_sd, p.y - disk_cy);
+            let rect_h = max(base_y - disk_cy, 0.001);
+            let rect_origin = vec2<f32>(cx - half_w, disk_cy);
+            let rect_sd = sd_rounded_rect(p, rect_origin, vec2<f32>(bot_w, rect_h), vec4<f32>(0.0));
+            let hollow_sd = min(rect_sd, disk_upper);
+            d = smax(d, -hollow_sd, max(bot_cr, 0.001));
+        } else if bot_type < 2.5 { // bulge — circular arc cap with smooth ears
+            let r_bulge = (half_w * half_w + bot_h * bot_h) / max(2.0 * bot_h, 0.001);
+            let y_c = base_y + bot_h - r_bulge;
+            let disk_sd = length(p - vec2<f32>(cx, y_c)) - r_bulge;
+            let bulge_sd = max(disk_sd, base_y - p.y);
+            d = smin(d, bulge_sd, max(bot_cr, 0.001));
+        } else if bot_type < 3.5 { // cut
+            d = smax(d, -sd_triangle(
+                p,
+                vec2<f32>(cx - bot_w * 0.5, base_y),
+                vec2<f32>(cx, base_y - bot_h),
+                vec2<f32>(cx + bot_w * 0.5, base_y)
+            ), smin_k);
+        } else { // peak
+            d = smin(d, sd_triangle(
+                p,
+                vec2<f32>(cx - bot_w * 0.5, base_y),
+                vec2<f32>(cx, base_y + bot_h),
+                vec2<f32>(cx + bot_w * 0.5, base_y)
+            ), smin_k);
+        }
+    }
+
+    return d;
+}
+
 // Quarter ellipse SDF for inner corners with asymmetric borders (GPUI approach)
 // This handles the case where adjacent border widths differ, creating an elliptical
 // inner corner instead of circular. Returns negative inside, positive outside.
@@ -445,16 +936,16 @@ fn shadow_circle(p: vec2<f32>, center: vec2<f32>, radius: f32, sigma: f32) -> f3
 fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_type: u32, clip_fade: vec4<f32>) -> f32 {
     var alpha: f32 = 1.0;
 
-    if clip_type != CLIP_NONE {
+    if clip_type != 0u {
         let aa_width = 0.75;
         switch clip_type {
-            case CLIP_RECT: {
+            case 1u /* CLIP_RECT */: {
                 let clip_origin = clip_bounds.xy;
                 let clip_size = clip_bounds.zw;
                 let clip_d = sd_rounded_rect(p, clip_origin, clip_size, clip_radius);
                 alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
             }
-            case CLIP_CIRCLE: {
+            case 2u /* CLIP_CIRCLE */: {
                 let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
                 let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
                 let center = clip_radius.xy;
@@ -463,7 +954,7 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<
                 let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
                 alpha = scissor_alpha * shape_alpha;
             }
-            case CLIP_ELLIPSE: {
+            case 3u /* CLIP_ELLIPSE */: {
                 let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
                 let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
                 let center = clip_radius.xy;
@@ -472,7 +963,7 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<
                 let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
                 alpha = scissor_alpha * shape_alpha;
             }
-            case CLIP_POLYGON: {
+            case 4u /* CLIP_POLYGON */: {
                 let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
                 let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
                 let vertex_count = u32(clip_radius.z);
@@ -651,13 +1142,14 @@ fn apply_css_filter(color: vec4<f32>, filter_a: vec4<f32>, filter_b: vec4<f32>) 
 // 3D SDF Functions
 // ============================================================================
 
-const SHAPE_NONE: u32 = 0u;
-const SHAPE_BOX: u32 = 1u;
-const SHAPE_SPHERE: u32 = 2u;
-const SHAPE_CYLINDER: u32 = 3u;
-const SHAPE_TORUS: u32 = 4u;
-const SHAPE_CAPSULE: u32 = 5u;
-const SHAPE_GROUP: u32 = 6u;
+// 3D shape types (field: perspective.w, variable: shape_type)
+//   0u = NONE    1u = BOX    2u = SPHERE    3u = CYLINDER
+//   4u = TORUS   5u = CAPSULE    6u = GROUP
+//
+// Inlined as literals rather than `const` at module scope so the
+// generated Metal source doesn't carry orphaned `constant uint`
+// declarations — see the longer comment next to the 2D enum block
+// above for why.
 
 fn sd_box_3d(p: vec3<f32>, half_ext: vec3<f32>, r: f32) -> f32 {
     let q = abs(p) - half_ext + vec3<f32>(r);
@@ -877,6 +1369,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let prim = primitives[in.instance_index];
     let p = in.uv;
 
+    // Screen-space derivative magnitude, computed up-front *outside*
+    // any control flow that depends on per-instance data. WGSL strictly
+    // requires `fwidth` / `dpdx` / `dpdy` to be called from uniform
+    // control flow; computing it here on the continuously-interpolated
+    // `in.uv` (which is uniform across every 2x2 pixel quad regardless
+    // of which primitive a quad belongs to) satisfies the rule.
+    //
+    // For an axis-aligned screen-space SDF this is identical to
+    // `fwidth(d)`: `d` is locally 1-Lipschitz in pixels, so
+    // `length(vec2(fwidth(p.x), fwidth(p.y)))` returns ~1.0 for
+    // axis-aligned edges and ~1.41 for 45° diagonals — the same range
+    // the previous `fwidth(d)` produced. Native backends (Metal,
+    // Vulkan, DX12) didn't enforce the uniformity rule so the old
+    // `fwidth(d)` worked there; Dawn (Chrome's WebGPU validator)
+    // rejects it because `d` is computed inside a switch that branches
+    // on a non-uniform `prim_type`. See
+    // https://www.w3.org/TR/WGSL/#uniformity for the spec rule.
+    let d_fw_screen = length(vec2<f32>(fwidth(p.x), fwidth(p.y)));
+
     let prim_type = prim.type_info.x;
     let fill_type = prim.type_info.y;
     let clip_type = prim.type_info.z;
@@ -896,16 +1407,27 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let cos_rz = prim.rotation.y;
     let sin_ry = prim.rotation.z;
     let cos_ry = prim.rotation.w;
-    let sin_rx = prim.perspective.x;
-    let cos_rx = prim.perspective.y;
-    let persp_d = prim.perspective.z;
-    let shape_type = u32(prim.perspective.w);
-    let depth = prim.sdf_3d.x;
+    // PRIM_NOTCH repurposes `prim.perspective`, `prim.sdf_3d`, and `prim.light`
+    // for 2D notch parameters (see the PRIM_NOTCH case below and the
+    // `PrimitiveType::Notch` doc comment in blinc_gpu::primitives). Extracting
+    // them as 3D data here would alias the modifier type code as `sin_rx` and
+    // flip `has_3d` on, which then runs the 3D perspective-unprojection branch
+    // and corrupts `sp` for every notch fragment. Force-zero those slots when
+    // prim_type == Notch so the 3D path never fires.
+    let is_notch = prim_type == 8u;
+    let sin_rx = select(prim.perspective.x, 0.0, is_notch);
+    let cos_rx = select(prim.perspective.y, 1.0, is_notch);
+    let persp_d = select(prim.perspective.z, 0.0, is_notch);
+    let shape_type = select(u32(prim.perspective.w), 0u, is_notch);
+    let depth = select(prim.sdf_3d.x, 0.0, is_notch);
 
-    let has_3d = abs(sin_ry) > 0.0001 || abs(sin_rx) > 0.0001 || persp_d > 0.001;
+    // Notches never go through the 3D perspective-unprojection branch below
+    // — their `sp` must be whatever the 2D local_affine path produces so the
+    // SDF evaluates against fragment positions directly.
+    let has_3d = !is_notch && (abs(sin_ry) > 0.0001 || abs(sin_rx) > 0.0001 || persp_d > 0.001);
 
     // ── 3D SDF Raymarching Path ──
-    if shape_type > 0u && shape_type != SHAPE_GROUP && depth > 0.001 {
+    if shape_type > 0u && shape_type != 6u && depth > 0.001 {
         let translate_z = prim.sdf_3d.w;
         let pd = select(800.0, persp_d, persp_d > 0.001);
         let rel = p - center;
@@ -1023,7 +1545,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // ── 3D Group SDF Raymarching Path ──
     // border[1] = shape_count, border[2] = aux_data offset
-    if shape_type == SHAPE_GROUP && prim.border.y > 0.5 {
+    if shape_type == 6u && prim.border.y > 0.5 {
         let group_shape_count = u32(prim.border.y);
         let group_aux_offset = u32(prim.border.z);
 
@@ -1146,7 +1668,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Calculate shadow first (rendered behind) - but NOT for inner shadow primitives
     // InnerShadow primitives handle their own shadow rendering differently
-    if (prim.shadow.z > 0.0 || prim.shadow.w != 0.0) && prim_type != PRIM_INNER_SHADOW {
+    if (prim.shadow.z > 0.0 || prim.shadow.w != 0.0) && prim_type != 4u {
         let shadow_offset = prim.shadow.xy;
         let blur = prim.shadow.z;
         let spread = prim.shadow.w;
@@ -1157,8 +1679,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Adjust corner radii for spread (expand corners proportionally)
         let shadow_radii = prim.corner_radius + vec4<f32>(spread);
 
-        // Use shaped rect SDF (respects squircle corner-shape) instead of plain rounded rect
-        let shadow_sdf_dist = sd_shaped_rect(sp, shadow_origin, shadow_size, shadow_radii, prim.corner_shape);
+        // For PRIM_NOTCH the shadow traces the actual notch outline
+        // via `sd_notch` — so concave arcs, bulges, scoops, cuts and
+        // peaks all cast shadows from their real visible edges instead
+        // of from the rectangular bounding box. Other primitives use
+        // the rounded-rect shadow path.
+        var shadow_sdf_dist: f32;
+        if prim_type == 8u /* PRIM_NOTCH */ {
+            shadow_sdf_dist = sd_notch(
+                sp, shadow_origin, shadow_size,
+                shadow_radii,
+                prim.light,
+                prim.perspective,
+                prim.sdf_3d
+            );
+        } else {
+            shadow_sdf_dist = sd_shaped_rect(sp, shadow_origin, shadow_size, shadow_radii, prim.corner_shape);
+        }
         var shadow_alpha: f32;
         if blur < 0.001 {
             shadow_alpha = select(0.0, 1.0, shadow_sdf_dist < 0.0);
@@ -1166,6 +1703,53 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let sigma_d = 0.5 * sqrt(2.0) * blur;
             shadow_alpha = 0.5 * (1.0 + erf(-shadow_sdf_dist / sigma_d));
         }
+
+        // Thin out the shadow at the "ending" of a concave arc. The
+        // concave boundary has its outward normal pointing AWAY from
+        // the shape (into the wedge region), and at the two points
+        // where the arc touches the outer bounds the normal becomes
+        // axis-aligned: at the `inner_top` end of a concave TOP arc
+        // it points straight up, at `inner_bottom` it points straight
+        // down, etc. Tracing `sd_notch` fully means those attachment
+        // points cast a full-strength shadow outward, which reads as
+        // a thick dark band bleeding past the concave edge.
+        //
+        // For each edge that has BOTH adjacent corners concave, fade
+        // the shadow to zero as the pixel approaches the attachment
+        // line on the "outside" side of the shape. The fade width is
+        // the shadow blur so it tapers smoothly.
+        if prim_type == 8u /* PRIM_NOTCH */ && blur > 0.001 {
+            let tl_c = prim.light.x > 0.5;
+            let tr_c = prim.light.y > 0.5;
+            let br_c = prim.light.z > 0.5;
+            let bl_c = prim.light.w > 0.5;
+            let fade_dist = blur;
+            if tl_c && tr_c {
+                let top_off = max(shadow_radii.x, shadow_radii.y);
+                let inner_top = shadow_origin.y + top_off;
+                let top_fade = smoothstep(inner_top - fade_dist, inner_top, sp.y);
+                shadow_alpha *= top_fade;
+            }
+            if bl_c && br_c {
+                let bottom_off = max(shadow_radii.w, shadow_radii.z);
+                let inner_bottom = shadow_origin.y + shadow_size.y - bottom_off;
+                let bot_fade = smoothstep(inner_bottom + fade_dist, inner_bottom, sp.y);
+                shadow_alpha *= bot_fade;
+            }
+            if tl_c && bl_c {
+                let left_off = max(shadow_radii.x, shadow_radii.w);
+                let inner_left = shadow_origin.x + left_off;
+                let left_fade = smoothstep(inner_left - fade_dist, inner_left, sp.x);
+                shadow_alpha *= left_fade;
+            }
+            if tr_c && br_c {
+                let right_off = max(shadow_radii.y, shadow_radii.z);
+                let inner_right = shadow_origin.x + shadow_size.x - right_off;
+                let right_fade = smoothstep(inner_right + fade_dist, inner_right, sp.x);
+                shadow_alpha *= right_fade;
+            }
+        }
+
         let shadow_color = prim.shadow_color * shadow_alpha;
 
         // Premultiply and blend
@@ -1175,17 +1759,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Calculate main shape SDF
     var d: f32;
     switch prim_type {
-        case PRIM_RECT: {
+        case 0u /* PRIM_RECT */: {
             d = sd_shaped_rect(sp, origin, size, prim.corner_radius, prim.corner_shape);
         }
-        case PRIM_CIRCLE: {
+        case 1u /* PRIM_CIRCLE */: {
             let radius = min(size.x, size.y) * 0.5;
             d = sd_circle(sp, center, radius);
         }
-        case PRIM_ELLIPSE: {
+        case 2u /* PRIM_ELLIPSE */: {
             d = sd_ellipse(sp, center, size * 0.5);
         }
-        case PRIM_SHADOW: {
+        case 3u /* PRIM_SHADOW */: {
             // Shadow-only primitive - mask out the shape interior
             // Shadow should be visible starting from the shape boundary (d >= 0)
             // Use constant AA width to avoid discontinuities at triangle seams on Vulkan
@@ -1196,7 +1780,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             result.a *= clip_alpha;
             return result;
         }
-        case PRIM_INNER_SHADOW: {
+        case 4u /* PRIM_INNER_SHADOW */: {
             // Inner shadow - renders INSIDE the shape only
             let shape_d = sd_shaped_rect(sp, origin, size, prim.corner_radius, prim.corner_shape);
 
@@ -1229,7 +1813,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             inner_result.a *= clamp(biased_alpha, 0.0, 1.0) * clip_alpha;
             return inner_result;
         }
-        case PRIM_CIRCLE_SHADOW: {
+        case 5u /* PRIM_CIRCLE_SHADOW */: {
             // Circle shadow - radially symmetric Gaussian blur
             let radius = min(size.x, size.y) * 0.5;
             let blur = prim.shadow.z;
@@ -1251,7 +1835,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             circle_result.a *= shape_mask * clip_alpha;
             return circle_result;
         }
-        case PRIM_CIRCLE_INNER_SHADOW: {
+        case 6u /* PRIM_CIRCLE_INNER_SHADOW */: {
             // Circle inner shadow - renders INSIDE the circle only
             let radius = min(size.x, size.y) * 0.5;
             let circle_d = sd_circle(sp, center, radius);
@@ -1281,8 +1865,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             inner_result.a *= clamp(biased_alpha, 0.0, 1.0) * clip_alpha;
             return inner_result;
         }
-        case PRIM_TEXT: {
-            // Text glyph - sample from glyph atlas
+        case 7u /* PRIM_TEXT */: {
+            // Text glyph - sample from glyph atlas.
             // UV bounds are stored in gradient_params: (u_min, v_min, u_max, v_max)
             // fill_type stores is_color flag (1 = color emoji, 0 = grayscale)
             let uv_bounds = prim.gradient_params;
@@ -1295,14 +1879,34 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // Map to atlas UV coordinates
             let atlas_uv = uv_bounds.xy + local_uv * (uv_bounds.zw - uv_bounds.xy);
 
+            // Use `textureSampleLevel(..., 0.0)` instead of `textureSample`
+            // here. WGSL's uniform-control-flow rule applies to
+            // *implicit-LOD* sampling — `textureSample` derives mip
+            // level from quad derivatives, which require all four
+            // pixels in the 2x2 derivative quad to take the same code
+            // path. We're inside `switch prim_type { case 7u /* PRIM_TEXT */ }`
+            // and `prim_type` comes from a per-instance buffer lookup
+            // (`primitives[in.instance_index]`), which Dawn classifies
+            // as non-uniform — so any implicit-LOD sample inside ANY
+            // arm of this switch fails validation.
+            //
+            // `textureSampleLevel(t, s, uv, 0.0)` takes the LOD as an
+            // explicit parameter, so no derivatives are needed and the
+            // uniformity rule doesn't apply. The glyph atlas is a
+            // single-mip texture (R8Unorm / Rgba8UnormSrgb, no mipmap
+            // chain), so LOD 0 is the only valid level anyway —
+            // sampling at LOD 0 is byte-identical to what
+            // `textureSample` would have produced. Native backends
+            // (Metal, Vulkan, DX12) accept both forms; Dawn (Chrome's
+            // WebGPU validator) requires the explicit form here.
             var text_result: vec4<f32>;
             if is_color {
                 // Color emoji - sample RGBA directly from color atlas
-                text_result = textureSample(color_glyph_atlas, glyph_sampler, atlas_uv);
+                text_result = textureSampleLevel(color_glyph_atlas, glyph_sampler, atlas_uv, 0.0);
             } else {
-                // Grayscale text - sample coverage from R channel, apply color tint
-                let coverage = textureSample(glyph_atlas, glyph_sampler, atlas_uv).r;
-                // Apply gamma correction for crisp text rendering
+                // Grayscale text - sample coverage from R channel,
+                // apply gamma correction, tint with primitive color
+                let coverage = textureSampleLevel(glyph_atlas, glyph_sampler, atlas_uv, 0.0).r;
                 let gamma_coverage = pow(coverage, 0.7);
                 text_result = vec4<f32>(prim.color.rgb, prim.color.a * gamma_coverage);
             }
@@ -1310,29 +1914,80 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // Apply clip alpha
             text_result.a *= clip_alpha;
 
-            // Soft anti-aliased clipping at edges
-            let edge_aa = 1.0;
-            let clip_edge_alpha = smoothstep(0.0, edge_aa, min(
-                min(p.x - prim.clip_bounds.x, prim.clip_bounds.x + prim.clip_bounds.z - p.x),
-                min(p.y - prim.clip_bounds.y, prim.clip_bounds.y + prim.clip_bounds.w - p.y)
-            ));
-            text_result.a *= clip_edge_alpha;
+            // Soft anti-aliased clipping at the rect-clip edges —
+            // only when the primitive actually has a rect clip.
+            // When `clip_type` is None the bounds are padding /
+            // stale metadata and this smoothstep would discard
+            // every fragment for a degenerate (zero-width or
+            // zero-height) rectangle that the layout pipeline can
+            // produce mid-frame (e.g. a scroll container whose
+            // inner clip hasn't resolved a dimension yet).
+            if clip_type == 1u {
+                let edge_aa = 1.0;
+                let clip_edge_alpha = smoothstep(0.0, edge_aa, min(
+                    min(p.x - prim.clip_bounds.x, prim.clip_bounds.x + prim.clip_bounds.z - p.x),
+                    min(p.y - prim.clip_bounds.y, prim.clip_bounds.y + prim.clip_bounds.w - p.y)
+                ));
+                text_result.a *= clip_edge_alpha;
+            }
 
             return text_result;
+        }
+        case 8u /* PRIM_NOTCH */: {
+            // Rounded rect with optional concave corners + optional top/bottom
+            // edge modifiers (scoop/bulge/cut/peak) — everything is SDF-
+            // composed in `sd_notch`, no CPU tessellation. See the
+            // `PrimitiveType::Notch` doc comment in `blinc_gpu::primitives`
+            // for which GpuPrimitive slots carry the notch parameters.
+            d = sd_notch(
+                sp, origin, size,
+                prim.corner_radius,
+                prim.light,       // per-corner type flags (TL, TR, BR, BL)
+                prim.perspective, // top modifier    (type, width, height, corner_r)
+                prim.sdf_3d       // bottom modifier (type, width, height, corner_r)
+            );
         }
         default: {
             d = sd_shaped_rect(sp, origin, size, prim.corner_radius, prim.corner_shape);
         }
     }
 
-    // Anti-aliasing: smooth transition at edge using screen-space adaptive width.
-    // fwidth(d) gives |dpdx(d)| + |dpdy(d)| which adapts to the local SDF gradient:
-    //   - Axis-aligned edges: fwidth ≈ 1.0 → AA width ≈ 0.75px (same as before)
-    //   - 45° corner curves:  fwidth ≈ 1.414 → AA width ≈ 1.06px (wider for diagonal)
-    // The wider AA at diagonal angles compensates for rectangular pixel grid alignment,
-    // producing uniform visual edge quality on both straight edges and curves.
-    let d_fw = fwidth(d);
-    let aa_width = max(d_fw * 0.75, 0.5);
+    // Anti-aliasing: smooth transition at edge over ~1 pixel total.
+    //
+    // `aa_width = 0.5` means the `smoothstep` range is `[-0.5, 0.5]` —
+    // one pixel wide, centered on the shape boundary. The fragment
+    // shader is evaluated at pixel CENTERS (integer + 0.5), so for an
+    // axis-aligned edge at integer y, pixels at `y ± 0.5` end up at
+    // `d = ∓0.5`, which `smoothstep(-0.5, 0.5, ±0.5)` saturates to 1
+    // and 0 respectively. That matters for two reasons:
+    //
+    //   1. **No seams between adjacent same-colored elements.** When
+    //      two fills meet at an integer-pixel line (e.g. menu bar
+    //      bottom + notch dropdown top), both sides of the boundary
+    //      now reach full alpha at their own pixel-center and don't
+    //      double-composite with partial alpha — the old wider AA
+    //      (`d_fw * 0.75 ≈ 1.06`) left them at `alpha ≈ 0.83`, which
+    //      let ~14% of the background bleed through at the shared
+    //      edge as a hairline seam.
+    //
+    //   2. **Pixel-accurate rect bounds.** A rect with integer pixel
+    //      bounds now covers exactly the right pixels with alpha 1,
+    //      matching what a non-AA rasterizer would produce. Previously
+    //      the AA zone extended half a pixel into each neighboring
+    //      row/column.
+    //
+    // The trade-off is that diagonal edges lose a fraction of a pixel
+    // of AA softness — they still transition over ~1 pixel in the
+    // gradient direction but the transition is a touch tighter than
+    // the old 2.12-pixel zone. Subpixel accuracy is preserved because
+    // the SDF is Euclidean (|∇d| = 1) so the 1-pixel smoothstep range
+    // matches the true distance-to-edge for every orientation.
+    //
+    // `d_fw_screen` (=`length(fwidth(p))`) isn't used for the width
+    // computation anymore — it's still computed at the top of fs_main
+    // because some upstream branches (shadow blur, etc.) read it.
+    _ = d_fw_screen;
+    let aa_width = 0.5;
     let fill_alpha = 1.0 - smoothstep(-aa_width, aa_width, d);
 
     if fill_alpha < 0.001 {
@@ -1342,10 +1997,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Determine fill color
     var fill_color: vec4<f32>;
     switch fill_type {
-        case FILL_SOLID: {
+        case 0u /* FILL_SOLID */: {
             fill_color = prim.color;
         }
-        case FILL_LINEAR_GRADIENT: {
+        case 1u /* FILL_LINEAR_GRADIENT */: {
             // Linear gradient using gradient_params (x1, y1, x2, y2) in user space
             let g_start = prim.gradient_params.xy;
             let g_end = prim.gradient_params.zw;
@@ -1362,7 +2017,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }
             fill_color = mix(prim.color, prim.color2, t);
         }
-        case FILL_RADIAL_GRADIENT: {
+        case 2u /* FILL_RADIAL_GRADIENT */: {
             // Radial gradient using gradient_params (cx, cy, radius, 0) in user space
             let g_center = prim.gradient_params.xy;
             let g_radius = prim.gradient_params.z;
@@ -1397,8 +2052,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let half_size = size * 0.5;
         let rel = sp - center;  // Position relative to center (signed, in unrotated space)
 
-        // Use same AA width as outer edge for consistent anti-aliasing quality
-        let border_aa = aa_width;  // 0.75 — matches outer edge smoothstep
+        // Use the same AA width as the outer edge smoothstep so the
+        // border's inner transition matches the fill's outer transition
+        // pixel-for-pixel. Currently 0.5 (tight 1-pixel AA — see the
+        // longer rationale above `aa_width`).
+        let border_aa = aa_width;
 
         // Select corner radius and corner shape based on quadrant
         var corner_radius: f32;
@@ -1439,8 +2097,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let is_within_inner_straight = straight_border_inner.x < -border_aa &&
                                        straight_border_inner.y < -border_aa;
 
-        // Fast path: clearly inside inner area, not near rounded corner
-        if is_within_inner_straight && !is_near_rounded_corner {
+        // Fast path: clearly inside inner area, not near rounded corner.
+        // Disabled for PRIM_NOTCH because the quadrant-based geometry
+        // above is derived from the rect bounding box and doesn't
+        // account for concave corners / top-bottom modifiers — a point
+        // deep inside the bbox can still be near a concave flare or a
+        // bulge edge and must go through the SDF-based `inner_sdf`
+        // branch below to pick up the border ring correctly.
+        if is_within_inner_straight && !is_near_rounded_corner && prim_type != 8u {
             // No border here, keep fill_color as-is
         } else {
             // Calculate inner SDF based on context
@@ -1477,13 +2141,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 }
             }
 
-            // Use screen-space adaptive AA for the inner border edge.
-            // fwidth(d) = |dpdx(d)| + |dpdy(d)| adapts to the local SDF gradient direction:
-            //   - Straight edges (axis-aligned): fwidth ≈ 1.0 → AA width ≈ 0.75px
-            //   - 45° diagonal (corner curves): fwidth ≈ 1.414 → AA width ≈ 1.06px
-            // The wider AA at diagonal angles compensates for pixel grid alignment,
-            // producing smoother inner border curves on opaque fills.
-            let inner_aa = max(d_fw * 0.75, 0.5);
+            // Match the main fill's tight 1-pixel AA (see `aa_width`
+            // above) so the inner border edge shares the same
+            // transition width as the outer shape edge. Wider AA here
+            // would create a visible gap between the border fill and
+            // the main fill at pixel boundaries.
+            let inner_aa = aa_width;
             let border_blend = smoothstep(-inner_aa, inner_aa, -inner_sdf);
 
             // Only apply border color where we're inside the shape
@@ -1553,6 +2216,76 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// Split SDF shader: Core shapes (Rect, Circle, Ellipse)
+///
+/// Handles prim_type 0-2 with full features: borders, gradients,
+/// CSS filters, mask gradients, perspective, clip regions.
+/// Part of the multi-pipeline SDF split for driver compatibility.
+pub const SDF_CORE_SHADER: &str = include_str!("shaders/sdf_core.wgsl");
+
+/// Split SDF shader: Shadow primitives
+///
+/// Handles prim_type 3-6 (Shadow, InnerShadow, CircleShadow,
+/// CircleInnerShadow). Each case is self-contained with early return.
+pub const SDF_SHADOW_SHADER: &str = include_str!("shaders/sdf_shadow.wgsl");
+
+/// Split SDF shader: 3D raymarched shapes
+///
+/// Handles primitives with shape_type > 0 (3D box, sphere, cylinder,
+/// torus, capsule, group). 32-step raymarching with Blinn-Phong lighting.
+pub const SDF_3D_SHADER: &str = include_str!("shaders/sdf_3d.wgsl");
+
+/// Split SDF shader: Notch primitives (prim_type 8)
+///
+/// Handles concave corners with edge modifiers (scoop, bulge, cut, peak).
+/// Full border, gradient, filter, and mask support.
+pub const SDF_NOTCH_SHADER: &str = include_str!("shaders/sdf_notch.wgsl");
+
+/// Vertex-buffer fallback: Core shapes (no VERTEX_STORAGE needed)
+///
+/// Same as SDF_CORE_SHADER but vs_main reads instance attributes
+/// from a vertex buffer instead of the storage buffer.
+pub const SDF_CORE_VB_SHADER: &str = include_str!("shaders/sdf_core_vb.wgsl");
+
+/// Vertex-buffer fallback: Shadow primitives
+pub const SDF_SHADOW_VB_SHADER: &str = include_str!("shaders/sdf_shadow_vb.wgsl");
+
+/// Vertex-buffer fallback: 3D raymarched shapes
+pub const SDF_3D_VB_SHADER: &str = include_str!("shaders/sdf_3d_vb.wgsl");
+
+/// Vertex-buffer fallback: Notch primitives
+pub const SDF_NOTCH_VB_SHADER: &str = include_str!("shaders/sdf_notch_vb.wgsl");
+
+/// Data-texture fallback: Core shapes (no storage buffers needed — WebGL2)
+///
+/// Replaces storage buffer reads with textureLoad from RGBA32F data textures.
+/// Also uses vertex buffer instance attributes (inherits from VB variant).
+pub const SDF_CORE_DT_SHADER: &str = include_str!("shaders/sdf_core_dt.wgsl");
+
+/// Data-texture fallback: Shadow primitives
+pub const SDF_SHADOW_DT_SHADER: &str = include_str!("shaders/sdf_shadow_dt.wgsl");
+
+/// Data-texture fallback: 3D raymarched shapes
+pub const SDF_3D_DT_SHADER: &str = include_str!("shaders/sdf_3d_dt.wgsl");
+
+/// Data-texture fallback: Notch primitives
+pub const SDF_NOTCH_DT_SHADER: &str = include_str!("shaders/sdf_notch_dt.wgsl");
+
+/// Data-texture fallback: Text rendering (no storage buffers — WebGL2)
+///
+/// Glyph data packed into Rgba32Float texture (width=6, height=max_glyphs).
+/// Same visual output as TEXT_SHADER.
+pub const TEXT_DT_SHADER: &str = include_str!("shaders/text_dt.wgsl");
+
+/// Data-texture fallback: Glass effects (no storage buffers — WebGL2)
+pub const GLASS_DT_SHADER: &str = include_str!("shaders/glass_dt.wgsl");
+
+/// Data-texture fallback: Simple glass effects (no storage buffers — WebGL2)
+pub const SIMPLE_GLASS_DT_SHADER: &str = include_str!("shaders/simple_glass_dt.wgsl");
+
+/// Data-texture fallback: Mesh rendering with joint matrices as texture (WebGL2)
+pub const MESH_DT_SHADER: &str = include_str!("shaders/mesh_dt.wgsl");
+
 /// Shader for text rendering with SDF glyphs
 ///
 /// Supports both grayscale text glyphs and color emoji:
@@ -1612,16 +2345,19 @@ fn vs_main(
 
     // Generate quad vertices
     // Quad vertices split along / diagonal (1-3 shared edge)
-    let quad_verts = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0), // 0 - top-left
-        vec2<f32>(1.0, 0.0), // 1 - top-right
-        vec2<f32>(0.0, 1.0), // 3 - bottom-left
-        vec2<f32>(1.0, 0.0), // 1 - top-right
-        vec2<f32>(1.0, 1.0), // 2 - bottom-right
-        vec2<f32>(0.0, 1.0), // 3 - bottom-left
-    );
-
-    let local_uv = quad_verts[vertex_index];
+    // PowerVR Vulkan codegen bug workaround — see SDF_SHADER vs_main
+    // for the rationale. `let array<...>(literal)[runtime]` is broken
+    // for indices 3..5 on the Pixel 10 Pro PowerVR driver; an explicit
+    // `switch` keeps the same vertex layout and renders correctly.
+    var local_uv: vec2<f32>;
+    switch vertex_index {
+        case 0u: { local_uv = vec2<f32>(0.0, 0.0); } // 0 - top-left
+        case 1u: { local_uv = vec2<f32>(1.0, 0.0); } // 1 - top-right
+        case 2u: { local_uv = vec2<f32>(0.0, 1.0); } // 3 - bottom-left
+        case 3u: { local_uv = vec2<f32>(1.0, 0.0); } // 1 - top-right
+        case 4u: { local_uv = vec2<f32>(1.0, 1.0); } // 2 - bottom-right
+        default: { local_uv = vec2<f32>(0.0, 1.0); } // 3 - bottom-left
+    }
 
     // Position in screen space
     let pos = vec2<f32>(
@@ -1692,23 +2428,32 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Check if this is a color emoji glyph
+    // Use `textureSampleLevel(..., 0.0)` instead of `textureSample`
+    // for both atlas paths. WGSL's uniform-control-flow rule applies
+    // to *implicit-LOD* sampling — `textureSample` derives the mip
+    // level from quad derivatives, which need all four pixels in the
+    // 2x2 derivative quad to take the same code path. The `is_color`
+    // flag is per-glyph (`@interpolate(flat)`) and can vary between
+    // adjacent quads, so Dawn classifies the `if in.is_color > 0.5`
+    // branch as non-uniform and rejects implicit-LOD samples inside.
+    //
+    // The glyph atlases are single-mip textures (R8Unorm and
+    // Rgba8UnormSrgb, no mipmap chain), so LOD 0 is the only valid
+    // level — `textureSampleLevel(..., 0.0)` is byte-identical to
+    // what `textureSample` would have produced. Native backends
+    // (Metal, Vulkan, DX12) accept both forms; Dawn requires the
+    // explicit form here.
     if in.is_color > 0.5 {
         // Color emoji: sample RGBA from color atlas, use texture color directly
-        let emoji_color = textureSample(color_atlas, glyph_sampler, in.uv);
-        // Apply clip alpha only - keep original emoji colors
+        let emoji_color = textureSampleLevel(color_atlas, glyph_sampler, in.uv, 0.0);
         return vec4<f32>(emoji_color.rgb, emoji_color.a * clip_alpha);
     } else {
         // Grayscale text: sample coverage from glyph atlas, apply tint color
-        let coverage = textureSample(glyph_atlas, glyph_sampler, in.uv).r;
+        let coverage = textureSampleLevel(glyph_atlas, glyph_sampler, in.uv, 0.0).r;
 
         // Use coverage directly with slight gamma correction for cleaner edges
-        // The rasterizer provides good coverage values - we just need to
-        // apply a subtle curve to sharpen without losing anti-aliasing
         // pow(x, 0.7) brightens mid-tones, making strokes appear crisper
         let aa_alpha = pow(coverage, 0.7);
-
-        // Apply both text alpha and clip alpha
         return vec4<f32>(in.color.rgb, in.color.a * aa_alpha * clip_alpha);
     }
 }
@@ -1801,16 +2546,19 @@ fn vs_main(
     );
 
     // Generate quad vertices split along / diagonal (1-3 shared edge)
-    let quad_verts = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0), // 0 - top-left
-        vec2<f32>(1.0, 0.0), // 1 - top-right
-        vec2<f32>(0.0, 1.0), // 3 - bottom-left
-        vec2<f32>(1.0, 0.0), // 1 - top-right
-        vec2<f32>(1.0, 1.0), // 2 - bottom-right
-        vec2<f32>(0.0, 1.0), // 3 - bottom-left
-    );
-
-    let local_uv = quad_verts[vertex_index];
+    // PowerVR Vulkan codegen bug workaround — see SDF_SHADER vs_main
+    // for the rationale. `let array<...>(literal)[runtime]` is broken
+    // for indices 3..5 on the Pixel 10 Pro PowerVR driver; an explicit
+    // `switch` keeps the same vertex layout and renders correctly.
+    var local_uv: vec2<f32>;
+    switch vertex_index {
+        case 0u: { local_uv = vec2<f32>(0.0, 0.0); } // 0 - top-left
+        case 1u: { local_uv = vec2<f32>(1.0, 0.0); } // 1 - top-right
+        case 2u: { local_uv = vec2<f32>(0.0, 1.0); } // 3 - bottom-left
+        case 3u: { local_uv = vec2<f32>(1.0, 0.0); } // 1 - top-right
+        case 4u: { local_uv = vec2<f32>(1.0, 1.0); } // 2 - bottom-right
+        default: { local_uv = vec2<f32>(0.0, 1.0); } // 3 - bottom-left
+    }
     let pos = vec2<f32>(
         bounds.x + local_uv.x * bounds.z,
         bounds.y + local_uv.y * bounds.w
@@ -1940,16 +2688,24 @@ fn calculate_glass_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>) -> f32 {
 
 // High quality blur using golden-angle spiral sampling
 // CSS spec: blur(Npx) means standard deviation = N pixels
+//
+// Uses `textureSampleLevel(.., .., uv, 0.0)` instead of `textureSample` so
+// the call is legal from non-uniform control flow. The fragment shader
+// `discard`s for shadow-only fragments before reaching the blur path,
+// which makes flow non-uniform across the quad — and WGSL/WebGPU bans
+// implicit-derivative samples (`textureSample`) in that case. The
+// backdrop has `mip_level_count: 1`, so explicitly sampling LOD 0 is
+// functionally identical to the implicit form.
 fn blur_backdrop(uv: vec2<f32>, blur_radius: f32) -> vec4<f32> {
     if blur_radius < 0.5 {
-        return textureSample(backdrop_texture, backdrop_sampler, uv);
+        return textureSampleLevel(backdrop_texture, backdrop_sampler, uv, 0.0);
     }
 
     let texel_size = 1.0 / uniforms.viewport_size;
     let sigma = blur_radius; // CSS spec: blur radius IS the standard deviation
 
     // Start with center sample (highest weight)
-    var color = textureSample(backdrop_texture, backdrop_sampler, uv);
+    var color = textureSampleLevel(backdrop_texture, backdrop_sampler, uv, 0.0);
     var total_weight = 1.0;
 
     let golden_angle = 2.39996323; // 137.5 degrees in radians
@@ -1973,7 +2729,7 @@ fn blur_backdrop(uv: vec2<f32>, blur_radius: f32) -> vec4<f32> {
             let sample_pos = uv + offset;
             let weight = gaussian_weight(ring_radius, sigma);
 
-            color += textureSample(backdrop_texture, backdrop_sampler, sample_pos) * weight;
+            color += textureSampleLevel(backdrop_texture, backdrop_sampler, sample_pos, 0.0) * weight;
             total_weight += weight;
         }
     }
@@ -1983,6 +2739,9 @@ fn blur_backdrop(uv: vec2<f32>, blur_radius: f32) -> vec4<f32> {
 
 // High quality blur with clip bounds for scroll containers
 // CSS spec: blur(Npx) means standard deviation = N pixels
+//
+// Uses `textureSampleLevel` for the same uniform-control-flow reason
+// documented on `blur_backdrop` above.
 fn blur_backdrop_clipped(uv: vec2<f32>, blur_radius: f32, clip_bounds: vec4<f32>) -> vec4<f32> {
     let clip_min = clip_bounds.xy / uniforms.viewport_size;
     let clip_max = (clip_bounds.xy + clip_bounds.zw) / uniforms.viewport_size;
@@ -1990,7 +2749,7 @@ fn blur_backdrop_clipped(uv: vec2<f32>, blur_radius: f32, clip_bounds: vec4<f32>
 
     if blur_radius < 0.5 {
         let clamped_uv = select(uv, clamp(uv, clip_min, clip_max), has_clip);
-        return textureSample(backdrop_texture, backdrop_sampler, clamped_uv);
+        return textureSampleLevel(backdrop_texture, backdrop_sampler, clamped_uv, 0.0);
     }
 
     let texel_size = 1.0 / uniforms.viewport_size;
@@ -1998,7 +2757,7 @@ fn blur_backdrop_clipped(uv: vec2<f32>, blur_radius: f32, clip_bounds: vec4<f32>
 
     // Start with center sample (highest weight)
     let center_uv = select(uv, clamp(uv, clip_min, clip_max), has_clip);
-    var color = textureSample(backdrop_texture, backdrop_sampler, center_uv);
+    var color = textureSampleLevel(backdrop_texture, backdrop_sampler, center_uv, 0.0);
     var total_weight = 1.0;
 
     let golden_angle = 2.39996323; // 137.5 degrees in radians
@@ -2023,7 +2782,7 @@ fn blur_backdrop_clipped(uv: vec2<f32>, blur_radius: f32, clip_bounds: vec4<f32>
             sample_pos = select(sample_pos, clamp(sample_pos, clip_min, clip_max), has_clip);
 
             let weight = gaussian_weight(ring_radius, sigma);
-            color += textureSample(backdrop_texture, backdrop_sampler, sample_pos) * weight;
+            color += textureSampleLevel(backdrop_texture, backdrop_sampler, sample_pos, 0.0) * weight;
             total_weight += weight;
         }
     }
@@ -2406,16 +3165,19 @@ fn vs_main(
     );
 
     // Generate quad vertices split along / diagonal (1-3 shared edge)
-    let quad_verts = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0), // 0 - top-left
-        vec2<f32>(1.0, 0.0), // 1 - top-right
-        vec2<f32>(0.0, 1.0), // 3 - bottom-left
-        vec2<f32>(1.0, 0.0), // 1 - top-right
-        vec2<f32>(1.0, 1.0), // 2 - bottom-right
-        vec2<f32>(0.0, 1.0), // 3 - bottom-left
-    );
-
-    let local_uv = quad_verts[vertex_index];
+    // PowerVR Vulkan codegen bug workaround — see SDF_SHADER vs_main
+    // for the rationale. `let array<...>(literal)[runtime]` is broken
+    // for indices 3..5 on the Pixel 10 Pro PowerVR driver; an explicit
+    // `switch` keeps the same vertex layout and renders correctly.
+    var local_uv: vec2<f32>;
+    switch vertex_index {
+        case 0u: { local_uv = vec2<f32>(0.0, 0.0); } // 0 - top-left
+        case 1u: { local_uv = vec2<f32>(1.0, 0.0); } // 1 - top-right
+        case 2u: { local_uv = vec2<f32>(0.0, 1.0); } // 3 - bottom-left
+        case 3u: { local_uv = vec2<f32>(1.0, 0.0); } // 1 - top-right
+        case 4u: { local_uv = vec2<f32>(1.0, 1.0); } // 2 - bottom-right
+        default: { local_uv = vec2<f32>(0.0, 1.0); } // 3 - bottom-left
+    }
     let pos = vec2<f32>(
         bounds.x + local_uv.x * bounds.z,
         bounds.y + local_uv.y * bounds.w
@@ -2487,9 +3249,15 @@ fn gaussian_weight(x: f32, sigma: f32) -> f32 {
 
 // High quality blur using golden-angle spiral sampling
 // CSS spec: blur(Npx) means standard deviation = N pixels
+//
+// Uses `textureSampleLevel(.., .., uv, 0.0)` for the same uniform-control-flow
+// reason documented on the equivalent function in GLASS_SHADER above:
+// the fragment shader `discard`s shadow-only fragments, so plain
+// `textureSample` (which needs implicit derivatives) is illegal here.
+// The backdrop has `mip_level_count: 1`, so explicit LOD 0 is identical.
 fn blur_backdrop(uv: vec2<f32>, radius: f32, clip_bounds: vec4<f32>) -> vec4<f32> {
     if radius < 0.5 {
-        return textureSample(backdrop_texture, backdrop_sampler, uv);
+        return textureSampleLevel(backdrop_texture, backdrop_sampler, uv, 0.0);
     }
 
     let texel_size = 1.0 / uniforms.viewport_size;
@@ -2502,7 +3270,7 @@ fn blur_backdrop(uv: vec2<f32>, radius: f32, clip_bounds: vec4<f32>) -> vec4<f32
 
     // Start with center sample (highest weight)
     let center_uv = select(uv, clamp(uv, clip_min, clip_max), has_clip);
-    var color = textureSample(backdrop_texture, backdrop_sampler, center_uv);
+    var color = textureSampleLevel(backdrop_texture, backdrop_sampler, center_uv, 0.0);
     var total_weight = 1.0;
 
     // Golden angle spiral for smooth sample distribution
@@ -2528,7 +3296,7 @@ fn blur_backdrop(uv: vec2<f32>, radius: f32, clip_bounds: vec4<f32>) -> vec4<f32
             sample_pos = select(sample_pos, clamp(sample_pos, clip_min, clip_max), has_clip);
 
             let weight = gaussian_weight(ring_radius, sigma);
-            color += textureSample(backdrop_texture, backdrop_sampler, sample_pos) * weight;
+            color += textureSampleLevel(backdrop_texture, backdrop_sampler, sample_pos, 0.0) * weight;
             total_weight += weight;
         }
     }
@@ -2730,12 +3498,13 @@ pub const PATH_SHADER: &str = r#"
 // Supports multi-stop gradients via 1D texture lookup.
 // Supports clipping via rect/circle/ellipse shapes.
 
-// Clip type constants
-const CLIP_NONE: u32 = 0u;
-const CLIP_RECT: u32 = 1u;
-const CLIP_CIRCLE: u32 = 2u;
-const CLIP_ELLIPSE: u32 = 3u;
-const CLIP_POLYGON: u32 = 4u;
+// Clip type values (variable: clip_type)
+//   0u = NONE    1u = RECT    2u = CIRCLE    3u = ELLIPSE    4u = POLYGON
+//
+// Inlined as literals rather than `const` to prevent naga from
+// emitting orphaned `constant uint CLIP_* = ...;` declarations into
+// the generated Metal source (which trip
+// `-Wunused-const-variable` at runtime shader compile time).
 
 struct Uniforms {
     // viewport_size (vec2) + padding (vec2) = 16 bytes, offset 0
@@ -2770,6 +3539,11 @@ struct Uniforms {
 @group(0) @binding(4) var image_sampler: sampler;
 @group(0) @binding(5) var backdrop_texture: texture_2d<f32>;
 @group(0) @binding(6) var backdrop_sampler: sampler;
+// Shared with the SDF pipeline — holds polygon clip vertices packed as
+// vec4(x0, y0, x1, y1). Exposed to the path pipeline so Lottie track
+// mattes (rendered as `ClipShape::Polygon` by `blinc_lottie`) affect
+// tessellated shape fills, not just SDF-drawn primitives.
+@group(0) @binding(7) var<storage, read> aux_data: array<vec4<f32>>;
 
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -2779,6 +3553,11 @@ struct VertexInput {
     @location(4) gradient_params: vec4<f32>, // linear: (x1,y1,x2,y2); radial: (cx,cy,r,0)
     @location(5) gradient_type: u32,
     @location(6) edge_distance: f32,         // distance to nearest edge (for AA)
+    // Per-vertex clip data — populated by push_path_with_brush_info so multiple
+    // path submissions with different clips can coexist in one VBO/draw call.
+    @location(7) clip_bounds: vec4<f32>,
+    @location(8) clip_radius: vec4<f32>,
+    @location(9) clip_type: u32,
 }
 
 struct VertexOutput {
@@ -2790,6 +3569,9 @@ struct VertexOutput {
     @location(4) @interpolate(flat) gradient_type: u32,
     @location(5) edge_distance: f32,
     @location(6) screen_pos: vec2<f32>,      // screen position for clip calculations
+    @location(7) @interpolate(flat) v_clip_bounds: vec4<f32>,
+    @location(8) @interpolate(flat) v_clip_radius: vec4<f32>,
+    @location(9) @interpolate(flat) v_clip_type: u32,
 }
 
 // ============================================================================
@@ -2841,20 +3623,20 @@ fn sd_ellipse(p: vec2<f32>, center: vec2<f32>, radii: vec2<f32>) -> f32 {
 // Calculate clip alpha (1.0 = inside clip, 0.0 = outside)
 // For non-rect clips: clip_bounds = rect scissor, clip_radius = shape data
 fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<f32>, clip_type: u32) -> f32 {
-    if clip_type == CLIP_NONE {
+    if clip_type == 0u {
         return 1.0;
     }
 
     let aa_width = 0.75;
 
     switch clip_type {
-        case CLIP_RECT: {
+        case 1u /* CLIP_RECT */: {
             let clip_origin = clip_bounds.xy;
             let clip_size = clip_bounds.zw;
             let clip_d = sd_rounded_rect(p, clip_origin, clip_size, clip_radius);
             return 1.0 - smoothstep(-aa_width, aa_width, clip_d);
         }
-        case CLIP_CIRCLE: {
+        case 2u /* CLIP_CIRCLE */: {
             let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
             let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
             let center = clip_radius.xy;
@@ -2863,7 +3645,7 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<
             let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
             return scissor_alpha * shape_alpha;
         }
-        case CLIP_ELLIPSE: {
+        case 3u /* CLIP_ELLIPSE */: {
             let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
             let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
             let center = clip_radius.xy;
@@ -2872,9 +3654,76 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<
             let shape_alpha = 1.0 - smoothstep(-aa_width, aa_width, clip_d);
             return scissor_alpha * shape_alpha;
         }
+        case 4u /* CLIP_POLYGON */: {
+            let scissor_d = sd_rounded_rect(p, clip_bounds.xy, clip_bounds.zw, vec4<f32>(0.0));
+            let scissor_alpha = 1.0 - smoothstep(-aa_width, aa_width, scissor_d);
+            let vertex_count = u32(clip_radius.z);
+            let aux_offset = u32(clip_radius.w);
+            let shape_alpha = calculate_polygon_clip_alpha(p, vertex_count, aux_offset);
+            return scissor_alpha * shape_alpha;
+        }
         default: {
             return 1.0;
         }
+    }
+}
+
+// Polygon winding-number test. Vertices are packed 2-per-vec4 in the
+// shared aux_data storage buffer; `aux_offset` is the starting vec4
+// index and `vertex_count` is the polygon vertex count. Mirrors the
+// implementation used by the SDF pipeline — kept in sync so a
+// polygon clip pushed at the `DrawContext` level clips fills and
+// shape primitives identically.
+fn calculate_polygon_clip_alpha(p: vec2<f32>, vertex_count: u32, aux_offset: u32) -> f32 {
+    if vertex_count < 3u {
+        return 1.0;
+    }
+
+    var winding: i32 = 0;
+
+    for (var i: u32 = 0u; i < vertex_count; i = i + 1u) {
+        let vec_idx = aux_offset + (i / 2u);
+        let data = aux_data[vec_idx];
+        var vi: vec2<f32>;
+        if (i % 2u) == 0u {
+            vi = data.xy;
+        } else {
+            vi = data.zw;
+        }
+
+        let j = (i + 1u) % vertex_count;
+        let vec_idx_j = aux_offset + (j / 2u);
+        let data_j = aux_data[vec_idx_j];
+        var vj: vec2<f32>;
+        if (j % 2u) == 0u {
+            vj = data_j.xy;
+        } else {
+            vj = data_j.zw;
+        }
+
+        // Cast a horizontal ray from `p` to the right; accumulate +1 / -1
+        // at each crossing based on edge direction.
+        if (vi.y <= p.y) {
+            if (vj.y > p.y) {
+                let cross = (vj.x - vi.x) * (p.y - vi.y) - (p.x - vi.x) * (vj.y - vi.y);
+                if (cross > 0.0) {
+                    winding = winding + 1;
+                }
+            }
+        } else {
+            if (vj.y <= p.y) {
+                let cross = (vj.x - vi.x) * (p.y - vi.y) - (p.x - vi.x) * (vj.y - vi.y);
+                if (cross < 0.0) {
+                    winding = winding - 1;
+                }
+            }
+        }
+    }
+
+    if winding != 0 {
+        return 1.0;
+    } else {
+        return 0.0;
     }
 }
 
@@ -2910,6 +3759,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.gradient_params = in.gradient_params;
     out.gradient_type = in.gradient_type;
     out.edge_distance = in.edge_distance;
+    out.v_clip_bounds = in.clip_bounds;
+    out.v_clip_radius = in.clip_radius;
+    out.v_clip_type = in.clip_type;
 
     return out;
 }
@@ -2919,6 +3771,13 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 // ============================================================================
 
 // Simple box blur for glass effect (samples backdrop in a small radius)
+//
+// Uses `textureSampleLevel` instead of `textureSample` so this is legal
+// to call from non-uniform control flow. The path-pipeline fragment
+// shader takes glass-effect branches based on per-vertex clip flags
+// (`use_glass_effect`), which are not provably uniform across the
+// rasterized triangle, so WGSL/WebGPU rejects implicit-derivative
+// samples here.
 fn sample_blur(uv: vec2<f32>, blur_radius: f32, viewport_size: vec2<f32>) -> vec4<f32> {
     let pixel_size = 1.0 / viewport_size;
     var total = vec4<f32>(0.0);
@@ -2930,7 +3789,7 @@ fn sample_blur(uv: vec2<f32>, blur_radius: f32, viewport_size: vec2<f32>) -> vec
         for (var y = -sample_radius; y <= sample_radius; y++) {
             let offset = vec2<f32>(f32(x), f32(y)) * pixel_size * blur_radius * 0.5;
             let sample_uv = clamp(uv + offset, vec2<f32>(0.0), vec2<f32>(1.0));
-            total += textureSample(backdrop_texture, backdrop_sampler, sample_uv);
+            total += textureSampleLevel(backdrop_texture, backdrop_sampler, sample_uv, 0.0);
             samples += 1.0;
         }
     }
@@ -2946,18 +3805,40 @@ fn adjust_saturation(color: vec3<f32>, saturation: f32) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Calculate clip alpha first
+    // Calculate clip alpha from per-vertex clip data so multiple paths with
+    // different clips can share a single VBO/draw without clobbering each
+    // other. The uniform clip_* fields are kept for legacy callers but no
+    // longer used here.
     let clip_alpha = calculate_clip_alpha(
         in.screen_pos,
-        uniforms.clip_bounds,
-        uniforms.clip_radius,
-        uniforms.clip_type
+        in.v_clip_bounds,
+        in.v_clip_radius,
+        in.v_clip_type
     );
 
     // Early out if fully clipped
     if clip_alpha < 0.001 {
         discard;
     }
+
+    // Use `textureSampleLevel(..., 0.0)` instead of `textureSample`
+    // for the gradient and image lookups. WGSL's uniform-control-flow
+    // rule applies to *implicit-LOD* sampling — `textureSample`
+    // derives mip level from quad derivatives, which need all four
+    // pixels in the 2x2 derivative quad to take the same code path.
+    // The brush type is selected by `in.gradient_type` (per-vertex)
+    // and `uniforms.use_image_texture` / `use_gradient_texture` /
+    // `use_glass_effect` (uniform), but Dawn classifies the per-vertex
+    // value as non-uniform — so any implicit-LOD sample inside a
+    // branch keyed on it fails validation.
+    //
+    // Both the gradient texture (1D ramp) and the image brush texture
+    // are created with `mip_level_count: 1` (see
+    // `gradient_texture.rs:222` and `image.rs:39`), so LOD 0 is the
+    // only valid level. `textureSampleLevel(t, s, uv, 0.0)` is
+    // byte-identical to what `textureSample` would have produced.
+    // Native backends (Metal, Vulkan, DX12) accept both forms; Dawn
+    // requires the explicit form here.
 
     var color: vec4<f32>;
 
@@ -2987,7 +3868,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let uv_min = uniforms.image_uv_bounds.xy;
         let uv_max = uniforms.image_uv_bounds.zw;
         let image_uv = uv_min + in.uv * (uv_max - uv_min);
-        color = textureSample(image_texture, image_sampler, image_uv);
+        color = textureSampleLevel(image_texture, image_sampler, image_uv, 0.0);
         // Apply tint from vertex color (multiply)
         color = vec4<f32>(color.rgb * in.color.rgb, color.a * in.color.a);
     } else if (in.gradient_type == 0u) {
@@ -3004,8 +3885,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Project UV onto gradient line
         var t: f32;
         if (g_len_sq > 0.0001) {
-            let p = in.uv - g_start;
-            t = clamp(dot(p, g_dir) / g_len_sq, 0.0, 1.0);
+            let p_lin = in.uv - g_start;
+            t = clamp(dot(p_lin, g_dir) / g_len_sq, 0.0, 1.0);
         } else {
             t = 0.0;
         }
@@ -3013,22 +3894,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Sample from gradient texture or mix vertex colors
         if (uniforms.use_gradient_texture == 1u) {
             // Multi-stop gradient: sample from 1D texture
-            color = textureSample(gradient_texture, gradient_sampler, t);
+            color = textureSampleLevel(gradient_texture, gradient_sampler, t, 0.0);
         } else {
             // 2-stop fast path: mix vertex colors
             color = mix(in.color, in.end_color, t);
         }
     } else {
-        // Radial gradient - params: (cx, cy, r, 0) in ObjectBoundingBox space
+        // Radial gradient - params: (cx, cy, rx, ry) all in
+        // ObjectBoundingBox space. `rx` = radius / bounds_width, `ry` =
+        // radius / bounds_height. The per-axis radius lets a circle in
+        // path-space stay a circle when the bounding box isn't square —
+        // a single scalar radius would stretch the gradient to match
+        // the OBB aspect ratio, making the Flair halo read as an
+        // ellipse on wide paths.
         let center = in.gradient_params.xy;
-        let radius = in.gradient_params.z;
-        let dist = length(in.uv - center);
-        let t = clamp(dist / max(radius, 0.001), 0.0, 1.0);
+        let radius_xy = max(in.gradient_params.zw, vec2<f32>(0.001));
+        let d = (in.uv - center) / radius_xy;
+        let t = clamp(length(d), 0.0, 1.0);
 
         // Sample from gradient texture or mix vertex colors
         if (uniforms.use_gradient_texture == 1u) {
             // Multi-stop gradient: sample from 1D texture
-            color = textureSample(gradient_texture, gradient_sampler, t);
+            color = textureSampleLevel(gradient_texture, gradient_sampler, t, 0.0);
         } else {
             // 2-stop fast path: mix vertex colors
             color = mix(in.color, in.end_color, t);
@@ -3040,101 +3927,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // (edge_distance = 0), which causes entire shape to fade. Need different AA approach.
     color.a *= uniforms.opacity * clip_alpha;
     return color;
-}
-"#;
-
-/// Shader for compact line segment rendering (polylines).
-///
-/// Renders one quad per segment instance (2 triangles), suitable for large
-/// time-series lines after downsampling.
-pub const LINE_SHADER: &str = r#"
-// ============================================================================
-// Blinc Line Segment Shader
-// ============================================================================
-
-struct Uniforms {
-    viewport_size: vec2<f32>,
-    _padding: vec2<f32>,
-}
-
-struct LineSegment {
-    // (x0, y0, x1, y1) in screen pixels
-    p0p1: vec4<f32>,
-    // Clip bounds (x, y, width, height). Sentinel disables clip.
-    clip_bounds: vec4<f32>,
-    // Premultiplied RGBA
-    color: vec4<f32>,
-    // Params: (half_width, z_layer, reserved, reserved)
-    params: vec4<f32>,
-}
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) world_pos: vec2<f32>,
-    @location(2) clip_bounds: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-@group(0) @binding(1) var<storage, read> segments: array<LineSegment>;
-
-// Vertex layout for a segment quad: (t, side)
-// t: 0=start, 1=end
-// side: -1/ +1
-var<private> QUAD: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
-    vec2<f32>(0.0, -1.0),
-    vec2<f32>(0.0,  1.0),
-    vec2<f32>(1.0, -1.0),
-    vec2<f32>(1.0, -1.0),
-    vec2<f32>(0.0,  1.0),
-    vec2<f32>(1.0,  1.0),
-);
-
-@vertex
-fn vs_main(
-    @builtin(vertex_index) vertex_index: u32,
-    @builtin(instance_index) instance_index: u32,
-) -> VertexOutput {
-    let seg = segments[instance_index];
-    let p0 = seg.p0p1.xy;
-    let p1 = seg.p0p1.zw;
-
-    let d = p1 - p0;
-    let len = max(length(d), 0.0001);
-    let dir = d / len;
-    let n = vec2<f32>(-dir.y, dir.x);
-
-    let t = QUAD[vertex_index].x;
-    let side = QUAD[vertex_index].y;
-    let half_w = seg.params.x;
-
-    let p = mix(p0, p1, t) + n * (side * half_w);
-
-    // Convert to clip space (-1..1)
-    let clip_pos = vec2<f32>(
-        (p.x / uniforms.viewport_size.x) * 2.0 - 1.0,
-        1.0 - (p.y / uniforms.viewport_size.y) * 2.0
-    );
-
-    var out: VertexOutput;
-    out.position = vec4<f32>(clip_pos, 0.0, 1.0);
-    out.color = seg.color;
-    out.world_pos = p;
-    out.clip_bounds = seg.clip_bounds;
-    return out;
-}
-
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Rect clip only (fast). Matches the "no clip" sentinel used elsewhere.
-    if (in.clip_bounds.x > -9000.0) {
-        let minp = in.clip_bounds.xy;
-        let maxp = in.clip_bounds.xy + in.clip_bounds.zw;
-        if (in.world_pos.x < minp.x || in.world_pos.x > maxp.x || in.world_pos.y < minp.y || in.world_pos.y > maxp.y) {
-            discard;
-        }
-    }
-    return in.color;
 }
 "#;
 
@@ -3452,8 +4244,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Sample layer texture
-    let src = textureSample(layer_texture, layer_sampler, in.uv);
+    // Sample layer texture (LOD 0 — non-uniform flow from discard above)
+    let src = textureSampleLevel(layer_texture, layer_sampler, in.uv, 0.0);
 
     // Apply opacity
     var src_alpha = src.a * uniforms.opacity;
@@ -3477,7 +4269,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (uniforms.blend_mode != BLEND_NORMAL) {
         // Compute screen UV from fragment position
         let screen_uv = in.frag_pos / uniforms.viewport_size;
-        let dst = textureSample(dest_texture, dest_sampler, screen_uv);
+        let dst = textureSampleLevel(dest_texture, dest_sampler, screen_uv, 0.0);
 
         // Unpremultiply source (src.a > 0 since src_alpha > 0.001 and opacity <= 1.0)
         let src_c = src.rgb / src.a;
@@ -3886,7 +4678,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 // This preserves the shape (including rounded corners) unlike blur-based approaches
 fn sample_min_distance(uv: vec2<f32>, radius: f32, texel_size: vec2<f32>) -> f32 {
     // Check center first - if opaque, distance is 0
-    let center = textureSample(original_texture, input_sampler, uv);
+    let center = textureSampleLevel(original_texture, input_sampler, uv, 0.0);
     if (center.a > 0.5) {
         return 0.0;
     }
@@ -3908,7 +4700,7 @@ fn sample_min_distance(uv: vec2<f32>, radius: f32, texel_size: vec2<f32>) -> f32
             let angle = f32(i) * 6.28318530718 / f32(num_angles);
             let offset = vec2<f32>(cos(angle), sin(angle)) * pixel_dist * texel_size;
             let sample_uv = clamp(uv + offset, vec2<f32>(0.0), vec2<f32>(1.0));
-            let s = textureSample(original_texture, input_sampler, sample_uv);
+            let s = textureSampleLevel(original_texture, input_sampler, sample_uv, 0.0);
 
             if (s.a > 0.5) {
                 min_dist = min(min_dist, dist);
@@ -3948,7 +4740,7 @@ fn fs_drop_shadow(in: VertexOutput) -> @location(0) vec4<f32> {
     let shadow_rgb = uniforms.color.rgb;
 
     // Sample original (unblurred) content at current position
-    let original = textureSample(original_texture, input_sampler, in.uv);
+    let original = textureSampleLevel(original_texture, input_sampler, in.uv, 0.0);
 
     // Composite shadow behind original using porter-duff "over" for non-premultiplied colors
     let result_a = original.a + shadow_a * (1.0 - original.a);
@@ -4035,7 +4827,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 // Find minimum distance to an opaque pixel within search_radius
 fn find_edge_distance(uv: vec2<f32>, search_radius: f32, texel_size: vec2<f32>) -> f32 {
     // Check center first - if opaque, distance is 0
-    let center = textureSample(source_texture, source_sampler, uv);
+    let center = textureSampleLevel(source_texture, source_sampler, uv, 0.0);
     if (center.a > 0.5) {
         return 0.0;
     }
@@ -4056,7 +4848,7 @@ fn find_edge_distance(uv: vec2<f32>, search_radius: f32, texel_size: vec2<f32>) 
             let angle = f32(i) * 6.28318530718 / f32(num_angles);
             let offset = vec2<f32>(cos(angle), sin(angle)) * pixel_dist * texel_size;
             let sample_uv = clamp(uv + offset, vec2<f32>(0.0), vec2<f32>(1.0));
-            let s = textureSample(source_texture, source_sampler, sample_uv);
+            let s = textureSampleLevel(source_texture, source_sampler, sample_uv, 0.0);
 
             if (s.a > 0.5) {
                 min_dist = min(min_dist, dist);
@@ -4106,7 +4898,7 @@ fn fs_glow(in: VertexOutput) -> @location(0) vec4<f32> {
     glow_alpha *= uniforms.opacity * uniforms.color.a;
 
     // Sample original content
-    let original = textureSample(source_texture, source_sampler, in.uv);
+    let original = textureSampleLevel(source_texture, source_sampler, in.uv, 0.0);
 
     // Glow color (premultiplied)
     let glow_rgb = uniforms.color.rgb;
@@ -4124,3 +4916,159 @@ fn fs_glow(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(result_rgb, result_a);
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_wgsl(source: &str) -> Result<(), String> {
+        naga::front::wgsl::parse_str(source).map_err(|e| e.emit_to_string(source))?;
+        Ok(())
+    }
+
+    /// Runtime shader compilation is the only thing that parses these WGSL
+    /// strings — if a case label or a const declaration is malformed, the
+    /// error only surfaces when the app actually tries to build a pipeline
+    /// on device. These tests invoke naga directly so the workspace test
+    /// suite catches syntax regressions (e.g. a stray `// comment {`
+    /// swallowing a case-body brace) before they ship.
+    #[test]
+    fn sdf_shader_parses() {
+        parse_wgsl(SDF_SHADER).expect("SDF_SHADER");
+    }
+
+    #[test]
+    fn path_shader_parses() {
+        parse_wgsl(PATH_SHADER).expect("PATH_SHADER");
+    }
+
+    #[test]
+    fn text_shader_parses() {
+        parse_wgsl(TEXT_SHADER).expect("TEXT_SHADER");
+    }
+
+    #[test]
+    fn glass_shader_parses() {
+        parse_wgsl(GLASS_SHADER).expect("GLASS_SHADER");
+    }
+
+    #[test]
+    fn simple_glass_shader_parses() {
+        parse_wgsl(SIMPLE_GLASS_SHADER).expect("SIMPLE_GLASS_SHADER");
+    }
+
+    #[test]
+    fn composite_shader_parses() {
+        parse_wgsl(COMPOSITE_SHADER).expect("COMPOSITE_SHADER");
+    }
+
+    #[test]
+    fn layer_composite_shader_parses() {
+        parse_wgsl(LAYER_COMPOSITE_SHADER).expect("LAYER_COMPOSITE_SHADER");
+    }
+
+    #[test]
+    fn blur_shader_parses() {
+        parse_wgsl(BLUR_SHADER).expect("BLUR_SHADER");
+    }
+
+    #[test]
+    fn drop_shadow_shader_parses() {
+        parse_wgsl(DROP_SHADOW_SHADER).expect("DROP_SHADOW_SHADER");
+    }
+
+    #[test]
+    fn glow_shader_parses() {
+        parse_wgsl(GLOW_SHADER).expect("GLOW_SHADER");
+    }
+
+    #[test]
+    fn color_matrix_shader_parses() {
+        parse_wgsl(COLOR_MATRIX_SHADER).expect("COLOR_MATRIX_SHADER");
+    }
+
+    #[test]
+    fn mask_image_shader_parses() {
+        parse_wgsl(MASK_IMAGE_SHADER).expect("MASK_IMAGE_SHADER");
+    }
+
+    #[test]
+    fn sdf_core_shader_parses() {
+        parse_wgsl(SDF_CORE_SHADER).expect("SDF_CORE_SHADER");
+    }
+
+    #[test]
+    fn sdf_shadow_shader_parses() {
+        parse_wgsl(SDF_SHADOW_SHADER).expect("SDF_SHADOW_SHADER");
+    }
+
+    #[test]
+    fn sdf_3d_shader_parses() {
+        parse_wgsl(SDF_3D_SHADER).expect("SDF_3D_SHADER");
+    }
+
+    #[test]
+    fn sdf_notch_shader_parses() {
+        parse_wgsl(SDF_NOTCH_SHADER).expect("SDF_NOTCH_SHADER");
+    }
+
+    #[test]
+    fn sdf_core_vb_shader_parses() {
+        parse_wgsl(SDF_CORE_VB_SHADER).expect("SDF_CORE_VB_SHADER");
+    }
+
+    #[test]
+    fn sdf_shadow_vb_shader_parses() {
+        parse_wgsl(SDF_SHADOW_VB_SHADER).expect("SDF_SHADOW_VB_SHADER");
+    }
+
+    #[test]
+    fn sdf_3d_vb_shader_parses() {
+        parse_wgsl(SDF_3D_VB_SHADER).expect("SDF_3D_VB_SHADER");
+    }
+
+    #[test]
+    fn sdf_notch_vb_shader_parses() {
+        parse_wgsl(SDF_NOTCH_VB_SHADER).expect("SDF_NOTCH_VB_SHADER");
+    }
+
+    #[test]
+    fn sdf_core_dt_shader_parses() {
+        parse_wgsl(SDF_CORE_DT_SHADER).expect("SDF_CORE_DT_SHADER");
+    }
+
+    #[test]
+    fn sdf_shadow_dt_shader_parses() {
+        parse_wgsl(SDF_SHADOW_DT_SHADER).expect("SDF_SHADOW_DT_SHADER");
+    }
+
+    #[test]
+    fn sdf_3d_dt_shader_parses() {
+        parse_wgsl(SDF_3D_DT_SHADER).expect("SDF_3D_DT_SHADER");
+    }
+
+    #[test]
+    fn sdf_notch_dt_shader_parses() {
+        parse_wgsl(SDF_NOTCH_DT_SHADER).expect("SDF_NOTCH_DT_SHADER");
+    }
+
+    #[test]
+    fn text_dt_shader_parses() {
+        parse_wgsl(TEXT_DT_SHADER).expect("TEXT_DT_SHADER");
+    }
+
+    #[test]
+    fn glass_dt_shader_parses() {
+        parse_wgsl(GLASS_DT_SHADER).expect("GLASS_DT_SHADER");
+    }
+
+    #[test]
+    fn simple_glass_dt_shader_parses() {
+        parse_wgsl(SIMPLE_GLASS_DT_SHADER).expect("SIMPLE_GLASS_DT_SHADER");
+    }
+
+    #[test]
+    fn mesh_dt_shader_parses() {
+        parse_wgsl(MESH_DT_SHADER).expect("MESH_DT_SHADER");
+    }
+}

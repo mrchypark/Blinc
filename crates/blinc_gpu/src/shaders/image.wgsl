@@ -175,8 +175,13 @@ fn calculate_clip_alpha(p: vec2<f32>, clip_bounds: vec4<f32>, clip_radius: vec4<
 
     let clip_d = rounded_rect_sdf_corners(p, clip_bounds.xy, clip_bounds.zw, clip_radius);
 
-    // Anti-aliased clip edge
-    let aa_width = fwidth(clip_d) * 0.5;
+    // Anti-aliased clip edge using a fixed pixel-width AA band.
+    // We avoid `fwidth(clip_d)` here because Chrome/Dawn's WebGPU WGSL
+    // validator rejects derivative functions (`fwidth`/`dpdx`/`dpdy`)
+    // inside non-uniform control flow (the early `discard` in fs_main).
+    // A constant 0.75 px half-width is visually identical for images
+    // rendered at screen resolution.
+    let aa_width = 0.75;
     return 1.0 - smoothstep(-aa_width, aa_width, clip_d);
 }
 
@@ -270,8 +275,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let opacity = input.params.y;
     let border_width = input.params.z;
 
-    // Sample the texture
-    var color = textureSample(image_texture, image_sampler, input.uv);
+    // Sample the texture.
+    // Uses `textureSampleLevel` (explicit LOD 0) instead of
+    // `textureSample` because the `discard` statements above for
+    // clip rejection make control flow non-uniform, and WGSL
+    // forbids implicit-derivative sampling (`textureSample`) in
+    // non-uniform flow. The image texture has no mipmaps so LOD 0
+    // is identical to the implicit form.
+    var color = textureSampleLevel(image_texture, image_sampler, input.uv, 0.0);
 
     // Apply tint
     color = color * input.tint;

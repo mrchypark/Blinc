@@ -1,5 +1,17 @@
 //! Window abstraction and configuration
 
+/// Platform-agnostic window identifier.
+///
+/// Wraps a `u64` to avoid leaking platform-specific types (e.g., winit's WindowId).
+/// Each window gets a unique ID at creation time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WindowId(pub u64);
+
+impl WindowId {
+    /// The default/primary window ID (used for single-window apps and mobile).
+    pub const PRIMARY: WindowId = WindowId(0);
+}
+
 /// Window configuration
 #[derive(Clone, Debug)]
 pub struct WindowConfig {
@@ -19,6 +31,18 @@ pub struct WindowConfig {
     pub always_on_top: bool,
     /// Whether to start in fullscreen mode
     pub fullscreen: bool,
+    /// Minimum window size in logical pixels (None = no constraint)
+    pub min_size: Option<(u32, u32)>,
+    /// Maximum window size in logical pixels (None = no constraint)
+    pub max_size: Option<(u32, u32)>,
+    /// Initial window position in logical pixels (None = OS default)
+    pub position: Option<(i32, i32)>,
+    /// Whether to center the window on the screen at creation
+    pub center: bool,
+    /// Whether this window is modal (blocks input to other windows while open)
+    pub modal: bool,
+    /// Parent window ID for modal relationships (None = top-level)
+    pub parent: Option<WindowId>,
 }
 
 impl Default for WindowConfig {
@@ -32,6 +56,12 @@ impl Default for WindowConfig {
             transparent: false,
             always_on_top: false,
             fullscreen: false,
+            min_size: None,
+            max_size: None,
+            position: None,
+            center: false,
+            modal: false,
+            parent: None,
         }
     }
 }
@@ -87,12 +117,51 @@ impl WindowConfig {
         self.fullscreen = fullscreen;
         self
     }
+
+    /// Set minimum window size in logical pixels
+    pub fn min_size(mut self, width: u32, height: u32) -> Self {
+        self.min_size = Some((width, height));
+        self
+    }
+
+    /// Set maximum window size in logical pixels
+    pub fn max_size(mut self, width: u32, height: u32) -> Self {
+        self.max_size = Some((width, height));
+        self
+    }
+
+    /// Set initial window position in logical pixels
+    pub fn position(mut self, x: i32, y: i32) -> Self {
+        self.position = Some((x, y));
+        self
+    }
+
+    /// Center the window on the screen at creation
+    pub fn center(mut self) -> Self {
+        self.center = true;
+        self
+    }
+
+    /// Make this a modal window that blocks input to other windows while open
+    pub fn modal(mut self) -> Self {
+        self.modal = true;
+        self
+    }
+
+    /// Set the parent window for modal relationships
+    pub fn parent(mut self, parent_id: WindowId) -> Self {
+        self.parent = Some(parent_id);
+        self
+    }
 }
 
 /// Window abstraction trait
 ///
 /// Implemented by platform-specific window types.
 pub trait Window: Send {
+    /// Get the platform-agnostic window ID
+    fn id(&self) -> WindowId;
+
     /// Get window size in physical pixels
     fn size(&self) -> (u32, u32);
 
@@ -116,6 +185,45 @@ pub trait Window: Send {
 
     /// Check if the window is visible
     fn is_visible(&self) -> bool;
+
+    /// Set window position in logical pixels
+    fn set_position(&self, _x: i32, _y: i32) {}
+
+    /// Center the window on its current monitor
+    fn center_on_screen(&self) {}
+
+    /// Set the window size in logical pixels
+    fn set_size(&self, _width: u32, _height: u32) {}
+
+    /// Start a window drag operation (for custom title bars).
+    ///
+    /// Call this from a mouse-down handler on a draggable region.
+    /// The OS takes over the drag and the window follows the cursor.
+    fn drag_window(&self) {}
+
+    /// Minimize the window
+    fn minimize(&self) {}
+
+    /// Maximize or restore the window
+    fn maximize(&self) {}
+
+    /// Close the window
+    fn close(&self) {}
+
+    /// Whether the window was configured with a transparent surface.
+    /// Default `false` for platforms where transparency isn't supported
+    /// or relevant.
+    fn is_transparent(&self) -> bool {
+        false
+    }
+
+    /// Get safe area insets (top, right, bottom, left) in logical pixels.
+    ///
+    /// On mobile: accounts for notch, status bar, home indicator.
+    /// On desktop: returns zeros (no safe area constraints).
+    fn safe_area_insets(&self) -> (f32, f32, f32, f32) {
+        (0.0, 0.0, 0.0, 0.0)
+    }
 }
 
 /// Cursor icons

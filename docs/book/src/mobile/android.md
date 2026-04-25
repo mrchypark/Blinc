@@ -1,70 +1,45 @@
-# Android Development
+# Android Project Setup
 
-This guide covers setting up your environment and building Blinc apps for Android.
+This guide covers setting up an Android Blinc project — toolchain, build commands, and the platform-specific files (`AndroidManifest.xml`, Gradle config, debugging).
+
+For the cross-platform Blinc API (native bridge, camera, deep linking, lifecycle, etc.), see the [Mobile Development overview](./overview.md).
 
 ## Prerequisites
 
 ### 1. Android SDK & NDK
 
-Install Android Studio or the standalone SDK:
-
 ```bash
-# macOS (via Homebrew)
+# macOS
 brew install --cask android-studio
 
-# Or download from https://developer.android.com/studio
-```
-
-Set up environment variables:
-
-```bash
 export ANDROID_HOME=$HOME/Library/Android/sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125
 export PATH=$PATH:$ANDROID_HOME/platform-tools
 ```
 
-### 2. Rust Android Targets
+### 2. Rust Targets
 
 ```bash
 rustup target add aarch64-linux-android
 rustup target add armv7-linux-androideabi
 rustup target add x86_64-linux-android
-rustup target add i686-linux-android
-```
-
-### 3. cargo-ndk
-
-```bash
 cargo install cargo-ndk
 ```
 
 ## Building
 
-### Debug Build
-
 ```bash
-# Build for arm64 (most modern devices)
+# Debug — single arch
 cargo ndk -t arm64-v8a build
 
-# Build for multiple architectures
-cargo ndk -t arm64-v8a -t armeabi-v7a build
-```
+# Release — multi-arch
+cargo ndk -t arm64-v8a -t armeabi-v7a build --release
 
-### Release Build
-
-```bash
-cargo ndk -t arm64-v8a build --release
-```
-
-### Using Gradle
-
-From the `platforms/android` directory:
-
-```bash
+# Or via Gradle (from platforms/android/)
 ./gradlew assembleDebug
 ```
 
-The APK will be at `app/build/outputs/apk/debug/app-debug.apk`.
+The APK lands in `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Project Configuration
 
@@ -76,8 +51,8 @@ name = "my_app"
 crate-type = ["cdylib", "staticlib"]
 
 [target.'cfg(target_os = "android")'.dependencies]
-blinc_app = { version = "0.1", features = ["android"] }
-blinc_platform_android = "0.1"
+blinc_app = { version = "0.5", features = ["android"] }
+blinc_platform_android = "0.5"
 android-activity = { version = "0.6", features = ["native-activity"] }
 log = "0.4"
 android_logger = "0.14"
@@ -86,9 +61,14 @@ android_logger = "0.14"
 ### AndroidManifest.xml
 
 ```xml
-<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+
+    <!-- Permissions for native bridge features -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:label="My App"
@@ -98,7 +78,8 @@ android_logger = "0.14"
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
 
             <meta-data
                 android:name="android.app.lib_name"
@@ -108,38 +89,32 @@ android_logger = "0.14"
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Deep link: myapp://path/to/route -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="myapp" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>
 ```
 
-## Touch Event Handling
-
-Android touch events are automatically routed to your UI. The touch phases map as follows:
-
-| Android Action | Blinc Event |
-|---------------|-------------|
-| ACTION_DOWN   | pointer_down |
-| ACTION_MOVE   | pointer_move |
-| ACTION_UP     | pointer_up + pointer_leave |
-| ACTION_CANCEL | pointer_leave |
-
-Two-finger pinch gestures emit the layout `PINCH` event with the gesture center
-and per-frame scale delta. One-finger drag scrolling is unchanged.
-
 ## Debugging
 
-### View Logs
-
 ```bash
+# View Rust logs
 adb logcat | grep -E "(blinc|BlincApp)"
+
+# Filter for native bridge calls
+adb logcat | grep BlincNativeBridge
 ```
 
 ### Common Issues
 
-**"Library not found"**
-
-Ensure the native library is built and copied to `app/src/main/jniLibs/`:
+**"Library not found"** — ensure the native library is built and copied to `app/src/main/jniLibs/<arch>/`:
 
 ```bash
 cargo ndk -t arm64-v8a build
@@ -147,29 +122,35 @@ cp target/aarch64-linux-android/debug/libmy_app.so \
    platforms/android/app/src/main/jniLibs/arm64-v8a/
 ```
 
-**"Vulkan not supported"**
-
-Check device compatibility:
+**"Vulkan not supported"** — check device capability:
 
 ```bash
 adb shell getprop ro.hardware.vulkan
 ```
 
-Most devices with API 24+ support Vulkan, but some older devices may not.
+API 24+ devices generally support Vulkan, but some emulators may not.
 
-**Touch events not working**
+**"Native call failed"** — verify the namespace+name matches between Kotlin and Rust handlers. Check logcat for `BlincNativeBridge: handler not found for X.Y`.
 
-1. Verify the render context is created successfully
-2. Check that `android.app.lib_name` in manifest matches your library name
-3. Look for errors in logcat
+**Touch events not working** — verify the render context is created successfully and `android.app.lib_name` in the manifest matches your library name.
 
-## Performance Tips
+## Performance
 
-1. **Use release builds** for performance testing
-2. **Enable LTO** in Cargo.toml:
-   ```toml
-   [profile.release]
-   lto = "thin"
-   opt-level = "z"
-   ```
-3. **Test on real devices** - emulators have different GPU characteristics
+```toml
+[profile.release]
+lto = "fat"
+opt-level = "z"      # optimize for size on mobile
+panic = "abort"
+strip = true
+codegen-units = 1
+```
+
+- **Test on real devices** — emulators have different GPU characteristics
+- **Profile with Android Studio Profiler** for CPU/GPU/memory
+- **Bundle assets via `assets/`** — `AndroidAssetLoader` auto-resolves them through the platform `AssetLoader` trait
+
+## Next Steps
+
+- [Mobile Development overview](./overview.md) — native bridge, camera, deep linking, lifecycle, safe area APIs
+- [iOS Project Setup](./ios.md) — build the iOS counterpart
+- [CLI Reference](./cli.md)

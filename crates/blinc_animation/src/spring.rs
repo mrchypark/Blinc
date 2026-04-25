@@ -100,6 +100,8 @@ pub struct Spring {
     value: f32,
     velocity: f32,
     target: f32,
+    /// When true, the spring is paused — step() is a no-op
+    paused: bool,
 }
 
 impl Spring {
@@ -109,6 +111,7 @@ impl Spring {
             value: initial,
             velocity: 0.0,
             target: initial,
+            paused: false,
         }
     }
 
@@ -130,23 +133,54 @@ impl Spring {
 
     /// Check if the spring has settled (within epsilon of target with minimal velocity)
     pub fn is_settled(&self) -> bool {
-        // Use small epsilons that work for both pixel-based values (scroll)
-        // and normalized values (scale, opacity). 0.01 is imperceptible in both cases.
         const EPSILON: f32 = 0.01;
         const VELOCITY_EPSILON: f32 = 0.1;
 
-        (self.value - self.target).abs() < EPSILON && self.velocity.abs() < VELOCITY_EPSILON
+        self.paused
+            || ((self.value - self.target).abs() < EPSILON
+                && self.velocity.abs() < VELOCITY_EPSILON)
     }
 
-    /// Step the spring simulation using RK4 integration
+    /// Pause the spring — step() becomes a no-op, preserving current state
+    pub fn pause(&mut self) {
+        self.paused = true;
+    }
+
+    /// Resume the spring from where it was paused
+    pub fn resume(&mut self) {
+        self.paused = false;
+    }
+
+    /// Step the spring simulation using RK4 integration.
+    ///
+    /// Large `dt` values are split into fixed-size substeps to keep the
+    /// integrator numerically stable on stiff springs. RK4's stability
+    /// on an undamped oscillator requires `dt * omega < ~2.78`; for our
+    /// stiffer scroll-rebound spring (`stiffness = 3000`,
+    /// `omega ≈ 55 rad/s`), a 16 ms dt from a 60 Hz `requestAnimationFrame`
+    /// loop was in the overshoot regime and produced a visible
+    /// multi-cycle oscillation on top of a supposedly
+    /// critically-damped spring. Substepping at ~8 ms keeps every
+    /// preset stable without needing preset-specific tuning.
     pub fn step(&mut self, dt: f32) {
+        if self.paused {
+            return;
+        }
         if self.is_settled() {
             self.value = self.target;
             self.velocity = 0.0;
             return;
         }
 
-        // RK4 integration for accurate spring physics
+        const MAX_SUBSTEP: f32 = 1.0 / 120.0;
+        let substeps = (dt / MAX_SUBSTEP).ceil().max(1.0) as u32;
+        let h = dt / substeps as f32;
+        for _ in 0..substeps {
+            self.rk4_step(h);
+        }
+    }
+
+    fn rk4_step(&mut self, dt: f32) {
         let k1_v = self.acceleration(self.value, self.velocity);
         let k1_x = self.velocity;
 

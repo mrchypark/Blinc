@@ -32,16 +32,22 @@ pub enum InputEvent {
         /// Scroll phase (for trackpad gestures)
         phase: ScrollPhase,
     },
-    /// Pinch zoom gesture update (trackpad magnify / touch pinch).
-    ///
-    /// `scale` is a ratio delta per update (1.0 = no change). Values > 1 zoom in,
-    /// values < 1 zoom out.
-    Pinch {
-        /// Scale ratio delta (1.0 = no change)
-        scale: f32,
-    },
     /// Scroll gesture ended (touchpad momentum finished)
     ScrollEnd,
+    /// Pinch zoom gesture (trackpad two-finger pinch)
+    Pinch {
+        /// Scale delta (1.0 = no change, >1 = zoom in, <1 = zoom out)
+        scale: f32,
+        /// Whether this is the start/end of the gesture
+        phase: ScrollPhase,
+    },
+    /// Rotation gesture (trackpad two-finger rotate)
+    Rotation {
+        /// Angle delta in radians
+        angle: f32,
+        /// Whether this is the start/end of the gesture
+        phase: ScrollPhase,
+    },
     /// IME composition session started.
     CompositionStarted,
     /// IME preview text changed.
@@ -311,6 +317,12 @@ pub enum Key {
 
     // Character input (for text input)
     Char(char),
+
+    // System keys
+    /// System back button (Android back, browser back)
+    Back,
+    /// Menu key
+    Menu,
 
     // Unknown key
     Unknown,

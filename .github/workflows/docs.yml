@@ -6,11 +6,23 @@ on:
     paths:
       - 'docs/book/**'
       - '.github/workflows/docs.yml'
+      - 'crates/*/src/**'
+      - 'examples/blinc_app_examples/examples/**'
+      - 'extensions/*/src/**'
+      - 'tools/build-web-examples/**'
+      - 'assets/**'
+      - 'Cargo.lock'
   pull_request:
     branches: [main]
     paths:
       - 'docs/book/**'
       - '.github/workflows/docs.yml'
+      - 'crates/*/src/**'
+      - 'examples/blinc_app_examples/examples/**'
+      - 'extensions/*/src/**'
+      - 'tools/build-web-examples/**'
+      - 'assets/**'
+      - 'Cargo.lock'
   workflow_dispatch:
 
 permissions:
@@ -28,6 +40,84 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Strip local-dev [patch] block (CI-only)
+        shell: bash
+        run: bash scripts/ci-strip-local-patch.sh
+
+      # The codegen tool + wasm-pack invocations need a working
+      # Rust toolchain with the wasm32 target. Cached between runs
+      # via `Swatinem/rust-cache` so the 41 wrapper compiles amortise
+      # to ~5-10 minutes on a warm cache (cold is ~25-35 minutes).
+      - name: Setup Rust + wasm32 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Include the auto-generated wrapper tree so incremental
+          # builds amortise across runs. The wrappers themselves are
+          # gitignored, so without this key they'd rebuild from
+          # scratch every time.
+          workspaces: |
+            .
+            examples/_generated
+          # Keep caches separate from the main CI workflow — the
+          # wasm32 target dir pulls in a different dep tree.
+          prefix-key: "docs-v1"
+
+      - name: Install wasm-pack
+        run: |
+          if ! command -v wasm-pack >/dev/null 2>&1; then
+            curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          fi
+
+      # wasm-pack 0.13 ships its own bundled `wasm-opt` (binaryen
+      # 116). That binary segfaults on the larger generated wasm
+      # modules (e.g. `cn_demo` — 1666 generated icon constants +
+      # the full `blinc_cn` component set). Installing a modern
+      # binaryen via apt puts a fresh `wasm-opt` on PATH, and
+      # wasm-pack will prefer the system binary over its bundled
+      # one when both exist.
+      - name: Install fresh binaryen (wasm-opt)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen
+          wasm-opt --version || true
+
+      # No separate cache for `examples/_generated/*/pkg/`. The
+      # `Swatinem/rust-cache` above already caches the cargo
+      # `target/` directory (the expensive part — full crate
+      # compilation). Each wasm-pack invocation on a warm cargo
+      # cache only runs wasm-bindgen + wasm-opt (~60-80s per
+      # example) — there's no compilation to redo. Caching the
+      # `pkg/` outputs separately created a fragile two-layer
+      # cache whose key (`Cargo.lock` + codegen tool source) was
+      # too narrow and didn't invalidate when crate sources
+      # changed, causing stale wasm artifacts to leak into the
+      # deployed pages. Rebuilding all wasm-pack outputs from
+      # scratch on every CI run is correct by construction and
+      # avoids that class of bug entirely. The `blinc-build-web-
+      # examples` incremental planner still works for local dev
+      # (where `.last-build-sha` persists across runs), but in CI
+      # the stamp doesn't exist → the planner falls back to
+      # "rebuild all" → predictable behavior.
+
+      # Regenerates `examples/_generated/<name>/` wrapper crates
+      # from the cross-target source in `examples/blinc_app_examples/examples/`,
+      # rewrites the gallery markdown + SUMMARY patch in
+      # `docs/book/src/web/`, and runs `wasm-pack build --target web
+      # --release` in each wrapper. The built wrappers land in
+      # `examples/_generated/<name>/pkg/` and stay there until the
+      # staging step below copies them into the book output.
+      #
+      # `mdbook build` wipes and rewrites `target/book/`, so we
+      # can't stage into `target/book/examples/` yet — staging
+      # happens after mdBook runs.
+      - name: Generate + build web example wrappers
+        run: |
+          cargo run -p blinc-build-web-examples -- --build
 
       - name: Setup mdBook
         uses: peaceiris/actions-mdbook@v2
@@ -36,6 +126,24 @@ jobs:
 
       - name: Build mdBook
         run: mdbook build docs/book
+
+      # Now that mdBook has populated `target/book/`, copy each
+      # wrapper's `index.html` + `pkg/` into
+      # `target/book/examples/<name>/`. The path is chosen so that
+      # mdBook's iframe references under
+      # `docs/book/src/web/example-gallery/<name>.md`
+      # (`src="../../examples/<name>/index.html"`) resolve correctly
+      # against the published book root at serve time.
+      #
+      # `--no-build` would be nice here to explicitly skip the
+      # wasm-pack re-run, but since the previous step already
+      # produced every `pkg/` directory, `wasm-pack build` is a
+      # no-op (cargo cache hit) and takes seconds.
+      - name: Stage example artifacts into book output
+        run: |
+          cargo run -p blinc-build-web-examples -- \
+            --no-gallery \
+            --stage-to target/book/examples
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
@@ -61,6 +169,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Strip local-dev [patch] block (CI-only)
+        shell: bash
+        run: bash scripts/ci-strip-local-patch.sh
 
       - name: Setup Python
         uses: actions/setup-python@v5
