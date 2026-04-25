@@ -15,7 +15,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[cfg(target_os = "ios")]
-use tracing::info;
+use tracing::{info, warn};
+
+#[cfg(any(target_os = "ios", test))]
+fn managed_event_sequence() -> [Event; 2] {
+    [
+        Event::Lifecycle(blinc_platform::LifecycleEvent::Resumed),
+        Event::Frame(blinc_platform::WindowId(0)),
+    ]
+}
 
 /// Wake proxy for iOS event loop
 ///
@@ -177,6 +185,6 @@ mod tests {
             events[0],
             Event::Lifecycle(LifecycleEvent::Resumed)
         ));
-        assert!(matches!(events[1], Event::Frame));
+        assert!(matches!(events[1], Event::Frame(_)));
     }
 }

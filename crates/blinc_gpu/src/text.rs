@@ -304,7 +304,7 @@ impl TextRenderingContext {
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
         self.prepare_text_with_style(
             text, x, y, font_size, color, anchor, alignment, width, wrap, font_name, generic, 400,
-            false, None,
+            false, None, 0.0,
         )
     }
 
@@ -342,54 +342,24 @@ impl TextRenderingContext {
         weight: u16,
         italic: bool,
         layout_height: Option<f32>,
+        letter_spacing: f32,
     ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
         let mut options = LayoutOptions {
             anchor,
             alignment,
-            max_width: width,
+            letter_spacing,
             ..Default::default()
         };
+        if let Some(w) = width {
+            options.max_width = Some(w);
+        }
         // Disable wrapping unless explicitly requested
         if !wrap {
             options.line_break = blinc_text::LineBreakMode::None;
         }
 
-        self.prepare_text_with_layout_options_and_style(
-            text,
-            x,
-            y,
-            font_size,
-            color,
-            &options,
-            font_name,
-            generic,
-            weight,
-            italic,
-            layout_height,
-        )
-    }
-
-    /// Prepare text with full `LayoutOptions` control (letter spacing, line height, wrapping, etc.)
-    ///
-    /// This is useful for canvas text where `TextStyle` carries additional typography settings
-    /// like `letter_spacing` and `line_height`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn prepare_text_with_layout_options_and_style(
-        &mut self,
-        text: &str,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [f32; 4],
-        options: &LayoutOptions,
-        font_name: Option<&str>,
-        generic: GenericFont,
-        weight: u16,
-        italic: bool,
-        layout_height: Option<f32>,
-    ) -> Result<Vec<GpuGlyph>, blinc_text::TextError> {
         let prepared = self.renderer.prepare_text_with_style(
-            text, font_size, color, options, font_name, generic, weight, italic,
+            text, font_size, color, &options, font_name, generic, weight, italic,
         )?;
 
         // Determine the number of lines from the prepared text
@@ -403,7 +373,7 @@ impl TextRenderingContext {
             glyph_extent
         };
 
-        let y_offset = match options.anchor {
+        let y_offset = match anchor {
             TextAnchor::Top => {
                 // Center glyphs within the layout-assigned height (if provided).
                 // This ensures items_center() on parent works correctly - text is

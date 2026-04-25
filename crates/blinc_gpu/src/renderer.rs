@@ -75,9 +75,12 @@ fn requested_device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
 }
 
 fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
-    // Start from adapter-supported limits so backend-specific edge cases
-    // (e.g. GLES reporting zero for some compute limits) won't fail device creation.
-    // Then clamp max_buffer_size conservatively unless overridden.
+    // Default wgpu limits include `max_buffer_size = 256 MiB`.
+    // This is conservative and may be smaller than what the hardware supports.
+    //
+    // If you want to raise this limit (e.g. for large path buffers), set:
+    //   BLINC_WGPU_MAX_BUFFER_MB=512
+    // The value is clamped to the adapter-supported maximum.
     let supported = adapter.limits();
 
     // On wasm32, use the adapter's own supported limits directly
@@ -103,9 +106,6 @@ fn device_required_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
             supported.max_buffer_size / (1024 * 1024)
         );
     } else {
-        limits.max_buffer_size = wgpu::Limits::default()
-            .max_buffer_size
-            .min(supported.max_buffer_size);
         tracing::debug!(
             "wgpu limits: max_buffer_size={} MiB (supported {} MiB)",
             limits.max_buffer_size / (1024 * 1024),
@@ -125,14 +125,10 @@ fn apply_renderer_config_overrides(
     //
     // Env:
     // - BLINC_GPU_MAX_PRIMITIVES=20000
-    // - BLINC_GPU_MAX_LINE_SEGMENTS=200000
     // - BLINC_GPU_MAX_GLYPHS=50000
     // - BLINC_GPU_MAX_GLASS_PRIMITIVES=1000
     if let Some(v) = env_usize("BLINC_GPU_MAX_PRIMITIVES") {
         config.max_primitives = v;
-    }
-    if let Some(v) = env_usize("BLINC_GPU_MAX_LINE_SEGMENTS") {
-        config.max_line_segments = v;
     }
     if let Some(v) = env_usize("BLINC_GPU_MAX_GLYPHS") {
         config.max_glyphs = v;
@@ -145,9 +141,6 @@ fn apply_renderer_config_overrides(
     let prim_cap = (required_limits.max_storage_buffer_binding_size as u64
         / std::mem::size_of::<GpuPrimitive>() as u64)
         .max(1) as usize;
-    let line_cap = (required_limits.max_storage_buffer_binding_size as u64
-        / std::mem::size_of::<GpuLineSegment>() as u64)
-        .max(1) as usize;
     let glyph_cap = (required_limits.max_storage_buffer_binding_size as u64
         / std::mem::size_of::<GpuGlyph>() as u64)
         .max(1) as usize;
@@ -156,7 +149,6 @@ fn apply_renderer_config_overrides(
         .max(1) as usize;
 
     config.max_primitives = config.max_primitives.clamp(1, prim_cap);
-    config.max_line_segments = config.max_line_segments.clamp(1, line_cap);
     config.max_glyphs = config.max_glyphs.clamp(1, glyph_cap);
     config.max_glass_primitives = config.max_glass_primitives.clamp(1, glass_cap);
 
@@ -165,9 +157,8 @@ fn apply_renderer_config_overrides(
 
 fn log_renderer_config(config: &RendererConfig) {
     tracing::info!(
-        "gpu config: max_primitives={}, max_line_segments={}, max_glyphs={}, max_glass_primitives={}, sample_count={}",
+        "gpu config: max_primitives={}, max_glyphs={}, max_glass_primitives={}, sample_count={}",
         config.max_primitives,
-        config.max_line_segments,
         config.max_glyphs,
         config.max_glass_primitives,
         config.sample_count
@@ -205,8 +196,6 @@ impl std::error::Error for RendererError {}
 pub struct RendererConfig {
     /// Maximum number of primitives per batch
     pub max_primitives: usize,
-    /// Maximum number of line segments per batch (compact polyline rendering)
-    pub max_line_segments: usize,
     /// Maximum number of glass primitives per batch
     pub max_glass_primitives: usize,
     /// Maximum number of glyphs per batch
@@ -243,10 +232,9 @@ impl Default for RendererConfig {
         Self {
             // Conservative defaults for low memory footprint
             // Buffers are re-created if scenes exceed these limits, so no hard cap
-            max_primitives: 1_000,     // ~192 KB — handles complex UI screens
-            max_line_segments: 50_000, // ~3.2 MB
-            max_glass_primitives: 32,  // ~8 KB
-            max_glyphs: 4_000,         // ~256 KB — handles full-screen text content
+            max_primitives: 1_000,    // ~192 KB — handles complex UI screens
+            max_glass_primitives: 32, // ~8 KB
+            max_glyphs: 4_000,        // ~256 KB — handles full-screen text content
             sample_count: 1,
             texture_format: None,
             unified_text_rendering: true, // Enabled for consistent transforms during animations
@@ -373,10 +361,12 @@ struct Pipelines {
     /// Split SDF overlay pipeline: notch shapes (1x sampled)
     sdf_notch_overlay: wgpu::RenderPipeline,
     /// Pipeline for text rendering (MSAA)
-    _text: wgpu::RenderPipeline,
+    #[allow(dead_code)]
+    text: wgpu::RenderPipeline,
     /// Pipeline for text rendering on top of existing content (1x sampled)
     text_overlay: wgpu::RenderPipeline,
     /// Pipeline for final compositing (MSAA)
+    #[allow(dead_code)]
     composite: wgpu::RenderPipeline,
     /// Pipeline for final compositing (1x sampled, for overlay blending)
     composite_overlay: wgpu::RenderPipeline,
@@ -431,14 +421,13 @@ struct Buffers {
     uniforms: wgpu::Buffer,
     /// Storage buffer for SDF primitives
     primitives: wgpu::Buffer,
-    /// Storage buffer for compact line segments (polylines)
-    line_segments: wgpu::Buffer,
     /// Storage buffer for glass primitives
     glass_primitives: wgpu::Buffer,
     /// Uniform buffer for glass shader
     glass_uniforms: wgpu::Buffer,
     /// Storage buffer for text glyphs
-    _glyphs: wgpu::Buffer,
+    #[allow(dead_code)]
+    glyphs: wgpu::Buffer,
     /// Uniform buffer for path rendering
     path_uniforms: wgpu::Buffer,
     /// Vertex buffer for path geometry (dynamic, recreated as needed)
@@ -480,27 +469,25 @@ struct Buffers {
 struct BindGroups {
     /// Bind group for SDF pipeline
     sdf: wgpu::BindGroup,
-    /// Bind group for compact line segment pipeline
-    lines: wgpu::BindGroup,
     /// Bind group for glass pipeline (needs backdrop texture)
-    _glass: Option<wgpu::BindGroup>,
+    glass: Option<wgpu::BindGroup>,
     /// Bind group for path pipeline
     path: wgpu::BindGroup,
 }
 
 /// Cached MSAA textures and resources for overlay rendering
 struct CachedMsaaTextures {
-    _msaa_texture: wgpu::Texture,
+    msaa_texture: wgpu::Texture,
     msaa_view: wgpu::TextureView,
-    _resolve_texture: wgpu::Texture,
+    resolve_texture: wgpu::Texture,
     resolve_view: wgpu::TextureView,
     width: u32,
     height: u32,
     sample_count: u32,
     /// Sampler for compositing (reused across frames)
-    _sampler: wgpu::Sampler,
+    sampler: wgpu::Sampler,
     /// Uniform buffer for compositing (reused across frames)
-    _composite_uniform_buffer: wgpu::Buffer,
+    composite_uniform_buffer: wgpu::Buffer,
     /// Bind group for compositing (recreated when textures change)
     composite_bind_group: wgpu::BindGroup,
 }
@@ -571,7 +558,7 @@ pub struct LayerTexture {
     /// Optional depth texture view (for 3D content)
     pub depth_view: Option<wgpu::TextureView>,
     /// Optional depth texture (kept alive for the view)
-    _depth_texture: Option<wgpu::Texture>,
+    depth_texture: Option<wgpu::Texture>,
 }
 
 impl LayerTexture {
@@ -629,7 +616,7 @@ impl LayerTexture {
             size,
             has_depth: with_depth,
             depth_view,
-            _depth_texture: depth_texture,
+            depth_texture,
         }
     }
 
@@ -1051,9 +1038,11 @@ struct SdfPrimitiveRanges {
 /// - Executes render passes
 pub struct GpuRenderer {
     /// wgpu instance
-    _instance: wgpu::Instance,
+    #[allow(dead_code)]
+    instance: wgpu::Instance,
     /// GPU adapter
-    _adapter: wgpu::Adapter,
+    #[allow(dead_code)]
+    adapter: wgpu::Adapter,
     /// GPU device
     pub(crate) device: Arc<wgpu::Device>,
     /// Command queue
@@ -1095,9 +1084,9 @@ pub struct GpuRenderer {
     /// Cached text resources (avoids per-frame allocation)
     cached_text: Option<CachedTextResources>,
     /// Placeholder glyph atlas texture view (1x1 transparent) for SDF bind group
-    _placeholder_glyph_atlas_view: wgpu::TextureView,
+    placeholder_glyph_atlas_view: wgpu::TextureView,
     /// Placeholder color glyph atlas texture view (1x1 transparent) for SDF bind group
-    _placeholder_color_glyph_atlas_view: wgpu::TextureView,
+    placeholder_color_glyph_atlas_view: wgpu::TextureView,
     /// Sampler for glyph atlas textures
     glyph_sampler: wgpu::Sampler,
     /// Active glyph atlas pointers — when set, `self.bind_groups.sdf` uses real atlas
@@ -1105,7 +1094,7 @@ pub struct GpuRenderer {
     /// Gradient texture cache for multi-stop gradient support on paths
     gradient_texture_cache: GradientTextureCache,
     /// Placeholder image texture (1x1 white) for path bind group when no image is used
-    _placeholder_path_image_view: wgpu::TextureView,
+    placeholder_path_image_view: wgpu::TextureView,
     /// Sampler for path image textures
     path_image_sampler: wgpu::Sampler,
     /// Layer texture cache for offscreen rendering and composition
@@ -1166,9 +1155,10 @@ use crate::mesh_pipeline::{
 
 struct BindGroupLayouts {
     sdf: wgpu::BindGroupLayout,
-    lines: wgpu::BindGroupLayout,
     glass: wgpu::BindGroupLayout,
+    #[allow(dead_code)]
     text: wgpu::BindGroupLayout,
+    #[allow(dead_code)]
     composite: wgpu::BindGroupLayout,
     path: wgpu::BindGroupLayout,
     /// Layout for layer composition shader
@@ -1230,12 +1220,10 @@ impl GpuRenderer {
         }
     }
 
-    /// Safely write primitives to buffer, truncating if necessary to prevent overflow.
-    ///
-    /// Returns the number of primitives written (after truncation).
-    fn write_primitives_safe(&self, primitives: &[GpuPrimitive]) -> usize {
+    /// Safely write primitives to buffer, truncating if necessary to prevent overflow
+    fn write_primitives_safe(&self, primitives: &[GpuPrimitive]) {
         if primitives.is_empty() {
-            return 0;
+            return;
         }
         let max_primitives = self.config.max_primitives;
         let primitives_to_write = if primitives.len() > max_primitives {
@@ -2224,8 +2212,8 @@ impl GpuRenderer {
             crate::flow_pipeline::FlowPipelineCache::new(device.clone(), texture_format);
 
         Ok(Self {
-            _instance: instance,
-            _adapter: adapter,
+            instance,
+            adapter,
             device,
             queue,
             pipelines,
@@ -2254,12 +2242,12 @@ impl GpuRenderer {
             cached_msaa: None,
             cached_glass: None,
             cached_text: None,
-            _placeholder_glyph_atlas_view: placeholder_glyph_atlas_view,
-            _placeholder_color_glyph_atlas_view: placeholder_color_glyph_atlas_view,
+            placeholder_glyph_atlas_view,
+            placeholder_color_glyph_atlas_view,
             glyph_sampler,
             active_glyph_atlas: None,
             gradient_texture_cache,
-            _placeholder_path_image_view: placeholder_path_image_view,
+            placeholder_path_image_view,
             path_image_sampler,
             layer_texture_cache: LayerTextureCache::new(texture_format),
             sdf_3d_resources: None,
@@ -2404,35 +2392,6 @@ impl GpuRenderer {
                 },
                 // Binding 5: Auxiliary data (storage buffer or data texture)
                 binding_5_entry,
-            ],
-        });
-
-        // Lines bind group layout (uniforms + line segments storage buffer)
-        let lines = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Lines Bind Group Layout"),
-            entries: &[
-                // Uniforms
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // Line segments storage buffer
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
             ],
         });
 
@@ -2610,8 +2569,8 @@ impl GpuRenderer {
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: wgpu::BufferSize::new(PATH_UNIFORM_SIZE),
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -2953,7 +2912,6 @@ impl GpuRenderer {
 
         BindGroupLayouts {
             sdf,
-            lines,
             glass,
             text,
             composite,
@@ -3484,13 +3442,6 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
-        let line_segments = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Line Segments Buffer"),
-            size: (std::mem::size_of::<GpuLineSegment>() * config.max_line_segments) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         let glass_primitives = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Glass Primitives Buffer"),
             size: (std::mem::size_of::<GpuGlassPrimitive>() * config.max_glass_primitives) as u64,
@@ -3514,9 +3465,7 @@ impl GpuRenderer {
 
         let path_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Path Uniforms Buffer"),
-            // Dynamic offsets require 256-byte alignment. Allocate one stride by default;
-            // we grow this buffer on demand based on the number of path draw calls.
-            size: PATH_UNIFORM_STRIDE.max(256),
+            size: std::mem::size_of::<PathUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -3607,10 +3556,9 @@ impl GpuRenderer {
         Buffers {
             uniforms,
             primitives,
-            line_segments,
             glass_primitives,
             glass_uniforms,
-            _glyphs: glyphs,
+            glyphs,
             path_uniforms,
             path_vertices: None,
             path_indices: None,
@@ -3707,21 +3655,6 @@ impl GpuRenderer {
             ],
         });
 
-        let lines = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Lines Bind Group"),
-            layout: &layouts.lines,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffers.uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: buffers.line_segments.as_entire_binding(),
-                },
-            ],
-        });
-
         // Path bind group (with gradient texture, image texture, and backdrop for glass)
         let path = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Path Bind Group"),
@@ -3729,11 +3662,7 @@ impl GpuRenderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &buffers.path_uniforms,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(PATH_UNIFORM_SIZE),
-                    }),
+                    resource: buffers.path_uniforms.as_entire_binding(),
                 },
                 // Gradient texture (binding 1)
                 wgpu::BindGroupEntry {
@@ -3776,8 +3705,7 @@ impl GpuRenderer {
         // Glass bind group will be created when we have a backdrop texture
         BindGroups {
             sdf,
-            lines,
-            _glass: None,
+            glass: None,
             path,
         }
     }
@@ -4467,100 +4395,6 @@ impl GpuRenderer {
         batch: &PrimitiveBatch,
         clear_color: [f64; 4],
     ) {
-        if std::env::var_os("BLINC_DEBUG_LINES").is_some() {
-            use std::sync::atomic::{AtomicU32, Ordering};
-            static LOGS: AtomicU32 = AtomicU32::new(0);
-            let n = LOGS.fetch_add(1, Ordering::Relaxed);
-            if n < 3 {
-                tracing::info!(
-                    "render_with_clear_simple: viewport_size={:?} prims={} lines={} fg_lines={} paths_v={} paths_i={}",
-                    self.viewport_size,
-                    batch.primitives.len(),
-                    batch.line_segments.len(),
-                    batch.foreground_line_segments.len(),
-                    batch.paths.vertices.len(),
-                    batch.paths.indices.len()
-                );
-            }
-        }
-
-        if std::env::var_os("BLINC_DEBUG_PATH_BOUNDS").is_some()
-            && !batch.paths.vertices.is_empty()
-            && !batch.paths.indices.is_empty()
-        {
-            use std::sync::atomic::{AtomicU32, Ordering};
-            static LOGS: AtomicU32 = AtomicU32::new(0);
-            let n = LOGS.fetch_add(1, Ordering::Relaxed);
-            if n < 3 {
-                let mut min_x = f32::INFINITY;
-                let mut min_y = f32::INFINITY;
-                let mut max_x = f32::NEG_INFINITY;
-                let mut max_y = f32::NEG_INFINITY;
-                let vp_w = self.viewport_size.0 as f32;
-                let vp_h = self.viewport_size.1 as f32;
-                let mut in_vp = 0usize;
-                for v in &batch.paths.vertices {
-                    min_x = min_x.min(v.position[0]);
-                    min_y = min_y.min(v.position[1]);
-                    max_x = max_x.max(v.position[0]);
-                    max_y = max_y.max(v.position[1]);
-                    if v.position[0].is_finite()
-                        && v.position[1].is_finite()
-                        && v.position[0] >= 0.0
-                        && v.position[0] <= vp_w
-                        && v.position[1] >= 0.0
-                        && v.position[1] <= vp_h
-                    {
-                        in_vp += 1;
-                    }
-                }
-
-                let draws = batch.paths.draws.len();
-                let first = batch.paths.draws.first().copied();
-                tracing::info!(
-                    "paths: draws={} v_bounds=({:.2},{:.2})..({:.2},{:.2}) v_in_viewport={} first_draw={:?}",
-                    draws,
-                    min_x,
-                    min_y,
-                    max_x,
-                    max_y,
-                    in_vp,
-                    first
-                );
-
-                // Also compute bounds for the first draw's index range to validate clipping.
-                if let Some(d) = first {
-                    let start = d.index_start as usize;
-                    let end = (d.index_start + d.index_count) as usize;
-                    if start < end && end <= batch.paths.indices.len() {
-                        let mut dmin_x = f32::INFINITY;
-                        let mut dmin_y = f32::INFINITY;
-                        let mut dmax_x = f32::NEG_INFINITY;
-                        let mut dmax_y = f32::NEG_INFINITY;
-                        for &idx in &batch.paths.indices[start..end] {
-                            let vi = idx as usize;
-                            if let Some(v) = batch.paths.vertices.get(vi) {
-                                dmin_x = dmin_x.min(v.position[0]);
-                                dmin_y = dmin_y.min(v.position[1]);
-                                dmax_x = dmax_x.max(v.position[0]);
-                                dmax_y = dmax_y.max(v.position[1]);
-                            }
-                        }
-                        tracing::info!(
-                            "paths: first_draw_i_bounds=({:.2},{:.2})..({:.2},{:.2}) clip_bounds={:?} clip_radius={:?} clip_type={}",
-                            dmin_x,
-                            dmin_y,
-                            dmax_x,
-                            dmax_y,
-                            d.clip_bounds,
-                            d.clip_radius,
-                            d.clip_type
-                        );
-                    }
-                }
-            }
-        }
-
         // Update uniforms
         let uniforms = Uniforms {
             viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
@@ -4580,13 +4414,10 @@ impl GpuRenderer {
         // When active_glyph_atlas is set, rebind uses the real atlas automatically.
         self.update_aux_data_buffer(batch);
 
-        // Update path buffers if we have background path geometry.
-        let has_paths = has_path_geometry(&batch.paths);
-        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
-        let has_foreground_primitives = !batch.foreground_primitives.is_empty();
-        let has_foreground_lines = !batch.foreground_line_segments.is_empty();
+        // Update path buffers if we have path geometry
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
-            self.update_path_buffers(&batch.paths);
+            self.update_path_buffers(batch);
         }
 
         // Create command encoder
@@ -4645,65 +4476,15 @@ impl GpuRenderer {
             // dispatch handles them the same way it handles text — see
             // BACKLOG.md for the plan.
             if has_paths {
-                render_pass.set_pipeline(&self.pipelines.path);
-                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
-            }
-        }
-
-        // Foreground layer (rendered after the main pass; required for `set_foreground_layer(true)`).
-        //
-        // Note: this is distinct from RenderContext's background/foreground batches. Within a
-        // single PrimitiveBatch, `foreground_*` entries must render *after* the main content.
-        if has_foreground_primitives || has_foreground_lines || has_foreground_paths {
-            // Reuse the same buffers: background has already been drawn.
-            let fg_prim_count = if has_foreground_primitives {
-                self.write_primitives_safe(&batch.foreground_primitives)
-            } else {
-                0
-            };
-            let fg_line_count = if has_foreground_lines {
-                self.write_line_segments_safe(&batch.foreground_line_segments)
-            } else {
-                0
-            };
-            if has_foreground_paths {
-                self.update_path_buffers(&batch.foreground_paths);
-            }
-
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc Foreground Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            if fg_prim_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.sdf);
-                render_pass.set_bind_group(0, &self.bind_groups.sdf, &[]);
-                render_pass.draw(0..6, 0..fg_prim_count as u32);
-            }
-
-            if fg_line_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.lines);
-                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-                render_pass.draw(0..6, 0..fg_line_count as u32);
-            }
-
-            if has_foreground_paths {
-                render_pass.set_pipeline(&self.pipelines.path);
-                self.draw_path_batch(
-                    &mut render_pass,
-                    &batch.foreground_paths,
-                    &self.bind_groups.path,
-                );
+                if let (Some(vb), Some(ib)) =
+                    (&self.buffers.path_vertices, &self.buffers.path_indices)
+                {
+                    render_pass.set_pipeline(&self.pipelines.path);
+                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                    render_pass.set_vertex_buffer(0, vb.slice(..));
+                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+                }
             }
         }
 
@@ -4967,18 +4748,6 @@ impl GpuRenderer {
                 self.layer_texture_cache.release(effected);
             }
         }
-
-        // Layer effects currently operate on primitive index ranges only.
-        // Compact line segments are stored in separate buffers (no order indices),
-        // so they would otherwise disappear in scenes that take the layer-effects path.
-        //
-        // Render them last as an overlay so they remain visible.
-        if !batch.line_segments.is_empty() {
-            self.render_line_segments_overlay(target, &batch.line_segments);
-        }
-        if !batch.foreground_line_segments.is_empty() {
-            self.render_line_segments_overlay(target, &batch.foreground_line_segments);
-        }
     }
 
     /// Render primitives excluding those in the given set
@@ -5021,10 +4790,7 @@ impl GpuRenderer {
             .map(|(_, p)| *p)
             .collect();
 
-        if included_primitives.is_empty()
-            && !has_path_geometry(&batch.paths)
-            && !has_path_geometry(&batch.foreground_paths)
-        {
+        if included_primitives.is_empty() && batch.paths.vertices.is_empty() {
             // Just clear the target
             let mut encoder = self
                 .device
@@ -5071,11 +4837,10 @@ impl GpuRenderer {
         // Sort and upload filtered primitives
         let sdf_ranges = self.upload_sorted_primitives(&included_primitives);
 
-        // Update path buffers if we have background paths.
-        let has_paths = has_path_geometry(&batch.paths);
-        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
+        // Update path buffers if we have path geometry
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
-            self.update_path_buffers(&batch.paths);
+            self.update_path_buffers(batch);
         }
 
         // Create command encoder
@@ -5145,32 +4910,6 @@ impl GpuRenderer {
                     }
                 }
             }
-        }
-
-        if has_foreground_paths {
-            self.update_path_buffers(&batch.foreground_paths);
-
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Filtered Foreground Path Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(&self.pipelines.path);
-            self.draw_path_batch(
-                &mut render_pass,
-                &batch.foreground_paths,
-                &self.bind_groups.path,
-            );
         }
 
         // Submit commands
@@ -5341,8 +5080,8 @@ impl GpuRenderer {
                 unsafe { (&*active.atlas_view_ptr, &*active.color_atlas_view_ptr) }
             } else {
                 (
-                    &self._placeholder_glyph_atlas_view,
-                    &self._placeholder_color_glyph_atlas_view,
+                    &self.placeholder_glyph_atlas_view,
+                    &self.placeholder_color_glyph_atlas_view,
                 )
             };
 
@@ -5408,59 +5147,11 @@ impl GpuRenderer {
         });
     }
 
-    /// Recreate the path bind group (needed when the path uniforms buffer is resized).
-    fn rebind_path_bind_group(&mut self) {
-        self.bind_groups.path = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Path Bind Group (rebound)"),
-            layout: &self.bind_group_layouts.path,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.buffers.path_uniforms,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(PATH_UNIFORM_SIZE),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.gradient_texture_cache.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.gradient_texture_cache.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self._placeholder_path_image_view,
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
-                },
-                // Backdrop texture placeholder (binding 5). The glass path pass creates
-                // a dedicated bind group when a real backdrop is required.
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self._placeholder_path_image_view,
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Sampler(&self.path_image_sampler),
-                },
-            ],
-        });
-    }
-
     /// Update path vertex and index buffers
-    fn update_path_buffers(&mut self, paths: &crate::primitives::PathBatch) {
+    fn update_path_buffers(&mut self, batch: &PrimitiveBatch) {
         // Upload gradient texture if needed for multi-stop gradients
-        if paths.use_gradient_texture {
-            if let Some(ref stops) = paths.gradient_stops {
+        if batch.paths.use_gradient_texture {
+            if let Some(ref stops) = batch.paths.gradient_stops {
                 self.gradient_texture_cache.upload_stops(
                     &self.queue,
                     stops,
@@ -5469,60 +5160,32 @@ impl GpuRenderer {
             }
         }
 
-        // Ensure uniforms buffer can hold all per-draw clip states.
-        let draw_count = paths.draws.len().max(1) as u64;
-        let required_uniform_bytes = PATH_UNIFORM_STRIDE.saturating_mul(draw_count);
-        if self.buffers.path_uniforms.size() < required_uniform_bytes {
-            self.buffers.path_uniforms = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Path Uniforms Buffer (resized)"),
-                size: required_uniform_bytes,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.rebind_path_bind_group();
-        }
-
-        // Pack per-draw uniforms at 256-byte aligned offsets.
-        let mut packed = vec![0u8; required_uniform_bytes as usize];
-        if paths.draws.is_empty() {
-            // Backward-compatible fallback: a single draw with default uniforms.
-            let u = PathUniforms {
-                viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
-                use_gradient_texture: if paths.use_gradient_texture { 1 } else { 0 },
-                use_image_texture: if paths.use_image_texture { 1 } else { 0 },
-                use_glass_effect: if paths.use_glass_effect { 1 } else { 0 },
-                image_uv_bounds: paths.image_uv_bounds,
-                glass_params: paths.glass_params,
-                glass_tint: paths.glass_tint,
-                ..PathUniforms::default()
-            };
-            let bytes = bytemuck::bytes_of(&u);
-            packed[0..bytes.len()].copy_from_slice(bytes);
-        } else {
-            for (i, d) in paths.draws.iter().enumerate() {
-                let u = PathUniforms {
-                    viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
-                    clip_bounds: d.clip_bounds,
-                    clip_radius: d.clip_radius,
-                    clip_type: d.clip_type,
-                    use_gradient_texture: if paths.use_gradient_texture { 1 } else { 0 },
-                    use_image_texture: if paths.use_image_texture { 1 } else { 0 },
-                    use_glass_effect: if paths.use_glass_effect { 1 } else { 0 },
-                    image_uv_bounds: paths.image_uv_bounds,
-                    glass_params: paths.glass_params,
-                    glass_tint: paths.glass_tint,
-                    ..PathUniforms::default()
-                };
-                let offset = (PATH_UNIFORM_STRIDE * i as u64) as usize;
-                let bytes = bytemuck::bytes_of(&u);
-                packed[offset..offset + bytes.len()].copy_from_slice(bytes);
-            }
-        }
-        self.queue
-            .write_buffer(&self.buffers.path_uniforms, 0, &packed);
+        // Update path uniforms with clip data and brush metadata from batch
+        let path_uniforms = PathUniforms {
+            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
+            clip_bounds: batch.paths.clip_bounds,
+            clip_radius: batch.paths.clip_radius,
+            clip_type: batch.paths.clip_type,
+            use_gradient_texture: if batch.paths.use_gradient_texture {
+                1
+            } else {
+                0
+            },
+            use_image_texture: if batch.paths.use_image_texture { 1 } else { 0 },
+            use_glass_effect: if batch.paths.use_glass_effect { 1 } else { 0 },
+            image_uv_bounds: batch.paths.image_uv_bounds,
+            glass_params: batch.paths.glass_params,
+            glass_tint: batch.paths.glass_tint,
+            ..PathUniforms::default()
+        };
+        self.queue.write_buffer(
+            &self.buffers.path_uniforms,
+            0,
+            bytemuck::bytes_of(&path_uniforms),
+        );
 
         // Create or recreate vertex buffer if needed
-        let vertex_size = (std::mem::size_of::<PathVertex>() * paths.vertices.len()) as u64;
+        let vertex_size = (std::mem::size_of::<PathVertex>() * batch.paths.vertices.len()) as u64;
         let need_new_vertex_buffer = match &self.buffers.path_vertices {
             Some(buf) => buf.size() < vertex_size,
             None => true,
@@ -5539,11 +5202,11 @@ impl GpuRenderer {
 
         if let Some(vb) = &self.buffers.path_vertices {
             self.queue
-                .write_buffer(vb, 0, bytemuck::cast_slice(&paths.vertices));
+                .write_buffer(vb, 0, bytemuck::cast_slice(&batch.paths.vertices));
         }
 
         // Create or recreate index buffer if needed
-        let index_size = (std::mem::size_of::<u32>() * paths.indices.len()) as u64;
+        let index_size = (std::mem::size_of::<u32>() * batch.paths.indices.len()) as u64;
         let need_new_index_buffer = match &self.buffers.path_indices {
             Some(buf) => buf.size() < index_size,
             None => true,
@@ -5560,120 +5223,8 @@ impl GpuRenderer {
 
         if let Some(ib) = &self.buffers.path_indices {
             self.queue
-                .write_buffer(ib, 0, bytemuck::cast_slice(&paths.indices));
+                .write_buffer(ib, 0, bytemuck::cast_slice(&batch.paths.indices));
         }
-    }
-
-    fn draw_path_batch(
-        &self,
-        render_pass: &mut wgpu::RenderPass<'_>,
-        paths: &crate::primitives::PathBatch,
-        bind_group: &wgpu::BindGroup,
-    ) {
-        self.draw_path_batch_for_layer(render_pass, paths, None, bind_group);
-    }
-
-    fn draw_path_batch_for_layer(
-        &self,
-        render_pass: &mut wgpu::RenderPass<'_>,
-        paths: &crate::primitives::PathBatch,
-        z_layer: Option<u32>,
-        bind_group: &wgpu::BindGroup,
-    ) {
-        if paths.vertices.is_empty() || paths.indices.is_empty() {
-            return;
-        }
-        let Some(vb) = &self.buffers.path_vertices else {
-            return;
-        };
-        let Some(ib) = &self.buffers.path_indices else {
-            return;
-        };
-
-        render_pass.set_vertex_buffer(0, vb.slice(..));
-        render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-
-        if paths.draws.is_empty() {
-            // Backward-compatible fallback: treat as a single draw with offset 0.
-            // (No z-layer info in this legacy representation.)
-            if z_layer.unwrap_or(0) == 0 {
-                render_pass.set_bind_group(0, bind_group, &[0]);
-                render_pass.draw_indexed(0..paths.indices.len() as u32, 0, 0..1);
-            }
-            return;
-        }
-
-        for (i, d) in paths.draws.iter().enumerate() {
-            if d.index_count == 0 {
-                continue;
-            }
-            if let Some(z) = z_layer {
-                if d.z_layer != z {
-                    continue;
-                }
-            }
-            let start = d.index_start;
-            let end = d.index_start.saturating_add(d.index_count);
-            let offset = (PATH_UNIFORM_STRIDE.saturating_mul(i as u64)) as u32;
-            render_pass.set_bind_group(0, bind_group, &[offset]);
-            render_pass.draw_indexed(start..end, 0, 0..1);
-        }
-    }
-
-    /// Upload path buffers/uniforms for a given [`crate::primitives::PathBatch`] without drawing.
-    ///
-    /// Note: Path buffers are shared; preparing a different `PathBatch` will overwrite
-    /// the currently prepared path buffers.
-    pub fn prepare_path_batch(&mut self, paths: &crate::primitives::PathBatch) {
-        self.update_path_buffers(paths);
-    }
-
-    /// Render only the path draws for a specific z-layer (overlay pass; no clear).
-    ///
-    /// Requires: `prepare_path_batch(paths)` must have been called with the same `paths`
-    /// earlier in the frame.
-    pub fn render_path_batch_overlay_for_layer_prepared(
-        &mut self,
-        target: &wgpu::TextureView,
-        paths: &crate::primitives::PathBatch,
-        z_layer: u32,
-    ) {
-        if paths.vertices.is_empty() || paths.indices.is_empty() {
-            return;
-        }
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Blinc Path Overlay Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc Path Overlay Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(&self.pipelines.path);
-            self.draw_path_batch_for_layer(
-                &mut render_pass,
-                paths,
-                Some(z_layer),
-                &self.bind_groups.path,
-            );
-        }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
     }
 
     /// Render primitives with MSAA (multi-sample anti-aliasing)
@@ -5701,11 +5252,10 @@ impl GpuRenderer {
         // Sort and upload primitives
         let sdf_ranges = self.upload_sorted_primitives(&batch.primitives);
 
-        // Update path buffers if we have background path geometry.
-        let has_paths = has_path_geometry(&batch.paths);
-        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
+        // Update path buffers if we have path geometry
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
-            self.update_path_buffers(&batch.paths);
+            self.update_path_buffers(batch);
         }
 
         // Create command encoder
@@ -5752,36 +5302,16 @@ impl GpuRenderer {
 
             // Render paths
             if has_paths {
-                render_pass.set_pipeline(&self.pipelines.path);
-                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
+                if let (Some(vb), Some(ib)) =
+                    (&self.buffers.path_vertices, &self.buffers.path_indices)
+                {
+                    render_pass.set_pipeline(&self.pipelines.path);
+                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                    render_pass.set_vertex_buffer(0, vb.slice(..));
+                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+                }
             }
-        }
-
-        // Foreground paths: preserve layered rendering semantics in MSAA path too.
-        if has_foreground_paths {
-            self.update_path_buffers(&batch.foreground_paths);
-
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc MSAA Foreground Path Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: msaa_target,
-                    resolve_target: Some(resolve_target),
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(&self.pipelines.path);
-            self.draw_path_batch(
-                &mut render_pass,
-                &batch.foreground_paths,
-                &self.bind_groups.path,
-            );
         }
 
         // Submit commands
@@ -5970,8 +5500,9 @@ impl GpuRenderer {
         backdrop: &wgpu::TextureView,
         _backdrop_size: (u32, u32),
         batch: &PrimitiveBatch,
+        has_backdrop_content: bool,
     ) {
-        if batch.primitives.is_empty() && batch.line_segments.is_empty() {
+        if batch.primitives.is_empty() {
             return;
         }
 
@@ -6000,6 +5531,11 @@ impl GpuRenderer {
 
         // Render to backdrop texture
         {
+            let backdrop_load = if has_backdrop_content {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+            };
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Backdrop Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -6007,7 +5543,7 @@ impl GpuRenderer {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: backdrop_load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -6044,6 +5580,7 @@ impl GpuRenderer {
         backdrop: &wgpu::TextureView,
         _backdrop_size: (u32, u32), // Not used - we render with full viewport coords
         batch: &PrimitiveBatch,
+        has_backdrop_content: bool,
     ) {
         // Glass effects require storage buffers for per-frame primitive data.
         // On WebGL2 (no storage buffers), skip glass rendering — the glass DT
@@ -6179,6 +5716,11 @@ impl GpuRenderer {
                 bytemuck::bytes_of(&main_uniforms),
             );
 
+            let backdrop_load = if has_backdrop_content {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+            };
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Backdrop Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -6186,7 +5728,7 @@ impl GpuRenderer {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: backdrop_load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -6215,6 +5757,11 @@ impl GpuRenderer {
                 bytemuck::bytes_of(&main_uniforms),
             );
 
+            let target_load = if has_backdrop_content {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+            };
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Target Background Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -6222,7 +5769,7 @@ impl GpuRenderer {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: target_load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -6440,17 +5987,20 @@ impl GpuRenderer {
 
         // Pass 5: Render paths (SVGs) on top of glass
         // Paths are tessellated geometry that need their own pipeline
-        let has_paths = has_path_geometry(&batch.paths);
-        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
-        if has_paths || has_foreground_paths {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Blinc Glass Path Encoder"),
-                });
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        if has_paths {
+            // Update path buffers (creates/resizes as needed)
+            self.update_path_buffers(batch);
 
-            if has_paths {
-                self.update_path_buffers(&batch.paths);
+            // Render paths
+            if let (Some(vb), Some(ib)) = (&self.buffers.path_vertices, &self.buffers.path_indices)
+            {
+                let mut encoder =
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("Blinc Glass Path Encoder"),
+                        });
+
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Glass Path Render Pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -6469,35 +6019,14 @@ impl GpuRenderer {
 
                 // Use overlay path pipeline (1x sampled, no MSAA)
                 render_pass.set_pipeline(&self.pipelines.path_overlay);
-                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
+                render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                render_pass.set_vertex_buffer(0, vb.slice(..));
+                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+
+                drop(render_pass);
+                self.queue.submit(std::iter::once(encoder.finish()));
             }
-
-            if has_foreground_paths {
-                self.update_path_buffers(&batch.foreground_paths);
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Glass Foreground Path Render Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-
-                render_pass.set_pipeline(&self.pipelines.path_overlay);
-                self.draw_path_batch(
-                    &mut render_pass,
-                    &batch.foreground_paths,
-                    &self.bind_groups.path,
-                );
-            }
-
-            self.queue.submit(std::iter::once(encoder.finish()));
         }
     }
 
@@ -6541,17 +6070,11 @@ impl GpuRenderer {
         // Sort and upload primitives
         let sdf_ranges = self.upload_sorted_primitives(&batch.primitives);
 
-        // Update line segments buffer
-        let line_count = self.write_line_segments_safe(&batch.line_segments);
-
-        // Update path buffers if we have background path geometry.
-        let has_paths = has_path_geometry(&batch.paths);
-        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
+        // Update path buffers if we have path geometry
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
-            self.update_path_buffers(&batch.paths);
+            self.update_path_buffers(batch);
         }
-        let has_foreground_primitives = !batch.foreground_primitives.is_empty();
-        let has_foreground_lines = !batch.foreground_line_segments.is_empty();
 
         // Create command encoder
         let mut encoder = self
@@ -6580,15 +6103,15 @@ impl GpuRenderer {
 
             // Render paths first (they're typically backgrounds)
             if has_paths {
-                render_pass.set_pipeline(&self.pipelines.path_overlay);
-                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
-            }
-
-            // Render compact line segments
-            if line_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.lines_overlay);
-                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-                render_pass.draw(0..6, 0..line_count as u32);
+                if let (Some(vb), Some(ib)) =
+                    (&self.buffers.path_vertices, &self.buffers.path_indices)
+                {
+                    render_pass.set_pipeline(&self.pipelines.path_overlay);
+                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                    render_pass.set_vertex_buffer(0, vb.slice(..));
+                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+                }
             }
 
             // Render SDF primitives using split overlay pipelines
@@ -6802,7 +6325,7 @@ impl GpuRenderer {
         // Update path buffers
         let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
-            self.update_path_buffers(&batch.paths);
+            self.update_path_buffers(batch);
         }
 
         // Sort and upload filtered primitives
@@ -6873,17 +6396,11 @@ impl GpuRenderer {
         // Sort and upload primitives
         let sdf_ranges = self.upload_sorted_primitives(&batch.primitives);
 
-        // Update line segments buffer
-        let line_count = self.write_line_segments_safe(&batch.line_segments);
-
-        // Update path buffers if we have background path geometry.
-        let has_paths = has_path_geometry(&batch.paths);
-        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
+        // Update path buffers if we have path geometry
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
-            self.update_path_buffers(&batch.paths);
+            self.update_path_buffers(batch);
         }
-        let has_foreground_primitives = !batch.foreground_primitives.is_empty();
-        let has_foreground_lines = !batch.foreground_line_segments.is_empty();
 
         // Create command encoder
         let mut encoder = self
@@ -6912,15 +6429,15 @@ impl GpuRenderer {
 
             // Render paths first
             if has_paths {
-                render_pass.set_pipeline(&self.pipelines.path_overlay);
-                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
-            }
-
-            // Render compact line segments
-            if line_count > 0 {
-                render_pass.set_pipeline(&self.pipelines.lines_overlay);
-                render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-                render_pass.draw(0..6, 0..line_count as u32);
+                if let (Some(vb), Some(ib)) =
+                    (&self.buffers.path_vertices, &self.buffers.path_indices)
+                {
+                    render_pass.set_pipeline(&self.pipelines.path_overlay);
+                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                    render_pass.set_vertex_buffer(0, vb.slice(..));
+                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+                }
             }
 
             // Render SDF primitives via split overlay pipelines
@@ -7006,92 +6523,26 @@ impl GpuRenderer {
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
-    /// Render compact line segments as an overlay on existing content (LoadOp::Load).
-    pub fn render_line_segments_overlay(
-        &mut self,
-        target: &wgpu::TextureView,
-        segments: &[GpuLineSegment],
-    ) {
-        if segments.is_empty() {
-            return;
-        }
-
-        if std::env::var_os("BLINC_DEBUG_LINES").is_some() {
-            use std::sync::atomic::{AtomicU32, Ordering};
-            static LOGS: AtomicU32 = AtomicU32::new(0);
-            let n = LOGS.fetch_add(1, Ordering::Relaxed);
-            if n < 10 {
-                tracing::info!(
-                    "render_line_segments_overlay: segments={} viewport_size={:?}",
-                    segments.len(),
-                    self.viewport_size
-                );
-            }
-        }
-
-        // Update uniforms
-        let uniforms = Uniforms {
-            viewport_size: [self.viewport_size.0 as f32, self.viewport_size.1 as f32],
-            _padding: [0.0; 2],
-        };
-        self.queue
-            .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
-
-        let seg_count = self.write_line_segments_safe(segments);
-        if seg_count == 0 {
-            return;
-        }
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Blinc Line Segments Overlay Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blinc Line Segments Overlay Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(&self.pipelines.lines_overlay);
-            render_pass.set_bind_group(0, &self.bind_groups.lines, &[]);
-            render_pass.draw(0..6, 0..seg_count as u32);
-        }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-    }
-
     /// Render paths (tessellated geometry like SVGs) as an overlay
     ///
     /// This renders paths on top of existing content without clearing.
     /// Used for z-layered rendering where paths need to be rendered separately.
     pub fn render_paths_overlay(&mut self, target: &wgpu::TextureView, batch: &PrimitiveBatch) {
-        let has_paths = has_path_geometry(&batch.paths);
-        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
-        if !has_paths && !has_foreground_paths {
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
+        if !has_paths {
             return;
         }
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Blinc Paths Overlay Encoder"),
-            });
+        // Update path buffers
+        self.update_path_buffers(batch);
 
-        // Background paths
-        if has_paths {
-            self.update_path_buffers(&batch.paths);
+        // Render paths
+        if let (Some(vb), Some(ib)) = (&self.buffers.path_vertices, &self.buffers.path_indices) {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Blinc Paths Overlay Encoder"),
+                });
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Paths Overlay Pass"),
@@ -7111,37 +6562,14 @@ impl GpuRenderer {
 
             // Use overlay path pipeline (1x sampled)
             render_pass.set_pipeline(&self.pipelines.path_overlay);
-            self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
+            render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+            render_pass.set_vertex_buffer(0, vb.slice(..));
+            render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+
+            drop(render_pass);
+            self.queue.submit(std::iter::once(encoder.finish()));
         }
-
-        // Foreground paths
-        if has_foreground_paths {
-            self.update_path_buffers(&batch.foreground_paths);
-
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Foreground Paths Overlay Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            render_pass.set_pipeline(&self.pipelines.path_overlay);
-            self.draw_path_batch(
-                &mut render_pass,
-                &batch.foreground_paths,
-                &self.bind_groups.path,
-            );
-        }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
     }
 
     /// Render SDF primitives with unified text rendering (text as primitives)
@@ -7177,11 +6605,7 @@ impl GpuRenderer {
         batch: &PrimitiveBatch,
         sample_count: u32,
     ) {
-        if batch.paths.vertices.is_empty()
-            && batch.foreground_paths.vertices.is_empty()
-            && batch.primitives.is_empty()
-            && batch.line_segments.is_empty()
-        {
+        if batch.paths.vertices.is_empty() && batch.primitives.is_empty() {
             return;
         }
 
@@ -7299,15 +6723,15 @@ impl GpuRenderer {
             });
 
             self.cached_msaa = Some(CachedMsaaTextures {
-                _msaa_texture: msaa_texture,
+                msaa_texture,
                 msaa_view,
-                _resolve_texture: resolve_texture,
+                resolve_texture,
                 resolve_view,
                 width,
                 height,
                 sample_count,
-                _sampler: sampler,
-                _composite_uniform_buffer: composite_uniform_buffer,
+                sampler,
+                composite_uniform_buffer,
                 composite_bind_group,
             });
         }
@@ -7343,12 +6767,14 @@ impl GpuRenderer {
         // MSAA overlay self-sufficient.
         self.update_aux_data_buffer(batch);
 
-        // Update path buffers (background only; foreground may be rendered in a second MSAA pass).
-        let has_paths = has_path_geometry(&batch.paths);
-        let has_foreground_paths = has_path_geometry(&batch.foreground_paths);
+        // Update path buffers
+        let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
         if has_paths {
-            self.update_path_buffers(&batch.paths);
+            self.update_path_buffers(batch);
         }
+
+        // Get references to the cached textures (after mutable borrows are done)
+        let cached = self.cached_msaa.as_ref().unwrap();
 
         let mut encoder = self
             .device
@@ -7386,7 +6812,6 @@ impl GpuRenderer {
             (&cached.resolve_view, None, wgpu::StoreOp::Store)
         };
         {
-            let cached = self.cached_msaa.as_ref().unwrap();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Overlay MSAA Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -7416,8 +6841,15 @@ impl GpuRenderer {
 
             // Render paths using MSAA pipeline
             if has_paths {
-                render_pass.set_pipeline(path_pipeline);
-                self.draw_path_batch(&mut render_pass, &batch.paths, &self.bind_groups.path);
+                if let (Some(vb), Some(ib)) =
+                    (&self.buffers.path_vertices, &self.buffers.path_indices)
+                {
+                    render_pass.set_pipeline(path_pipeline);
+                    render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                    render_pass.set_vertex_buffer(0, vb.slice(..));
+                    render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+                }
             }
 
             // Render SDF primitives using split MSAA pipelines
@@ -7454,7 +6886,6 @@ impl GpuRenderer {
 
         // Pass 2: Blend resolved texture onto target using cached resources
         {
-            let cached = self.cached_msaa.as_ref().unwrap();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Overlay Blend Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -7476,85 +6907,7 @@ impl GpuRenderer {
             render_pass.draw(0..3, 0..1); // Fullscreen triangle
         }
 
-        // Optional: Foreground paths rendered in a separate MSAA+composite pass so they land on top.
-        if has_foreground_paths {
-            self.update_path_buffers(&batch.foreground_paths);
-
-            // Pass 3: MSAA render foreground paths to resolve texture
-            {
-                let cached = self.cached_msaa.as_ref().unwrap();
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Overlay MSAA Foreground Paths Render Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &cached.msaa_view,
-                        resolve_target: Some(&cached.resolve_view),
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Discard,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-
-                let path_pipeline = if sample_count > 1 {
-                    if let Some(ref msaa) = self.msaa_pipelines {
-                        &msaa.path
-                    } else {
-                        &self.pipelines.path
-                    }
-                } else {
-                    &self.pipelines.path
-                };
-
-                render_pass.set_pipeline(path_pipeline);
-                self.draw_path_batch(
-                    &mut render_pass,
-                    &batch.foreground_paths,
-                    &self.bind_groups.path,
-                );
-            }
-
-            // Pass 4: Composite (load existing target, blend foreground on top)
-            {
-                let cached = self.cached_msaa.as_ref().unwrap();
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Overlay Foreground Blend Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-
-                render_pass.set_pipeline(&self.pipelines.composite_overlay);
-                render_pass.set_bind_group(0, &cached.composite_bind_group, &[]);
-                render_pass.draw(0..3, 0..1);
-            }
-        }
-
         self.queue.submit(std::iter::once(encoder.finish()));
-
-        // Foreground primitives (set_foreground_layer) should land on top of the MSAA composite.
-        if !batch.foreground_primitives.is_empty() {
-            self.render_primitives_overlay(target, &batch.foreground_primitives);
-        }
-
-        // Render compact line segments after the MSAA composite.
-        // (Lines are geometry and typically look acceptable without MSAA here.)
-        if !batch.line_segments.is_empty() {
-            self.render_line_segments_overlay(target, &batch.line_segments);
-        }
-        if !batch.foreground_line_segments.is_empty() {
-            self.render_line_segments_overlay(target, &batch.foreground_line_segments);
-        }
     }
 
     /// Render only paths with MSAA anti-aliasing
@@ -7567,10 +6920,9 @@ impl GpuRenderer {
         batch: &PrimitiveBatch,
         sample_count: u32,
     ) {
-        let merged = Self::merged_paths_for_msaa(&batch.paths, &batch.foreground_paths);
-        let Some(merged) = merged else {
+        if batch.paths.vertices.is_empty() || batch.paths.indices.is_empty() {
             return;
-        };
+        }
 
         // Ensure we have MSAA pipelines for this sample count
         let need_new_pipelines = match &self.msaa_pipelines {
@@ -7686,15 +7038,15 @@ impl GpuRenderer {
             });
 
             self.cached_msaa = Some(CachedMsaaTextures {
-                _msaa_texture: msaa_texture,
+                msaa_texture,
                 msaa_view,
-                _resolve_texture: resolve_texture,
+                resolve_texture,
                 resolve_view,
                 width,
                 height,
                 sample_count,
-                _sampler: sampler,
-                _composite_uniform_buffer: composite_uniform_buffer,
+                sampler,
+                composite_uniform_buffer,
                 composite_bind_group,
             });
         }
@@ -7708,7 +7060,7 @@ impl GpuRenderer {
             .write_buffer(&self.buffers.uniforms, 0, bytemuck::bytes_of(&uniforms));
 
         // Update path buffers
-        self.update_path_buffers(&merged);
+        self.update_path_buffers(batch);
 
         // Get references to the cached textures
         let cached = self.cached_msaa.as_ref().unwrap();
@@ -7762,8 +7114,14 @@ impl GpuRenderer {
                 &self.pipelines.path
             };
 
-            render_pass.set_pipeline(path_pipeline);
-            self.draw_path_batch(&mut render_pass, &merged, &self.bind_groups.path);
+            if let (Some(vb), Some(ib)) = (&self.buffers.path_vertices, &self.buffers.path_indices)
+            {
+                render_pass.set_pipeline(path_pipeline);
+                render_pass.set_bind_group(0, &self.bind_groups.path, &[]);
+                render_pass.set_vertex_buffer(0, vb.slice(..));
+                render_pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..batch.paths.indices.len() as u32, 0, 0..1);
+            }
         }
 
         // Pass 2: Blend resolved texture onto target
@@ -10285,7 +9643,7 @@ impl GpuRenderer {
         bottom: &wgpu::TextureView,
         top: &wgpu::TextureView,
         output: &wgpu::TextureView,
-        _size: (u32, u32),
+        size: (u32, u32),
         blend_mode: blinc_core::BlendMode,
         opacity: f32,
     ) {

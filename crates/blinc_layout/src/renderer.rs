@@ -3571,7 +3571,7 @@ impl RenderTree {
         mouse_y: f32,
         mut delta_x: f32,
         mut delta_y: f32,
-    ) -> (f32, f32) {
+    ) -> ScrollDispatchOutcome {
         // Routing rule: the scroll goes to whichever scrollable the
         // cursor is *over*. No chaining to ancestors when the inner
         // container reaches its edge — that behaviour (CSS-style scroll
@@ -3603,7 +3603,11 @@ impl RenderTree {
         }
 
         let Some(node_id) = target else {
-            return (delta_x, delta_y);
+            return ScrollDispatchOutcome {
+                remaining_x: delta_x,
+                remaining_y: delta_y,
+                ..Default::default()
+            };
         };
 
         let direction = self.get_scroll_direction(node_id);
@@ -3634,15 +3638,13 @@ impl RenderTree {
             dispatch_y
         );
 
-        if dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001 {
-            if has_scroll_physics {
-                if let Some(physics) = self.scroll_physics.get(&node_id) {
-                    let mut p = physics.lock().unwrap();
-                    p.apply_touch_scroll_delta(dispatch_x, dispatch_y, now_ms);
-                    p.on_scroll_activity();
-                }
-                self.last_scroll_target = Some((node_id, now_ms));
-            } else {
+        let dispatched = dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001;
+        if dispatched {
+            let has_handler = self
+                .handler_registry
+                .has_handler(node_id, blinc_core::events::event_types::SCROLL);
+
+            if has_handler {
                 let ctx = crate::event_handler::EventContext::new(
                     blinc_core::events::event_types::SCROLL,
                     node_id,
@@ -3650,6 +3652,20 @@ impl RenderTree {
                 .with_mouse_pos(mouse_x, mouse_y)
                 .with_scroll_delta(dispatch_x, dispatch_y);
                 self.handler_registry.dispatch(&ctx);
+            }
+
+            if has_scroll_physics {
+                // Nodes with a scroll handler own their scroll state update through
+                // that handler. Direct physics is only for physics-only targets.
+                if !has_handler {
+                    if let Some(physics) = self.scroll_physics.get(&node_id) {
+                        let mut p = physics.lock().unwrap();
+                        p.apply_touch_scroll_delta(dispatch_x, dispatch_y, now_ms);
+                        p.on_scroll_activity();
+                    }
+                }
+                self.last_scroll_target = Some((node_id, now_ms));
+            } else {
                 self.last_scroll_target = Some((node_id, now_ms));
             }
         }
@@ -3667,7 +3683,15 @@ impl RenderTree {
             delta_y = 0.0;
         }
 
-        (delta_x, delta_y)
+        ScrollDispatchOutcome {
+            remaining_x: delta_x,
+            remaining_y: delta_y,
+            physics_consumed_x: has_scroll_physics && handles_x,
+            physics_consumed_y: has_scroll_physics && handles_y,
+            custom_consumed_x: !has_scroll_physics && handles_x,
+            custom_consumed_y: !has_scroll_physics && handles_y,
+            dispatched,
+        }
     }
 
     /// Dispatch scroll with time for touch velocity tracking (mobile)
@@ -3732,14 +3756,11 @@ impl RenderTree {
         let mut remaining_dy = delta_y;
 
         if dispatch_x.abs() > 0.001 || dispatch_y.abs() > 0.001 {
-            if has_scroll_physics {
-                if let Some(physics) = self.scroll_physics.get(&node_id) {
-                    let mut p = physics.lock().unwrap();
-                    p.apply_touch_scroll_delta(dispatch_x, dispatch_y, scroll_time);
-                    p.on_scroll_activity();
-                }
-                self.last_scroll_target = Some((node_id, scroll_time));
-            } else {
+            let has_handler = self
+                .handler_registry
+                .has_handler(node_id, blinc_core::events::event_types::SCROLL);
+
+            if has_handler {
                 let ctx = crate::event_handler::EventContext::new(
                     blinc_core::events::event_types::SCROLL,
                     node_id,
@@ -3748,6 +3769,18 @@ impl RenderTree {
                 .with_scroll_delta(dispatch_x, dispatch_y)
                 .with_scroll_time(scroll_time);
                 self.handler_registry.dispatch(&ctx);
+            }
+
+            if has_scroll_physics {
+                if !has_handler {
+                    if let Some(physics) = self.scroll_physics.get(&node_id) {
+                        let mut p = physics.lock().unwrap();
+                        p.apply_touch_scroll_delta(dispatch_x, dispatch_y, scroll_time);
+                        p.on_scroll_activity();
+                    }
+                }
+                self.last_scroll_target = Some((node_id, scroll_time));
+            } else {
                 self.last_scroll_target = Some((node_id, scroll_time));
             }
         }
@@ -3817,7 +3850,8 @@ impl RenderTree {
                 0.0,
                 scale,
             );
-            return;
+
+            break;
         }
     }
 

@@ -18,6 +18,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use std::collections::HashMap;
+use wgpu::util::DeviceExt;
 
 /// Maximum particles per system for buffer allocation
 pub const MAX_PARTICLES_PER_SYSTEM: u32 = 100_000;
@@ -646,7 +647,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 #[derive(Debug)]
 pub struct ParticleSystemGpu {
     /// Particle buffer (read/write for compute)
-    _particle_buffer: wgpu::Buffer,
+    particle_buffer: wgpu::Buffer,
     /// Emitter uniform buffer
     emitter_buffer: wgpu::Buffer,
     /// Simulation uniforms buffer
@@ -922,7 +923,7 @@ impl ParticleSystemGpu {
         });
 
         Self {
-            _particle_buffer: particle_buffer,
+            particle_buffer,
             emitter_buffer,
             sim_uniform_buffer,
             render_uniform_buffer,

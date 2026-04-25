@@ -714,7 +714,7 @@ impl FontRegistry {
         // beyond the dependency line. By that point `load_font`
         // above has already resolved the plugin's fonts out of the
         // `Noto Color Emoji` family.
-        self.faces.insert(cache_key, None);
+        self.faces.put(cache_key, None);
         Err(TextError::FontLoadError(
             "No emoji font found on system".to_string(),
         ))
@@ -937,8 +937,16 @@ impl FontRegistry {
     /// `None` entries from before the font was loaded would otherwise
     /// prevent the newly-loaded font from being found.
     pub fn invalidate_generic_cache(&mut self) {
-        self.faces
-            .retain(|key, val| !key.starts_with("__generic_") || val.is_some());
+        let keys_to_remove: Vec<String> = self
+            .faces
+            .iter()
+            .filter(|(key, val)| key.starts_with("__generic_") && val.is_none())
+            .map(|(key, _)| key.clone())
+            .collect();
+
+        for key in keys_to_remove {
+            self.faces.pop(&key);
+        }
     }
 
     /// Load a font with fallback to generic category

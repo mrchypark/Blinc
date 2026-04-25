@@ -126,6 +126,12 @@ mod app;
 mod context;
 mod error;
 mod frame_utils;
+mod headless_assert;
+mod headless_report;
+mod headless_runner;
+mod headless_runtime;
+mod headless_scenario;
+mod playbook;
 mod runloop;
 mod svg_atlas;
 mod text_measurer;
@@ -270,17 +276,6 @@ pub use blinc_macros::BlincComponent;
 /// Prelude module - import everything commonly needed
 pub mod prelude {
     pub use crate::app::{BlincApp, BlincConfig};
-    #[cfg(any(
-        feature = "windowed",
-        all(feature = "android", target_os = "android"),
-        all(feature = "ios", target_os = "ios"),
-        all(feature = "fuchsia", target_os = "fuchsia"),
-        all(feature = "harmony", target_env = "ohos")
-    ))]
-    pub use crate::automation_session::{
-        run_desktop_harness_scenario, run_headless_scenario, AutomationFailure, AutomationLocator,
-        AutomationRun, AutomationRuntimeMode, AutomationSession,
-    };
     pub use crate::context::{DebugMode, RenderContext};
     pub use crate::error::{BlincError, Result};
     pub use crate::register_font;
@@ -305,10 +300,3 @@ pub mod prelude {
     // Theme types
     pub use blinc_theme::{ColorScheme, ColorToken, RadiusToken, SpacingToken, ThemeState};
 }
-
-pub mod headless_assert;
-pub mod headless_report;
-pub mod headless_runner;
-pub mod headless_runtime;
-pub mod headless_scenario;
-pub mod playbook;

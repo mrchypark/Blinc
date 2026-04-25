@@ -537,6 +537,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 Ok(mut glyphs) => {
                     tracing::trace!(
@@ -659,6 +660,7 @@ impl RenderContext {
                     &backdrop.view,
                     (backdrop.width, backdrop.height),
                     &bg_batch,
+                    has_bg_images,
                 );
             }
 
@@ -4110,6 +4112,7 @@ impl RenderContext {
                     font_weight,
                     text.italic,
                     layout_height,
+                    text.letter_spacing,
                 ) {
                     if let Some(clip) = text.clip_bounds {
                         for glyph in &mut shadow_glyphs {
@@ -4160,6 +4163,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 Ok(mut glyphs) => {
                     tracing::trace!(
@@ -4291,6 +4295,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 if let Some(clip) = text.clip_bounds {
                     for glyph in &mut glyphs {
@@ -4385,6 +4390,7 @@ impl RenderContext {
                         &backdrop.view,
                         (backdrop.width, backdrop.height),
                         &batch,
+                        has_bg_images,
                     );
                 }
 
@@ -4419,6 +4425,7 @@ impl RenderContext {
                     &backdrop.view,
                     (backdrop.width, backdrop.height),
                     &batch,
+                    has_bg_images,
                 );
             }
 
@@ -4524,8 +4531,7 @@ impl RenderContext {
 
                 // First pass: render z_layer=0 primitives with clear
                 let z0_primitives = batch.primitives_for_layer(0);
-                // Create a temporary batch for z=0 primitives only.
-                // Paths are rendered per z-layer below to preserve Stack z-ordering.
+                // Create a temporary batch for z=0 (include paths - they don't have z-layer support)
                 let mut z0_batch = PrimitiveBatch::new();
                 z0_batch.primitives = z0_primitives;
                 z0_batch.paths = batch.paths.clone();
@@ -4541,16 +4547,10 @@ impl RenderContext {
                         .render_dynamic_images(target, &batch.dynamic_images);
                 }
 
-                let has_paths = !batch.paths.vertices.is_empty() && !batch.paths.indices.is_empty();
-                if has_paths {
-                    // Render paths per z-layer so high-z paths are not occluded by later primitive overlays.
-                    // Note: in this interleaved branch we prioritize layer ordering correctness.
-                    self.renderer.prepare_path_batch(&batch.paths);
-                    self.renderer.render_path_batch_overlay_for_layer_prepared(
-                        target,
-                        &batch.paths,
-                        0,
-                    );
+                // Render paths with MSAA for smooth edges on curved shapes like notch
+                if use_msaa_overlay && z0_batch.has_paths() {
+                    self.renderer
+                        .render_paths_overlay_msaa(target, &z0_batch, self.sample_count);
                 }
 
                 // Render z=0 images
@@ -4586,15 +4586,6 @@ impl RenderContext {
                             self.renderer
                                 .render_primitives_overlay(target, &layer_primitives);
                         }
-                    }
-
-                    // Render paths for this layer (interleaved with primitives for proper z-order)
-                    if has_paths {
-                        self.renderer.render_path_batch_overlay_for_layer_prepared(
-                            target,
-                            &batch.paths,
-                            z,
-                        );
                     }
 
                     // Render images for this layer
@@ -4936,6 +4927,7 @@ impl RenderContext {
                     font_weight,
                     text.italic,
                     layout_height,
+                    text.letter_spacing,
                 ) {
                     // Offset clip bounds to layer-local coords
                     if let Some(clip) = text.clip_bounds {
@@ -5102,6 +5094,7 @@ impl RenderContext {
                 font_weight,
                 text.italic,
                 layout_height,
+                text.letter_spacing,
             ) {
                 let mut glyphs = glyphs;
                 if let Some(clip) = text.clip_bounds {

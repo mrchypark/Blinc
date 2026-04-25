@@ -1,6 +1,5 @@
 //! Event loop and platform events
 
-use crate::accessibility::AccessibilityActionRequest;
 use crate::error::PlatformError;
 use crate::input::InputEvent;
 use crate::window::Window;

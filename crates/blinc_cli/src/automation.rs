@@ -1,8 +1,444 @@
 use anyhow::{bail, Context, Result};
-use blinc_app::Playbook;
 use clap::{Args, Subcommand};
+use serde::Deserialize;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[derive(Debug, Clone, Deserialize)]
+struct Playbook {
+    initial_state: String,
+    #[serde(default)]
+    states: Vec<String>,
+    #[serde(default)]
+    execution: Vec<String>,
+    #[serde(default)]
+    transitions: Vec<PlaybookTransition>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PlaybookTransition {
+    #[serde(default)]
+    name: Option<String>,
+    from: String,
+    event: String,
+    to: String,
+    #[serde(default)]
+    steps: Vec<ScenarioStep>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ScenarioStep {
+    Wait {
+        ms: u64,
+    },
+    Tick {
+        frames: u32,
+    },
+    Click {
+        #[serde(flatten)]
+        target: ScenarioTarget,
+        #[serde(default)]
+        x: Option<f32>,
+        #[serde(default)]
+        y: Option<f32>,
+    },
+    Fill {
+        #[serde(flatten)]
+        target: ScenarioTarget,
+        value: String,
+    },
+    Press {
+        key: String,
+    },
+    Scroll {
+        #[serde(flatten)]
+        target: ScenarioTarget,
+        dx: f32,
+        dy: f32,
+    },
+    Snapshot {
+        path: Option<String>,
+    },
+    ExportTrace {
+        path: Option<String>,
+    },
+    AssertExists {
+        #[serde(flatten)]
+        target: ScenarioTarget,
+    },
+    AssertTextContains {
+        #[serde(flatten)]
+        target: ScenarioTarget,
+        value: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ScenarioTarget {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(flatten)]
+    semantic: ScenarioSemanticLocator,
+}
+
+impl ScenarioTarget {
+    fn is_empty(&self) -> bool {
+        self.id.is_none() && !self.has_semantic_fields()
+    }
+
+    fn has_semantic_fields(&self) -> bool {
+        self.semantic.has_any()
+    }
+
+    fn validate_required(&self) -> Result<()> {
+        let has_id = self.id.is_some();
+        let has_semantic = self.has_semantic_fields();
+        match (has_id, has_semantic) {
+            (true, false) | (false, true) => Ok(()),
+            (false, false) => bail!("scenario step requires either id or semantic locator fields"),
+            (true, true) => bail!("scenario step cannot mix id with semantic locator fields"),
+        }
+    }
+
+    fn validate_optional(&self) -> Result<()> {
+        if self.id.is_some() && self.has_semantic_fields() {
+            bail!("scenario step cannot mix id with semantic locator fields");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ScenarioSemanticLocator {
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    placeholder: Option<String>,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    within: Option<String>,
+    #[serde(default)]
+    nth: Option<usize>,
+}
+
+impl ScenarioSemanticLocator {
+    fn has_any(&self) -> bool {
+        self.role.is_some()
+            || self.text.is_some()
+            || self.label.is_some()
+            || self.placeholder.is_some()
+            || self.tag.is_some()
+            || self.within.is_some()
+            || self.nth.is_some()
+    }
+}
+
+struct CompiledPlaybook {
+    initial_state: usize,
+    state_ids: HashMap<String, usize>,
+    execution: Vec<String>,
+    transitions: Vec<CompiledTransition>,
+}
+
+struct CompiledTransition {
+    name: String,
+    from_state: usize,
+    event: String,
+    to_state: usize,
+    steps: Vec<ScenarioStep>,
+}
+
+impl CompiledPlaybook {
+    fn execution_scenario(&self) -> Result<()> {
+        let steps = self
+            .execution_sequence()?
+            .into_iter()
+            .flat_map(|transition| transition.steps.iter());
+        validate_scenario_steps(steps)
+    }
+
+    fn execution_sequence(&self) -> Result<Vec<&CompiledTransition>> {
+        if !self.execution.is_empty() {
+            return self.execution_sequence_from_path();
+        }
+
+        let mut current_state = self.initial_state;
+        let mut consumed = vec![false; self.transitions.len()];
+        let mut ordered = Vec::with_capacity(self.transitions.len());
+
+        loop {
+            let candidate_indices = self
+                .transitions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, transition)| {
+                    (!consumed[index] && transition.from_state == current_state).then_some(index)
+                })
+                .collect::<Vec<_>>();
+
+            match candidate_indices.as_slice() {
+                [] => break,
+                [index] => {
+                    let transition = &self.transitions[*index];
+                    current_state = transition.to_state;
+                    consumed[*index] = true;
+                    ordered.push(transition);
+                }
+                _ => bail!(
+                    "playbook execution is ambiguous from state {}",
+                    state_name(&self.state_ids, current_state)
+                ),
+            }
+        }
+
+        if consumed.iter().any(|used| !*used) {
+            bail!("playbook contains disconnected or branching transitions that require an explicit execution path");
+        }
+
+        Ok(ordered)
+    }
+
+    fn execution_sequence_from_path(&self) -> Result<Vec<&CompiledTransition>> {
+        let mut current_state = self.initial_state;
+        let mut ordered = Vec::with_capacity(self.execution.len());
+
+        for selector in &self.execution {
+            let matches = self
+                .transitions
+                .iter()
+                .filter(|transition| {
+                    transition.from_state == current_state
+                        && (transition.name == *selector || transition.event == *selector)
+                })
+                .collect::<Vec<_>>();
+
+            let transition = match matches.as_slice() {
+                [transition] => *transition,
+                [] => bail!(
+                    "execution path step {:?} does not match any transition from state {}",
+                    selector,
+                    state_name(&self.state_ids, current_state)
+                ),
+                _ => bail!(
+                    "execution path step {:?} matches multiple transitions from state {}",
+                    selector,
+                    state_name(&self.state_ids, current_state)
+                ),
+            };
+
+            current_state = transition.to_state;
+            ordered.push(transition);
+        }
+
+        Ok(ordered)
+    }
+}
+
+fn validate_scenario_steps<'a>(steps: impl IntoIterator<Item = &'a ScenarioStep>) -> Result<()> {
+    for step in steps {
+        match step {
+            ScenarioStep::Click { target, x, y } => {
+                let has_point = x.is_some() || y.is_some();
+                if has_point {
+                    if x.is_none() || y.is_none() {
+                        bail!("coordinate click steps require both x and y");
+                    }
+                    if !target.is_empty() {
+                        bail!("coordinate click steps cannot mix locator fields with x/y");
+                    }
+                } else {
+                    target.validate_required()?;
+                }
+            }
+            ScenarioStep::Fill { target, value } => {
+                let _ = value;
+                target.validate_required()?;
+            }
+            ScenarioStep::AssertExists { target } => target.validate_required()?,
+            ScenarioStep::AssertTextContains { target, value } => {
+                let _ = value;
+                target.validate_required()?;
+            }
+            ScenarioStep::Scroll { target, dx, dy } => {
+                let _ = (dx, dy);
+                target.validate_optional()?;
+            }
+            ScenarioStep::Wait { ms } => {
+                let _ = ms;
+            }
+            ScenarioStep::Tick { frames } => {
+                let _ = frames;
+            }
+            ScenarioStep::Press { key } => {
+                let _ = key;
+            }
+            ScenarioStep::Snapshot { path } | ScenarioStep::ExportTrace { path } => {
+                let _ = path;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn state_name(state_ids: &HashMap<String, usize>, target: usize) -> &str {
+    state_ids
+        .iter()
+        .find_map(|(name, state_id)| (*state_id == target).then_some(name.as_str()))
+        .unwrap_or("<unknown>")
+}
+
+fn transition_name(transition: &PlaybookTransition) -> &str {
+    transition_label(transition)
+}
+
+impl Playbook {
+    fn from_yaml(input: &str) -> Result<Self> {
+        let playbook: Self = serde_yaml::from_str(input)?;
+        playbook.validate()?;
+        Ok(playbook)
+    }
+
+    fn from_path(path: &Path) -> Result<Self> {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read playbook {}", path.display()))?;
+        Self::from_yaml(&raw)
+            .with_context(|| format!("failed to parse playbook {}", path.display()))
+    }
+
+    fn validate(&self) -> Result<()> {
+        let initial_state = self.initial_state.trim();
+        if initial_state.is_empty() {
+            bail!("playbook initial_state cannot be empty");
+        }
+
+        for state in &self.states {
+            if state.trim().is_empty() {
+                bail!("playbook states cannot contain empty names");
+            }
+        }
+
+        for selector in &self.execution {
+            if selector.trim().is_empty() {
+                bail!("playbook execution steps cannot be empty");
+            }
+        }
+
+        for transition in &self.transitions {
+            if transition
+                .name
+                .as_deref()
+                .is_some_and(|name| name.trim().is_empty())
+            {
+                bail!(
+                    "transition {} cannot have an empty name",
+                    transition_name(transition)
+                );
+            }
+            if transition.from.trim().is_empty() {
+                bail!(
+                    "transition {} cannot have an empty from state",
+                    transition_name(transition)
+                );
+            }
+            if transition.event.trim().is_empty() {
+                bail!(
+                    "transition {} cannot have an empty event",
+                    transition_name(transition)
+                );
+            }
+            if transition.to.trim().is_empty() {
+                bail!(
+                    "transition {} cannot have an empty to state",
+                    transition_name(transition)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn compile(&self) -> Result<CompiledPlaybook> {
+        self.validate()?;
+
+        let initial_state_name = self.initial_state.trim();
+        let explicit_states = if self.states.is_empty() {
+            None
+        } else {
+            let mut known = BTreeSet::new();
+            known.insert(initial_state_name.to_string());
+            for state in &self.states {
+                known.insert(state.clone());
+            }
+            Some(known)
+        };
+
+        let mut state_ids = HashMap::new();
+        let mut ensure_state = |name: &str| {
+            if !state_ids.contains_key(name) {
+                let next = state_ids.len();
+                state_ids.insert(name.to_string(), next);
+            }
+        };
+        ensure_state(initial_state_name);
+        for state in &self.states {
+            ensure_state(state);
+        }
+
+        if let Some(known_states) = explicit_states.as_ref() {
+            for transition in &self.transitions {
+                if !known_states.contains(&transition.from) {
+                    bail!(
+                        "transition {} references unknown state {}",
+                        transition_name(transition),
+                        transition.from
+                    );
+                }
+                if !known_states.contains(&transition.to) {
+                    bail!(
+                        "transition {} references unknown state {}",
+                        transition_name(transition),
+                        transition.to
+                    );
+                }
+            }
+        }
+
+        for transition in &self.transitions {
+            ensure_state(&transition.from);
+            ensure_state(&transition.to);
+        }
+        let initial_state = *state_ids
+            .get(initial_state_name)
+            .expect("initial state should be registered");
+        let transitions = self
+            .transitions
+            .iter()
+            .map(|transition| CompiledTransition {
+                name: transition_name(transition).to_string(),
+                from_state: *state_ids
+                    .get(&transition.from)
+                    .expect("from state should be registered"),
+                event: transition.event.clone(),
+                to_state: *state_ids
+                    .get(&transition.to)
+                    .expect("to state should be registered"),
+                steps: transition.steps.clone(),
+            })
+            .collect();
+        Ok(CompiledPlaybook {
+            initial_state,
+            state_ids,
+            execution: self.execution.clone(),
+            transitions,
+        })
+    }
+}
 
 #[derive(Subcommand, Debug)]
 pub enum AutomationCommands {
@@ -336,7 +772,7 @@ fn playbook_svg(playbook: &Playbook) -> Result<String> {
     ))
 }
 
-fn transition_label(transition: &blinc_app::PlaybookTransition) -> &str {
+fn transition_label(transition: &PlaybookTransition) -> &str {
     transition
         .name
         .as_deref()
@@ -356,9 +792,8 @@ fn escape_xml(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_run_command, playbook_svg, AutomationCommands, AutomationRunArgs};
+    use super::{build_run_command, playbook_svg, AutomationCommands, AutomationRunArgs, Playbook};
     use crate::project::create_rust_project;
-    use blinc_app::Playbook;
     use clap::Parser;
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard};

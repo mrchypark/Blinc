@@ -32,14 +32,6 @@ pub enum InputEvent {
         /// Scroll phase (for trackpad gestures)
         phase: ScrollPhase,
     },
-    /// Pinch zoom gesture update (trackpad magnify / touch pinch).
-    ///
-    /// `scale` is a ratio delta per update (1.0 = no change). Values > 1 zoom in,
-    /// values < 1 zoom out.
-    Pinch {
-        /// Scale ratio delta (1.0 = no change)
-        scale: f32,
-    },
     /// Scroll gesture ended (touchpad momentum finished)
     ScrollEnd,
     /// Pinch zoom gesture (trackpad two-finger pinch)
@@ -56,6 +48,16 @@ pub enum InputEvent {
         /// Whether this is the start/end of the gesture
         phase: ScrollPhase,
     },
+    /// IME composition session started.
+    CompositionStarted,
+    /// IME preview text changed.
+    CompositionUpdated(ImeCompositionUpdate),
+    /// IME composition committed user-visible text.
+    CompositionCommitted(String),
+    /// IME composition was cancelled without a commit.
+    CompositionCancelled,
+    /// Keyboard-driven focus traversal without backend-specific key leakage.
+    FocusTraversal(FocusTraversalIntent),
 }
 
 // ============================================================================

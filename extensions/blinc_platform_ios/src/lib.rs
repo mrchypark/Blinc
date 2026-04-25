@@ -55,10 +55,6 @@ pub use window::IOSWindow;
 #[cfg(target_os = "ios")]
 pub use app::ios_main;
 
-// Convenience constructor for non-iOS builds
-#[cfg(not(target_os = "ios"))]
-use blinc_platform::PlatformError;
-
 #[cfg(not(target_os = "ios"))]
 impl IOSPlatform {
     /// Create a placeholder platform (for cross-compilation checks)

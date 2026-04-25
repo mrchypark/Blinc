@@ -180,7 +180,8 @@ where
                 self.runtime_cfg.width as f32,
                 self.runtime_cfg.height as f32,
             );
-            tree.transfer_scroll_state_from(&self.tree);
+            tree.transfer_scroll_offsets_from(&self.tree);
+            tree.transfer_scroll_physics_from(&self.tree);
             tree.initialize_motion_animations(&mut self.render_state);
             self.render_state.end_stable_motion_frame();
             self.render_state.process_global_motion_replays();
@@ -199,7 +200,7 @@ where
                         self.runtime_cfg.width as f32,
                         self.runtime_cfg.height as f32,
                     );
-                    self.tree.restore_bound_scroll_ref_offsets();
+                    self.tree.process_pending_scroll_refs();
                     self.tree
                         .initialize_motion_animations(&mut self.render_state);
                     self.render_state.end_stable_motion_frame();
@@ -211,7 +212,7 @@ where
                         self.runtime_cfg.width as f32,
                         self.runtime_cfg.height as f32,
                     );
-                    self.tree.restore_bound_scroll_ref_offsets();
+                    self.tree.process_pending_scroll_refs();
                     self.tree
                         .initialize_motion_animations(&mut self.render_state);
                     self.render_state.end_stable_motion_frame();

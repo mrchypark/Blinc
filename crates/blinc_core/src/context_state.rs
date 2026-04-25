@@ -125,18 +125,33 @@ impl HookState {
     }
 
     /// Store a signal with the given key
-    pub fn insert<T: 'static>(
+    pub fn insert(&mut self, key: StateKey, signal_id: u64) {
+        let debug_key = format!("#{:016x}", key.key_hash);
+        self.insert_registration(key, debug_key, signal_id, type_name::<()>());
+    }
+
+    pub fn insert_with_debug<T: 'static>(
         &mut self,
         key: StateKey,
         debug_key: impl Into<String>,
         signal_id: u64,
+    ) {
+        self.insert_registration(key, debug_key, signal_id, type_name::<T>());
+    }
+
+    fn insert_registration(
+        &mut self,
+        key: StateKey,
+        debug_key: impl Into<String>,
+        signal_id: u64,
+        type_name: &'static str,
     ) {
         self.signals.insert(
             key,
             HookDebugRegistration {
                 signal_id,
                 key: debug_key.into(),
-                type_name: type_name::<T>(),
+                type_name,
             },
         );
     }
@@ -144,7 +159,7 @@ impl HookState {
     /// Store a signal whose originating key is not directly printable.
     pub fn insert_opaque<T: 'static>(&mut self, key: StateKey, signal_id: u64) {
         let debug_key = format!("#{:016x}", key.key_hash);
-        self.insert::<T>(key, debug_key, signal_id);
+        self.insert_with_debug::<T>(key, debug_key, signal_id);
     }
 
     fn debug_registrations(&self) -> Vec<HookDebugRegistration> {
@@ -778,7 +793,7 @@ impl BlincContextState {
                 .hooks
                 .lock()
                 .unwrap()
-                .insert::<T>(state_key, key, raw_id);
+                .insert_with_debug::<T>(state_key, key, raw_id);
             signal
         };
 
@@ -824,7 +839,7 @@ impl BlincContextState {
                 .hooks
                 .lock()
                 .unwrap()
-                .insert::<T>(state_key, key, raw_id);
+                .insert_with_debug::<T>(state_key, key, raw_id);
             signal
         }
     }
@@ -1525,7 +1540,7 @@ impl BlincContextState {
                 .unwrap()
                 .create_signal(new_value.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert::<T>(state_key, key, raw_id);
+            hooks.insert_with_debug::<T>(state_key, key, raw_id);
             (signal.id(), new_value)
         }
     }
@@ -1655,6 +1670,7 @@ mod tests {
             recorder_event_callback: RwLock::new(None),
             recorder_snapshot_callback: RwLock::new(None),
             recorder_update_callback: RwLock::new(None),
+            pending_custom_passes: Mutex::new(Vec::new()),
         };
         state.restore_resource_override(None);
         state.restore_binding_override(None);
@@ -1678,7 +1694,7 @@ mod tests {
 
         assert!(hooks.get(&key).is_none());
 
-        hooks.insert::<i32>(key.clone(), "test", 42);
+        hooks.insert_with_debug::<i32>(key.clone(), "test", 42);
         assert_eq!(hooks.get(&key), Some(42));
         assert_eq!(
             hooks.debug_registrations(),

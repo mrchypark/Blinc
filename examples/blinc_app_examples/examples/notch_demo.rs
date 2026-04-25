@@ -363,9 +363,7 @@ fn stateful_icon_button(
         })
 }
 
-/// The notched dropdown panel with collapse animation
-#[allow(clippy::too_many_arguments)]
-fn notched_dropdown(
+struct NotchedDropdownParams {
     active_item: Option<MenuItem>,
     center_x: f32,
     width: f32,
@@ -376,6 +374,7 @@ fn notched_dropdown(
     menu_bar_bg: Color,
 }
 
+/// The notched dropdown panel with collapse animation
 fn notched_dropdown(params: NotchedDropdownParams) -> Notch {
     let content = dropdown_content(params.active_item);
 
@@ -399,9 +398,9 @@ fn notched_dropdown(params: NotchedDropdownParams) -> Notch {
     // offset-looking shadow (all the blur is below the shape), but
     // it's the simplest way to avoid the double-shadow at the merge.
     notch()
-        .concave_top(top_radius)
-        .rounded_bottom(bottom_radius)
-        .bg(menu_bar_bg)
+        .concave_top(params.top_radius)
+        .rounded_bottom(params.bottom_radius)
+        .bg(params.menu_bar_bg)
         .shadow(blinc_core::Shadow {
             offset_x: 0.0,
             offset_y: 6.0,
@@ -409,9 +408,9 @@ fn notched_dropdown(params: NotchedDropdownParams) -> Notch {
             spread: 0.0,
             color: Color::BLACK.with_alpha(0.12),
         })
-        .opacity(opacity)
+        .opacity(params.opacity)
         .absolute()
-        .top(MENU_BAR_HEIGHT - top_radius)
+        .top(MENU_BAR_HEIGHT - params.top_radius)
         .bottom(12.0)
         .left(left)
         .w(params.width)

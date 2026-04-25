@@ -45,7 +45,10 @@
 pub mod accessibility;
 pub mod app;
 pub mod assets;
+pub mod ble;
+pub mod clipboard;
 pub mod deep_link;
+pub mod environment;
 mod error;
 mod event;
 pub mod haptics;

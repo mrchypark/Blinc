@@ -8,49 +8,6 @@ use blinc_layout::GenericFont as LayoutGenericFont;
 use blinc_text::{FontFace, FontRegistry, GenericFont, LayoutOptions, TextLayoutEngine};
 use std::sync::{Arc, Mutex};
 
-struct MeasureFallbackWalker {
-    font_size: f32,
-    letter_spacing: f32,
-    gid_resolver: blinc_text::fallback::FallbackGlyphIdResolver,
-}
-
-impl blinc_text::fallback::FallbackWalkHandler for MeasureFallbackWalker {
-    type Error = std::convert::Infallible;
-
-    fn on_skip(&mut self) -> std::result::Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn on_primary(
-        &mut self,
-        _glyph: blinc_text::PositionedGlyph,
-    ) -> std::result::Result<(), Self::Error> {
-        Ok(())
-    }
-
-    fn on_fallback(
-        &mut self,
-        glyph: blinc_text::PositionedGlyph,
-        candidate: &blinc_text::FallbackCandidate,
-    ) -> std::result::Result<Option<f32>, Self::Error> {
-        let Some(nominal_gid) = candidate.face.glyph_id(glyph.codepoint) else {
-            return Ok(None);
-        };
-        if nominal_gid == 0 {
-            return Ok(None);
-        }
-
-        let fallback_gid =
-            self.gid_resolver
-                .resolve_gid(candidate, glyph.codepoint, self.font_size, nominal_gid);
-
-        let adv_units = candidate.face.glyph_advance(fallback_gid).unwrap_or(0) as f32;
-        let scale = self.font_size / candidate.face.metrics().units_per_em as f32;
-        let adv_px = (adv_units * scale).round();
-        Ok(Some(adv_px + self.letter_spacing))
-    }
-}
-
 /// Convert from layout's GenericFont to text's GenericFont
 fn to_text_generic_font(layout_font: LayoutGenericFont) -> GenericFont {
     match layout_font {
@@ -192,40 +149,17 @@ impl TextMeasurer for FontTextMeasurer {
         // Determine which font to use based on options
         let generic_font = to_text_generic_font(options.generic_font);
 
-        // Fast path: use cached fonts only (never load during measurement).
-        //
-        // Keep selection consistent with the renderer:
-        // - try requested family+style first
-        // - if unavailable, fall back to cached generic
-        // - if requested style isn't available, fall back to normal style (if cached)
+        // Fast path: use cached fonts only (never load during measurement)
+        // Use weight and italic from options to get the correct font variant
         let mut registry = self.font_registry.lock().unwrap();
-        let mut font = registry.get_for_render_with_style(
+        let font = match registry.get_for_render_with_style(
             options.font_name.as_deref(),
             generic_font,
             options.font_weight,
             options.italic,
-        );
-        if font.is_none() {
-            font = registry.get_for_render_with_style(
-                None,
-                generic_font,
-                options.font_weight,
-                options.italic,
-            );
-        }
-        if font.is_none() && (options.font_weight != 400 || options.italic) {
-            font = registry.get_for_render_with_style(
-                options.font_name.as_deref(),
-                generic_font,
-                400,
-                false,
-            );
-            if font.is_none() {
-                font = registry.get_for_render_with_style(None, generic_font, 400, false);
-            }
-        }
-        let Some(font) = font else {
-            return Self::estimate_size(text, font_size, options);
+        ) {
+            Some(f) => f,
+            None => return Self::estimate_size(text, font_size, options),
         };
         drop(registry); // Release lock before layout
 

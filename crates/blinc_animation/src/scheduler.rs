@@ -941,10 +941,9 @@ impl SchedulerHandle {
     pub fn register_spring(&self, spring: Spring) -> Option<SpringId> {
         self.inner.upgrade().map(|inner| {
             let mut guard = inner.lock().unwrap();
-            // Reset last_frame to now to prevent huge dt on first tick
-            // This ensures new springs start animating smoothly from their current frame
-            guard.last_frame = Instant::now();
-            guard.springs.insert(spring)
+            let id = guard.springs.insert(spring);
+            guard.fresh_springs.insert(id);
+            id
         })
     }
 

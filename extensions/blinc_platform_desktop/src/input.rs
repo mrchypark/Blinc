@@ -297,7 +297,10 @@ pub fn scroll_end_event() -> InputEvent {
 ///
 /// `scale` is a ratio delta per update (1.0 = no change).
 pub fn pinch_event(scale: f32) -> InputEvent {
-    InputEvent::Pinch { scale }
+    InputEvent::Pinch {
+        scale,
+        phase: ScrollPhase::Moved,
+    }
 }
 
 #[cfg(test)]

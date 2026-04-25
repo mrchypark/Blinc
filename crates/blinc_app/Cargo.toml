@@ -18,7 +18,7 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 blinc_core = { path = "../blinc_core", version = "0.5.1" }
-blinc_layout = { path = "../blinc_layout", version = "0.5.1" }
+blinc_layout = { path = "../blinc_layout", version = "0.5.1", features = ["recorder"] }
 blinc_gpu = { path = "../blinc_gpu", version = "0.5.1", default-features = false }
 blinc_svg = { path = "../blinc_svg", version = "0.5.1" }
 blinc_text = { path = "../blinc_text", version = "0.5.1" }
@@ -28,6 +28,7 @@ blinc_animation = { path = "../blinc_animation", version = "0.5.1" }
 blinc_macros = { path = "../blinc_macros", version = "0.5.1" }
 blinc_router = { path = "../blinc_router", version = "0.5.1" }
 blinc_theme = { path = "../blinc_theme", version = "0.5.1" }
+blinc_recorder = { path = "../blinc_recorder", version = "0.5.1" }
 
 # GPU
 wgpu.workspace = true
@@ -49,11 +50,6 @@ web-time = "1.1"
 thiserror.workspace = true
 anyhow.workspace = true
 
-# Serialization
-serde.workspace = true
-serde_json.workspace = true
-serde_yaml.workspace = true
-
 # Logging
 tracing.workspace = true
 
@@ -63,6 +59,7 @@ lru = { workspace = true }
 # Serialization (window state persistence)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml.workspace = true
 
 # File dialogs (desktop only)
 rfd = { version = "0.15", optional = true }

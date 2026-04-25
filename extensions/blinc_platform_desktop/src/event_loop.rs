@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use crate::input;
 use crate::window::DesktopWindow;
 use blinc_platform::{
-    ControlFlow, Event, EventLoop, LifecycleEvent, PlatformError, Window, WindowConfig,
-    WindowEvent, WindowId,
+    current_ime_state, ControlFlow, Event, EventLoop, ImeCursorArea, ImeState, LifecycleEvent,
+    PlatformError, Window, WindowConfig, WindowEvent, WindowId,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
@@ -200,6 +200,9 @@ where
     modifiers: ModifiersState,
     /// Current mouse position (per-window tracking could be added later)
     mouse_position: (f32, f32),
+    last_scroll_event_at: Option<Instant>,
+    scroll_end_pending: bool,
+    applied_ime_state: ImeState,
     /// Whether the app should exit
     should_exit: bool,
     /// Currently active modal window (blocks input to other windows)
@@ -234,7 +237,7 @@ where
                 self.should_exit = true;
             }
         }
-        if let Some(ref window) = self.window {
+        if let Some(window) = self.windows.get(&winit_id) {
             sync_ime_window_state(window, &mut self.applied_ime_state, current_ime_state());
         }
     }
@@ -399,9 +402,9 @@ where
 
             WinitWindowEvent::Ime(ime) => {
                 if let Some(input_event) = input::convert_ime_event(&ime) {
-                    self.handle_event(Event::Input(input_event));
+                    self.handle_event_for(winit_id, Event::Input(wid, input_event));
                 }
-                if let Some(ref window) = self.window {
+                if let Some(window) = self.windows.get(&winit_id) {
                     window.request_redraw();
                 }
             }
@@ -446,6 +449,10 @@ where
                     winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
                 ) {
                     self.handle_event_for(winit_id, Event::Input(wid, input::scroll_end_event()));
+                    self.reset_scroll_state();
+                } else {
+                    self.last_scroll_event_at = Some(Instant::now());
+                    self.scroll_end_pending = true;
                 }
             }
 
@@ -493,38 +500,6 @@ where
                     winit_id,
                     Event::Window(wid, WindowEvent::DroppedFileCancelled),
                 );
-            }
-
-            WinitWindowEvent::Ime(ime_event) => {
-                match ime_event {
-                    winit::event::Ime::Commit(text) => {
-                        // IME committed text — deliver each character as a Char key event
-                        for c in text.chars() {
-                            let input_event = blinc_platform::InputEvent::Keyboard(
-                                blinc_platform::KeyboardEvent {
-                                    key: blinc_platform::Key::Char(c),
-                                    state: blinc_platform::KeyState::Pressed,
-                                    modifiers: blinc_platform::Modifiers::default(),
-                                },
-                            );
-                            self.handle_event_for(winit_id, Event::Input(wid, input_event));
-                        }
-                        if let Some(window) = self.windows.get(&winit_id) {
-                            window.request_redraw();
-                        }
-                    }
-                    winit::event::Ime::Preedit(text, cursor) => {
-                        // IME pre-edit (composition in progress)
-                        // TODO: render pre-edit text with underline at cursor position
-                        let _ = (text, cursor);
-                    }
-                    winit::event::Ime::Enabled => {
-                        tracing::debug!("IME enabled for window {:?}", winit_id);
-                    }
-                    winit::event::Ime::Disabled => {
-                        tracing::debug!("IME disabled for window {:?}", winit_id);
-                    }
-                }
             }
 
             WinitWindowEvent::PinchGesture { delta, phase, .. } => {
@@ -576,11 +551,14 @@ where
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let elapsed_since_last_scroll = self.last_scroll_event_at.map(|last| last.elapsed());
         if should_emit_synthetic_scroll_end(self.scroll_end_pending, elapsed_since_last_scroll) {
-            self.handle_event(Event::Input(input::scroll_end_event()));
-            self.reset_scroll_state();
-            if let Some(ref window) = self.window {
-                window.request_redraw();
+            if let Some(primary_id) = self.primary_winit_id {
+                let wid = to_window_id(primary_id);
+                self.handle_event_for(primary_id, Event::Input(wid, input::scroll_end_event()));
+                if let Some(window) = self.windows.get(&primary_id) {
+                    window.request_redraw();
+                }
             }
+            self.reset_scroll_state();
             return;
         }
 

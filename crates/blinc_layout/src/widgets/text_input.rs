@@ -400,6 +400,10 @@ pub fn has_focused_text_input() -> bool {
     GLOBAL_FOCUS_COUNT.load(Ordering::Relaxed) > 0
 }
 
+pub fn has_live_focused_text_widget() -> bool {
+    has_focused_text_input()
+}
+
 /// Get the current text-input tap generation counter.
 ///
 /// Increments on every tap that lands on a text input or text area

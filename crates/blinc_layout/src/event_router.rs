@@ -653,6 +653,7 @@ impl EventRouter {
                     x,
                     y,
                     button: RecorderMouseButton::from(button),
+                    modifiers: recorder_bridge::RecorderModifiers::default(),
                     target_element: Some(format!("{:?}", hit.node)),
                 });
             }
@@ -725,6 +726,7 @@ impl EventRouter {
                     x,
                     y,
                     button: RecorderMouseButton::from(button),
+                    modifiers: recorder_bridge::RecorderModifiers::default(),
                     target_element: Some(format!("{:?}", target)),
                 });
 
@@ -734,6 +736,7 @@ impl EventRouter {
                         x,
                         y,
                         button: RecorderMouseButton::from(button),
+                        modifiers: recorder_bridge::RecorderModifiers::default(),
                         target_element: Some(format!("{:?}", target)),
                     });
                 }

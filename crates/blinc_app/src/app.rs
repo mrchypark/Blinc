@@ -15,8 +15,6 @@ use crate::error::{BlincError, Result};
 pub struct BlincConfig {
     /// Maximum primitives per batch
     pub max_primitives: usize,
-    /// Maximum line segments per batch (compact polylines, e.g. charts)
-    pub max_line_segments: usize,
     /// Maximum glass primitives per batch
     pub max_glass_primitives: usize,
     /// Maximum glyphs per batch
@@ -29,7 +27,6 @@ impl Default for BlincConfig {
     fn default() -> Self {
         Self {
             max_primitives: 10_000,
-            max_line_segments: 200_000,
             max_glass_primitives: 1_000,
             max_glyphs: 50_000,
             sample_count: 4, // 4x MSAA for path anti-aliasing
@@ -71,7 +68,6 @@ impl BlincApp {
     ///
     /// This is used internally for platform-specific initialization (Android, iOS)
     /// where the GPU setup is done differently.
-    #[cfg_attr(not(any(target_os = "android", target_os = "ios")), allow(dead_code))]
     pub(crate) fn from_context(ctx: RenderContext, config: BlincConfig) -> Self {
         Self { ctx, config }
     }
@@ -82,7 +78,6 @@ impl BlincApp {
         // MSAA is handled separately via render_overlay_msaa for foreground paths.
         let renderer_config = RendererConfig {
             max_primitives: config.max_primitives,
-            max_line_segments: config.max_line_segments,
             max_glass_primitives: config.max_glass_primitives,
             max_glyphs: config.max_glyphs,
             sample_count: 1, // SDF pipelines always use single-sampled textures
@@ -418,7 +413,6 @@ impl BlincApp {
 
         let renderer_config = RendererConfig {
             max_primitives: config.max_primitives,
-            max_line_segments: config.max_line_segments,
             max_glass_primitives: config.max_glass_primitives,
             max_glyphs: config.max_glyphs,
             sample_count: 1,

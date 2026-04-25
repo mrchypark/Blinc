@@ -25,712 +25,32 @@
 use std::hash::Hash;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex, OnceLock,
+    Arc, Mutex,
 };
 
-use blinc_animation::scheduler::WakeCallback;
 use blinc_animation::{
     AnimatedTimeline, AnimatedValue, AnimationContext, AnimationScheduler, SchedulerHandle,
     SharedAnimatedTimeline, SharedAnimatedValue, SpringConfig,
 };
-use blinc_core::context_state::{
-    BlincContextState, ContextBindingOverride, ContextResourceOverride, HookState, SharedHookState,
-    StateKey, StatefulCallback,
-};
+use blinc_core::context_state::{BlincContextState, HookState, SharedHookState, StateKey};
 use blinc_core::reactive::{Derived, ReactiveGraph, Signal, SignalId, State, StatefulDepsCallback};
 use blinc_layout::overlay_state::{get_overlay_manager, OverlayContext};
 use blinc_layout::prelude::*;
 use blinc_layout::widgets::overlay::{overlay_manager, OverlayManager, OverlayManagerExt};
 use blinc_platform::{
-    ControlFlow, Event, EventLoop, ImeCursorArea, ImeState, InputEvent, Key, KeyState,
-    LifecycleEvent, MouseEvent, Platform, TouchEvent, Window, WindowConfig, WindowEvent,
+    ControlFlow, Event, EventLoop, InputEvent, Key, KeyState, LifecycleEvent, MouseEvent, Platform,
+    TouchEvent, Window, WindowConfig, WindowEvent,
 };
 
 use crate::app::BlincApp;
 use crate::error::{BlincError, Result};
-
-// -----------------------------------------------------------------------------
-// Optional windowed e2e (desktop)
-// -----------------------------------------------------------------------------
-//
-// We can't rely on OS-level screenshots in CI (or on machines without Screen
-// Recording permission). For deterministic macOS e2e we optionally read back the
-// rendered swapchain frame (requires SurfaceConfiguration.usage COPY_SRC) and
-// validate pixels directly.
-//
-// Enabled via env vars:
-// - BLINC_E2E_CAPTURE_PATH=/tmp/out.png   (write PNG; can be a directory too)
-// - BLINC_E2E_EXPECT=blueish|warm         (assert minimal pixels in main panel)
-// - BLINC_E2E_TRIGGER_PATH=/tmp/trigger   (optional: only capture when this file exists)
-// - BLINC_E2E_MAX_CAPTURES=2              (optional: number of captures before exiting)
-// - BLINC_E2E_EXIT=0|false                (optional: keep running after captures)
-// - BLINC_E2E_SCRIPT=gallery_sidebar_click_after_scroll (optional: internal input simulation)
-// - BLINC_E2E_SCRIPT_EXIT=0|false          (optional: keep running after script)
-//
-// Note: this is intentionally minimal and only runs once per process.
-
-fn e2e_is_enabled() -> bool {
-    std::env::var_os("BLINC_E2E_CAPTURE_PATH").is_some()
-        || std::env::var_os("BLINC_E2E_EXPECT").is_some()
-}
-
-fn e2e_exit_after() -> bool {
-    if let Ok(v) = std::env::var("BLINC_E2E_EXIT") {
-        let v = v.trim().to_ascii_lowercase();
-        return !(v.is_empty() || v == "0" || v == "false" || v == "no");
-    }
-    e2e_is_enabled()
-}
-
-pub(crate) fn sync_platform_ime_state() {
-    let cursor_area = blinc_layout::widgets::focused_text_widget_ime_area().map(|bounds| {
-        ImeCursorArea::new(
-            bounds.x as f64,
-            bounds.y as f64,
-            bounds.width as f64,
-            bounds.height as f64,
-        )
-    });
-    let enabled = blinc_layout::widgets::has_live_focused_text_widget();
-    let session_id = blinc_layout::widgets::text_input::focused_text_input_node_id()
-        .or_else(blinc_layout::widgets::text_input::focused_text_area_node_id)
-        .map(|node_id| {
-            blinc_platform::TextInputSessionId::new(format!("node:{}", node_id.to_raw()))
-        });
-    let state = if enabled {
-        let mut request = blinc_platform::ImeRequest::new(
-            session_id
-                .unwrap_or_else(|| blinc_platform::TextInputSessionId::new("focused-text-widget")),
-        )
-        .with_visibility(blinc_platform::ImeVisibility::Visible);
-        if let Some(cursor_area) = cursor_area {
-            request = request.with_cursor_area(cursor_area);
-        }
-        ImeState::default().with_request(Some(request))
-    } else {
-        ImeState::default()
-    };
-    blinc_platform::set_ime_state(state);
-}
-
-fn keyboard_text_chars(event: &blinc_platform::KeyboardEvent) -> Vec<char> {
-    if let Some(text) = event.text.as_deref() {
-        return visible_text_chars(text);
-    }
-
-    let mods = &event.modifiers;
-    let fallback = letter_key_char(&event.key).map_or_else(
-        || match &event.key {
-            Key::Char(c) => Some(*c),
-            Key::Space => Some(' '),
-            Key::Num0 => Some(if mods.shift { ')' } else { '0' }),
-            Key::Num1 => Some(if mods.shift { '!' } else { '1' }),
-            Key::Num2 => Some(if mods.shift { '@' } else { '2' }),
-            Key::Num3 => Some(if mods.shift { '#' } else { '3' }),
-            Key::Num4 => Some(if mods.shift { '$' } else { '4' }),
-            Key::Num5 => Some(if mods.shift { '%' } else { '5' }),
-            Key::Num6 => Some(if mods.shift { '^' } else { '6' }),
-            Key::Num7 => Some(if mods.shift { '&' } else { '7' }),
-            Key::Num8 => Some(if mods.shift { '*' } else { '8' }),
-            Key::Num9 => Some(if mods.shift { '(' } else { '9' }),
-            Key::Minus => Some(if mods.shift { '_' } else { '-' }),
-            Key::Equals => Some(if mods.shift { '+' } else { '=' }),
-            Key::LeftBracket => Some(if mods.shift { '{' } else { '[' }),
-            Key::RightBracket => Some(if mods.shift { '}' } else { ']' }),
-            Key::Backslash => Some(if mods.shift { '|' } else { '\\' }),
-            Key::Semicolon => Some(if mods.shift { ':' } else { ';' }),
-            Key::Quote => Some(if mods.shift { '"' } else { '\'' }),
-            Key::Comma => Some(if mods.shift { '<' } else { ',' }),
-            Key::Period => Some(if mods.shift { '>' } else { '.' }),
-            Key::Slash => Some(if mods.shift { '?' } else { '/' }),
-            Key::Grave => Some(if mods.shift { '~' } else { '`' }),
-            _ => None,
-        },
-        |base| {
-            Some(if mods.shift {
-                base.to_ascii_uppercase()
-            } else {
-                base
-            })
-        },
-    );
-
-    fallback.into_iter().collect()
-}
-
-fn keyboard_text_chars_for_dispatch(
-    event: &blinc_platform::KeyboardEvent,
-    composition_active: bool,
-) -> Vec<char> {
-    if composition_active && event.text.is_none() {
-        return Vec::new();
-    }
-
-    keyboard_text_chars(event)
-}
-
-fn visible_text_chars(text: &str) -> Vec<char> {
-    text.chars().filter(|ch| !ch.is_control()).collect()
-}
-
-fn should_skip_composition_commit(
-    keyboard_committed_text: Option<&[char]>,
-    composition_text: &str,
-) -> bool {
-    let composition_chars = visible_text_chars(composition_text);
-    !composition_chars.is_empty()
-        && keyboard_committed_text.is_some_and(|chars| chars == composition_chars.as_slice())
-}
-
-fn track_keyboard_committed_text(
-    tracked_text: &mut Option<Vec<char>>,
-    event: &blinc_platform::KeyboardEvent,
-) {
-    if event.state != KeyState::Pressed {
-        return;
-    }
-
-    let mods = &event.modifiers;
-    if mods.ctrl || mods.meta {
-        *tracked_text = None;
-        return;
-    }
-
-    *tracked_text = event
-        .text
-        .as_deref()
-        .map(visible_text_chars)
-        .filter(|chars| !chars.is_empty());
-}
-
-fn take_composition_commit_text(
-    tracked_text: &mut Option<Vec<char>>,
-    composition_text: &str,
-) -> Vec<char> {
-    let composition_chars = visible_text_chars(composition_text);
-    let should_skip = !composition_chars.is_empty()
-        && tracked_text
-            .as_deref()
-            .is_some_and(|chars| chars == composition_chars.as_slice());
-    *tracked_text = None;
-
-    if should_skip {
-        Vec::new()
-    } else {
-        composition_chars
-    }
-}
-
-fn reset_composition_tracking_state(
-    composition_active: &mut bool,
-    tracked_text: &mut Option<Vec<char>>,
-) {
-    *composition_active = false;
-    *tracked_text = None;
-    blinc_layout::widgets::set_focused_text_widget_composition(None);
-}
-
-fn letter_key_char(key: &Key) -> Option<char> {
-    match key {
-        Key::A => Some('a'),
-        Key::B => Some('b'),
-        Key::C => Some('c'),
-        Key::D => Some('d'),
-        Key::E => Some('e'),
-        Key::F => Some('f'),
-        Key::G => Some('g'),
-        Key::H => Some('h'),
-        Key::I => Some('i'),
-        Key::J => Some('j'),
-        Key::K => Some('k'),
-        Key::L => Some('l'),
-        Key::M => Some('m'),
-        Key::N => Some('n'),
-        Key::O => Some('o'),
-        Key::P => Some('p'),
-        Key::Q => Some('q'),
-        Key::R => Some('r'),
-        Key::S => Some('s'),
-        Key::T => Some('t'),
-        Key::U => Some('u'),
-        Key::V => Some('v'),
-        Key::W => Some('w'),
-        Key::X => Some('x'),
-        Key::Y => Some('y'),
-        Key::Z => Some('z'),
-        _ => None,
-    }
-}
-
-#[cfg(any(
-    target_os = "macos",
-    all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "windows"
-))]
-fn sync_accessibility_snapshot(tree: &blinc_layout::RenderTree) {
-    if let Some(snapshot) = blinc_layout::export_accessibility_snapshot(tree) {
-        blinc_platform::update_platform_accessibility_snapshot(snapshot.clone());
-        blinc_platform_desktop::update_accessibility_snapshot(snapshot);
-    }
-}
-
-#[cfg(not(any(
-    target_os = "macos",
-    all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "windows"
-)))]
-fn sync_accessibility_snapshot(tree: &blinc_layout::RenderTree) {
-    if let Some(snapshot) = blinc_layout::export_accessibility_snapshot(tree) {
-        blinc_platform::update_platform_accessibility_snapshot(snapshot);
-    }
-    blinc_platform::mark_accessibility_unsupported(
-        "platform accessibility bridge is not wired for this runtime",
-    );
-}
-
-fn maybe_record_tree_snapshot(tree: &blinc_layout::RenderTree, windowed_ctx: &WindowedContext) {
-    if !blinc_layout::recorder_bridge::is_recording_snapshots() {
-        return;
-    }
-
-    let hovered_nodes = windowed_ctx
-        .event_router
-        .hovered_nodes()
-        .collect::<std::collections::HashSet<_>>();
-    let snapshot = blinc_layout::recorder_bridge::capture_tree_snapshot(
-        tree,
-        windowed_ctx.event_router.focused(),
-        &hovered_nodes,
-        windowed_ctx.width as u32,
-        windowed_ctx.height as u32,
-    );
-    blinc_layout::recorder_bridge::record_snapshot(snapshot);
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum E2eScript {
-    GallerySidebarClickAfterScroll,
-}
-
-fn e2e_script() -> Option<E2eScript> {
-    let v = std::env::var("BLINC_E2E_SCRIPT").ok()?;
-    match v.trim().to_ascii_lowercase().as_str() {
-        "gallery_sidebar_click_after_scroll" | "gallery-sidebar-click-after-scroll" => {
-            Some(E2eScript::GallerySidebarClickAfterScroll)
-        }
-        _ => None,
-    }
-}
-
-fn e2e_script_exit_after(script_enabled: bool) -> bool {
-    if !script_enabled {
-        return false;
-    }
-    if let Ok(v) = std::env::var("BLINC_E2E_SCRIPT_EXIT") {
-        let v = v.trim().to_ascii_lowercase();
-        return !(v.is_empty() || v == "0" || v == "false" || v == "no");
-    }
-    true
-}
-
-fn read_keyed_state<T: Clone + Send + 'static>(
-    hooks: &SharedHookState,
-    reactive: &SharedReactiveGraph,
-    key: &str,
-) -> Option<T> {
-    let state_key = StateKey::from_string::<T>(key);
-    let raw_id = hooks.lock().ok()?.get(&state_key)?;
-    let signal_id = SignalId::from_raw(raw_id);
-    let signal: Signal<T> = Signal::from_id(signal_id);
-    reactive.lock().ok()?.get(signal)
-}
-
-fn e2e_find_hit_point_with_id_prefix(
-    tree: &RenderTree,
-    router: &EventRouter,
-    window_w: f32,
-    window_h: f32,
-    x_max: f32,
-    id_prefix: &str,
-) -> Option<(f32, f32, String)> {
-    let x0 = 6.0;
-    let y0 = 6.0;
-    let x1 = x_max.min(window_w - 6.0);
-    let y1 = (window_h - 6.0).max(y0);
-    let step = 8.0;
-
-    let mut y = y0;
-    while y <= y1 {
-        let mut x = x0;
-        while x <= x1 {
-            if let Some(hit) = router.hit_test(tree, x, y) {
-                if let Some(id) = tree.element_registry().get_id(hit.node) {
-                    if id.starts_with(id_prefix) {
-                        return Some((x, y, id.to_string()));
-                    }
-                }
-            }
-            x += step;
-        }
-        y += step;
-    }
-    None
-}
-
-fn e2e_find_hit_point_with_exact_id(
-    tree: &RenderTree,
-    router: &EventRouter,
-    window_w: f32,
-    window_h: f32,
-    x_max: f32,
-    exact_id: &str,
-) -> Option<(f32, f32)> {
-    let x0 = 6.0;
-    let y0 = 6.0;
-    let x1 = x_max.min(window_w - 6.0);
-    let y1 = (window_h - 6.0).max(y0);
-    let step = 8.0;
-
-    let mut y = y0;
-    while y <= y1 {
-        let mut x = x0;
-        while x <= x1 {
-            if let Some(hit) = router.hit_test(tree, x, y) {
-                if let Some(id) = tree.element_registry().get_id(hit.node) {
-                    if id == exact_id {
-                        return Some((x, y));
-                    }
-                }
-            }
-            x += step;
-        }
-        y += step;
-    }
-    None
-}
-
-fn e2e_max_captures() -> usize {
-    std::env::var("BLINC_E2E_MAX_CAPTURES")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&v| v >= 1)
-        .unwrap_or(1)
-}
-
-fn e2e_trigger_path() -> Option<std::path::PathBuf> {
-    std::env::var("BLINC_E2E_TRIGGER_PATH")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-}
-
-fn e2e_capture_on_start(trigger: Option<&std::path::PathBuf>) -> bool {
-    if let Ok(v) = std::env::var("BLINC_E2E_CAPTURE_ON_START") {
-        let v = v.trim().to_ascii_lowercase();
-        return !(v.is_empty() || v == "0" || v == "false" || v == "no");
-    }
-    // If an explicit trigger path is configured, default to trigger-only.
-    trigger.is_none()
-}
-
-fn e2e_output_path(base: &std::path::Path, capture_index: usize) -> std::path::PathBuf {
-    // capture_index is 1-based.
-    if base.is_dir() {
-        return base.join(format!("capture-{capture_index}.png"));
-    }
-
-    if capture_index <= 1 {
-        return base.to_path_buf();
-    }
-
-    let file_name = base
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("capture.png");
-    let (stem, ext) = match file_name.rsplit_once('.') {
-        Some((s, e)) => (s.to_string(), format!(".{e}")),
-        None => (file_name.to_string(), String::new()),
-    };
-    let new_name = format!("{stem}-{capture_index}{ext}");
-    base.with_file_name(new_name)
-}
-
-fn padded_bytes_per_row(width: u32) -> u32 {
-    let unpadded = width * 4;
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    unpadded.div_ceil(align) * align
-}
-
-fn bgra_or_rgba_to_rgba(
-    format: wgpu::TextureFormat,
-    bytes: &[u8],
-    width: u32,
-    height: u32,
-) -> Option<Vec<u8>> {
-    let bytes_per_row = padded_bytes_per_row(width) as usize;
-    let expected = bytes_per_row.saturating_mul(height as usize);
-    if bytes.len() < expected {
-        return None;
-    }
-
-    let mut out = vec![0u8; (width as usize) * (height as usize) * 4];
-    for y in 0..height as usize {
-        let row_start = y * bytes_per_row;
-        let row_end = row_start + (width as usize) * 4;
-        let row = &bytes[row_start..row_end];
-        let dst = &mut out[y * (width as usize) * 4..(y + 1) * (width as usize) * 4];
-
-        match format {
-            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => {
-                for x in 0..width as usize {
-                    let i = x * 4;
-                    // BGRA -> RGBA
-                    dst[i] = row[i + 2];
-                    dst[i + 1] = row[i + 1];
-                    dst[i + 2] = row[i];
-                    dst[i + 3] = row[i + 3];
-                }
-            }
-            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => {
-                dst.copy_from_slice(row);
-            }
-            _ => return None,
-        }
-    }
-    Some(out)
-}
-
-fn e2e_save_png_minimal_rgba(
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-    path: &std::path::Path,
-) -> std::io::Result<()> {
-    use std::fs::File;
-    use std::io::Write;
-
-    fn crc32(data: &[u8]) -> u32 {
-        let mut crc = 0xFFFF_FFFFu32;
-        for &b in data {
-            crc ^= b as u32;
-            for _ in 0..8 {
-                let mask = (crc & 1).wrapping_neg();
-                crc = (crc >> 1) ^ (0xEDB8_8320u32 & mask);
-            }
-        }
-        !crc
-    }
-
-    fn write_chunk(file: &mut File, typ: &[u8; 4], data: &[u8]) -> std::io::Result<()> {
-        file.write_all(&(data.len() as u32).to_be_bytes())?;
-        file.write_all(typ)?;
-        file.write_all(data)?;
-        let mut crc_data = Vec::with_capacity(typ.len() + data.len());
-        crc_data.extend_from_slice(typ);
-        crc_data.extend_from_slice(data);
-        file.write_all(&crc32(&crc_data).to_be_bytes())?;
-        Ok(())
-    }
-
-    fn adler32_rgba(rgba: &[u8], width: u32, height: u32) -> u32 {
-        let mut a: u32 = 1;
-        let mut b: u32 = 0;
-        let mod_adler: u32 = 65521;
-
-        let row_len = width as usize * 4;
-        for y in 0..height as usize {
-            // Each scanline begins with a single filter byte (0 = None).
-            a %= mod_adler;
-            b = (b + a) % mod_adler;
-            let row = &rgba[y * row_len..(y + 1) * row_len];
-            for &byte in row {
-                a = (a + byte as u32) % mod_adler;
-                b = (b + a) % mod_adler;
-            }
-        }
-        (b << 16) | a
-    }
-
-    let mut file = File::create(path)?;
-
-    // PNG signature
-    file.write_all(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])?;
-
-    // IHDR
-    let mut ihdr = Vec::with_capacity(13);
-    ihdr.extend_from_slice(&width.to_be_bytes());
-    ihdr.extend_from_slice(&height.to_be_bytes());
-    ihdr.push(8); // bit depth
-    ihdr.push(6); // color type RGBA
-    ihdr.push(0); // compression
-    ihdr.push(0); // filter
-    ihdr.push(0); // interlace
-    write_chunk(&mut file, b"IHDR", &ihdr)?;
-
-    // IDAT: uncompressed deflate blocks
-    let mut idat = Vec::new();
-    let scanline_len = width as usize * 4 + 1;
-    idat.push(0x78);
-    idat.push(0x01);
-
-    for y in 0..height as usize {
-        let is_last = y + 1 == height as usize;
-        let bfinal = if is_last { 1u8 } else { 0u8 };
-
-        let row_start = y * (width as usize) * 4;
-        let row_end = row_start + (width as usize) * 4;
-
-        let mut scanline = Vec::with_capacity(scanline_len);
-        scanline.push(0); // filter: none
-        scanline.extend_from_slice(&rgba[row_start..row_end]);
-
-        idat.push(bfinal); // BFINAL + BTYPE=00
-        let len = scanline.len() as u16;
-        idat.extend_from_slice(&len.to_le_bytes());
-        idat.extend_from_slice(&(!len).to_le_bytes());
-        idat.extend_from_slice(&scanline);
-    }
-
-    let adler = adler32_rgba(rgba, width, height);
-    idat.extend_from_slice(&adler.to_be_bytes());
-
-    write_chunk(&mut file, b"IDAT", &idat)?;
-    write_chunk(&mut file, b"IEND", &[])?;
-    Ok(())
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum E2eExpect {
-    Blueish,
-    Warm,
-}
-
-fn e2e_expect() -> Option<E2eExpect> {
-    let v = std::env::var("BLINC_E2E_EXPECT").ok()?;
-    match v.trim().to_ascii_lowercase().as_str() {
-        "blue" | "blueish" | "line" => Some(E2eExpect::Blueish),
-        "warm" | "heat" | "heatmap" => Some(E2eExpect::Warm),
-        _ => None,
-    }
-}
-
-fn e2e_threshold(expect: E2eExpect, w: u32, h: u32, total_samples: usize) -> usize {
-    // Use a threshold proportional to window size so it scales across Retina/non-Retina.
-    // These are intentionally conservative: we mostly want to catch “nothing rendered”.
-    let area = (w as u64).saturating_mul(h as u64).max(1);
-    match expect {
-        E2eExpect::Blueish => {
-            // Line: the stroke is thin, but should still appear across a wide span.
-            // Require at least ~0.03% of sampled points to be “colored”.
-            (total_samples / 3000)
-                .max(10)
-                .min((area / 50_000) as usize + 20)
-        }
-        E2eExpect::Warm => {
-            // Heatmap fills a lot of area; expect more colored pixels.
-            (total_samples / 800).max(30)
-        }
-    }
-}
-
-fn e2e_count_pixels(rgba: &[u8], w: u32, h: u32) -> (usize, usize, usize) {
-    // Returns (blueish, warm, total_samples).
-    if w == 0 || h == 0 {
-        return (0, 0, 0);
-    }
-
-    let iw = w as i32;
-    let ih = h as i32;
-
-    // Sample the main content area, avoiding sidebar/tabs where selection
-    // colors could cause false positives.
-    //
-    // Important: `w`/`h` are physical pixels. On Retina macOS they are typically 2x the
-    // logical window size, so we prefer a logical-size hint when available.
-    let narrow = std::env::var("BLINC_WINDOW_SIZE")
-        .ok()
-        .and_then(|v| v.trim().split_once('x').map(|(a, _b)| a.trim().to_string()))
-        .and_then(|w| w.parse::<i32>().ok())
-        .map(|logical_w| logical_w < 900)
-        .unwrap_or(iw < 900);
-    // In narrow layouts we have the tabs row on top; the plot starts lower.
-    let x0 = if narrow {
-        (iw as f32 * 0.06)
-    } else {
-        (iw as f32 * 0.33)
-    } as i32;
-    let x1 = (iw as f32 * 0.97) as i32;
-    let y0 = if narrow {
-        (ih as f32 * 0.42) as i32
-    } else {
-        (ih as f32 * 0.24) as i32
-    };
-    // In narrow layouts, the chart can sit very close to the bottom edge (e.g. heatmap),
-    // so we sample a little lower to avoid false negatives.
-    let y1 = if narrow {
-        (ih as f32 * 0.98) as i32
-    } else {
-        (ih as f32 * 0.92) as i32
-    };
-
-    let step_x = ((x1 - x0) / 120).max(4);
-    let step_y = ((y1 - y0) / 80).max(4);
-
-    let mut blue = 0usize;
-    let mut warm = 0usize;
-    let mut total = 0usize;
-
-    let row_bytes = w as usize * 4;
-    for y in (y0.max(0)..y1.min(ih)).step_by(step_y as usize) {
-        let row = (y as usize) * row_bytes;
-
-        // For multi-line charts the “signal” is thin and multi-colored. A coarse grid
-        // can miss it; scan a subset of columns per row instead of sampling just a few points.
-        for x in (x0.max(0)..x1.min(iw)).step_by(2) {
-            total += 1;
-            let idx = row + (x as usize) * 4;
-            if idx + 4 > rgba.len() {
-                continue;
-            }
-            let r = rgba[idx] as f32 / 255.0;
-            let g = rgba[idx + 1] as f32 / 255.0;
-            let b = rgba[idx + 2] as f32 / 255.0;
-            let a = rgba[idx + 3] as f32 / 255.0;
-
-            if a >= 0.8 {
-                // “Blueish” is really “non-background, colored stroke” in the main plot.
-                // Use a broader heuristic:
-                // - not too dark
-                // - noticeable chroma (channel spread) OR strong blue dominance
-                let mx = r.max(g).max(b);
-                let mn = r.min(g).min(b);
-                let spread = mx - mn;
-                let colored = (mx > 0.22 && spread > 0.08) || (b > 0.35 && (b - r.max(g)) > 0.10);
-                if colored {
-                    blue += 1;
-                }
-                // Warm heatmap pixels skew red/yellow: high (r,g), lower b.
-                // Keep this tolerant; we mainly want to catch “heatmap disappeared”.
-                if (r > 0.50) && (g > 0.18) && (b < 0.60) && (r - b > 0.18) && (g - b > 0.10) {
-                    warm += 1;
-                }
-            }
-        }
-    }
-
-    (blue, warm, total)
-}
 
 /// Shared animation scheduler for the application (thread-safe)
 pub type SharedAnimationScheduler = Arc<Mutex<AnimationScheduler>>;
 
 // SharedAnimatedValue and SharedAnimatedTimeline are re-exported from blinc_animation
 
-#[cfg(all(
-    feature = "windowed",
-    not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
-))]
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
 use blinc_platform_desktop::DesktopPlatform;
 
 /// Shared dirty flag type for element refs
@@ -961,8 +281,6 @@ pub struct WindowedContext {
     pub rebuild_count: u32,
     /// Event router for input event handling
     pub event_router: EventRouter,
-    /// Pointer query state for CSS pointer pressure/touch metadata.
-    pub pointer_query: blinc_layout::pointer_query::PointerQueryState,
     /// Animation scheduler for spring/keyframe animations
     pub animations: SharedAnimationScheduler,
     /// Shared dirty flag for element refs - when set, triggers UI rebuild
@@ -1000,83 +318,6 @@ pub struct WindowedContext {
 }
 
 impl WindowedContext {
-    fn ensure_global_context_state() -> (
-        &'static BlincContextState,
-        SharedReactiveGraph,
-        SharedHookState,
-        RefDirtyFlag,
-    ) {
-        if !BlincContextState::is_initialized() {
-            let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
-            let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
-            let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
-            let stateful_callback: StatefulCallback = Arc::new(|signal_ids| {
-                blinc_layout::check_stateful_deps(signal_ids);
-            });
-            BlincContextState::init_with_callback(
-                reactive,
-                hooks,
-                ref_dirty_flag,
-                stateful_callback,
-            );
-        }
-
-        let global = BlincContextState::get();
-        (
-            global,
-            global.active_reactive(),
-            global.active_hooks(),
-            global.active_dirty_flag(),
-        )
-    }
-
-    fn ensure_element_registry(global: &'static BlincContextState) -> SharedElementRegistry {
-        if let Some(existing) = global.element_registry::<blinc_layout::selector::ElementRegistry>()
-        {
-            existing
-        } else {
-            let registry: SharedElementRegistry =
-                Arc::new(blinc_layout::selector::ElementRegistry::new());
-            global.set_element_registry(Arc::clone(&registry) as blinc_core::AnyElementRegistry);
-            registry
-        }
-    }
-
-    /// Create a deterministic headless context for offscreen rendering and screenshot tests.
-    ///
-    /// Unlike the internal runtime constructor, this convenience API initializes the
-    /// shared animation/context globals when they are not yet available so tests can
-    /// build a `WindowedContext` without recreating the full windowed runtime setup.
-    pub fn new_headless(logical_width: f32, logical_height: f32) -> Self {
-        let _init_guard = headless_context_init_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let animations = prepare_runtime_scheduler(None, false);
-        let (global, reactive, hooks, ref_dirty_flag) = Self::ensure_global_context_state();
-        let element_registry = Self::ensure_element_registry(global);
-        let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
-
-        let ctx = Self::new_headless_runtime(
-            logical_width,
-            logical_height,
-            animations,
-            ref_dirty_flag,
-            reactive,
-            hooks,
-            element_registry,
-            ready_callbacks,
-        );
-
-        if !blinc_animation::is_scheduler_initialized() {
-            let scheduler_handle = ctx.animations.lock().unwrap().handle();
-            blinc_animation::set_global_scheduler(scheduler_handle);
-        }
-
-        global.set_viewport_size(logical_width, logical_height);
-
-        ctx
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn from_window<W: Window>(
         window: &W,
@@ -1110,7 +351,6 @@ impl WindowedContext {
             focused: window.is_focused(),
             rebuild_count: 0,
             event_router,
-            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
             animations,
             ref_dirty_flag,
             reactive,
@@ -1162,7 +402,6 @@ impl WindowedContext {
             focused,
             rebuild_count: 0,
             event_router: EventRouter::new(),
-            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
             animations,
             ref_dirty_flag,
             reactive,
@@ -1274,57 +513,6 @@ impl WindowedContext {
             focused,
             rebuild_count: 0,
             event_router: EventRouter::new(),
-            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
-            animations,
-            ref_dirty_flag,
-            reactive,
-            hooks,
-            overlay_manager: overlay_mgr,
-            had_visible_overlays: false,
-            element_registry,
-            ready_callbacks,
-            stylesheet: None,
-            css_sources: Vec::new(),
-            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
-            open_window_fn: None,
-            close_fn: None,
-            drag_fn: None,
-            minimize_fn: None,
-            maximize_fn: None,
-        }
-    }
-
-    /// Create a WindowedContext for Fuchsia
-    ///
-    /// This is used by the Fuchsia runner since it doesn't have a Window trait implementation.
-    #[cfg(all(feature = "fuchsia", target_os = "fuchsia"))]
-    pub(crate) fn new_fuchsia(
-        logical_width: f32,
-        logical_height: f32,
-        scale_factor: f64,
-        physical_width: f32,
-        physical_height: f32,
-        focused: bool,
-        animations: SharedAnimationScheduler,
-        ref_dirty_flag: RefDirtyFlag,
-        reactive: SharedReactiveGraph,
-        hooks: SharedHookState,
-        overlay_mgr: OverlayManager,
-        element_registry: SharedElementRegistry,
-        ready_callbacks: SharedReadyCallbacks,
-    ) -> Self {
-        Self {
-            width: logical_width,
-            height: logical_height,
-            scale_factor,
-            safe_area: (0.0, 0.0, 0.0, 0.0),
-            keyboard_inset: 0.0,
-            physical_width,
-            physical_height,
-            focused,
-            rebuild_count: 0,
-            event_router: EventRouter::new(),
-            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
             animations,
             ref_dirty_flag,
             reactive,
@@ -1359,12 +547,13 @@ impl WindowedContext {
             width: logical_width,
             height: logical_height,
             scale_factor: 1.0,
+            safe_area: (0.0, 0.0, 0.0, 0.0),
+            keyboard_inset: 0.0,
             physical_width: logical_width,
             physical_height: logical_height,
             focused: true,
             rebuild_count: 0,
             event_router: EventRouter::new(),
-            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
             animations,
             ref_dirty_flag,
             reactive,
@@ -1375,6 +564,12 @@ impl WindowedContext {
             ready_callbacks,
             stylesheet: None,
             css_sources: Vec::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
+            open_window_fn: None,
+            close_fn: None,
+            drag_fn: None,
+            minimize_fn: None,
+            maximize_fn: None,
         }
     }
 
@@ -1387,19 +582,6 @@ impl WindowedContext {
 
         let global = BlincContextState::get();
         global.set_viewport_size(logical_width, logical_height);
-    }
-
-    /// Update context from window (preserving event router, dirty flag, and reactive graph)
-    fn update_from_window<W: Window>(&mut self, window: &W) {
-        let (physical_width, physical_height) = window.size();
-        let scale_factor = window.scale_factor();
-
-        self.physical_width = physical_width as f32;
-        self.physical_height = physical_height as f32;
-        self.width = physical_width as f32 / scale_factor as f32;
-        self.height = physical_height as f32 / scale_factor as f32;
-        self.scale_factor = scale_factor;
-        self.focused = window.is_focused();
     }
 
     pub(crate) fn prepare_windowless_frame(&mut self, current_time: u64) {
@@ -1435,6 +617,68 @@ impl WindowedContext {
                 }
             }
         }
+    }
+
+    /// Create a WindowedContext for Fuchsia
+    ///
+    /// This is used by the Fuchsia runner since it doesn't have a Window trait implementation.
+    #[cfg(all(feature = "fuchsia", target_os = "fuchsia"))]
+    pub(crate) fn new_fuchsia(
+        logical_width: f32,
+        logical_height: f32,
+        scale_factor: f64,
+        physical_width: f32,
+        physical_height: f32,
+        focused: bool,
+        animations: SharedAnimationScheduler,
+        ref_dirty_flag: RefDirtyFlag,
+        reactive: SharedReactiveGraph,
+        hooks: SharedHookState,
+        overlay_mgr: OverlayManager,
+        element_registry: SharedElementRegistry,
+        ready_callbacks: SharedReadyCallbacks,
+    ) -> Self {
+        Self {
+            width: logical_width,
+            height: logical_height,
+            scale_factor,
+            safe_area: (0.0, 0.0, 0.0, 0.0),
+            keyboard_inset: 0.0,
+            physical_width,
+            physical_height,
+            focused,
+            rebuild_count: 0,
+            event_router: EventRouter::new(),
+            animations,
+            ref_dirty_flag,
+            reactive,
+            hooks,
+            overlay_manager: overlay_mgr,
+            had_visible_overlays: false,
+            element_registry,
+            ready_callbacks,
+            stylesheet: None,
+            css_sources: Vec::new(),
+            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
+            open_window_fn: None,
+            close_fn: None,
+            drag_fn: None,
+            minimize_fn: None,
+            maximize_fn: None,
+        }
+    }
+
+    /// Update context from window (preserving event router, dirty flag, and reactive graph)
+    fn update_from_window<W: Window>(&mut self, window: &W) {
+        let (physical_width, physical_height) = window.size();
+        let scale_factor = window.scale_factor();
+
+        self.physical_width = physical_width as f32;
+        self.physical_height = physical_height as f32;
+        self.width = physical_width as f32 / scale_factor as f32;
+        self.height = physical_height as f32 / scale_factor as f32;
+        self.scale_factor = scale_factor;
+        self.focused = window.is_focused();
     }
 
     // =========================================================================
@@ -1690,21 +934,18 @@ impl WindowedContext {
         use blinc_core::reactive::SignalId;
 
         let state_key = StateKey::from_string::<T>(key);
-        // IMPORTANT: Do not execute `init()` while holding internal locks.
-        // Otherwise, `init()` may call ctx.use_* / State::get() and deadlock.
-        let existing_raw_id = { self.hooks.lock().unwrap().get(&state_key) };
+        let mut hooks = self.hooks.lock().unwrap();
 
-        let signal = if let Some(raw_id) = existing_raw_id {
+        // Check if we have an existing signal with this key
+        let signal = if let Some(raw_id) = hooks.get(&state_key) {
+            // Reconstruct the signal from stored ID
             let signal_id = SignalId::from_raw(raw_id);
             Signal::from_id(signal_id)
         } else {
-            let initial = init();
-            let signal = self.reactive.lock().unwrap().create_signal(initial);
+            // First time - create a new signal and store it
+            let signal = self.reactive.lock().unwrap().create_signal(init());
             let raw_id = signal.id().to_raw();
-            self.hooks
-                .lock()
-                .unwrap()
-                .insert::<T>(state_key, key, raw_id);
+            hooks.insert(state_key, raw_id);
             signal
         };
 
@@ -1748,20 +989,18 @@ impl WindowedContext {
         use blinc_core::reactive::SignalId;
 
         let state_key = StateKey::from_string::<T>(key);
-        // Same locking rule as `use_state_keyed`: run `init()` lock-free.
-        let existing_raw_id = { self.hooks.lock().unwrap().get(&state_key) };
+        let mut hooks = self.hooks.lock().unwrap();
 
-        if let Some(raw_id) = existing_raw_id {
+        // Check if we have an existing signal with this key
+        if let Some(raw_id) = hooks.get(&state_key) {
+            // Reconstruct the signal from stored ID
             let signal_id = SignalId::from_raw(raw_id);
             Signal::from_id(signal_id)
         } else {
-            let initial = init();
-            let signal = self.reactive.lock().unwrap().create_signal(initial);
+            // First time - create a new signal and store it
+            let signal = self.reactive.lock().unwrap().create_signal(init());
             let raw_id = signal.id().to_raw();
-            self.hooks
-                .lock()
-                .unwrap()
-                .insert::<T>(state_key, key, raw_id);
+            hooks.insert(state_key, raw_id);
             signal
         }
     }
@@ -1821,7 +1060,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(Arc::clone(&new_inner));
             let raw_id = signal.id().to_raw();
-            hooks.insert::<SharedScrollRefInner>(state_key, key, raw_id);
+            hooks.insert(state_key, raw_id);
             (signal.id(), new_inner)
         };
 
@@ -2209,7 +1448,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(shared_state.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert_opaque::<blinc_layout::SharedState<S>>(state_key, raw_id);
+            hooks.insert(state_key, raw_id);
             shared_state
         }
     }
@@ -2288,7 +1527,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(animated_value.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert_opaque::<SharedAnimatedValue>(state_key, raw_id);
+            hooks.insert(state_key, raw_id);
             animated_value
         }
     }
@@ -2366,7 +1605,7 @@ impl WindowedContext {
                 .unwrap()
                 .create_signal(timeline.clone());
             let raw_id = signal.id().to_raw();
-            hooks.insert_opaque::<SharedAnimatedTimeline>(state_key, raw_id);
+            hooks.insert(state_key, raw_id);
             timeline
         }
     }
@@ -2453,7 +1692,7 @@ impl WindowedContext {
                 .animation_handle()
                 .register_tick_callback(callback)
                 .expect("Animation scheduler should be alive");
-            hooks.insert_opaque::<TickCallbackMarker>(state_key, id.to_raw());
+            hooks.insert(state_key, id.to_raw());
             id
         }
     }
@@ -2702,115 +1941,6 @@ impl WindowedContext {
     }
 }
 
-#[cfg(test)]
-mod windowed_context_tests {
-    use super::{prepare_runtime_scheduler, shared_runtime_scheduler, WindowedContext};
-    use blinc_animation::scheduler::WakeCallback;
-    use blinc_core::BlincContextState;
-    use std::sync::{Arc, Mutex, OnceLock};
-
-    fn test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    #[test]
-    fn headless_context_initializes_expected_defaults() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let ctx = WindowedContext::new_headless(640.0, 360.0);
-
-        assert_eq!(ctx.width, 640.0);
-        assert_eq!(ctx.height, 360.0);
-        assert_eq!(ctx.physical_width(), 640.0);
-        assert_eq!(ctx.physical_height(), 360.0);
-        assert_eq!(ctx.scale_factor, 1.0);
-        assert!(ctx.focused);
-    }
-
-    #[test]
-    fn headless_context_resize_updates_logical_and_physical_size() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let mut ctx = WindowedContext::new_headless(640.0, 360.0);
-
-        ctx.set_headless_size(1024.0, 768.0);
-
-        assert_eq!(ctx.width, 1024.0);
-        assert_eq!(ctx.height, 768.0);
-        assert_eq!(ctx.physical_width(), 1024.0);
-        assert_eq!(ctx.physical_height(), 768.0);
-    }
-
-    #[test]
-    fn headless_context_resize_keeps_existing_global_registry() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let mut ctx = WindowedContext::new_headless(640.0, 360.0);
-        let before = BlincContextState::get()
-            .element_registry_any()
-            .expect("headless context installs a global element registry");
-
-        ctx.set_headless_size(1024.0, 768.0);
-
-        let after = BlincContextState::get()
-            .element_registry_any()
-            .expect("headless resize preserves a global element registry");
-        assert!(Arc::ptr_eq(&before, &after));
-    }
-
-    #[test]
-    fn repeated_headless_context_reuses_existing_global_registry() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let first = WindowedContext::new_headless(640.0, 360.0);
-        let second = WindowedContext::new_headless(800.0, 600.0);
-
-        assert!(Arc::ptr_eq(
-            first.element_registry(),
-            second.element_registry()
-        ));
-    }
-
-    #[test]
-    fn prepare_runtime_scheduler_resets_shared_state_between_runs() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let scheduler = shared_runtime_scheduler();
-        {
-            let mut guard = scheduler.lock().unwrap();
-            guard.add_tick_callback(|_| {});
-            let wake_callback: WakeCallback = Arc::new(|| {});
-            guard.set_wake_callback_arc(wake_callback);
-            guard.start_background();
-        }
-
-        let prepared = prepare_runtime_scheduler(None, false);
-
-        assert!(Arc::ptr_eq(&scheduler, &prepared));
-        let guard = prepared.lock().unwrap();
-        assert_eq!(guard.tick_callback_count(), 0);
-        assert!(!guard.is_background_running());
-        assert!(!guard.is_continuous_redraw());
-    }
-
-    #[test]
-    fn new_headless_resets_shared_scheduler_state() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let scheduler = shared_runtime_scheduler();
-        {
-            let mut guard = scheduler.lock().unwrap();
-            guard.add_tick_callback(|_| {});
-            let wake_callback: WakeCallback = Arc::new(|| {});
-            guard.set_wake_callback_arc(wake_callback);
-            guard.start_background();
-        }
-
-        let ctx = WindowedContext::new_headless(640.0, 360.0);
-
-        assert!(Arc::ptr_eq(&scheduler, &ctx.animations));
-        let guard = scheduler.lock().unwrap();
-        assert_eq!(guard.tick_callback_count(), 0);
-        assert!(!guard.is_background_running());
-        assert!(!guard.is_continuous_redraw());
-    }
-}
-
 // =============================================================================
 // BlincContext Implementation
 // =============================================================================
@@ -2923,10 +2053,7 @@ impl WindowedApp {
     ///
     /// On desktop, this sets up a filesystem-based loader.
     /// On Android, this would use the NDK AssetManager.
-    #[cfg(all(
-        feature = "windowed",
-        not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
-    ))]
+    #[cfg(all(feature = "windowed", not(target_os = "android")))]
     fn init_asset_loader() {
         use blinc_platform::assets::{set_global_asset_loader, FilesystemAssetLoader};
 
@@ -2943,10 +2070,7 @@ impl WindowedApp {
     /// - Platform-appropriate theme bundle (macOS, Windows, Linux, etc.)
     /// - System color scheme detection (light/dark mode)
     /// - Redraw callback to trigger UI updates on theme changes
-    #[cfg(all(
-        feature = "windowed",
-        not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
-    ))]
+    #[cfg(all(feature = "windowed", not(target_os = "android")))]
     fn init_theme() {
         use blinc_theme::{
             detect_system_color_scheme, platform_theme_bundle, set_redraw_callback, ThemeState,
@@ -2995,10 +2119,7 @@ impl WindowedApp {
     ///         )
     /// })
     /// ```
-    #[cfg(all(
-        feature = "windowed",
-        not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
-    ))]
+    #[cfg(all(feature = "windowed", not(target_os = "android")))]
     pub fn run<F, E>(config: WindowConfig, ui_builder: F) -> Result<()>
     where
         F: FnMut(&mut WindowedContext) -> E + 'static,
@@ -3139,25 +2260,6 @@ impl WindowedApp {
         // Shared hook state for use_state persistence
         let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
 
-        struct ResourceOverrideGuard(Option<ContextResourceOverride>);
-        struct BindingOverrideGuard(Option<ContextBindingOverride>);
-
-        impl Drop for ResourceOverrideGuard {
-            fn drop(&mut self) {
-                if let Some(ctx) = BlincContextState::try_get() {
-                    ctx.restore_resource_override(self.0.take());
-                }
-            }
-        }
-
-        impl Drop for BindingOverrideGuard {
-            fn drop(&mut self) {
-                if let Some(ctx) = BlincContextState::try_get() {
-                    ctx.restore_binding_override(self.0.take());
-                }
-            }
-        }
-
         // Initialize global context state singleton (if not already initialized)
         // This allows components to create internal state without context parameters
         if !BlincContextState::is_initialized() {
@@ -3173,28 +2275,19 @@ impl WindowedApp {
                 stateful_callback,
             );
         }
-        let _resource_override_guard = ResourceOverrideGuard(
-            BlincContextState::get().set_resource_override(ContextResourceOverride::new(
-                Arc::clone(&reactive),
-                Arc::clone(&hooks),
-                Arc::clone(&ref_dirty_flag),
-            )),
-        );
-        let _binding_override_guard = BindingOverrideGuard(
-            BlincContextState::get().set_binding_override(ContextBindingOverride::default()),
-        );
 
         // Shared animation scheduler for spring/keyframe animations
         // Runs on background thread so animations continue even when window loses focus
-        let wake_callback: WakeCallback = Arc::new(move || wake_proxy.wake());
-        let animations = prepare_runtime_scheduler(Some(wake_callback), true);
+        let mut scheduler = AnimationScheduler::new();
+        // Set up wake callback so animation thread can wake the event loop
+        scheduler.set_wake_callback(move || wake_proxy.wake());
+        scheduler.start_background();
+        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(scheduler));
 
         // Set global scheduler handle for StateContext and component access
         {
             let scheduler_handle = animations.lock().unwrap().handle();
-            if !blinc_animation::is_scheduler_initialized() {
-                blinc_animation::set_global_scheduler(scheduler_handle);
-            }
+            blinc_animation::set_global_scheduler(scheduler_handle);
         }
 
         // Shared CSS animation/transition store
@@ -3219,15 +2312,6 @@ impl WindowedApp {
         // Shared element registry for query API
         let element_registry: SharedElementRegistry =
             Arc::new(blinc_layout::selector::ElementRegistry::new());
-        let programmatic_events = Arc::new(Mutex::new(Vec::<(
-            String,
-            blinc_core::ProgrammaticElementEvent,
-        )>::new()));
-        let pending_focus_changes = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
-        let pending_scroll_requests = Arc::new(Mutex::new(Vec::<(
-            String,
-            blinc_core::ScrollIntoViewOptions,
-        )>::new()));
 
         // Set up query callback in BlincContextState so components can query elements globally
         {
@@ -3244,42 +2328,6 @@ impl WindowedApp {
             let bounds_callback: blinc_core::BoundsCallback =
                 Arc::new(move |id: &str| registry_for_bounds.get_bounds(id));
             BlincContextState::get().set_bounds_callback(bounds_callback);
-        }
-
-        // Route query API focus requests through the runtime event loop.
-        {
-            let pending_focus_changes = Arc::clone(&pending_focus_changes);
-            let focus_callback: blinc_core::FocusCallback = Arc::new(move |id| {
-                if let Ok(mut pending) = pending_focus_changes.lock() {
-                    pending.push(id.map(str::to_string));
-                }
-                focus_wake_proxy.wake();
-            });
-            BlincContextState::get().set_focus_callback(focus_callback);
-        }
-
-        // Route scroll-into-view requests through the runtime scroll path.
-        {
-            let pending_scroll_requests = Arc::clone(&pending_scroll_requests);
-            let scroll_callback: blinc_core::ScrollCallback = Arc::new(move |id, options| {
-                if let Ok(mut pending) = pending_scroll_requests.lock() {
-                    pending.push((id.to_string(), options));
-                }
-                scroll_wake_proxy.wake();
-            });
-            BlincContextState::get().set_scroll_callback(scroll_callback);
-        }
-
-        // Route ElementHandle interactions through the existing runtime path.
-        {
-            let programmatic_events = Arc::clone(&programmatic_events);
-            let callback: blinc_core::ProgrammaticEventCallback = Arc::new(move |id, event| {
-                if let Ok(mut pending) = programmatic_events.lock() {
-                    pending.push((id.to_string(), event));
-                }
-                programmatic_event_wake_proxy.wake();
-            });
-            BlincContextState::get().set_programmatic_event_callback(callback);
         }
 
         // Store element registry in BlincContextState for global query() function
@@ -3606,11 +2654,7 @@ impl WindowedApp {
                                     }
                                     let config = wgpu::SurfaceConfiguration {
                                         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                                            | if e2e_enabled {
-                                                wgpu::TextureUsages::COPY_SRC
-                                            } else {
-                                                wgpu::TextureUsages::empty()
-                                            },
+                                            | wgpu::TextureUsages::COPY_SRC,
                                         format,
                                         width,
                                         height,
@@ -3858,14 +2902,8 @@ impl WindowedApp {
                             windowed_ctx.event_router.on_window_focus(focused);
 
                             if !focused {
-                                reset_composition_tracking_state(
-                                    &mut composition_active,
-                                    &mut keyboard_committed_text,
-                                );
                                 blinc_layout::widgets::blur_all_text_inputs();
                             }
-
-                            sync_platform_ime_state();
                         }
                     }
 
@@ -3902,6 +2940,8 @@ impl WindowedApp {
                             /// Computed bounds dimensions of the element
                             bounds_width: f32,
                             bounds_height: f32,
+                            scroll_delta_x: f32,
+                            scroll_delta_y: f32,
                             /// Drag delta for DRAG/DRAG_END events
                             drag_delta_x: f32,
                             drag_delta_y: f32,
@@ -3928,6 +2968,8 @@ impl WindowedApp {
                                     bounds_y: 0.0,
                                     bounds_width: 0.0,
                                     bounds_height: 0.0,
+                                    scroll_delta_x: 0.0,
+                                    scroll_delta_y: 0.0,
                                     drag_delta_x: 0.0,
                                     drag_delta_y: 0.0,
                                     key_char: None,
@@ -4046,25 +3088,7 @@ impl WindowedApp {
                                         let lx = x / scale;
                                         let ly = y / scale;
                                         let btn = convert_mouse_button(button);
-
-                                        if std::env::var_os("BLINC_DEBUG_HIT").is_some() {
-                                            if let Some(hit) = router.hit_test(tree, lx, ly) {
-                                                let id = tree.element_registry().get_id(hit.node);
-                                                tracing::info!(
-                                                    "debug_hit: down pos=({:.1}, {:.1}) node={:?} id={:?}",
-                                                    lx,
-                                                    ly,
-                                                    hit.node,
-                                                    id
-                                                );
-                                            } else {
-                                                tracing::info!(
-                                                    "debug_hit: down pos=({:.1}, {:.1}) node=None",
-                                                    lx,
-                                                    ly
-                                                );
-                                            }
-                                        }
+                                        windowed_ctx.pointer_query.set_pressure(1.0);
 
                                         // Check for backdrop clicks (dismisses overlays)
                                         // This still needs special handling because backdrop clicks should
@@ -4115,6 +3139,7 @@ impl WindowedApp {
                                         let lx = x / scale;
                                         let ly = y / scale;
                                         let btn = convert_mouse_button(button);
+                                        windowed_ctx.pointer_query.set_pressure(0.0);
 
                                         // Route through main tree (includes overlay content)
                                         router.on_mouse_up(tree, lx, ly, btn);
@@ -4172,10 +3197,60 @@ impl WindowedApp {
                                 },
                                 InputEvent::Keyboard(kb_event) => {
                                     let mods = &kb_event.modifiers;
-                                    let text_chars = keyboard_text_chars_for_dispatch(
-                                        &kb_event,
-                                        composition_active,
-                                    );
+
+                                    // Extract character from key if applicable
+                                    let key_char = match &kb_event.key {
+                                        Key::Char(c) => Some(*c),
+                                        Key::Space => Some(' '),
+                                        Key::A => Some(if mods.shift { 'A' } else { 'a' }),
+                                        Key::B => Some(if mods.shift { 'B' } else { 'b' }),
+                                        Key::C => Some(if mods.shift { 'C' } else { 'c' }),
+                                        Key::D => Some(if mods.shift { 'D' } else { 'd' }),
+                                        Key::E => Some(if mods.shift { 'E' } else { 'e' }),
+                                        Key::F => Some(if mods.shift { 'F' } else { 'f' }),
+                                        Key::G => Some(if mods.shift { 'G' } else { 'g' }),
+                                        Key::H => Some(if mods.shift { 'H' } else { 'h' }),
+                                        Key::I => Some(if mods.shift { 'I' } else { 'i' }),
+                                        Key::J => Some(if mods.shift { 'J' } else { 'j' }),
+                                        Key::K => Some(if mods.shift { 'K' } else { 'k' }),
+                                        Key::L => Some(if mods.shift { 'L' } else { 'l' }),
+                                        Key::M => Some(if mods.shift { 'M' } else { 'm' }),
+                                        Key::N => Some(if mods.shift { 'N' } else { 'n' }),
+                                        Key::O => Some(if mods.shift { 'O' } else { 'o' }),
+                                        Key::P => Some(if mods.shift { 'P' } else { 'p' }),
+                                        Key::Q => Some(if mods.shift { 'Q' } else { 'q' }),
+                                        Key::R => Some(if mods.shift { 'R' } else { 'r' }),
+                                        Key::S => Some(if mods.shift { 'S' } else { 's' }),
+                                        Key::T => Some(if mods.shift { 'T' } else { 't' }),
+                                        Key::U => Some(if mods.shift { 'U' } else { 'u' }),
+                                        Key::V => Some(if mods.shift { 'V' } else { 'v' }),
+                                        Key::W => Some(if mods.shift { 'W' } else { 'w' }),
+                                        Key::X => Some(if mods.shift { 'X' } else { 'x' }),
+                                        Key::Y => Some(if mods.shift { 'Y' } else { 'y' }),
+                                        Key::Z => Some(if mods.shift { 'Z' } else { 'z' }),
+                                        Key::Num0 => Some(if mods.shift { ')' } else { '0' }),
+                                        Key::Num1 => Some(if mods.shift { '!' } else { '1' }),
+                                        Key::Num2 => Some(if mods.shift { '@' } else { '2' }),
+                                        Key::Num3 => Some(if mods.shift { '#' } else { '3' }),
+                                        Key::Num4 => Some(if mods.shift { '$' } else { '4' }),
+                                        Key::Num5 => Some(if mods.shift { '%' } else { '5' }),
+                                        Key::Num6 => Some(if mods.shift { '^' } else { '6' }),
+                                        Key::Num7 => Some(if mods.shift { '&' } else { '7' }),
+                                        Key::Num8 => Some(if mods.shift { '*' } else { '8' }),
+                                        Key::Num9 => Some(if mods.shift { '(' } else { '9' }),
+                                        Key::Minus => Some(if mods.shift { '_' } else { '-' }),
+                                        Key::Equals => Some(if mods.shift { '+' } else { '=' }),
+                                        Key::LeftBracket => Some(if mods.shift { '{' } else { '[' }),
+                                        Key::RightBracket => Some(if mods.shift { '}' } else { ']' }),
+                                        Key::Backslash => Some(if mods.shift { '|' } else { '\\' }),
+                                        Key::Semicolon => Some(if mods.shift { ':' } else { ';' }),
+                                        Key::Quote => Some(if mods.shift { '"' } else { '\'' }),
+                                        Key::Comma => Some(if mods.shift { '<' } else { ',' }),
+                                        Key::Period => Some(if mods.shift { '>' } else { '.' }),
+                                        Key::Slash => Some(if mods.shift { '?' } else { '/' }),
+                                        Key::Grave => Some(if mods.shift { '~' } else { '`' }),
+                                        _ => None,
+                                    };
 
                                     // Key code for special key handling (backspace, arrows, etc)
                                     // Letter keys use ASCII uppercase (65=A, 90=Z) for Cmd+key shortcuts
@@ -4247,22 +3322,13 @@ impl WindowedApp {
                                             }
 
                                             // Dispatch KEY_DOWN for all keys
-                                            router.on_key_down_with_modifiers(
-                                                key_code,
-                                                mods.shift,
-                                                mods.ctrl,
-                                                mods.alt,
-                                                mods.meta,
-                                            );
+                                            router.on_key_down(key_code);
 
                                             // For character-producing keys, dispatch TEXT_INPUT
                                             // We use broadcast dispatch so any focused text input can receive it
-                                            if !mods.ctrl && !mods.meta {
-                                                track_keyboard_committed_text(
-                                                    &mut keyboard_committed_text,
-                                                    &kb_event,
-                                                );
-                                                for c in text_chars {
+                                            if let Some(c) = key_char {
+                                                // Don't send text input if ctrl/cmd is held (shortcuts)
+                                                if !mods.ctrl && !mods.meta {
                                                     keyboard_events.push(PendingEvent {
                                                         event_type: blinc_core::events::event_types::TEXT_INPUT,
                                                         key_char: Some(c),
@@ -4398,43 +3464,7 @@ impl WindowedApp {
                                             router.on_mouse_leave();
                                         }
                                     }
-                                    TouchEvent::Moved { x, y, .. } => {
-                                        let lx = x / scale;
-                                        let ly = y / scale;
-
-                                        // Use occlusion-aware hit testing for touch move as well
-                                        let overlay_bounds = windowed_ctx.overlay_manager.get_visible_overlay_bounds();
-                                        let overlay_layer_id = tree.query_by_id(
-                                            blinc_layout::widgets::overlay::OVERLAY_LAYER_ID
-                                        );
-                                        router.on_mouse_move_with_occlusion(
-                                            tree,
-                                            lx,
-                                            ly,
-                                            &overlay_bounds,
-                                            overlay_layer_id,
-                                        );
-
-                                        for event in pending_events.iter_mut() {
-                                            event.mouse_x = lx;
-                                            event.mouse_y = ly;
-                                        }
-                                    }
-                                    TouchEvent::Ended { x, y, .. } => {
-                                        let lx = x / scale;
-                                        let ly = y / scale;
-                                        router.on_mouse_up(tree, lx, ly, MouseButton::Left);
-                                        for event in pending_events.iter_mut() {
-                                            event.mouse_x = lx;
-                                            event.mouse_y = ly;
-                                        }
-                                    }
-                                    TouchEvent::Cancelled { .. } => {
-                                        // Touch cancelled - treat like mouse leave
-                                        // This will emit POINTER_UP if there was a pressed target
-                                        router.on_mouse_leave();
-                                    }
-                                },
+                                }
                                 InputEvent::Scroll { delta_x, delta_y, phase } => {
                                     let (mx, my) = router.mouse_position();
                                     // Scroll deltas are also in physical pixels, convert to logical
@@ -4456,10 +3486,6 @@ impl WindowedApp {
                                     // Store mouse position and delta for dispatch phase
                                     // We'll re-do hit test in dispatch phase since we need mutable borrow
                                     scroll_info = Some((mx, my, ldx, ldy));
-                                }
-                                InputEvent::Pinch { scale } => {
-                                    let (mx, my) = router.mouse_position();
-                                    pinch_info = Some((mx, my, scale));
                                 }
                                 InputEvent::ScrollEnd => {
                                     // Scroll momentum ended - full stop
@@ -4485,6 +3511,11 @@ impl WindowedApp {
                                         ..Default::default()
                                     });
                                 }
+                                InputEvent::CompositionStarted
+                                | InputEvent::CompositionUpdated(_)
+                                | InputEvent::CompositionCommitted(_)
+                                | InputEvent::CompositionCancelled
+                                | InputEvent::FocusTraversal(_) => {}
                             }
 
                             router.clear_event_callback();
@@ -4529,17 +3560,6 @@ impl WindowedApp {
                                 .as_ref()
                                 .map(|c| c.overlay_manager.has_blocking_overlay())
                                 .unwrap_or(false);
-
-                            if let Some((mouse_x, mouse_y, scale)) = pinch_info {
-                                if has_overlay_backdrop {
-                                    tracing::trace!("Skipping pinch - overlay with backdrop is visible");
-                                } else if let Some(ref mut windowed_ctx) = ctx {
-                                    let router = &mut windowed_ctx.event_router;
-                                    if let Some(hit) = router.hit_test(tree, mouse_x, mouse_y) {
-                                        tree.dispatch_pinch_chain(&hit, mouse_x, mouse_y, scale);
-                                    }
-                                }
-                            }
 
                             if let Some((mouse_x, mouse_y, delta_x, delta_y)) = scroll_info {
                                 // Skip if gesture ended in this same event - go straight to bounce
@@ -4691,8 +3711,6 @@ impl WindowedApp {
                                 window.request_redraw();
                             }
                         }
-
-                        sync_platform_ime_state();
                     }
 
                     Event::Frame(_) => {
@@ -4874,6 +3892,10 @@ impl WindowedApp {
                                         tracing::debug!("Subtree rebuilds processed, recomputing layout");
                                         tree.apply_stylesheet_layout_overrides();
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                        // FLIP: detect position changes and start CSS transitions
+                                        tree.apply_flip_transitions();
+                                        // Update FLIP bounds cache for next rebuild
+                                        tree.update_flip_bounds();
                                         // Begin/end motion frame to track which motions are still in tree
                                         rs.begin_stable_motion_frame();
                                         tree.initialize_motion_animations(rs);
@@ -4963,8 +3985,14 @@ impl WindowedApp {
                                         // (builds class index once, iterates rules once)
                                         tree.apply_all_stylesheet_styles();
 
+                                        // Register pointer-space elements from stylesheet
+                                        if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                                            windowed_ctx.pointer_query.register_from_stylesheet(stylesheet);
+                                        }
+
                                         // Compute layout with new viewport dimensions
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                        tree.update_flip_bounds();
 
                                         // Initialize motion animations for any nodes wrapped in motion() containers
                                         tree.initialize_motion_animations(rs);
@@ -5004,6 +4032,7 @@ impl WindowedApp {
                                                 tracing::debug!("Incremental update: LayoutChanged - recomputing layout");
                                                 existing_tree.apply_stylesheet_layout_overrides();
                                                 existing_tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                                existing_tree.update_flip_bounds();
                                             }
                                             UpdateResult::ChildrenChanged => {
                                                 // Children changed - subtrees were rebuilt in place
@@ -5016,6 +4045,14 @@ impl WindowedApp {
                                                 // Recompute layout since structure changed
                                                 existing_tree.apply_stylesheet_layout_overrides();
                                                 existing_tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                                // FLIP: detect position changes and start CSS transitions
+                                                existing_tree.apply_flip_transitions();
+                                                existing_tree.update_flip_bounds();
+
+                                                // Re-register pointer-space elements (new elements may have pointer-space)
+                                                if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                                                    windowed_ctx.pointer_query.register_from_stylesheet(stylesheet);
+                                                }
 
                                                 // Initialize motion animations for any new nodes wrapped in motion() containers
                                                 existing_tree.initialize_motion_animations(rs);
@@ -5052,8 +4089,14 @@ impl WindowedApp {
                                     // Apply CSS visual + layout styles in a single optimized pass
                                     tree.apply_all_stylesheet_styles();
 
+                                    // Register pointer-space elements from stylesheet
+                                    if let Some(ref stylesheet) = windowed_ctx.stylesheet {
+                                        windowed_ctx.pointer_query.register_from_stylesheet(stylesheet);
+                                    }
+
                                     // Compute layout in logical pixels
                                     tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                    tree.update_flip_bounds();
 
                                     // Initialize motion animations for any nodes wrapped in motion() containers
                                     tree.initialize_motion_animations(rs);
@@ -5095,172 +4138,6 @@ impl WindowedApp {
                             // is already ready at that point.
 
                             // =========================================================
-                            // Optional internal e2e scripts (deterministic input simulation)
-                            // =========================================================
-                            if !e2e_script_ran {
-                                if let Some(script) = e2e_script {
-                                    if let Some(ref mut tree) = render_tree {
-                                        if windowed_ctx.rebuild_count > 0 {
-                                            // Only run once per process after the first build is complete.
-                                            e2e_script_ran = true;
-                                            match script {
-                                                E2eScript::GallerySidebarClickAfterScroll => {
-                                                    let router = &mut windowed_ctx.event_router;
-                                                    let window_w = windowed_ctx.width;
-                                                    let window_h = windowed_ctx.height;
-
-                                                    let selected_before: Option<usize> =
-                                                        read_keyed_state(&hooks, &reactive, "charts_gallery_selected");
-                                                    tracing::info!(
-                                                        "e2e_script: gallery_sidebar_click_after_scroll selected_before={:?}",
-                                                        selected_before
-                                                    );
-
-                                                    let x_search_max = 360.0;
-                                                    let Some((probe_x, probe_y, probe_id)) =
-                                                        e2e_find_hit_point_with_id_prefix(
-                                                            tree,
-                                                            router,
-                                                            window_w,
-                                                            window_h,
-                                                            x_search_max,
-                                                            "charts_gallery_sidebar_item_",
-                                                        )
-                                                    else {
-                                                        eprintln!(
-                                                            "e2e script error: could not find sidebar hit point (prefix='charts_gallery_sidebar_item_')"
-                                                        );
-                                                        std::process::exit(1);
-                                                    };
-                                                    tracing::info!(
-                                                        "e2e_script: probe=({:.1}, {:.1}) hit_id={}",
-                                                        probe_x,
-                                                        probe_y,
-                                                        probe_id
-                                                    );
-
-                                                    let Some(sidebar_scroll_node) =
-                                                        tree.query_by_id("charts_gallery_sidebar_scroll")
-                                                    else {
-                                                        eprintln!(
-                                                            "e2e script error: missing element id 'charts_gallery_sidebar_scroll'"
-                                                        );
-                                                        std::process::exit(1);
-                                                    };
-
-                                                    let target_index: usize = std::env::var(
-                                                        "BLINC_E2E_GALLERY_TARGET_INDEX",
-                                                    )
-                                                    .ok()
-                                                    .and_then(|v| v.trim().parse::<usize>().ok())
-                                                    .unwrap_or(8);
-                                                    let target_id = format!(
-                                                        "charts_gallery_sidebar_item_{}",
-                                                        target_index
-                                                    );
-
-                                                    let mut click_point: Option<(f32, f32)> = None;
-                                                    for _ in 0..180 {
-                                                        if let Some((x, y)) = e2e_find_hit_point_with_exact_id(
-                                                            tree,
-                                                            router,
-                                                            window_w,
-                                                            window_h,
-                                                            x_search_max,
-                                                            &target_id,
-                                                        ) {
-                                                            click_point = Some((x, y));
-                                                            break;
-                                                        }
-                                                        // Scroll down (content moves up).
-                                                        tree.dispatch_scroll_event(
-                                                            sidebar_scroll_node,
-                                                            probe_x,
-                                                            probe_y,
-                                                            0.0,
-                                                            -72.0,
-                                                        );
-                                                    }
-
-                                                    let Some((click_x, click_y)) = click_point else {
-                                                        eprintln!(
-                                                            "e2e script error: failed to scroll to target id '{target_id}'"
-                                                        );
-                                                        std::process::exit(1);
-                                                    };
-
-                                                    // Simulate click at a point that actually hits the target.
-                                                    tracing::info!(
-                                                        "e2e_script: target_id={} click=({:.1}, {:.1})",
-                                                        target_id,
-                                                        click_x,
-                                                        click_y
-                                                    );
-                                                    let mut down_events = router.on_mouse_down(
-                                                        tree,
-                                                        click_x,
-                                                        click_y,
-                                                        MouseButton::Left,
-                                                    );
-                                                    down_events.extend(router.on_mouse_up(
-                                                        tree,
-                                                        click_x,
-                                                        click_y,
-                                                        MouseButton::Left,
-                                                    ));
-                                                    for (node, event_type) in down_events {
-                                                        let (bx, by, bw, bh) = router
-                                                            .get_node_bounds(node)
-                                                            .unwrap_or((0.0, 0.0, 0.0, 0.0));
-                                                        tree.dispatch_event_full(
-                                                            node,
-                                                            event_type,
-                                                            click_x,
-                                                            click_y,
-                                                            click_x - bx,
-                                                            click_y - by,
-                                                            bx,
-                                                            by,
-                                                            bw,
-                                                            bh,
-                                                            0.0,
-                                                            0.0,
-                                                            1.0,
-                                                        );
-                                                    }
-
-                                                    let selected_after: Option<usize> =
-                                                        read_keyed_state(&hooks, &reactive, "charts_gallery_selected");
-                                                    tracing::info!(
-                                                        "e2e_script: gallery_sidebar_click_after_scroll selected_after={:?} expected={}",
-                                                        selected_after,
-                                                        target_index
-                                                    );
-                                                    if selected_after != Some(target_index) {
-                                                        eprintln!(
-                                                            "e2e script error: click did not update selection (got {:?}, expected {})",
-                                                            selected_after,
-                                                            target_index
-                                                        );
-                                                        std::process::exit(1);
-                                                    }
-
-                                                    println!(
-                                                        "e2e script ok: gallery_sidebar_click_after_scroll target_index={}",
-                                                        target_index
-                                                    );
-
-                                                    if e2e_script_exit {
-                                                        std::process::exit(0);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // =========================================================
                             // PHASE 3: Tick animations and dynamic render state
                             // This must happen AFTER tree rebuild so motions are initialized
                             // =========================================================
@@ -5292,7 +4169,8 @@ impl WindowedApp {
                                 let mut s = store.lock().unwrap();
                                 let (anim, trans) = s.tick(dt_ms);
                                 drop(s);
-                                anim || trans || tree.css_has_active()
+                                let flip = tree.tick_flip_animations(dt_ms);
+                                anim || trans || flip || tree.css_has_active()
                             } else {
                                 false
                             };
@@ -5331,13 +4209,9 @@ impl WindowedApp {
                                     // (e.g. visibility: hidden → display: none, or height changes on hover)
                                     if state_changed {
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                        tree.update_flip_bounds();
                                     }
                                 }
-                                blinc_layout::selector::sync_context_focus_from_runtime(
-                                    tree,
-                                    &windowed_ctx.event_router,
-                                );
-                                sync_accessibility_snapshot(tree);
                             }
 
                             // Apply CSS animation/transition values AFTER state styles
@@ -5346,8 +4220,10 @@ impl WindowedApp {
                                 if let Some(ref mut tree) = ws.render_tree {
                                     tree.apply_all_css_animation_props();
                                     tree.apply_all_css_transition_props();
+                                    tree.apply_flip_animation_props();
                                     if tree.apply_animated_layout_props() {
                                         tree.compute_layout(windowed_ctx.width, windowed_ctx.height);
+                                        tree.update_flip_bounds();
                                     }
                                 }
                             }
@@ -5418,169 +4294,8 @@ impl WindowedApp {
                                 if let Err(e) = result {
                                     tracing::error!("Render error: {}", e);
                                 }
-                            }
 
-                            // Optional: capture + validate rendered pixels for e2e.
-                            //
-                            // This avoids relying on OS-level screenshots (which can be black in CI
-                            // or require Screen Recording permission). Captures are read back from
-                            // the swapchain frame via COPY_SRC.
-                            if e2e_enabled && e2e_captures_done < e2e_max_captures {
-                                let mut should_capture = false;
-                                let mut consumed_trigger = false;
-
-                                if e2e_capture_on_start && e2e_captures_done == 0 {
-                                    should_capture = true;
-                                } else if let Some(ref trigger) = e2e_trigger_path {
-                                    if trigger.exists() {
-                                        should_capture = true;
-                                        consumed_trigger = true;
-                                    }
-                                }
-
-                                if should_capture && render_tree.is_some() {
-                                    let capture_index = e2e_captures_done + 1; // 1-based
-
-                                    let width = windowed_ctx.physical_width as u32;
-                                    let height = windowed_ctx.physical_height as u32;
-                                    let bytes_per_row = padded_bytes_per_row(width);
-                                    let buffer_size = (bytes_per_row as u64) * (height as u64);
-
-                                    let buffer = blinc_app.device().create_buffer(&wgpu::BufferDescriptor {
-                                        label: Some("blinc_e2e_readback"),
-                                        size: buffer_size,
-                                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                                        mapped_at_creation: false,
-                                    });
-
-                                    let mut encoder =
-                                        blinc_app.device().create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                            label: Some("blinc_e2e_copy_encoder"),
-                                        });
-
-                                    encoder.copy_texture_to_buffer(
-                                        wgpu::ImageCopyTexture {
-                                            texture: &frame.texture,
-                                            mip_level: 0,
-                                            origin: wgpu::Origin3d::ZERO,
-                                            aspect: wgpu::TextureAspect::All,
-                                        },
-                                        wgpu::ImageCopyBuffer {
-                                            buffer: &buffer,
-                                            layout: wgpu::ImageDataLayout {
-                                                offset: 0,
-                                                bytes_per_row: Some(bytes_per_row),
-                                                rows_per_image: Some(height),
-                                            },
-                                        },
-                                        wgpu::Extent3d {
-                                            width,
-                                            height,
-                                            depth_or_array_layers: 1,
-                                        },
-                                    );
-
-                                    blinc_app.queue().submit(std::iter::once(encoder.finish()));
-
-                                    let buffer_slice = buffer.slice(..);
-                                    let (tx, rx) = std::sync::mpsc::channel();
-                                    buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-                                        tx.send(result).ok();
-                                    });
-                                    blinc_app.device().poll(wgpu::Maintain::Wait);
-                                    if let Err(e) = rx
-                                        .recv()
-                                        .unwrap_or(Err(wgpu::BufferAsyncError))
-                                    {
-                                        eprintln!("e2e error: failed to map readback buffer: {e}");
-                                        std::process::exit(1);
-                                    }
-
-                                    let data = buffer_slice.get_mapped_range();
-                                    let Some(rgba) =
-                                        bgra_or_rgba_to_rgba(config.format, &data, width, height)
-                                    else {
-                                        eprintln!(
-                                            "e2e error: unsupported surface format for readback: {:?}",
-                                            config.format
-                                        );
-                                        std::process::exit(1);
-                                    };
-                                    drop(data);
-                                    buffer.unmap();
-
-                                    let out_path = e2e_capture_path
-                                        .as_ref()
-                                        .map(|base| e2e_output_path(base, capture_index));
-                                    if let Some(path) = out_path.as_ref() {
-                                        let parent: Option<&std::path::Path> = if path.is_dir() {
-                                            Some(path.as_path())
-                                        } else {
-                                            path.parent()
-                                        };
-                                        if let Some(parent) = parent {
-                                            let _ = std::fs::create_dir_all(parent);
-                                        }
-                                        if let Err(e) =
-                                            e2e_save_png_minimal_rgba(&rgba, width, height, path)
-                                        {
-                                            eprintln!(
-                                                "e2e error: failed to write png {}: {e}",
-                                                path.display()
-                                            );
-                                            std::process::exit(1);
-                                        }
-                                    }
-
-                                    let (blue, warm, total) = e2e_count_pixels(&rgba, width, height);
-
-                                    if let Some(expect) = e2e_expect {
-                                        let threshold = e2e_threshold(expect, width, height, total);
-                                        match expect {
-                                            E2eExpect::Blueish => {
-                                                if blue < threshold {
-                                                    eprintln!(
-                                                        "e2e error: expected colored line pixels, got blue={blue} (threshold={threshold}, total={total})"
-                                                    );
-                                                    if let Some(path) = out_path.as_ref() {
-                                                        eprintln!("e2e png: {}", path.display());
-                                                    }
-                                                    std::process::exit(1);
-                                                }
-                                            }
-                                            E2eExpect::Warm => {
-                                                if warm < threshold {
-                                                    eprintln!(
-                                                        "e2e error: expected warm heatmap pixels, got warm={warm} (threshold={threshold}, total={total})"
-                                                    );
-                                                    if let Some(path) = out_path.as_ref() {
-                                                        eprintln!("e2e png: {}", path.display());
-                                                    }
-                                                    std::process::exit(1);
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if consumed_trigger {
-                                        if let Some(ref trigger) = e2e_trigger_path {
-                                            let _ = std::fs::remove_file(trigger);
-                                        }
-                                    }
-
-                                    e2e_captures_done += 1;
-                                    println!(
-                                        "e2e ok: capture={} {}x{} blue={} warm={} total={}",
-                                        capture_index, width, height, blue, warm, total
-                                    );
-                                    if let Some(path) = out_path.as_ref() {
-                                        println!("e2e png: {}", path.display());
-                                    }
-
-                                    if e2e_exit && e2e_captures_done >= e2e_max_captures {
-                                        std::process::exit(0);
-                                    }
-                                }
+                                blinc_app.clear_blend_target();
                             }
 
                             // =========================================================
@@ -5633,7 +4348,7 @@ impl WindowedApp {
                                 mgr.take_dirty() || mgr.has_visible_overlays()
                             };
 
-                            // Check if CSS animations/transitions need continued redraws
+                            // Check if CSS animations/transitions/FLIP need continued redraws
                             // (includes transitions created during apply_complex_selector_styles)
                             let css_needs_redraw = css_active
                                 || !ws.render_tree
@@ -5643,20 +4358,13 @@ impl WindowedApp {
                                     .as_ref()
                                     .is_some_and(|t| t.has_active_flip_animations());
 
-                            let needs_e2e_redraw = e2e_enabled
-                                && e2e_captures_done < e2e_max_captures
-                                && ((e2e_capture_on_start && e2e_captures_done == 0)
-                                    || e2e_trigger_path.is_some());
+                            // Check if pointer query elements need continuous redraws
+                            let pointer_query_active = !windowed_ctx.pointer_query.is_empty();
 
-                            if needs_animation_redraw
-                                || needs_cursor_redraw
-                                || needs_motion_redraw
-                                || scroll_animating
-                                || needs_overlay_redraw
-                                || theme_animating
-                                || css_needs_redraw
-                                || needs_e2e_redraw
-                            {
+                            // @flow shaders using time/animation builtins need continuous redraws
+                            let flow_needs_redraw = blinc_app.has_active_flows();
+
+                            if needs_animation_redraw || needs_cursor_redraw || needs_motion_redraw || scroll_animating || needs_overlay_redraw || theme_animating || css_needs_redraw || pointer_query_active || flow_needs_redraw {
                                 // Request another frame to render updated animation values
                                 // For cursor blink, also re-request continuous redraw for next frame
                                 if needs_cursor_redraw {
@@ -5694,10 +4402,7 @@ impl WindowedApp {
 }
 
 /// Convert platform mouse button to layout mouse button
-#[cfg(all(
-    feature = "windowed",
-    not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
-))]
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
 fn convert_mouse_button(button: blinc_platform::MouseButton) -> MouseButton {
     match button {
         blinc_platform::MouseButton::Left => MouseButton::Left,
@@ -5710,10 +4415,7 @@ fn convert_mouse_button(button: blinc_platform::MouseButton) -> MouseButton {
 }
 
 /// Convert layout cursor style to platform cursor
-#[cfg(all(
-    feature = "windowed",
-    not(any(target_os = "android", target_os = "ios", target_os = "fuchsia"))
-))]
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
 fn convert_cursor_style(cursor: CursorStyle) -> blinc_platform::Cursor {
     match cursor {
         CursorStyle::Default => blinc_platform::Cursor::Default,
@@ -5756,245 +4458,4 @@ where
         ..Default::default()
     };
     WindowedApp::run(config, ui_builder)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use blinc_core::BlincContextState;
-    use blinc_platform::{Key, KeyState, KeyboardEvent, Modifiers};
-    use blinc_recorder::{
-        install_recorder, uninstall_recorder, RecordingConfig, SharedRecordingSession,
-    };
-
-    fn make_test_ctx() -> WindowedContext {
-        let animations: SharedAnimationScheduler = Arc::new(Mutex::new(AnimationScheduler::new()));
-        let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
-        let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
-        let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
-        let element_registry: SharedElementRegistry =
-            Arc::new(blinc_layout::selector::ElementRegistry::new());
-        let ready_callbacks: SharedReadyCallbacks = Arc::new(Mutex::new(Vec::new()));
-
-        WindowedContext {
-            width: 100.0,
-            height: 100.0,
-            scale_factor: 1.0,
-            physical_width: 100.0,
-            physical_height: 100.0,
-            focused: true,
-            rebuild_count: 0,
-            event_router: EventRouter::new(),
-            pointer_query: blinc_layout::pointer_query::PointerQueryState::new(),
-            animations,
-            ref_dirty_flag,
-            reactive,
-            hooks,
-            overlay_manager: overlay_manager(),
-            had_visible_overlays: false,
-            element_registry,
-            ready_callbacks,
-            stylesheet: None,
-            css_sources: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn test_use_state_keyed_init_can_call_use_state_keyed_without_deadlock() {
-        let ctx = make_test_ctx();
-
-        let outer: State<i32> = ctx.use_state_keyed("outer", || {
-            let inner: State<i32> = ctx.use_state_keyed("inner", || 10);
-            inner.get() + 5
-        });
-
-        assert_eq!(outer.get(), 15);
-    }
-
-    #[test]
-    fn test_use_signal_keyed_init_can_call_use_state_keyed_without_deadlock() {
-        let ctx = make_test_ctx();
-
-        let sig: Signal<i32> = ctx.use_signal_keyed("sig", || {
-            let inner: State<i32> = ctx.use_state_keyed("inner2", || 7);
-            inner.get() * 2
-        });
-
-        assert_eq!(ctx.get(sig), Some(14));
-    }
-
-    #[test]
-    fn maybe_record_tree_snapshot_writes_into_installed_recorder() {
-        if !BlincContextState::is_initialized() {
-            let reactive: SharedReactiveGraph = Arc::new(Mutex::new(ReactiveGraph::new()));
-            let hooks: SharedHookState = Arc::new(Mutex::new(HookState::new()));
-            let dirty: RefDirtyFlag = Arc::new(AtomicBool::new(false));
-            BlincContextState::init_with_callback(reactive, hooks, dirty, Arc::new(|_| {}));
-        }
-
-        let recorder = Arc::new(SharedRecordingSession::new(RecordingConfig::debug()));
-        install_recorder(Arc::clone(&recorder));
-        recorder.start();
-
-        let ctx = make_test_ctx();
-        let ui = div()
-            .id("root")
-            .w(100.0)
-            .h(100.0)
-            .child(div().id("status").child(text("Ready")));
-        let mut tree =
-            RenderTree::from_element_with_registry(&ui, Arc::clone(&ctx.element_registry));
-        tree.compute_layout(ctx.width, ctx.height);
-
-        maybe_record_tree_snapshot(&tree, &ctx);
-
-        let export = recorder.export();
-        assert_eq!(export.snapshots.len(), 1);
-        assert_eq!(export.snapshots[0].root_id.as_deref(), Some("root"));
-        assert!(export.snapshots[0].elements.contains_key("status"));
-
-        uninstall_recorder();
-    }
-
-    #[test]
-    fn keyboard_text_chars_prefers_committed_text() {
-        let event = KeyboardEvent {
-            key: Key::Unknown,
-            text: Some("초".to_string()),
-            state: KeyState::Pressed,
-            modifiers: Modifiers::default(),
-        };
-
-        assert_eq!(keyboard_text_chars(&event), vec!['초']);
-    }
-
-    #[test]
-    fn keyboard_text_chars_filters_control_characters() {
-        let event = KeyboardEvent {
-            key: Key::Enter,
-            text: Some("\r".to_string()),
-            state: KeyState::Pressed,
-            modifiers: Modifiers::default(),
-        };
-
-        assert!(keyboard_text_chars(&event).is_empty());
-    }
-
-    #[test]
-    fn keyboard_text_chars_falls_back_to_shifted_letters() {
-        let event = KeyboardEvent {
-            key: Key::A,
-            text: None,
-            state: KeyState::Pressed,
-            modifiers: Modifiers {
-                shift: true,
-                ..Modifiers::default()
-            },
-        };
-
-        assert_eq!(keyboard_text_chars(&event), vec!['A']);
-    }
-
-    #[test]
-    fn keyboard_text_chars_falls_back_to_symbols() {
-        let event = KeyboardEvent {
-            key: Key::Slash,
-            text: None,
-            state: KeyState::Pressed,
-            modifiers: Modifiers {
-                shift: true,
-                ..Modifiers::default()
-            },
-        };
-
-        assert_eq!(keyboard_text_chars(&event), vec!['?']);
-    }
-
-    #[test]
-    fn keyboard_text_chars_for_dispatch_suppresses_fallback_during_composition() {
-        let event = KeyboardEvent {
-            key: Key::A,
-            text: None,
-            state: KeyState::Pressed,
-            modifiers: Modifiers::default(),
-        };
-
-        assert!(keyboard_text_chars_for_dispatch(&event, true).is_empty());
-    }
-
-    #[test]
-    fn keyboard_text_chars_for_dispatch_keeps_committed_text_during_composition() {
-        let event = KeyboardEvent {
-            key: Key::Unknown,
-            text: Some("한".to_string()),
-            state: KeyState::Pressed,
-            modifiers: Modifiers::default(),
-        };
-
-        assert_eq!(keyboard_text_chars_for_dispatch(&event, true), vec!['한']);
-    }
-
-    #[test]
-    fn composition_commit_is_skipped_when_keyboard_event_already_carried_same_text() {
-        let keyboard_chars = vec!['한', '글'];
-
-        assert!(should_skip_composition_commit(
-            Some(keyboard_chars.as_slice()),
-            "한글"
-        ));
-    }
-
-    #[test]
-    fn composition_commit_is_not_skipped_when_text_differs() {
-        let keyboard_chars = vec!['한', '글'];
-
-        assert!(!should_skip_composition_commit(
-            Some(keyboard_chars.as_slice()),
-            "초성"
-        ));
-    }
-
-    #[test]
-    fn tracked_keyboard_text_skips_matching_later_composition_commit() {
-        let mut tracked = None;
-        let event = KeyboardEvent {
-            key: Key::Unknown,
-            text: Some("한글".to_string()),
-            state: KeyState::Pressed,
-            modifiers: Modifiers::default(),
-        };
-
-        track_keyboard_committed_text(&mut tracked, &event);
-
-        assert!(take_composition_commit_text(&mut tracked, "한글").is_empty());
-    }
-
-    #[test]
-    fn tracked_keyboard_text_does_not_skip_different_later_composition_commit() {
-        let mut tracked = None;
-        let event = KeyboardEvent {
-            key: Key::Unknown,
-            text: Some("한글".to_string()),
-            state: KeyState::Pressed,
-            modifiers: Modifiers::default(),
-        };
-
-        track_keyboard_committed_text(&mut tracked, &event);
-
-        assert_eq!(
-            take_composition_commit_text(&mut tracked, "초성"),
-            vec!['초', '성']
-        );
-    }
-
-    #[test]
-    fn reset_composition_tracking_state_clears_active_flag_and_tracked_text() {
-        let mut composition_active = true;
-        let mut tracked = Some(vec!['한', '글']);
-
-        reset_composition_tracking_state(&mut composition_active, &mut tracked);
-
-        assert!(!composition_active);
-        assert!(tracked.is_none());
-    }
 }
