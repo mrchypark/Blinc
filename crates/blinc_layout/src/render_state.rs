@@ -322,6 +322,49 @@ impl CssAnimationStore {
         Self::default()
     }
 
+    /// Whether any tracked animation or transition belongs to a node
+    /// in the supplied `painted` set.
+    ///
+    /// The unfiltered "any active animation?" check used to keep the
+    /// redraw chain alive for every `infinite` keyframe in the
+    /// stylesheet, even when the animated element was scrolled
+    /// off-screen — `styling_demo`, with ~25 infinite animations,
+    /// pinned ~73 % CPU at idle. Filtering by visibility lets the
+    /// chain die when the user isn't looking at the moving parts;
+    /// when they scroll back, `tick(dt_ms)` catches up by elapsed
+    /// time so the visible state is still correct.
+    pub fn has_visible_active(&self, painted: &std::collections::HashSet<LayoutNodeId>) -> bool {
+        self.animations.keys().any(|n| painted.contains(n))
+            || self.transitions.keys().any(|n| painted.contains(n))
+    }
+
+    /// Whether any visible animation or transition is currently
+    /// touching a property classified as
+    /// [`needs_vsync_for_smoothness`](blinc_animation::KeyframeProperties::needs_vsync_for_smoothness)
+    /// — transforms, 3D rotation, layout sizing, font-size, clip-path
+    /// geometry.
+    ///
+    /// Used by the windowed app to decide whether the configured
+    /// `animation_fps_cap` should bypass for the next frame: if a
+    /// visible rotate-y / grow-shrink / clip-reveal keyframe is
+    /// mid-cycle, capping to 30 fps would visibly stair-step;
+    /// opacity and color cycles elsewhere on the same screen
+    /// tolerate the cap fine.
+    pub fn has_visible_vsync_class(
+        &self,
+        painted: &std::collections::HashSet<LayoutNodeId>,
+    ) -> bool {
+        self.animations
+            .iter()
+            .filter(|(n, _)| painted.contains(*n))
+            .any(|(_, a)| a.current_properties.needs_vsync_for_smoothness())
+            || self
+                .transitions
+                .iter()
+                .filter(|(n, _)| painted.contains(*n))
+                .any(|(_, a)| a.current_properties.needs_vsync_for_smoothness())
+    }
+
     /// Tick all active CSS animations and transitions
     ///
     /// Called from the AnimationScheduler's background thread via tick callback.

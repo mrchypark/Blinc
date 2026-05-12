@@ -21,7 +21,7 @@
 //!
 //! ```sh
 //! cargo run -p blinc_app_examples --example gltf_animation_demo \
-//!     --features windowed --release
+//!     --features gltf --release
 //! ```
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -317,6 +317,7 @@ fn main() -> Result<()> {
         title: "glTF Animation Demo — buster_drone".to_string(),
         width: 1024,
         height: 768,
+        animation_fps_cap: Some(120),
         ..Default::default()
     };
 

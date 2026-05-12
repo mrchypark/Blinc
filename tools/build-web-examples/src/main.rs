@@ -137,7 +137,11 @@ const INFERABLE_DEPS: &[(&str, &str, &str)] = &[
     (
         "blinc_canvas_kit::",
         "blinc_canvas_kit",
-        r#"{ path = "../../../crates/blinc_canvas_kit" }"#,
+        // Standalone downstream package (lives at `packages/blinc_canvas_kit/`,
+        // gitignored). Workspace `[patch]` redirects the git URL to the local
+        // path so wasm wrappers iterate without a push/rev cycle. Bump the
+        // rev when the published repo gets new releases.
+        r#"{ git = "https://github.com/project-blinc/blinc_canvas_kit.git", rev = "5dbdad2bfdf7189446ee211da9cbd28b3edd4186" }"#,
     ),
     (
         "blinc_theme::",
@@ -782,7 +786,7 @@ wasm-opt = false
 # crate is `#![cfg(target_arch = "wasm32")]`-gated inside `src/lib.rs`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 blinc_app = {{ path = "../../../crates/blinc_app", default-features = false, features = ["web"] }}
-blinc_layout = {{ path = "../../../crates/blinc_layout" }}
+blinc_layout = {{ path = "../../../crates/blinc_layout", features=["media"] }}
 blinc_core = {{ path = "../../../crates/blinc_core" }}
 {extra_deps}wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
@@ -1804,6 +1808,14 @@ fn build_wrappers_with_wasm_pack(
         }
 
         println!("  wasm-pack build {}", meta.name);
+        // CI pre-installs a matching `wasm-bindgen-cli` on PATH (see
+        // `.github/workflows/docs.yml`) so wasm-pack's version probe
+        // hits the system binary and skips the per-wrapper download.
+        // Locally devs already have one on PATH from a previous run.
+        // We avoid `--mode no-install` here because that mode looks
+        // ONLY at wasm-pack's `~/.cache/.wasm-pack/` directory and
+        // ignores PATH — it would error out even with the right
+        // binary installed.
         let status = std::process::Command::new("wasm-pack")
             .args(["build", "--target", "web", "--release"])
             .current_dir(&wrapper_dir)

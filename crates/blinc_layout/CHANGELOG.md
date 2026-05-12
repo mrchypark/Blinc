@@ -2,6 +2,21 @@
 
 All notable changes to `blinc_layout` will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- `RenderTree::painted_node_ids()` — set of node ids the paint walker actually rendered this frame (clipped against the window viewport even on scrolls without `viewport_cull` opt-in). Exposes the source of truth for visibility-gated redraw decisions.
+- `RenderTree::has_active_visible_visual_animations(painted)` and `has_active_visible_flip_animations(painted)` — visibility-gated counterparts of the existing `has_active_*` predicates. Used by the windowed redraw chain so off-screen `animate_bounds` / FLIP entries don't pin the chain alive.
+- `RenderTree::css_has_visible_transitions(painted)` — companion to `css_transitions_empty`, returns true when at least one CSS transition has a painted target.
+- `CssAnimationStore::has_visible_active(painted)` and `has_visible_vsync_class(painted)` — visibility-gated keyframe/transition checks. The `vsync_class` variant additionally filters on `KeyframeProperties::needs_vsync_for_smoothness` so the windowed app's animation FPS cap can bypass to native vsync when a visible transform / layout / clip-path keyframe is mid-cycle.
+- `RenderTree::has_any_cursor_style()` and `HandlerRegistry::has_any_pointer_handler()` — short-circuit gates for the mouse-move pipeline; UIs with no pointer handlers, no `:hover`/`:active` rules, and no `cursor:` styles skip the per-move hit_test entirely.
+- `Stylesheet::has_pointer_state_rules()` — detects `:hover` / `:active` selectors so the mouse-move skip path knows when CSS state styling is at risk.
+- `stateful::has_visible_animating_statefuls(painted)` — registry of animating Statefuls now carries a `node_id_fn` so the windowed app can intersect with painted nodes. An off-screen spinner whose Stateful is mid-animation no longer pins the redraw chain.
+
+### Changed
+- Mouse-move hit-test pipeline short-circuits when nothing in the tree could react. Pure-static views (e.g. `hello_blinc`) no longer hit_test on every cursor move; cursor styling still works via a single one-shot resolve.
+- Scroll FSM settles `Scrolling → Idle` after 200ms idle even when not overscrolling. Wheel-scroll inputs without `ScrollPhase::Ended` (mouse wheel, many Linux trackpad drivers) no longer leave `scroll_animating=true` permanently.
+
 ## [0.5.1] - 2026-04-13
 
 ### Added
@@ -39,6 +54,21 @@ All notable changes to `blinc_layout` will be documented in this file.
 - ElementStyle/RenderProps fields for full CSS-driven lazy loading
 - `placeholder_image` and `fade_duration_ms` now flow through `ImageData` to renderer
 - Placeholder images preloaded eagerly so they're ready when type 2 placeholder renders
+
+#### Performance / memory
+
+- `Scroll::viewport_cull(true)` opts the scroll into per-frame paint culling. The renderer skips painting any descendant whose post-scroll absolute bounds (plus a 200 px overscan) don't intersect the visible viewport. Layout still runs for every child — this only affects the paint walker. Saves GPU primitive memory and draw cost on long lists where most children are off-screen.
+- `RustHighlighter` and `JsonHighlighter` share their compiled regex tables across all instances via `OnceLock<Arc<[TokenRule]>>`. An app with multiple `code()` blocks no longer pays the regex DFA build cost (and resident size) N times.
+- `Text::new` skips `decode_html_entities` entirely when the input contains no `&` — drops one `String` allocation per text element per build for the common no-entity case.
+- Motion-binding lookups in `render_layer_with_motion` are batched: one `motion_bindings.get(&node)` per node-pass instead of four. Non-bound nodes (the ~95% case) short-circuit before reaching the mutex-locked field accessors.
+- Class-name storage migrated from `Vec<String>` to `Vec<Arc<str>>` end-to-end, interned through `blinc_core::intern`. Affects `Div`, `Text`, `Svg`, `Stateful`, link / list / blockquote / button widgets, and `ElementRegistry::classes`. The `element_classes()` trait method now returns `&[Arc<str>]`. Repeated class names share one allocation across all nodes.
+
+### Changed
+- `ElementRegistry::register_element_type` takes `&'static str` (was `String`). Element types come from `ElementBuilder::semantic_type_name`'s compile-time literals, so the per-build `String` allocation per element was unnecessary.
+- `Div::class` / `Text::class` / `.class()` builders take `impl AsRef<str>` instead of `impl Into<String>`. Slightly more permissive and avoids the unconditional `String` allocation.
+
+### Fixed
+- Several intra-doc links in `selector::registry`, `widgets::scroll`, `widgets::rich_text_editor::render`, and `css_parser` that were rejected by `cargo doc -D rustdoc::broken-intra-doc-links`.
 
 ## [0.4.0] - 2026-04-05
 

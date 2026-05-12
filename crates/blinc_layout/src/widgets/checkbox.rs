@@ -392,7 +392,7 @@ impl ElementBuilder for Checkbox {
         self.inner.element_id()
     }
 
-    fn element_classes(&self) -> &[String] {
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
         self.inner.element_classes()
     }
 }
@@ -539,7 +539,7 @@ impl ElementBuilder for CheckboxBuilder {
         self.get_or_build().element_id()
     }
 
-    fn element_classes(&self) -> &[String] {
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
         self.get_or_build().element_classes()
     }
 }

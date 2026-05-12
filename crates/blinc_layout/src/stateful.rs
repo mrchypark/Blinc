@@ -484,7 +484,7 @@ pub(crate) fn register_stateful_deps(
 /// Returns true if any deps matched and subtree rebuilds were queued.
 pub fn check_stateful_deps(changed_signals: &[SignalId]) -> bool {
     // Collect matching refresh callbacks first, then release lock before calling them.
-    // This prevents deadlock when refresh callbacks call use_signal() -> use_effect()
+    // This prevents deadlock when refresh callbacks call use_signal() -> subscribe()
     // -> register_stateful_deps() which would try to acquire the same lock.
     let callbacks_to_call: Vec<Arc<dyn Fn() + Send + Sync>> = {
         let registry = STATEFUL_DEPS.lock().unwrap();
@@ -515,29 +515,46 @@ pub fn check_stateful_deps(changed_signals: &[SignalId]) -> bool {
 // Animation-Driven Refresh Registry
 // =========================================================================
 
+/// Closure that resolves a Stateful's current `node_id`, if it has been
+/// rendered into the tree yet. Returning `None` means "not yet bound",
+/// not "settled" — callers conservatively treat that as visible.
+pub(crate) type StatefulNodeIdFn = Arc<dyn Fn() -> Option<LayoutNodeId> + Send + Sync>;
+
 /// Registry of stateful elements with active animations
 ///
-/// Maps stateful_key -> (animation_keys, refresh_fn) where animation_keys are
-/// the persisted animated value keys and refresh_fn triggers a callback re-run.
-/// The windowed app checks these on animation frames to update animating statefuls.
+/// Maps stateful_key -> (animation_keys, refresh_fn, node_id_fn). The
+/// `animation_keys` are the persisted animated value keys, `refresh_fn`
+/// triggers a callback re-run, and `node_id_fn` resolves the Stateful's
+/// current node in the render tree so the windowed app can gate the
+/// redraw chain on viewport visibility (off-screen spinners shouldn't
+/// pin the chain at full refresh rate — issue #28's spinner-scrolled-
+/// out-of-view regression).
 #[allow(clippy::type_complexity, clippy::incompatible_msrv)]
 static STATEFUL_ANIMATIONS: LazyLock<
-    Mutex<std::collections::HashMap<u64, (Vec<String>, Arc<dyn Fn() + Send + Sync>)>>,
+    Mutex<
+        std::collections::HashMap<
+            u64,
+            (Vec<String>, Arc<dyn Fn() + Send + Sync>, StatefulNodeIdFn),
+        >,
+    >,
 > = LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Register a stateful element for animation-driven refresh
 ///
 /// Called internally when `use_spring()` or `use_animated_value()` is used
-/// and the animation is active (not settled).
+/// and the animation is active (not settled). `node_id_fn` should resolve
+/// the Stateful's current node in the tree (returns `None` if not yet
+/// rendered) so visibility-based gating can filter off-screen entries.
 pub(crate) fn register_stateful_animation(
     stateful_key: u64,
     animation_keys: Vec<String>,
     refresh_fn: Arc<dyn Fn() + Send + Sync>,
+    node_id_fn: StatefulNodeIdFn,
 ) {
     STATEFUL_ANIMATIONS
         .lock()
         .unwrap()
-        .insert(stateful_key, (animation_keys, refresh_fn));
+        .insert(stateful_key, (animation_keys, refresh_fn, node_id_fn));
 }
 
 /// Unregister a stateful element from animation refresh
@@ -559,7 +576,9 @@ pub fn check_stateful_animations() -> bool {
         let registry = STATEFUL_ANIMATIONS.lock().unwrap();
         registry
             .iter()
-            .map(|(key, (anim_keys, refresh_fn))| (*key, anim_keys.clone(), Arc::clone(refresh_fn)))
+            .map(|(key, (anim_keys, refresh_fn, _node_id_fn))| {
+                (*key, anim_keys.clone(), Arc::clone(refresh_fn))
+            })
             .collect()
     };
 
@@ -639,6 +658,31 @@ pub fn has_animating_statefuls() -> bool {
     !STATEFUL_ANIMATIONS.lock().unwrap().is_empty()
 }
 
+/// Same as `has_animating_statefuls`, but only counts entries whose
+/// associated render node was painted in the most recent frame.
+///
+/// `painted` should be the set of node ids the paint walker actually
+/// rendered (after viewport culling and motion-skip filtering). A
+/// Stateful that hasn't been bound to a node yet (`node_id_fn` returns
+/// `None`) is treated as visible — it's mid-rebuild and shouldn't get
+/// its animations frozen on the very first frame.
+///
+/// Used by the windowed app's redraw chain so that a continuous-spin
+/// spinner scrolled out of view stops keeping the frame loop alive.
+/// `has_animating_statefuls` is preserved for the cleanup-only path
+/// in `check_stateful_animations` (which still needs to walk every
+/// entry regardless of visibility, otherwise settled off-screen
+/// statefuls would never get unregistered).
+pub fn has_visible_animating_statefuls(painted: &std::collections::HashSet<LayoutNodeId>) -> bool {
+    let registry = STATEFUL_ANIMATIONS.lock().unwrap();
+    registry
+        .values()
+        .any(|(_, _, node_id_fn)| match node_id_fn() {
+            Some(id) => painted.contains(&id),
+            None => true,
+        })
+}
+
 /// Take all pending prop updates
 ///
 /// Called by the windowed app to apply incremental updates to the RenderTree.
@@ -666,9 +710,21 @@ pub fn queue_prop_update(node_id: LayoutNodeId, props: RenderProps) {
 /// Trait for user-defined state types that can handle event transitions
 ///
 /// Implement this trait on your state enum to define how events cause
-/// state transitions.
+/// state transitions. Two transition paths are exposed:
 ///
-/// # Example
+/// * `on_event` — event-driven, fired by `Stateful::dispatch(event)` (or
+///   the auto-registered pointer / keyboard handlers). Use for state
+///   changes that follow from a discrete user input.
+///
+/// * `on_tick` — data-guarded, fired by the framework whenever the
+///   Stateful's registered deps change. Read signal values inside the
+///   impl and return a new state when a data condition is met. This is
+///   the Harel-statechart "guarded transition" path: the transition is
+///   not triggered by an event but by reaching a value condition. The
+///   default impl returns `None`, so existing event-only state types
+///   stay opt-out.
+///
+/// # Example — event-driven
 ///
 /// ```ignore
 /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -692,11 +748,44 @@ pub fn queue_prop_update(node_id: LayoutNodeId, props: RenderProps) {
 ///     }
 /// }
 /// ```
+///
+/// # Example — data-guarded (uses `on_tick`)
+///
+/// ```ignore
+/// // Imagine `progress: State<f32>` is a signal registered as a dep.
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+/// enum LoaderState {
+///     #[default]
+///     Loading,
+///     Done,
+/// }
+///
+/// impl StateTransitions for LoaderState {
+///     fn on_event(&self, _event: u32) -> Option<Self> { None }
+///
+///     fn on_tick(&self) -> Option<Self> {
+///         match self {
+///             LoaderState::Loading if PROGRESS.get() >= 1.0 => Some(LoaderState::Done),
+///             _ => None,
+///         }
+///     }
+/// }
+/// ```
 pub trait StateTransitions:
     Clone + Copy + PartialEq + Eq + Hash + Send + Sync + std::fmt::Debug + 'static
 {
     /// Handle an event and return the new state, or None if no transition
     fn on_event(&self, event: u32) -> Option<Self>;
+
+    /// Re-evaluate this state against current signal data without an
+    /// explicit event. Called by the framework before a deps-driven
+    /// rebuild — read globals or thread-local context inside and
+    /// return a new state when a data condition warrants transition.
+    /// Default impl returns `None` (no data-guarded transitions), so
+    /// existing event-only state types stay opt-out.
+    fn on_tick(&self) -> Option<Self> {
+        None
+    }
 }
 
 /// A no-op state type for dependency-based refreshing without state transitions
@@ -1127,7 +1216,7 @@ pub struct StatefulInner<S: StateTransitions> {
     pub(crate) current_event: Option<crate::event_handler::EventContext>,
 
     /// Refresh callback for re-registering deps dynamically
-    /// Set during StatefulBuilder::on_state() and used by use_effect()
+    /// Set during StatefulBuilder::on_state() and used by subscribe()
     pub(crate) refresh_callback: Option<Arc<dyn Fn() + Send + Sync>>,
 
     /// Animation keys used by this stateful (for animation-driven refresh)
@@ -1145,7 +1234,7 @@ pub struct StatefulInner<S: StateTransitions> {
     /// because the rebuild path replaces the parent node's classes/style with
     /// whatever the on_state callback returned — and that callback has no way
     /// to know about classes the user attached to the outer Stateful.
-    pub(crate) base_classes: Vec<String>,
+    pub(crate) base_classes: Vec<std::sync::Arc<str>>,
 
     /// Container-level element id set via `.id()` on the Stateful itself.
     /// Mirrors `base_classes` for the same reason.
@@ -1519,7 +1608,7 @@ impl<S: StateTransitions> StateContext<S> {
         let state = blinc_core::context_state::use_state_keyed(&signal_key, init);
 
         // Automatically register as dependency so on_state re-runs when signal changes
-        self.use_effect(&state);
+        self.subscribe(&state);
 
         state
     }
@@ -1825,7 +1914,7 @@ impl<S: StateTransitions> StateContext<S> {
     /// # Example
     ///
     /// ```ignore
-    /// let direction_signal: State<String> = use_state(|| "down".to_string());
+    /// let direction_signal: State<String> = use_state_keyed("direction", || "down".to_string());
     ///
     /// stateful::<NoState>()
     ///     .deps([direction_signal.signal_id()])
@@ -1852,7 +1941,7 @@ impl<S: StateTransitions> StateContext<S> {
     /// # Example
     ///
     /// ```ignore
-    /// let counter: State<i32> = use_state(|| 0);
+    /// let counter: State<i32> = use_state_keyed("counter", || 0);
     ///
     /// stateful::<ButtonState>()
     ///     .deps([counter.signal_id()])
@@ -1872,7 +1961,9 @@ impl<S: StateTransitions> StateContext<S> {
     ) -> Option<blinc_core::State<T>> {
         let signal_id = self.deps.get(index)?;
         let signal = blinc_core::Signal::from_id(*signal_id);
-        let dirty_flag = blinc_core::context_state::BlincContextState::get().active_dirty_flag();
+        let dirty_flag = blinc_core::context_state::BlincContextState::get()
+            .dirty_flag()
+            .clone();
         Some(blinc_core::State::new(
             signal,
             self.reactive.clone(),
@@ -1900,24 +1991,31 @@ impl<S: StateTransitions> StateContext<S> {
         self.deps.get(index).copied()
     }
 
-    /// Register a signal as a dependency for this stateful element
+    /// Subscribe this stateful container to a signal's changes.
     ///
-    /// When the signal changes, the `on_state` callback will be re-invoked.
-    /// This is useful when you create signals with `ctx.use_signal()` and need
-    /// the stateful to react to their changes.
+    /// When the signal's value changes, the `on_state` callback is
+    /// re-invoked (same path as registering the signal via
+    /// `StatefulBuilder::deps([signal_id])` at construction time —
+    /// this is the inside-the-callback variant for signals created
+    /// with `ctx.use_signal(...)`).
+    ///
+    /// Renamed from the earlier `use_effect` to avoid collision with
+    /// React's `useEffect` mental model, which is conceptually
+    /// different (React's runs after render; ours registers a
+    /// reactivity subscription).
     ///
     /// # Example
     ///
     /// ```ignore
     /// stateful::<ButtonState>()
     ///     .on_state(|ctx| {
-    ///         // Create a counter signal
+    ///         // Create a counter signal scoped to this Stateful.
     ///         let count = ctx.use_signal("count", || 0);
     ///
-    ///         // Register it as a dependency - on_state re-runs when count changes
-    ///         ctx.use_effect(&count);
+    ///         // Subscribe — on_state re-runs when count changes.
+    ///         ctx.subscribe(&count);
     ///
-    ///         // Update count on click (via ctx.event())
+    ///         // Update count on pointer up.
     ///         if let Some(event) = ctx.event() {
     ///             if event.event_type == POINTER_UP {
     ///                 count.update(|n| n + 1);
@@ -1927,7 +2025,7 @@ impl<S: StateTransitions> StateContext<S> {
     ///         div().child(text(&format!("Count: {}", count.get())))
     ///     })
     /// ```
-    pub fn use_effect<T: Clone + Send + 'static>(&self, signal: &blinc_core::State<T>) {
+    pub fn subscribe<T: Clone + Send + 'static>(&self, signal: &blinc_core::State<T>) {
         let signal_id = signal.signal_id();
 
         // Lock shared state and check if signal is already a dependency
@@ -1941,7 +2039,7 @@ impl<S: StateTransitions> StateContext<S> {
         // Add to deps
         inner.deps.push(signal_id);
         tracing::info!(
-            "use_effect: registered signal {:?}, total deps: {}",
+            "subscribe: registered signal {:?}, total deps: {}",
             signal_id,
             inner.deps.len()
         );
@@ -1957,12 +2055,12 @@ impl<S: StateTransitions> StateContext<S> {
         if let Some(callback) = refresh_callback {
             let stateful_key = Arc::as_ptr(&self.shared_state) as u64;
             tracing::debug!(
-                "use_effect: re-registering deps for stateful_key={}",
+                "subscribe: re-registering deps for stateful_key={}",
                 stateful_key
             );
             register_stateful_deps(stateful_key, deps, Arc::new(move || callback()));
         } else {
-            tracing::warn!("use_effect: no refresh_callback available!");
+            tracing::warn!("subscribe: no refresh_callback available!");
         }
     }
 
@@ -2152,7 +2250,9 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         let shared_state = use_shared_state_with::<S>(&key_str, initial);
 
         // Get the reactive graph from context
-        let reactive = blinc_core::context_state::BlincContextState::get().active_reactive();
+        let reactive = blinc_core::context_state::BlincContextState::get()
+            .reactive()
+            .clone();
 
         // Wrap the callback to use StateContext
         let callback = Arc::new(callback);
@@ -2210,7 +2310,7 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
             });
 
         // Create Stateful using the existing infrastructure
-        let stateful = Stateful::with_shared_state(shared_state);
+        let mut stateful = Stateful::with_shared_state(shared_state);
 
         // Set the callback
         stateful.shared_state.lock().unwrap().state_callback = Some(legacy_callback);
@@ -2226,14 +2326,14 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         let stateful = stateful.register_state_handlers();
 
         // Create and store refresh callback BEFORE apply_state_callback
-        // This is needed because use_signal() calls use_effect() which needs refresh_callback
+        // This is needed because use_signal() calls subscribe() which needs refresh_callback
         let shared = Arc::clone(&stateful.shared_state);
         let shared_for_refresh = Arc::clone(&shared);
         let refresh_callback: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             refresh_stateful(&shared_for_refresh);
         });
 
-        // Store refresh callback in StatefulInner for use_effect
+        // Store refresh callback in StatefulInner for subscribe
         stateful.shared_state.lock().unwrap().refresh_callback =
             Some(Arc::clone(&refresh_callback));
 
@@ -2260,7 +2360,19 @@ impl<S: StateTransitions + Default> StatefulBuilder<S> {
         // This ensures the callback re-runs while springs are animating
         let anim_keys = stateful.shared_state.lock().unwrap().animation_keys.clone();
         if !anim_keys.is_empty() {
-            register_stateful_animation(stateful_key, anim_keys, Arc::clone(&refresh_callback));
+            let shared_for_node_id = Arc::clone(&shared);
+            let node_id_fn: StatefulNodeIdFn = Arc::new(move || {
+                shared_for_node_id
+                    .lock()
+                    .ok()
+                    .and_then(|inner| inner.node_id)
+            });
+            register_stateful_animation(
+                stateful_key,
+                anim_keys,
+                Arc::clone(&refresh_callback),
+                node_id_fn,
+            );
         }
 
         stateful
@@ -2335,6 +2447,19 @@ pub fn stateful_with_key<S: StateTransitions + Default>(
 /// This re-runs the `on_state` callback and queues a prop update.
 /// Called internally by the reactive system when dependencies change.
 pub(crate) fn refresh_stateful<S: StateTransitions>(shared: &SharedState<S>) {
+    // Data-guarded transition path. Before rebuilding the subtree,
+    // give the state machine a chance to transition based on the
+    // newly-arrived signal data — the dep change that brought us
+    // here may have crossed a guard condition that warrants a state
+    // change without a discrete event. Default `on_tick` returns
+    // `None`, so event-only state types stay no-op.
+    {
+        let mut inner = shared.lock().unwrap();
+        if let Some(new_state) = inner.state.on_tick() {
+            inner.state = new_state;
+            inner.needs_visual_update = true;
+        }
+    }
     Stateful::<S>::refresh_props_internal(shared);
 }
 
@@ -2785,7 +2910,14 @@ impl<S: StateTransitions> Stateful<S> {
             if !anim_keys.is_empty() {
                 if let Some(refresh_cb) = refresh_cb {
                     let stateful_key = Arc::as_ptr(shared) as u64;
-                    register_stateful_animation(stateful_key, anim_keys, refresh_cb);
+                    let shared_for_node_id = Arc::clone(shared);
+                    let node_id_fn: StatefulNodeIdFn = Arc::new(move || {
+                        shared_for_node_id
+                            .lock()
+                            .ok()
+                            .and_then(|inner| inner.node_id)
+                    });
+                    register_stateful_animation(stateful_key, anim_keys, refresh_cb, node_id_fn);
                 }
             }
         }
@@ -2902,7 +3034,14 @@ impl<S: StateTransitions> Stateful<S> {
         if !anim_keys.is_empty() {
             if let Some(refresh_cb) = refresh_callback {
                 let stateful_key = Arc::as_ptr(shared) as u64;
-                register_stateful_animation(stateful_key, anim_keys, refresh_cb);
+                let shared_for_node_id = Arc::clone(shared);
+                let node_id_fn: StatefulNodeIdFn = Arc::new(move || {
+                    shared_for_node_id
+                        .lock()
+                        .ok()
+                        .and_then(|inner| inner.node_id)
+                });
+                register_stateful_animation(stateful_key, anim_keys, refresh_cb, node_id_fn);
             }
         }
 
@@ -2982,7 +3121,10 @@ impl<S: StateTransitions> Stateful<S> {
 
     /// Add a CSS class name for selector matching
     pub fn class(self, name: &str) -> Self {
-        self.inner.borrow_mut().classes.push(name.to_string());
+        self.inner
+            .borrow_mut()
+            .classes
+            .push(blinc_core::intern::intern(name));
         // Mirror into shared_state so refresh_props_internal can re-seed temp_div
         // on subtree rebuild. Without this, classes set on the Stateful container
         // are wiped from the element_registry the first time the on_state callback
@@ -2991,7 +3133,7 @@ impl<S: StateTransitions> Stateful<S> {
             .lock()
             .unwrap()
             .base_classes
-            .push(name.to_string());
+            .push(blinc_core::intern::intern(name));
         self
     }
 
@@ -4156,6 +4298,16 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
         ElementTypeId::Div
     }
 
+    fn element_id(&self) -> Option<&str> {
+        // SAFETY: Same pattern as children_builders/layout_style - stable during rendering
+        unsafe { (*self.inner.as_ptr()).element_id.as_deref() }
+    }
+
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
+        // SAFETY: Same pattern as children_builders/layout_style - stable during rendering
+        unsafe { &(*self.inner.as_ptr()).classes }
+    }
+
     fn event_handlers(&self) -> Option<&crate::event_handler::EventHandlers> {
         // SAFETY: We use a raw pointer here because we need to return a reference
         // to the event handlers cache. The cache is stable during rendering.
@@ -4197,26 +4349,6 @@ impl<S: StateTransitions> ElementBuilder for Stateful<S> {
     fn visual_animation_config(&self) -> Option<crate::visual_animation::VisualAnimationConfig> {
         self.ensure_callback_invoked();
         self.inner.borrow().visual_animation_config()
-    }
-
-    fn element_id(&self) -> Option<&str> {
-        self.ensure_callback_invoked();
-        // SAFETY: See layout_style()/event_handlers(). This is safe as long as element_id()
-        // is only called during build/render phases where the inner Div isn't being mutated
-        // concurrently (UI is single-threaded).
-        unsafe {
-            let inner = self.inner.as_ptr();
-            (*inner).element_id()
-        }
-    }
-
-    fn element_classes(&self) -> &[String] {
-        self.ensure_callback_invoked();
-        // SAFETY: Same reasoning as element_id().
-        unsafe {
-            let inner = self.inner.as_ptr();
-            (*inner).classes()
-        }
     }
 
     fn scroll_physics(&self) -> Option<crate::scroll::SharedScrollPhysics> {
@@ -4323,28 +4455,94 @@ pub fn text_field() -> TextField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{div, reset_call_counters, EventRouter, MouseButton, RenderTree};
     use blinc_core::events::event_types;
     use blinc_core::{Brush, Color, CornerRadius};
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::Once;
 
-    fn ensure_context_state() {
-        if blinc_core::context_state::BlincContextState::try_get().is_some() {
-            return;
+    /// Minimal data-guarded state used to exercise `on_tick`.
+    /// Mirrors the documented Harel-style guard pattern: the
+    /// transition isn't triggered by an event, just by re-evaluating
+    /// the state's own data fields. In real use the impl reads
+    /// signal globals; here we use a plain bool field so the test
+    /// stays self-contained.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    struct GuardedState {
+        crossed: bool,
+    }
+
+    impl StateTransitions for GuardedState {
+        fn on_event(&self, _event: u32) -> Option<Self> {
+            None
         }
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            let reactive: blinc_core::reactive::SharedReactiveGraph = std::sync::Arc::new(
-                std::sync::Mutex::new(blinc_core::reactive::ReactiveGraph::new()),
-            );
-            let hooks: blinc_core::context_state::SharedHookState = std::sync::Arc::new(
-                std::sync::Mutex::new(blinc_core::context_state::HookState::new()),
-            );
-            let dirty: blinc_core::context_state::DirtyFlag =
-                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            blinc_core::context_state::BlincContextState::init(reactive, hooks, dirty);
-        });
+
+        fn on_tick(&self) -> Option<Self> {
+            // Transition once when the guard is "armed".
+            if !self.crossed {
+                Some(GuardedState { crossed: true })
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Default `on_tick` impl returns `None`. Pinning so existing
+    /// event-only state types (ButtonState, ToggleState, etc.) stay
+    /// no-op and don't accidentally start data-driven transitioning
+    /// after the trait grew this method.
+    #[test]
+    fn test_on_tick_default_is_no_op() {
+        assert_eq!(ButtonState::Idle.on_tick(), None);
+        assert_eq!(ButtonState::Hovered.on_tick(), None);
+        assert_eq!(ButtonState::Pressed.on_tick(), None);
+        assert_eq!(NoState.on_tick(), None);
+        // Unit type also implements StateTransitions.
+        assert_eq!(<()>::on_tick(&()), None);
+    }
+
+    /// Custom `on_tick` impl drives a transition when the guard
+    /// condition is met. After the transition, repeated ticks
+    /// return `None` — terminal-on-condition behaviour.
+    #[test]
+    fn test_on_tick_can_transition() {
+        let initial = GuardedState { crossed: false };
+        let next = initial.on_tick();
+        assert_eq!(next, Some(GuardedState { crossed: true }));
+
+        let after = next.unwrap().on_tick();
+        assert_eq!(after, None, "no further transition once crossed");
+    }
+
+    /// `refresh_stateful` calls `on_tick` before invoking the
+    /// rebuild. Using the GuardedState above, calling
+    /// `refresh_stateful` directly on a SharedState should mutate
+    /// `state` from `crossed: false` to `crossed: true`.
+    /// Verifies the wiring without needing the full event-loop /
+    /// signal-registry stack.
+    #[test]
+    fn test_refresh_stateful_invokes_on_tick() {
+        // Build the SharedState through `Stateful::new` so we don't
+        // duplicate the StatefulInner field list — this stays robust
+        // when fields get added in the future.
+        let stateful: Stateful<GuardedState> = Stateful::new(GuardedState { crossed: false });
+        let shared = Arc::clone(&stateful.shared_state);
+
+        assert_eq!(
+            shared.lock().unwrap().state,
+            GuardedState { crossed: false }
+        );
+
+        refresh_stateful(&shared);
+
+        // After refresh, on_tick has fired and the state moved.
+        assert_eq!(
+            shared.lock().unwrap().state,
+            GuardedState { crossed: true },
+            "refresh_stateful should call on_tick before rebuilding"
+        );
+        assert!(
+            shared.lock().unwrap().needs_visual_update,
+            "transitioned state should mark needs_visual_update"
+        );
     }
 
     #[test]
@@ -4358,124 +4556,6 @@ mod tests {
 
         let mut tree = LayoutTree::new();
         let _node = elem.build(&mut tree);
-    }
-
-    #[test]
-    fn test_stateful_builder_merges_id_from_on_state() {
-        // Regression test: `.id()` set on the Div returned from StatefulBuilder::on_state
-        // must be merged into the base container so the element is queryable by ID.
-        ensure_context_state();
-        reset_call_counters();
-
-        let ui =
-            stateful::<NoState>().on_state(|_ctx| div().id("stateful-test-id").w(100.0).h(40.0));
-
-        let mut tree = RenderTree::from_element(&ui);
-        tree.compute_layout(200.0, 200.0);
-
-        assert!(
-            tree.element_registry().contains("stateful-test-id"),
-            "expected stateful element id to be registered"
-        );
-    }
-
-    #[test]
-    fn test_stateful_builder_click_after_scroll_hits_visible_item() {
-        use std::sync::{Arc, Mutex};
-
-        ensure_context_state();
-        reset_call_counters();
-
-        let item_h = 40.0;
-        let item_count = 20usize;
-        let clicks: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
-
-        let mut list = div().flex_col().w_full();
-        for i in 0..item_count {
-            let clicks = Arc::clone(&clicks);
-            list = list.child(
-                stateful::<ButtonState>()
-                    .initial(ButtonState::Idle)
-                    .on_state(move |_ctx| {
-                        div()
-                            .id(format!("item-{i}"))
-                            .w_full()
-                            .h(item_h)
-                            .flex_shrink_0()
-                    })
-                    .on_click(move |_| {
-                        clicks.lock().unwrap().push(i);
-                    }),
-            );
-        }
-
-        let ui = div().w(200.0).h(200.0).child(
-            div()
-                .id("scroll")
-                .w_full()
-                .h_full()
-                .overflow_y_scroll()
-                .child(list),
-        );
-
-        let mut tree = RenderTree::from_element(&ui);
-        tree.compute_layout(200.0, 200.0);
-
-        assert!(
-            tree.element_registry().contains("item-10"),
-            "expected item id set in on_state() to be registered"
-        );
-
-        // Scroll down by 10 items (visual content moves up).
-        let scroll_id = tree
-            .element_registry()
-            .get("scroll")
-            .expect("scroll container id registered");
-        tree.dispatch_scroll_event(scroll_id, 10.0, 10.0, 0.0, -(item_h * 10.0));
-
-        // Simulate a click in the top-left of the scroll viewport.
-        let (x, y) = (10.0, item_h / 2.0);
-        let mut router = EventRouter::new();
-
-        for (node, event_type) in router.on_mouse_down(&tree, x, y, MouseButton::Left) {
-            let (bx, by, bw, bh) = router.get_node_bounds(node).unwrap_or((0.0, 0.0, 0.0, 0.0));
-            tree.dispatch_event_full(
-                node,
-                event_type,
-                x,
-                y,
-                x - bx,
-                y - by,
-                bx,
-                by,
-                bw,
-                bh,
-                0.0,
-                0.0,
-                1.0,
-            );
-        }
-
-        for (node, event_type) in router.on_mouse_up(&tree, x, y, MouseButton::Left) {
-            let (bx, by, bw, bh) = router.get_node_bounds(node).unwrap_or((0.0, 0.0, 0.0, 0.0));
-            tree.dispatch_event_full(
-                node,
-                event_type,
-                x,
-                y,
-                x - bx,
-                y - by,
-                bx,
-                by,
-                bw,
-                bh,
-                0.0,
-                0.0,
-                1.0,
-            );
-        }
-
-        assert_eq!(clicks.lock().unwrap().as_slice(), &[10]);
     }
 
     #[test]

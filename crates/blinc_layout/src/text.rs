@@ -50,10 +50,6 @@ pub struct Text {
     font_family: FontFamily,
     /// Taffy style for layout
     style: Style,
-    /// Explicit width override applied through the builder API
-    width_override: Option<Dimension>,
-    /// Explicit max-width override applied through the builder API
-    max_width_override: Option<Dimension>,
     /// Render layer
     render_layer: RenderLayer,
     /// Drop shadow
@@ -85,7 +81,7 @@ pub struct Text {
     /// Semantic type name for CSS type selectors (e.g., "h1", "p", "span")
     semantic_type: Option<&'static str>,
     /// CSS class names for selector matching
-    classes: Vec<String>,
+    classes: Vec<std::sync::Arc<str>>,
 }
 
 impl Text {
@@ -95,10 +91,22 @@ impl Text {
     /// - Named entities: `&amp;`, `&nbsp;`, `&copy;`, etc.
     /// - Decimal entities: `&#65;`, `&#8364;`, etc.
     /// - Hexadecimal entities: `&#x41;`, `&#x20AC;`, etc.
-    pub fn new(content: impl ToString) -> Self {
-        let resolved = content.to_string();
-        // Decode HTML entities (e.g., &amp; -> &, &copy; -> ©)
-        let decoded_content = decode_html_entities(&resolved).into_owned();
+    pub fn new(content: impl Into<String>) -> Self {
+        // Decode HTML entities (e.g., &amp; -> &, &copy; -> ©).
+        //
+        // Fast path: most text has no `&` at all. `decode_html_entities`
+        // is a Cow returner — `Cow::Borrowed` when nothing changed —
+        // but the previous `.into_owned()` allocated a fresh String even
+        // in the borrowed case. Skip the call entirely when there's
+        // nothing it could possibly change. For a UI with hundreds of
+        // text labels rebuilt on every state change, this drops one
+        // allocation per text element per build.
+        let raw_content = content.into();
+        let decoded_content = if raw_content.contains('&') {
+            decode_html_entities(&raw_content).into_owned()
+        } else {
+            raw_content
+        };
 
         let mut text = Self {
             content: decoded_content,
@@ -110,8 +118,6 @@ impl Text {
             italic: false,
             font_family: FontFamily::default(),
             style: Style::default(),
-            width_override: None,
-            max_width_override: None,
             render_layer: RenderLayer::default(),
             shadow: None,
             transform: None,
@@ -149,8 +155,8 @@ impl Text {
     ///
     /// Classes can be used with `.class` selectors in stylesheets.
     /// Multiple classes can be added by chaining `.class()` calls.
-    pub fn class(mut self, name: impl Into<String>) -> Self {
-        self.classes.push(name.into());
+    pub fn class(mut self, name: impl AsRef<str>) -> Self {
+        self.classes.push(blinc_core::intern::intern(name.as_ref()));
         self
     }
 
@@ -473,19 +479,17 @@ impl Text {
             // Set width to Auto so Taffy queries the measure function,
             // max_width to 100% so text doesn't overflow parent,
             // and height to Auto so it's determined by measurement.
-            self.style.size.width = self.width_override.unwrap_or(Dimension::Auto);
+            self.style.size.width = Dimension::Auto;
             self.style.size.height = Dimension::Auto;
-            self.style.max_size.width = self.max_width_override.unwrap_or(Dimension::Percent(1.0));
+            self.style.max_size.width = Dimension::Percent(1.0);
             // Allow text to shrink if needed
             self.style.flex_shrink = 1.0;
         } else {
             // For non-wrapping text, use fixed dimensions based on measurement
-            self.style.size.width = self
-                .width_override
-                .unwrap_or(Dimension::Length(metrics.width));
+            self.style.size.width = Dimension::Length(metrics.width);
             let standardized_height = self.font_size * self.line_height;
             self.style.size.height = Dimension::Length(standardized_height);
-            self.style.max_size.width = self.max_width_override.unwrap_or(Dimension::Percent(1.0));
+            self.style.max_size.width = Dimension::Percent(1.0);
             // No wrapping: don't shrink, keep natural size
             self.style.flex_shrink = 0.0;
         }
@@ -532,34 +536,6 @@ impl Text {
     /// Set flex-shrink
     pub fn flex_shrink(mut self) -> Self {
         self.style.flex_shrink = 1.0;
-        self
-    }
-
-    /// Set width in pixels
-    pub fn w(mut self, px: f32) -> Self {
-        self.width_override = Some(Dimension::Length(px));
-        self.update_size_estimate();
-        self
-    }
-
-    /// Set width to 100%
-    pub fn w_full(mut self) -> Self {
-        self.width_override = Some(Dimension::Percent(1.0));
-        self.update_size_estimate();
-        self
-    }
-
-    /// Set width to auto
-    pub fn w_auto(mut self) -> Self {
-        self.width_override = Some(Dimension::Auto);
-        self.update_size_estimate();
-        self
-    }
-
-    /// Set max-width in pixels
-    pub fn max_w(mut self, px: f32) -> Self {
-        self.max_width_override = Some(Dimension::Length(px));
-        self.update_size_estimate();
         self
     }
 
@@ -631,17 +607,14 @@ impl ElementBuilder for Text {
     fn build(&self, tree: &mut LayoutTree) -> LayoutNodeId {
         use crate::tree::TextMeasureContext;
 
-        let needs_measure_context =
-            self.wrap || matches!(self.width_override, Some(Dimension::Auto));
-
-        // Wrapping text needs the measure callback for multi-line height, and
-        // explicit auto-width text needs it to recover intrinsic single-line width.
-        if needs_measure_context {
+        // For wrapping text, use a measure context so Taffy can calculate
+        // the correct multi-line height based on available width
+        if self.wrap {
             let context = TextMeasureContext {
                 content: self.content.clone(),
                 font_size: self.font_size,
                 line_height: self.line_height,
-                wrap: self.wrap,
+                wrap: true,
                 font_name: self.font_family.name.clone(),
                 generic_font: self.font_family.generic,
                 font_weight: self.weight.weight(),
@@ -682,7 +655,7 @@ impl ElementBuilder for Text {
         self.element_id.as_deref()
     }
 
-    fn element_classes(&self) -> &[String] {
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
         &self.classes
     }
 
@@ -714,7 +687,7 @@ impl ElementBuilder for Text {
 
 /// Convenience function to create a new text element
 pub fn text(content: impl ToString) -> Text {
-    let mut t = Text::new(content);
+    let mut t = Text::new(content.to_string());
     t.update_size_estimate();
     t
 }
@@ -744,8 +717,6 @@ impl Text {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::div::div;
-    use crate::renderer::RenderTree;
 
     #[test]
     fn test_text_builder() {
@@ -806,86 +777,5 @@ mod tests {
 
         let t = text("No entities here @ all #123");
         assert_eq!(t.content(), "No entities here @ all #123");
-    }
-
-    #[test]
-    fn test_text_w_full_persists_after_size_update() {
-        let t = text("Paragraph body").w_full().size(16.0);
-        let style = t.layout_style().unwrap();
-
-        assert!(matches!(style.size.width, Dimension::Percent(p) if (p - 1.0).abs() < 0.001));
-    }
-
-    #[test]
-    fn test_text_max_w_persists_after_size_update() {
-        let t = text("Paragraph body").max_w(180.0).size(16.0);
-        let style = t.layout_style().unwrap();
-
-        assert!(matches!(style.size.width, Dimension::Auto));
-        assert!(matches!(style.max_size.width, Dimension::Length(w) if (w - 180.0).abs() < 0.001));
-    }
-
-    #[test]
-    fn test_text_w_auto_persists_after_size_update() {
-        let t = text("Paragraph body").w_auto().size(16.0);
-        let style = t.layout_style().unwrap();
-
-        assert!(matches!(style.size.width, Dimension::Auto));
-    }
-
-    #[test]
-    fn test_text_w_auto_preserves_intrinsic_width_in_items_start_container() {
-        let content = "Intrinsic width";
-        let ui = div()
-            .w(300.0)
-            .flex_col()
-            .items_start()
-            .child(text(content).no_wrap().w_auto());
-
-        let mut tree = RenderTree::from_element(&ui);
-        tree.compute_layout(300.0, 100.0);
-
-        let root = tree.root().unwrap();
-        let child = tree.layout_tree.children(root)[0];
-        let bounds = tree.layout_tree.get_bounds(child, (0.0, 0.0)).unwrap();
-        let expected = crate::text_measure::measure_text(content, 14.0);
-
-        assert!(
-            (bounds.width - expected.width).abs() <= 1.0,
-            "bounds.width={}, expected.width={}",
-            bounds.width,
-            expected.width
-        );
-    }
-
-    #[test]
-    fn test_text_max_w_limits_wrap_measurement_width() {
-        let content =
-            "This paragraph should wrap to the explicit max width instead of the parent width.";
-
-        let constrained = div().w(200.0).child(text(content).max_w(80.0));
-        let mut constrained_tree = RenderTree::from_element(&constrained);
-        constrained_tree.compute_layout(200.0, 400.0);
-
-        let constrained_root = constrained_tree.root().unwrap();
-        let constrained_text = constrained_tree.layout_tree.children(constrained_root)[0];
-        let constrained_bounds = constrained_tree
-            .layout_tree
-            .get_bounds(constrained_text, (0.0, 0.0))
-            .unwrap();
-
-        let baseline = div().w(80.0).child(text(content));
-        let mut baseline_tree = RenderTree::from_element(&baseline);
-        baseline_tree.compute_layout(80.0, 400.0);
-
-        let baseline_root = baseline_tree.root().unwrap();
-        let baseline_text = baseline_tree.layout_tree.children(baseline_root)[0];
-        let baseline_bounds = baseline_tree
-            .layout_tree
-            .get_bounds(baseline_text, (0.0, 0.0))
-            .unwrap();
-
-        assert!(constrained_bounds.width <= 80.0);
-        assert_eq!(constrained_bounds.height, baseline_bounds.height);
     }
 }

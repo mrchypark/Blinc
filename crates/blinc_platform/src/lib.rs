@@ -76,7 +76,7 @@ pub use input::{
     KeyboardEvent, Modifiers, MouseButton, MouseEvent, ScrollPhase, TouchEvent,
 };
 pub use platform::Platform;
-pub use window::{Cursor, Window, WindowConfig, WindowId};
+pub use window::{AnimationThreadMode, Cursor, Window, WindowConfig, WindowId};
 
 // Re-export commonly used asset types
 pub use accessibility::{
@@ -134,5 +134,5 @@ pub mod prelude {
     };
     pub use crate::permissions::{PermissionKind, PermissionStatus};
     pub use crate::platform::Platform;
-    pub use crate::window::{Cursor, Window, WindowConfig, WindowId};
+    pub use crate::window::{AnimationThreadMode, Cursor, Window, WindowConfig, WindowId};
 }
