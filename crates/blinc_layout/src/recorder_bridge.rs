@@ -793,7 +793,10 @@ fn capture_node_recursive(
     let render_node = tree.get_render_node(node);
     let accessibility = tree.layout().accessibility_metadata(node);
     let semantic = Some(SnapshotSemanticInfo {
-        tag: tree.element_registry().get_element_type(node),
+        tag: tree
+            .element_registry()
+            .get_element_type(node)
+            .map(str::to_string),
         role: accessibility
             .as_ref()
             .map(|metadata| format!("{:?}", metadata.role)),

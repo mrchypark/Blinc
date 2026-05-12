@@ -8,7 +8,7 @@
 //!
 //! All approaches produce `ElementStyle` - a unified schema for visual properties.
 //!
-//! Run with: cargo run -p blinc_app_examples --example styling_demo --features windowed
+//! Run with: cargo run -p blinc_app_examples --example styling_demo
 
 use blinc_app::prelude::*;
 use blinc_app::windowed::WindowedApp;
@@ -33,6 +33,7 @@ fn main() -> Result<()> {
         height: 800,
         resizable: true,
         fullscreen: false,
+        animation_fps_cap: Some(30),
         ..Default::default()
     };
 

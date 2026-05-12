@@ -3,6 +3,8 @@
 //! Supports multiple windows via `AppCommand::CreateWindow`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use std::time::{Duration, Instant};
 
@@ -108,12 +110,82 @@ fn sync_ime_window_state<W: DesktopImeWindow>(
 #[derive(Clone)]
 pub struct WakeProxy {
     proxy: EventLoopProxy<AppCommand>,
+    /// Shared deadline + lazy timer thread for `wake_at`. Lazily
+    /// initialised on first deadline-based wake to avoid spawning a
+    /// timer thread for apps that never use the animation FPS cap.
+    timer: Arc<TimerState>,
+}
+
+/// State for the lazy timer thread that backs `WakeProxy::wake_at`.
+struct TimerState {
+    /// `(deadline, condvar)`. Setting the deadline + notifying the
+    /// condvar wakes the timer thread which then sleeps via
+    /// `wait_timeout` until the deadline expires.
+    deadline: std::sync::Mutex<Option<std::time::Instant>>,
+    cv: std::sync::Condvar,
+    started: AtomicBool,
 }
 
 impl WakeProxy {
     /// Wake up the event loop, causing it to process events and potentially redraw
     pub fn wake(&self) {
         let _ = self.proxy.send_event(AppCommand::Wake);
+    }
+
+    /// Schedule a `wake()` to fire after `delay`. If a wake is already
+    /// pending and would fire sooner, this call is a no-op (we never
+    /// extend an earlier deadline).
+    ///
+    /// Backs the windowed app's `animation_fps_cap` — the redraw
+    /// chain uses this instead of `request_redraw()` when the only
+    /// reason to schedule a frame is animation progress and the app
+    /// has asked for a sub-vsync animation rate. A single dedicated
+    /// timer thread is started lazily on first call; subsequent
+    /// calls just update the deadline.
+    pub fn wake_at(&self, delay: std::time::Duration) {
+        let target = std::time::Instant::now() + delay;
+        let mut guard = self.timer.deadline.lock().unwrap();
+        match *guard {
+            Some(existing) if existing <= target => {
+                // An earlier wake is already pending — keep it.
+                return;
+            }
+            _ => *guard = Some(target),
+        }
+        self.timer.cv.notify_one();
+        drop(guard);
+
+        if !self.timer.started.swap(true, Ordering::AcqRel) {
+            let timer = Arc::clone(&self.timer);
+            let proxy = self.proxy.clone();
+            std::thread::Builder::new()
+                .name("blinc-wake-timer".to_string())
+                .spawn(move || {
+                    let mut guard = timer.deadline.lock().unwrap();
+                    loop {
+                        match *guard {
+                            None => {
+                                // Park until a deadline is set.
+                                guard = timer.cv.wait(guard).unwrap();
+                            }
+                            Some(d) => {
+                                let now = std::time::Instant::now();
+                                if d <= now {
+                                    *guard = None;
+                                    drop(guard);
+                                    let _ = proxy.send_event(AppCommand::Wake);
+                                    guard = timer.deadline.lock().unwrap();
+                                } else {
+                                    let timeout = d - now;
+                                    let (g, _) = timer.cv.wait_timeout(guard, timeout).unwrap();
+                                    guard = g;
+                                }
+                            }
+                        }
+                    }
+                })
+                .expect("spawn blinc-wake-timer");
+        }
     }
 
     /// Request creation of a new window on the next event loop tick
@@ -143,6 +215,11 @@ impl DesktopEventLoop {
 
         let wake_proxy = WakeProxy {
             proxy: event_loop.create_proxy(),
+            timer: Arc::new(TimerState {
+                deadline: std::sync::Mutex::new(None),
+                cv: std::sync::Condvar::new(),
+                started: AtomicBool::new(false),
+            }),
         };
 
         Ok(Self {
@@ -279,6 +356,19 @@ where
     F: FnMut(Event, &DesktopWindow) -> ControlFlow,
 {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // Wait until something actually happens. winit 0.30 defaults to
+        // `ControlFlow::Poll`, which on X11 / Wayland makes the event
+        // loop spin as fast as the kernel will schedule it (issue #28
+        // — 25 % idle CPU on Ubuntu 25.10 / Intel HD 520). macOS hides
+        // this because NSApp.run is event-driven even under Poll, so
+        // the bug never showed up there. Under `Wait` the loop blocks
+        // until input arrives, the scheduler's `wake_proxy.wake()`
+        // fires (delivered as `StartCause::WaitCancelled`), or a
+        // window asks for a redraw — none of which happen on a static
+        // focused UI, so the loop sleeps and the process drops to
+        // ~0 % CPU.
+        event_loop.set_control_flow(WinitControlFlow::Wait);
+
         // Create the primary window if we don't have one
         if self.primary_winit_id.is_none() {
             let config = self.window_config.clone();
@@ -296,12 +386,53 @@ where
     }
 
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        // Request redraw on wait timeout (frame tick) for all windows
-        if matches!(cause, StartCause::WaitCancelled { .. } | StartCause::Poll) {
-            for window in self.windows.values() {
-                window.request_redraw();
-            }
-        }
+        // Wake-cause telemetry. Silent in normal builds (the format
+        // args aren't even evaluated when the trace target is
+        // disabled). For idle-CPU diagnosis on Linux, run with
+        // `RUST_LOG=blinc_platform_desktop::wakes=trace` and the
+        // output shows one line per event-loop wake — useful for
+        // counting wakeups/sec on a static UI.
+        tracing::trace!(
+            target: "blinc_platform_desktop::wakes",
+            ?cause,
+            "event loop woke"
+        );
+
+        // Intentionally no `request_redraw` here.
+        //
+        // Earlier this handler called `request_redraw()` on every
+        // window for every `WaitCancelled` cause. That blanket wake
+        // showed up as residual idle CPU on Linux (issue #28): Wayland
+        // / X11 compositors deliver more spurious wakes than macOS
+        // — focus subscriptions, configure events, raw input shifts
+        // — and each wake fired a redraw the windowed app's frame
+        // gate then immediately threw away because `frame_dirty` was
+        // false. The wakeup-and-skip cycle is cheap individually but
+        // the OS overhead added up to a few percent of a CPU even on
+        // a static, out-of-focus hello-world.
+        //
+        // Two paths actually need the redraw, and both arrive at it
+        // without our help here:
+        //
+        // - `wake_proxy.wake()` (animation scheduler bg thread, FPS
+        //   cap timer, external wake calls) sends
+        //   `AppCommand::Wake`. winit delivers that as `user_event`
+        //   below, which already calls `request_redraw` on every
+        //   window. The bg-thread side also flips `frame_dirty` to
+        //   `true` before sending, so the resulting `Event::Frame`
+        //   actually paints.
+        //
+        // - Real `WindowEvent` / `DeviceEvent` wakes flow through
+        //   `window_event` (and the windowed-app handler's prelude),
+        //   which decides per-event whether to flip `frame_dirty`
+        //   and call `request_redraw`. Bare mouse-moves are
+        //   intentionally skipped; everything else paints exactly
+        //   once.
+        //
+        // Anything reaching `WaitCancelled` that *isn't* one of the
+        // two above is by definition a wake we don't need to act
+        // on. Letting it return through `about_to_wait` and back to
+        // `ControlFlow::Wait` keeps the process at ~0% CPU.
     }
 
     fn window_event(

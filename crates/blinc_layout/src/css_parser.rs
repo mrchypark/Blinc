@@ -1616,6 +1616,41 @@ impl Stylesheet {
         self.styles.get(&key)
     }
 
+    /// Whether the stylesheet contains any rule keyed on a pointer state
+    /// (`:hover` or `:active`).
+    ///
+    /// Used by the windowed app's mouse-move path to skip hit testing
+    /// entirely when no element has a pointer-driven style or handler —
+    /// turns "static UI with no interaction" into a true zero-CPU idle
+    /// even while the cursor is moving over the window.
+    ///
+    /// Walks the simple-rule and class-rule HashMaps for keys with the
+    /// `:hover` / `:active` suffix that the parser produces, plus the
+    /// complex-selector list for any compound that carries a state
+    /// pseudo-class. Cheap enough to call per-frame on a static stylesheet
+    /// (workspaces with very large CSS should still consider caching it
+    /// alongside the parse result).
+    pub fn has_pointer_state_rules(&self) -> bool {
+        let suffix_match = |key: &str| key.ends_with(":hover") || key.ends_with(":active");
+        if self.styles.keys().any(|k| suffix_match(k)) {
+            return true;
+        }
+        if self.class_styles.keys().any(|k| suffix_match(k)) {
+            return true;
+        }
+        self.complex_rules.iter().any(|(sel, _)| {
+            sel.segments.iter().any(|(compound, _)| {
+                compound.parts.iter().any(|p| {
+                    matches!(
+                        p,
+                        SelectorPart::State(ElementState::Hover)
+                            | SelectorPart::State(ElementState::Active)
+                    )
+                })
+            })
+        })
+    }
+
     /// Get all styles for an element, including state variants
     ///
     /// Returns a tuple of (base_style, state_styles) where state_styles is a Vec
@@ -2138,6 +2173,17 @@ pub fn active_stylesheet() -> Option<Arc<Stylesheet>> {
     ACTIVE_STYLESHEET.read().ok()?.clone()
 }
 
+/// Drop the global active stylesheet. Used by hot-reload's
+/// `WindowedContext::reset_for_hot_reload` so the next `ctx.add_css`
+/// call repopulates a fresh sheet — without this, stateful widgets
+/// looking up CSS overrides during the rebuild would briefly see
+/// stale rules from the pre-patch run.
+pub fn clear_active_stylesheet() {
+    if let Ok(mut guard) = ACTIVE_STYLESHEET.write() {
+        *guard = None;
+    }
+}
+
 // ============================================================================
 // Nom Parsers with VerboseError for diagnostics
 // ============================================================================
@@ -2270,7 +2316,7 @@ fn parse_complex_selector(input: &str) -> ParseResult<ComplexSelector> {
 
 /// Parse a compound selector: one or more simple selector parts with no combinator.
 /// e.g. `#id.class:hover:first-child`
-/// Find the index of the matching closing parenthesis for the opening paren at input[0].
+/// Find the index of the matching closing parenthesis for the opening paren at `input[0]`.
 fn find_matching_paren(input: &str) -> Option<usize> {
     if !input.starts_with('(') {
         return None;
@@ -7267,7 +7313,7 @@ fn split_whitespace_respecting_parens(input: &str) -> Vec<String> {
     parts
 }
 
-/// Parse explicit shadow: offset-x offset-y blur [spread] color
+/// Parse explicit shadow: `offset-x offset-y blur [spread] color`
 fn parse_explicit_shadow(input: &str) -> Option<Shadow> {
     let parts = split_whitespace_respecting_parens(input);
     if parts.len() >= 4 {
@@ -8907,8 +8953,8 @@ fn split_gradient_parts(input: &str) -> Vec<String> {
     parts
 }
 
-/// Parse gradient direction (angle or "to <direction>")
-/// Returns (angle_in_degrees, color_start_index)
+/// Parse gradient direction (angle or `to <direction>`).
+/// Returns `(angle_in_degrees, color_start_index)`.
 fn parse_gradient_direction(first_part: &str) -> (f32, usize) {
     let part = first_part.trim().to_lowercase();
 

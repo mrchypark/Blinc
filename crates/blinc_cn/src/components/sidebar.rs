@@ -7,9 +7,10 @@
 //!
 //! ```ignore
 //! use blinc_cn::prelude::*;
+//! use blinc_core::use_state_keyed;
 //!
 //! // Basic sidebar
-//! let is_collapsed = use_state(|| false);
+//! let is_collapsed = use_state_keyed("sidebar_collapsed", || false);
 //!
 //! cn::sidebar(&is_collapsed)
 //!     .item("Home", home_icon, || println!("Home clicked"))
@@ -367,7 +368,7 @@ impl Sidebar {
         // Apply user classes and id
         let mut inner = stateful_container;
         for c in &builder.classes {
-            inner = inner.class(c.as_str());
+            inner = inner.class(c);
         }
         if let Some(ref id) = builder.user_id {
             inner = inner.id(id);
@@ -425,7 +426,7 @@ impl ElementBuilder for Sidebar {
         self.inner.visual_animation_config()
     }
 
-    fn element_classes(&self) -> &[String] {
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
         self.inner.element_classes()
     }
 
@@ -448,7 +449,7 @@ pub struct SidebarBuilder {
     /// Optional main content area that sits next to the sidebar
     content_builder: Option<ContentBuilderFn>,
     /// User-added CSS classes
-    classes: Vec<String>,
+    classes: Vec<std::sync::Arc<str>>,
     /// User-set element ID
     user_id: Option<String>,
     built: OnceCell<Sidebar>,
@@ -546,8 +547,8 @@ impl SidebarBuilder {
     }
 
     /// Add a CSS class for selector matching
-    pub fn class(mut self, name: impl Into<String>) -> Self {
-        self.classes.push(name.into());
+    pub fn class(mut self, name: impl AsRef<str>) -> Self {
+        self.classes.push(blinc_core::intern::intern(name.as_ref()));
         self
     }
 
@@ -615,7 +616,7 @@ impl ElementBuilder for SidebarBuilder {
         self.get_or_build().visual_animation_config()
     }
 
-    fn element_classes(&self) -> &[String] {
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
         self.get_or_build().element_classes()
     }
 
@@ -630,8 +631,9 @@ impl ElementBuilder for SidebarBuilder {
 ///
 /// ```ignore
 /// use blinc_cn::prelude::*;
+/// use blinc_core::use_state_keyed;
 ///
-/// let collapsed = use_state(|| false);
+/// let collapsed = use_state_keyed("sidebar_collapsed", || false);
 ///
 /// // Home icon SVG
 /// let home_icon = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>"#;

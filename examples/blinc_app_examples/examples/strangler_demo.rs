@@ -43,7 +43,7 @@
 //!
 //! ```sh
 //! cargo run -p blinc_app_examples --example strangler_demo \
-//!     --features windowed --release
+//!     --features gltf --release
 //! ```
 //!
 //! [`blinc_canvas_kit::SceneKit3D`]: https://docs.rs/blinc_canvas_kit/latest/blinc_canvas_kit/struct.SceneKit3D.html
@@ -249,6 +249,7 @@ fn main() -> Result<()> {
         title: "The Strangler — full-body skin + morph demo".to_string(),
         width: 1024,
         height: 768,
+        animation_fps_cap: Some(60),
         ..Default::default()
     };
 

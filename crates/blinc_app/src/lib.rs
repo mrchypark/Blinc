@@ -136,6 +136,15 @@ mod runloop;
 mod svg_atlas;
 mod text_measurer;
 
+/// Subsecond hot-reload websocket client.
+///
+/// Compiled only when the `hot-reload` feature is on. Spawns a thread
+/// that connects to `dx serve --hot-patch`'s dev-server and applies
+/// incoming jump-table patches. See module docs for the wire format
+/// and dep-tree rationale.
+#[cfg(feature = "hot-reload")]
+pub mod hot_reload;
+
 // Windowed module is compiled for desktop (windowed feature), Android, iOS, Fuchsia, HarmonyOS,
 // AND web — since `WindowedContext` and the shared scheduler / overlay / registry types are
 // used by every platform runner. The web runner also lives behind a wasm32 cfg gate (see below).
@@ -268,7 +277,7 @@ pub use blinc_layout::prelude::*;
 pub use blinc_layout::RenderTree;
 
 // Re-export platform types for windowed applications
-pub use blinc_platform::WindowConfig;
+pub use blinc_platform::{AnimationThreadMode, WindowConfig};
 
 // Re-export derive macro
 pub use blinc_macros::BlincComponent;
@@ -292,7 +301,7 @@ pub mod prelude {
     pub use blinc_core::reactive::{Derived, Effect, ReactiveGraph, Signal};
 
     // Platform types
-    pub use blinc_platform::WindowConfig;
+    pub use blinc_platform::{AnimationThreadMode, WindowConfig};
 
     // Derive macro for components
     pub use blinc_macros::BlincComponent;

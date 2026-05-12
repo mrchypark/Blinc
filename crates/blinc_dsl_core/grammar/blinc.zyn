@@ -1,0 +1,932 @@
+// blinc.zyn — Blinc UI DSL grammar (prototype scope, ZynPEG 2.0)
+//
+// Status: risk-reduction prototype. Covers only the `view { ... }`
+// + `text("...")` slice needed to validate the embed-runtime round-trip
+// end-to-end. The full grammar (component / state / style / events /
+// interpolation / if / for) lands in phase 2 of the Blinc DSL plan
+// (ROADMAP §3.9).
+//
+// Host glue lives in `crates/blinc_dsl_core/src/lib.rs`. Builtins
+// resolve to functions registered via `runtime.register_function(...)`
+// in the host (no `.zrtl` plugin loading — Blinc statically links).
+
+@language {
+    name: "Blinc",
+    version: "0.1.0-prototype",
+    file_extensions: [".blinc"],
+    entry_point: "render_view"
+}
+
+// `@builtin` map. Zyntax's `inject_builtin_externs`
+// (grammar2.rs:198-315) auto-injects properly-typed extern decls
+// for every entry, pulling signatures from the runtime's
+// registered builtins (we populate those via
+// `register_function_typed` in `src/lib.rs`). Each entry gives a
+// short DSL-visible alias and the mangled symbol the host
+// registered under.
+@builtin {
+    text: "$Blinc$text",
+    text_int: "$Blinc$text_int",
+    // Signal accessors. Synthesised by `resolve_signal_calls` —
+    // not addressable from user code directly. Listed here so
+    // `inject_builtin_externs` injects matching extern decls; the
+    // host registers the implementations via
+    // `register_function_typed` and the JIT calls into Rust.
+    __signal_get_i32: "__signal_get_i32",
+    __signal_get_f64: "__signal_get_f64",
+}
+
+// =====================================================================
+// Program structure
+// =====================================================================
+//
+// Top-level items follow Zyntax's struct + impl idiom (mirroring
+// ml.zyn:799-803 + the impl_block shapes at ml.zyn:~970+):
+//
+//   1. `component <Name> { field: T, field: T, ... }` — data-only
+//      declaration. Lowers to `TypedDeclaration::Class` with fields.
+//      The keyword is `component` rather than `struct` because UI
+//      authors think in terms of components; semantically it IS a
+//      struct (a Zyntax `TypedClass` with no methods of its own).
+//   2. `impl <Name> { fn ... fn ... }` — methods on a previously-
+//      declared component. Lowers to `TypedDeclaration::Impl` with
+//      one `TypedFunction`-shaped item per `fn`. The grammar
+//      interpreter's `Impl` constructor (interpreter.rs:1017-1080)
+//      converts each function into a `TypedMethod` automatically.
+//   3. `view { ... }` — bare quick-test shape, no enclosing
+//      component. Lowers to a free function named `render_view`.
+//
+// `top_level_items` collects each item, mirroring ml.zyn:324.
+
+program = { SOI ~ items:top_level_items ~ EOI }
+  -> items
+
+top_level_items = { item:top_level_item* }
+  -> TypedProgram {
+      declarations: item,
+  }
+
+// PEG ordered alternates: try the folded `component { state, view }`
+// form first since it matches a longer prefix than the bare
+// `component_decl`. Falling through handles standalone struct-only
+// `component { fields }` decls, standalone `impl` blocks, and the
+// bare `view { ... }` quick-test shape.
+top_level_item = { signal_decl | component_folded | component_decl | fsm_decl | impl_block | bare_view_item }
+
+// `signal <name>: <type>` — declares a host-bound reactive signal
+// the DSL can read inside guards, view bodies, etc. Lowers to a
+// zero-arg extern `TypedDeclaration::Function` that the
+// `resolve_signal_calls` post-parse pass uses as a directory of
+// known signals when rewriting `<name>.get()` calls into the
+// host-registered `__signal_get_<T>("<name>")` extern.
+//
+// Recognition heuristic on the host side: `inject_builtin_externs`
+// (zyntax_embed/src/grammar2.rs:198-315) sets
+// `link_name: Some(<target_symbol>)` on every auto-injected
+// builtin extern. The grammar action's `Function` constructor
+// hardcodes `link_name: None` (interpreter.rs:898), so signal
+// decls authored via this rule arrive with `link_name = None`.
+// The post-parse pass uses `is_external: true && link_name == None
+// && params.is_empty() && body.is_none()` as the discriminator,
+// then strips these decls before compile so the bare-name
+// extern doesn't conflict with anything at link time.
+//
+// Why an extern decl as the carrier rather than e.g. a marker
+// statement: keeping signal metadata at the declaration level
+// (where types live) means the post-parse pass can read return
+// types directly via standard TypedAST traversal, no parallel
+// metadata structure. The is_external + body=None shape mirrors
+// what Zyntax's own extern injection produces, so downstream
+// passes that already handle externs handle ours uniformly.
+signal_decl = { "signal" ~ name:identifier ~ ":" ~ ty:state_type }
+  -> TypedDeclaration::Function {
+      name: intern(name),
+      params: [],
+      return_type: ty,
+      body: None,
+      is_external: true,
+  }
+
+bare_view_item = { "view" ~ "{" ~ stmts:statements ~ "}" }
+  -> TypedDeclaration::Function {
+      name: intern("render_view"),
+      params: [],
+      return_type: Type::Unit,
+      body: Some(TypedBlock { statements: stmts }),
+  }
+
+// `component <Name> { fields, <view-form>, fn handler() { ... } }`
+// — folded source-level shape. Emits BOTH a Class (data) and an
+// Impl (methods) from one rule by inlining a list of two
+// declarations and letting the patched `get_field_as_decl_list`
+// flatten when `top_level_items` collects the result.
+//
+// The `<view-form>` slot accepts either the bare `view { stmts }`
+// shape (depends on every state field) or the dep-list closure
+// form `view([state1, state2]) {|ctx| stmts}` (explicit signal
+// dependencies). Both lower to a `TypedDeclaration::Function`
+// named `view`; see `view_member` below for the alternates and
+// their lowering shapes.
+//
+// Additional `fn`s (event handlers, helpers, methods) sit
+// alongside the view via `impl_fn*` and get prepended into the
+// Impl's items.
+//
+// This is the natural user-facing component shape — UI authors
+// think in terms of "a component IS a thing with state and a
+// view". Internally we lower to Zyntax's struct + impl idiom.
+component_folded = {
+    "component" ~ name:identifier ~ "{"
+    ~ fields:struct_field_list?
+    ~ view:view_member
+    ~ extra:impl_fn*
+    ~ "}"
+}
+  -> concat_list(
+      [TypedDeclaration::Class {
+          name: intern(name),
+          fields: fields,
+      }],
+      [TypedDeclaration::Impl {
+          trait_name: intern(name),
+          for_type: intern(name),
+          items: prepend_list(view, extra),
+      }],
+  )
+
+// Two view forms — the grammar distinguishes them by what comes
+// after the `view` keyword. PEG ordered alternates: the deps form
+// is tried first because `view (` consumes a longer
+// disambiguating prefix than `view {`, so the tries don't waste
+// work on common cases.
+//
+//   * `view([dep1, dep2]) {|ctx| stmts}` — explicit dependencies.
+//     Mirrors Blinc's `Stateful::deps([...])` widget pattern: the
+//     view's render closure is invoked when any listed dep's
+//     signal fires, never on every frame. The deps list is
+//     captured as a leading `__view_deps__(dep1, dep2)` marker
+//     call inside the function body so the host's runtime can
+//     extract it (same intercept pattern Zyntax uses for
+//     `__fstring__`). Body parameter `ctx` is a TypedParameter
+//     with no explicit type — the host/compiler resolves what
+//     `ctx` is at lowering time (e.g. `ViewCtx` once that type
+//     gets registered as a runtime extern).
+//
+//   * `view { stmts }` — implicit "depends on all state". Same
+//     shape as a parameterless `fn view() { stmts }`. Useful for
+//     components where every field drives the UI.
+view_member = { view_with_deps | view_simple }
+
+view_simple = { "view" ~ "{" ~ stmts:statements ~ "}" }
+  -> TypedDeclaration::Function {
+      name: intern("view"),
+      params: [],
+      return_type: Type::Unit,
+      body: Some(TypedBlock { statements: stmts }),
+  }
+
+view_with_deps = {
+    "view" ~ "(" ~ "[" ~ deps:dep_id_list ~ "]" ~ ")"
+    ~ "{" ~ "|" ~ ctx:identifier ~ "|"
+    ~ stmts:statements
+    ~ "}"
+}
+  -> TypedDeclaration::Function {
+      name: intern("view"),
+      params: [TypedParameter { name: intern(ctx) }],
+      return_type: Type::Unit,
+      body: Some(TypedBlock {
+          statements: prepend_list(
+              TypedStatement::Expression {
+                  expr: TypedExpression::Call {
+                      callee: Box::new(TypedExpression::Variable { name: intern("__view_deps__") }),
+                      args: deps,
+                  },
+              },
+              stmts,
+          ),
+      }),
+  }
+
+// Identifier list, comma-or-newline separated. Each name is
+// lowered to a TypedExpression::Variable so the synthesised
+// `__view_deps__(dep1, dep2)` marker call carries the correct
+// expression shapes (the runtime treats them as state-field
+// references at lowering time). Commas optional, same rationale
+// as `struct_field_list`.
+dep_id_list = { first:dep_id_expr ~ rest:dep_id_tail* }
+  -> prepend_list(first, rest)
+
+dep_id_tail = { ","? ~ d:dep_id_expr }
+  -> d
+
+dep_id_expr = { name:identifier }
+  -> TypedExpression::Variable { name: intern(name) }
+
+// `component <Name> { fields }` — bare struct-only form, no
+// methods. Useful for data-only components that other components
+// reference. Lowers to `TypedDeclaration::Class`.
+//
+// Field initializers (`count: i32 = 0`) aren't representable yet:
+// `construct_field` (interpreter.rs:1418-1439) hardcodes
+// `initializer: None`. Until that's patched upstream, default
+// values come from explicit `fn init() { count = 0 }` methods in
+// a separate `impl` block (or in the folded form above).
+component_decl = { "component" ~ name:identifier ~ "{" ~ fields:struct_field_list? ~ "}" }
+  -> TypedDeclaration::Class {
+      name: intern(name),
+      fields: fields,
+  }
+
+// Field list. Each field is either a reactive `state` field
+// (wrapped in `State<T>`) or a plain data field (bare type). PEG
+// ordered alternates inside `struct_field` try `state_field` first
+// because it matches the longer prefix (`state name: T`).
+//
+// Separator is optional — `","?` lets fields be comma-separated,
+// newline-separated (WHITESPACE auto-skips `\n`), or mixed. UI
+// authors writing
+//
+//     component Counter {
+//         state count: i32
+//         state width: i32
+//     }
+//
+// is the natural shape; forcing trailing commas would be hostile.
+// The PEG `*` cleanly stops when the next token isn't a
+// struct_field (e.g. when it's `view` or `}`), so trailing-comma
+// behaviour falls out for free.
+struct_field_list = { first:struct_field ~ rest:struct_field_tail* }
+  -> prepend_list(first, rest)
+
+struct_field_tail = { ","? ~ f:struct_field }
+  -> f
+
+struct_field = { state_field | plain_field }
+
+// `state <name>: <T>` — reactive field. Lowers to `TypedField` with
+// type wrapped in `Type::Named { name: "State", type_args: [T] }`
+// so the host can pattern-match on the wrapper to find reactive
+// fields without needing a TypedField annotation slot (which the
+// grammar interpreter doesn't support today).
+//
+// Reactivity is opt-in. Plain `name: T` fields are non-reactive
+// data — UI doesn't rebuild when they change. Most fields end up
+// being plain (config, derived data, refs); `state` is the
+// exception.
+state_field = { "state" ~ name:identifier ~ ":" ~ inner:state_type }
+  -> TypedField {
+      name: intern(name),
+      ty: Type::Named { name: intern("State"), type_args: [inner] },
+  }
+
+// Bare data field. No `state` keyword, no reactivity wrapper.
+plain_field = { name:identifier ~ ":" ~ ty:state_type }
+  -> TypedField {
+      name: intern(name),
+      ty: ty,
+  }
+
+// Type expressions accepted on fields. Mirrors ml.zyn:1422-1452's
+// `prim_*` shape: each primitive is its own rule so the action
+// constructs `Type::Primitive { name: intern("...") }` with the
+// right tag. Extend as the prototype grows.
+state_type = { state_type_f64 | state_type_i32 | state_type_string }
+
+state_type_i32 = { "i32" }
+  -> Type::Primitive { name: intern("i32") }
+
+// `f64` — double-precision float, used for guard expressions
+// against signal values like `progress.get() >= 1.0`. Maps to
+// Zyntax's `PrimitiveType::F64` (interpreter.rs:2015). f64 (not
+// f32) because the typed-AST `TypedLiteral::Float` variant is
+// f64-only — using f32 would force every literal-vs-signal
+// comparison to cross types. Adding f32 alongside requires
+// either grammar-level type suffixes (`1.0f32`) or
+// explicit-cast support. f64 covers the common case (UI
+// progress, normalised positions) without coercion risk.
+state_type_f64 = { "f64" }
+  -> Type::Primitive { name: intern("f64") }
+
+// DSL surface uses `string` (most-natural keyword) but the typed AST
+// is built as `Type::Primitive { name: intern("str") }` because
+// Zyntax's `primitive_type_from_name` (interpreter.rs:2017)
+// recognises only `str` / `String` for the string primitive,
+// matching ml.zyn's `prim_str` (ml.zyn:1444). Diverging the
+// user-facing keyword from the AST tag is fine — the AST shape is
+// what downstream consumers (type checker, codegen) match on.
+state_type_string = { "string" }
+  -> Type::Primitive { name: intern("str") }
+
+// `impl <Name> { fn ... fn ... }` — methods attached to a
+// previously-declared component. The interpreter's `Impl` path
+// at interpreter.rs:1017+ unwraps each `TypedDeclaration::Function`
+// into a `TypedMethod`. We use `trait_name == for_type ==
+// component_name` (the inherent-impl convention) so the typed AST
+// carries the component as both the implemented trait stub and
+// the type — same shape ml.zyn uses for inherent impl blocks.
+impl_block = { "impl" ~ name:identifier ~ "{" ~ items:impl_items ~ "}" }
+  -> TypedDeclaration::Impl {
+      trait_name: intern(name),
+      for_type: intern(name),
+      items: items,
+  }
+
+impl_items = { item:impl_fn* }
+  -> item
+
+// `fn <name>() { stmts }` inside an impl block. No params, no
+// return type for the prototype slice — adding params (including
+// `self`) and return types is mechanical when handlers / methods
+// taking arguments land. The interpreter's Impl-walk converts this
+// `TypedDeclaration::Function` into a `TypedMethod`.
+impl_fn = { "fn" ~ name:identifier ~ "(" ~ ")" ~ "{" ~ stmts:statements ~ "}" }
+  -> TypedDeclaration::Function {
+      name: intern(name),
+      params: [],
+      return_type: Type::Unit,
+      body: Some(TypedBlock { statements: stmts }),
+  }
+
+// =====================================================================
+// `fsm <Name> { ... }` — finite state machine declaration
+// =====================================================================
+//
+// Declares a state machine: an enum of named states + a metadata
+// payload (initial state, event-driven transitions). Lowers to TWO
+// `TypedDeclaration`s emitted from one rule via `concat_list`,
+// flattened by the patched `get_field_as_decl_list` helper:
+//
+//   1. `TypedDeclaration::Enum` — one variant per `state X` decl,
+//      same shape ml.zyn produces for `enum Foo { Red, Green }`
+//      (ml.zyn:991-1021). Existing `StateTransitions` plumbing in
+//      `blinc_layout::stateful` consumes types of this shape.
+//   2. `TypedDeclaration::Impl` — inherent impl carrying a single
+//      synthesised method `__fsm_meta__()` whose body is a flat
+//      list of marker calls:
+//         __fsm_initial__("InitialState")
+//         __fsm_transition__("From", "Event", "To")
+//         __fsm_transition__("From2", "Event2", "To2")
+//         ...
+//      The host runtime / a downstream pass intercepts these
+//      marker calls (same pattern Zyntax uses for `__fstring__`
+//      and we use for `__view_deps__`) to register the FSM with
+//      the framework and emit the matching `StateTransitions`
+//      `on_event` impl.
+//
+// Why marker calls and not, say, a richer enum-with-data shape:
+// the Zyntax `TypedAST` doesn't have a first-class FSM node, but
+// it does have `TypedDeclaration::Enum` and ordinary call
+// statements. We pour the FSM's metadata into structures the type
+// system already supports, and the runtime/host extracts it. No
+// upstream patches required.
+//
+// Tick-driven transitions (the data-guarded path that lowers to
+// `StateTransitions::on_tick`) aren't in this slice. When they
+// land, the same `__fsm_meta__` body grows additional
+// `__fsm_tick__("State", <guard expr>, "NextState")` markers; no
+// schema change for the existing event-driven shape.
+fsm_decl = {
+    "fsm" ~ name:identifier ~ "{"
+    ~ states:state_decl+
+    ~ "initial" ~ initial:identifier
+    ~ transitions:transition_decl*
+    ~ "}"
+}
+  -> concat_list(
+      [TypedDeclaration::Enum {
+          name: intern(name),
+          variants: states,
+      }],
+      [TypedDeclaration::Impl {
+          trait_name: intern(name),
+          for_type: intern(name),
+          items: [TypedDeclaration::Function {
+              name: intern("__fsm_meta__"),
+              params: [],
+              return_type: Type::Unit,
+              body: Some(TypedBlock {
+                  statements: prepend_list(
+                      TypedStatement::Expression {
+                          expr: TypedExpression::Call {
+                              callee: Box::new(TypedExpression::Variable {
+                                  name: intern("__fsm_initial__"),
+                              }),
+                              args: [TypedExpression::StringLiteral { value: initial }],
+                          },
+                      },
+                      transitions,
+                  ),
+              }),
+          }],
+      }],
+  )
+
+// `state Foo` — a single state variant. Lowers to a `TypedVariant`
+// with `Unit` fields (no associated data). Variants with attached
+// data (e.g. `state Loading(progress: f32)`) aren't in this slice
+// — keeping FSM states stateless mirrors how Blinc's existing
+// `StateTransitions` impls work (ButtonState, ScrollState, etc.).
+//
+// One state per `state` keyword. Multiple variants written as
+// `state Idle, state Loading` (commas optional via the
+// separator-flexibility rules) or one-per-line.
+state_decl = { "state" ~ name:identifier }
+  -> TypedVariant {
+      name: intern(name),
+      fields: TypedVariantFields::Unit,
+  }
+
+// Two transition shapes — event-driven and tick-driven (data
+// guarded). PEG ordered alternates: `event_transition` first
+// because `on` is a strong discriminator; `tick_transition`
+// follows, recognised by the `tick` keyword. The two paths
+// mirror the `StateTransitions` trait's two methods in
+// blinc_layout/src/stateful.rs: `on_event` for event-driven and
+// `on_tick` for data-guarded transitions.
+transition_decl = { event_transition | tick_transition }
+
+// `on <FromState>.<Event> -> <ToState>` — event-driven transition.
+// Lowers to a single `TypedStatement::Expression` wrapping a marker
+// call `__fsm_transition__("From", "Event", "To")`. State and event
+// names are emitted as `TypedExpression::StringLiteral` (the
+// interpreter's `StringLiteral` constructor, interpreter.rs:550-555,
+// trim-matches stripping is a no-op on bare identifiers and the
+// resulting interned string is the variant/event name).
+//
+// Why string-literal args instead of variant-path expressions
+// (e.g. `Foo::Idle`): at parse time we don't have access to the
+// type registry that would resolve identifier→variant, so the
+// marker carries the names as strings and the host resolves them
+// at FSM-registration time. Same approach used for
+// `__fsm_initial__`'s arg.
+event_transition = { "on" ~ from:identifier ~ "." ~ event:identifier ~ "->" ~ to:identifier }
+  -> TypedStatement::Expression {
+      expr: TypedExpression::Call {
+          callee: Box::new(TypedExpression::Variable {
+              name: intern("__fsm_transition__"),
+          }),
+          args: [
+              TypedExpression::StringLiteral { value: from },
+              TypedExpression::StringLiteral { value: event },
+              TypedExpression::StringLiteral { value: to },
+          ],
+      },
+  }
+
+// `tick <FromState> -> <ToState> when <guard expr>` — data-guarded
+// transition. Lowers to a marker call
+// `__fsm_tick__("From", <guard>, "To")` where `<guard>` is the raw
+// expression (NOT a string literal — the runtime/compiler reads
+// the expression to lower the guard into the body of the
+// `StateTransitions::on_tick` impl).
+//
+// At Stateful::refresh_stateful time, the framework calls
+// `state.on_tick()` on the current state; the lowering of
+// `<guard>` decides whether to return `Some(NextState)`. See
+// blinc_layout/src/stateful.rs:`StateTransitions::on_tick` for
+// the runtime contract.
+//
+// Multiple tick rules from the same FromState compose by ordered
+// pattern matching at lowering time — the first guard whose
+// expression evaluates truthy wins. The grammar emits them in
+// declaration order; the runtime/compiler preserves it.
+//
+// Why `when` rather than `if`: `if` is taken by `if_stmt` for
+// conditional rendering inside view bodies. `when` is unambiguous
+// here without overloading the conditional keyword.
+tick_transition = {
+    "tick" ~ from:identifier ~ "->" ~ to:identifier ~ "when" ~ guard:expr
+}
+  -> TypedStatement::Expression {
+      expr: TypedExpression::Call {
+          callee: Box::new(TypedExpression::Variable {
+              name: intern("__fsm_tick__"),
+          }),
+          args: [
+              TypedExpression::StringLiteral { value: from },
+              guard,
+              TypedExpression::StringLiteral { value: to },
+          ],
+      },
+  }
+
+// Collect all statements inside the view block.
+statements = { stmt:statement* }
+  -> stmt
+
+// Statement choice. PEG ordered alternates with backtracking — each
+// alternate's first token (or first few tokens) is enough to
+// distinguish.
+//
+//   * `text_*_stmt` start with the keyword `"text" ~ "("` — they
+//     fail fast on anything else and we fall through.
+//   * `assign_stmt` starts with `identifier ~ "="`. Crucially it
+//     comes AFTER the text-stmt alternates: if a user happens to
+//     name a variable `text`, the literal-`"text"` match in
+//     text_*_stmt succeeds but the following `~ "("` fails, the
+//     alternate backtracks, and `assign_stmt` re-matches the
+//     identifier cleanly.
+//
+// The two `text_*` arms still split on arg shape (string-typed vs
+// integer literal) — Zyntax doesn't have arg-type fn overloading at
+// the type-checker level today, so we route through distinct host
+// callees. Same pattern as `imagepipe.zyn:148-186`'s
+// `rotate90`/`rotate180`/`rotate270` split.
+//
+// `text(<variable>)` for a bare identifier ref isn't supported yet
+// — interpolate via `text(f"{count}")` instead. f-string parts now
+// accept full expressions (see `f_string_expr` below).
+statement = {
+    text_string_stmt | text_int_stmt | if_stmt | let_stmt | assign_stmt
+}
+
+// `let <name> = <expr>` — immutable local binding. Lowers to
+// `TypedStatement::Let` with `is_mutable: false` and no
+// `type_annotation` (the compiler infers from the initializer; see
+// `interpreter.rs:381-403`'s "Let" construction). Mutable lets
+// (`let mut x = ...`) and typed lets (`let x: T = ...`) aren't in
+// the prototype slice — the design intent is that mutation flows
+// through component `state` fields, and typed lets only matter
+// when inference can't pin a type, which doesn't happen at the
+// expression shapes the prototype supports today.
+//
+// Why we use `let` for plain locals AND `state ...` for reactive
+// fields: a `let` inside a method body is just a stack-local binding
+// with no UI-rebuild semantics. State that drives the view lives at
+// the component level (declared via `state name: T` in the field
+// list). Keeping them syntactically distinct prevents the
+// "everything is reactive" trap — most computed values in event
+// handlers don't need to trigger renders.
+let_stmt = { "let" ~ name:identifier ~ "=" ~ init:expr }
+  -> TypedStatement::Let {
+      name: intern(name),
+      type_annotation: None,
+      initializer: Some(init),
+      is_mutable: false,
+  }
+
+// `if <expr> { <stmts> }`, `if <expr> { <stmts> } else if ...`,
+// and `if <expr> { <stmts> } else { <stmts> }`. PEG ordered
+// alternates — the `else if` form is tried first because it
+// consumes the longest prefix; the bare-else and no-else forms
+// fall through.
+//
+// `else if` chains lower naturally via recursion: the second `if`
+// is itself an `if_stmt`, which gets wrapped in a single-statement
+// `TypedBlock` so it fits the `else_branch: TypedBlock` slot the
+// interpreter expects. So
+//
+//     if A { ... } else if B { ... } else { ... }
+//
+// lowers to
+//
+//     If { cond: A, then: {...}, else: { [ If { cond: B, then: {...},
+//         else: { ... } } ] } }
+//
+// which is the standard recursive shape Rust / ml.zyn produce too
+// (ml.zyn:2055-2069 mirrors this pattern).
+if_stmt = { if_else_if_stmt | if_else_stmt | if_simple_stmt }
+
+if_else_if_stmt = {
+    "if" ~ cond:expr ~ then_body:block ~ "else" ~ chained:if_stmt
+}
+  -> TypedStatement::If {
+      condition: cond,
+      then_branch: then_body,
+      else_branch: TypedBlock { statements: [chained] },
+  }
+
+if_else_stmt = { "if" ~ cond:expr ~ then_body:block ~ "else" ~ else_body:block }
+  -> TypedStatement::If {
+      condition: cond,
+      then_branch: then_body,
+      else_branch: else_body,
+  }
+
+if_simple_stmt = { "if" ~ cond:expr ~ then_body:block }
+  -> TypedStatement::If {
+      condition: cond,
+      then_branch: then_body,
+      else_branch: None,
+  }
+
+// Curly-delimited statement block. Distinct from the bare
+// `statements` rule because top-level `view { ... }` and
+// `fn name() { ... }` already provide the surrounding braces. This
+// rule is what `if` / `else` / future loops need: a self-contained
+// brace-delimited stmt sequence that lowers to a `TypedBlock`.
+block = { "{" ~ stmts:statement* ~ "}" }
+  -> TypedBlock { statements: stmts }
+
+// `<target> = <expr>` — assignment statement, lowered as a
+// TypedExpression::Binary with BinaryOp::Assign wrapped in a
+// TypedStatement::Expression. This is how Zyntax represents
+// assignment: assignment is an expression operator, not a distinct
+// statement shape (see TypedAST `BinaryOp::Assign` at
+// typed_ast.rs:592).
+//
+// Target is restricted to a bare identifier for now — handles the
+// only state-mutation shape phase-2 needs (`count = count + 1`).
+// Field-access targets (`self.count = …`) and indexed targets
+// (`buf[0] = …`) get added when components grow methods that
+// reference `self`. The `target` arm uses the same
+// `variable_expr` shape as the right-hand side so the AST is
+// consistent on both sides of `=`.
+//
+// State semantics aren't enforced here. A `state count: i32` field
+// lowers to `Type::Named { State, [i32] }`; `count = count + 1`
+// just produces an Assign Binary. Whether the compiler turns that
+// into `count.set(count.get() + 1)` or a direct cell write is a
+// later (post-parse) lowering concern — keeping the parser dumb
+// matches the "let the compiler handle compiling" direction.
+assign_stmt = { target:variable_expr ~ "=" ~ value:expr }
+  -> TypedStatement::Expression {
+      expr: TypedExpression::Binary {
+          op: "Assign",
+          left: Box::new(target),
+          right: Box::new(value),
+      },
+  }
+
+// =====================================================================
+// text(<string-typed expr>)
+// =====================================================================
+//
+// String form. `text_arg` is either a plain string literal or an
+// f-string — both type-check as `string` so the host's
+// `$Blinc$text(s: string)` accepts either uniformly. F-strings
+// desugar to nested `concat(concat("hi ", __fstring_format__(N)), …)`
+// calls (see `f_string_*` rules below — same shape as
+// `ml.zyn:2885-2906`), and the `@builtin` map at the top of this
+// file routes `concat` / `__fstring_format__` to our inlined host
+// helpers (`$Blinc$concat`, `$Blinc$format_int`).
+text_string_stmt = { "text" ~ "(" ~ s:text_string_arg ~ ")" }
+  -> TypedStatement::Expression {
+      expr: TypedExpression::Call {
+          callee: Box::new(TypedExpression::Variable { name: intern("$Blinc$text") }),
+          args: [s],
+      },
+  }
+
+// Accept either a plain string literal or an f-string. Order: try
+// f-string first because it has the strong `f"` prefix.
+text_string_arg = { f_string_literal | string_literal }
+
+// =====================================================================
+// text(N)
+// =====================================================================
+//
+// Integer form. Same DSL surface (`text(...)`), different host
+// builtin (`$Blinc$text_int(n: i32)`), different scene op
+// (`DslOp::IntText(n)`). The dispatch is grammar-level via PEG
+// alternates — Zyntax doesn't have arg-type-based fn overloading at
+// the type-checker level today, so we route through distinct
+// callees instead. Same pattern as the `rotate90`/`rotate180`/
+// `rotate270` split in `imagepipe.zyn:148-186`.
+//
+// Probes the i32 ABI through Cranelift's JIT — the host's extern
+// receives an actual `i32` register, not a length-prefixed pointer.
+text_int_stmt = { "text" ~ "(" ~ n:integer ~ ")" }
+  -> TypedStatement::Expression {
+      expr: TypedExpression::Call {
+          callee: Box::new(TypedExpression::Variable { name: intern("$Blinc$text_int") }),
+          args: [n],
+      },
+  }
+
+// =====================================================================
+// Terminals
+// =====================================================================
+
+// String literal — the raw matched text including quotes lands in
+// `value`. The host's `$Blinc$text` is responsible for unescaping.
+// Mirrors the imagepipe convention — see ml.zyn / imagepipe.zyn.
+string_literal = @{ "\"" ~ string_inner* ~ "\"" }
+  -> TypedExpression::StringLiteral { value: text() }
+
+string_inner = { !("\"" | "\\") ~ ANY | "\\" ~ ANY }
+
+// Signed integer literal. Atomic rule — `text()` returns the matched
+// digits + optional sign which `parse_int()` interprets. Mirrors
+// imagepipe.zyn's `signed_integer` rule.
+integer = @{ ("+" | "-")? ~ ASCII_DIGIT+ }
+  -> TypedExpression::IntLiteral { value: parse_int(text()) }
+
+// Float literal. Mirrors ml.zyn:2846 — accepts both `1.0`-style
+// and scientific (`1e-3`) forms. Must come before `integer` in
+// `primary_expr` because `1` alone is a valid prefix of `1.0`,
+// and PEG ordered alternates pick the first match. The parsed
+// value is a `f64` at the typed-AST level; signal accessors
+// (`__signal_get_f32`) downcast where needed.
+float = @{
+    ("+" | "-")? ~ ASCII_DIGIT+ ~
+    (
+        "." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+      | ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+
+    )
+}
+  -> TypedExpression::FloatLiteral { value: parse_float(text()) }
+
+// =====================================================================
+// F-strings
+// =====================================================================
+//
+// `f"...{expr}..."` desugars to nested `concat(concat(text_part,
+// __fstring_format__(expr)), text_part)` calls via `fold_concat`
+// (the grammar-action helper at zyn_peg/src/runtime2/interpreter.rs:2323
+// that builds the call tree from a list of parts). Both `concat` and
+// `__fstring_format__` resolve through the `@builtin` map at the top
+// of this file — concat goes to `$Blinc$concat`, the format helper
+// goes to `$Blinc$format_int`.
+//
+// Mirrors ml.zyn:2885-2917 verbatim except for the format-spec
+// support and triple-quoted variant; we'll add those when needed.
+
+// Use Zyntax's standard `fold_concat` action — same shape as
+// ml.zyn:2895. The grammar's job is to parse and produce TypedAST;
+// the compiler handles SSA / codegen for `__fstring__` calls.
+f_string_literal = { "f\"" ~ parts:f_string_part* ~ "\"" }
+  -> fold_concat(parts)
+
+f_string_part = { f_string_interp | f_string_text }
+
+// `{expr}` interpolation. The expr is wrapped in a
+// `__fstring_format__` call so the runtime stringifies it. The
+// `@builtin` map at the top of this file routes
+// `__fstring_format__` to `$Blinc$format_int(i32) -> string`.
+// Expanding the format helper to dispatch on type (string, float,
+// bool, etc.) is a follow-up.
+f_string_interp = { "{" ~ e:f_string_expr ~ "}" }
+  -> TypedExpression::Call {
+      callee: Box::new(TypedExpression::Variable { name: intern("__fstring_format__") }),
+      args: [e],
+  }
+
+// Expressions allowed inside `{...}`. Delegates to the full
+// expression grammar — variables, integer literals, and binary
+// arithmetic all flow through. Adding more expression shapes (call
+// exprs, field access) happens by extending `primary_expr` below.
+f_string_expr = { e:expr }
+  -> e
+
+// Plain text run inside an f-string (between interpolations).
+// Atomic — `text()` returns the matched run as a
+// `TypedExpression::StringLiteral`.
+f_string_text = @{ (!("\"" | "{" | "}") ~ ANY)+ }
+  -> TypedExpression::StringLiteral { value: text() }
+
+// =====================================================================
+// Expressions
+// =====================================================================
+//
+// Standard precedence ladder, mirroring the shape ml.zyn uses
+// (`additive_expr` / `multiplicative_expr` / `primary_expr` —
+// ml.zyn:2417-2462). We keep it small for the phase-2 minimal slice:
+//
+//     expr → additive_expr → multiplicative_expr → primary_expr
+//
+// Comparisons, logical ops, ranges, and method calls aren't needed
+// yet for state mutation + interpolated rendering — we'll extend
+// outward as components grow conditionals and method dispatch.
+
+expr = { e:comparison_expr } -> e
+
+// Comparison layer. Single-shot, non-chainable — `a < b < c` is
+// a parse error, not `(a < b) < c`. Mirrors ml.zyn:2384-2396 with
+// the `comparison_with_op | comparison_no_op` shape: when there's
+// a comparison operator we build a Binary, otherwise we fall
+// through to `additive_expr`.
+//
+// Comparison binds looser than additive (`a + b < c + d` →
+// `Binary(a + b, Lt, c + d)`), matching every C-family precedence
+// table. The interpreter's `string_to_binary_op`
+// (interpreter.rs:4430-4435) already maps `<` / `>` / `==` / `!=`
+// / `<=` / `>=` to the corresponding `BinaryOp` variants.
+comparison_expr = { comparison_with_op | comparison_no_op }
+
+comparison_with_op = { left:additive_expr ~ op:comparison_op ~ right:additive_expr }
+  -> TypedExpression::Binary {
+      op: op,
+      left: Box::new(left),
+      right: Box::new(right),
+  }
+
+comparison_no_op = { inner:additive_expr }
+  -> inner
+
+// Order matters within `comparison_op`: `<=` / `>=` / `==` / `!=`
+// must come before `<` / `>` / `=` so PEG doesn't greedy-match the
+// shorter prefix. Quoted as an atomic rule (`@`) so the matched
+// text is what the action's `op:` field receives.
+comparison_op = @{ "==" | "!=" | "<=" | ">=" | "<" | ">" }
+
+// `a + b - c` → Binary(Binary(a, +, b), -, c). `fold_left_ops` is
+// the standard Zyntax helper at runtime2/interpreter.rs:2148 — it
+// takes a first operand and a list of [op, operand] pairs and
+// folds them left-associatively. The op string (`"+"` or `"-"`) is
+// converted to BinaryOp via `string_to_binary_op`
+// (interpreter.rs:4422-4448), which already accepts the ASCII forms
+// we emit here.
+additive_expr = { first:multiplicative_expr ~ rest:additive_rest* }
+  -> fold_left_ops(first, rest)
+
+additive_rest = { op:additive_op ~ operand:multiplicative_expr }
+  -> make_pair(op, operand)
+
+additive_op = @{ "+" | "-" }
+
+// Same pattern for `*` / `/`. Modulo (`%`) and matrix mul (`@`)
+// don't add value for the state-mutation slice and would only
+// invite questions about i32 wrap behaviour — punting until a real
+// use case shows up.
+multiplicative_expr = { first:postfix_expr ~ rest:multiplicative_rest* }
+  -> fold_left_ops(first, rest)
+
+multiplicative_rest = { op:multiplicative_op ~ operand:postfix_expr }
+  -> make_pair(op, operand)
+
+multiplicative_op = @{ "*" | "/" }
+
+// Postfix layer. Method calls (`obj.method(args)`) and bare field
+// access (`obj.field`) — both bind tighter than any binary
+// operator. Mirrors ml.zyn:2461-2479's postfix shape and uses
+// Zyntax's built-in `fold_postfix` helper
+// (runtime2/interpreter.rs:2286-2322) which dispatches each suffix
+// to TypedExpression::MethodCall / TypedExpression::Field.
+//
+// Index and slice suffixes are left out of the prototype slice —
+// they only matter once we add lists/maps. Adding them is
+// mechanical when needed (same Suffix-shape as below).
+postfix_expr = { base:primary_expr ~ suffixes:postfix_suffix* }
+  -> fold_postfix(base, suffixes)
+
+// Order matters: `suffix_method` first so `obj.foo(args)` doesn't
+// get split into `Field(obj.foo)` + an unconsumed `(args)` token.
+postfix_suffix = { suffix_method | suffix_field }
+
+suffix_method = { "." ~ method:identifier ~ "(" ~ args:call_args_list? ~ ")" }
+  -> SuffixMethod {
+      method: intern(method),
+      args: args,
+  }
+
+suffix_field = { "." ~ field:identifier }
+  -> SuffixField {
+      field: intern(field),
+  }
+
+// Argument list, comma-or-newline separated. `prepend_list` is
+// the standard helper Zyntax exposes for stitching `first ~
+// rest*` into a flat list. WHITESPACE auto-skips so authors can
+// layout args one per line; the optional `","?` lets them mix in
+// commas where they prefer.
+call_args_list = { first:expr ~ rest:call_args_tail* }
+  -> prepend_list(first, rest)
+
+call_args_tail = { ","? ~ e:expr }
+  -> e
+
+// Primary expressions. PEG ordered alternates — order matters:
+//
+//   1. `paren_expr` first because `(` is unambiguous.
+//   2. `f_string_literal` before `string_literal` — `f"` is a
+//      stronger prefix than `"`.
+//   3. `string_literal` before `float`/`integer` — quotes vs digits.
+//   4. `float` before `integer` — both start with digits, and the
+//      float rule consumes the longer prefix (`1.0` matches float;
+//      `1` alone falls through to integer).
+//   5. `integer` before `variable_expr` — digits start with a
+//      digit character which `identifier`'s `ASCII_ALPHA` head
+//      can't match, so the order here is mostly cosmetic, but
+//      keeping literals together feels right.
+//   6. `variable_expr` last as the catch-all bare-name shape.
+primary_expr = {
+    paren_expr |
+    f_string_literal |
+    string_literal |
+    float |
+    integer |
+    variable_expr
+}
+
+// Parenthesised grouping. Doesn't synthesise a wrapper expression —
+// PEG's pass-through (`-> e`) just hands the inner expression back
+// up the precedence ladder. Avoids an unnecessary AST node.
+paren_expr = { "(" ~ e:expr ~ ")" } -> e
+
+// Bare identifier reference. Lowers to TypedExpression::Variable
+// with the interned name. The interpreter's `parsed_value_to_expr`
+// (interpreter.rs) accepts this shape for fold_left_ops operands,
+// so it composes cleanly with the additive/multiplicative chain.
+variable_expr = { name:identifier }
+  -> TypedExpression::Variable { name: intern(name) }
+
+// =====================================================================
+// Terminals: identifier
+// =====================================================================
+identifier = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// Whitespace + comments are skipped wherever they appear.
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
+COMMENT = _{ "//" ~ (!"\n" ~ ANY)* }

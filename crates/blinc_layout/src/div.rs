@@ -392,8 +392,10 @@ pub struct Div {
     pub(crate) event_handlers: crate::event_handler::EventHandlers,
     /// Element ID for selector API queries
     pub(crate) element_id: Option<String>,
-    /// CSS class names for selector matching
-    pub(crate) classes: Vec<String>,
+    /// CSS class names for selector matching. Interned `Arc<str>` so
+    /// repeated class names share one allocation (see
+    /// [`blinc_core::intern`]).
+    pub(crate) classes: Vec<std::sync::Arc<str>>,
     // 3D transform properties (stored separately to flow through to render_props)
     pub(crate) rotate_x: Option<f32>,
     pub(crate) rotate_y: Option<f32>,
@@ -585,13 +587,15 @@ impl Div {
     ///
     /// Classes can be used with `.class` selectors in stylesheets.
     /// Multiple classes can be added by chaining `.class()` calls.
-    pub fn class(mut self, name: impl Into<String>) -> Self {
-        self.classes.push(name.into());
+    /// Names are interned so a class like `"cn-button"` used by
+    /// hundreds of nodes shares a single underlying allocation.
+    pub fn class(mut self, name: impl AsRef<str>) -> Self {
+        self.classes.push(blinc_core::intern::intern(name.as_ref()));
         self
     }
 
     /// Get the element's class list
-    pub fn classes(&self) -> &[String] {
+    pub fn classes(&self) -> &[std::sync::Arc<str>] {
         &self.classes
     }
 
@@ -3896,6 +3900,14 @@ pub trait ElementBuilder {
         None
     }
 
+    /// Whether this element opts in to viewport culling for its
+    /// descendants. The renderer skips painting any descendant whose
+    /// post-scroll bounds don't intersect the visible viewport (plus a
+    /// small overscan buffer). Only meaningful on scroll containers.
+    fn viewport_cull(&self) -> bool {
+        false
+    }
+
     /// Get motion animation config for a child at given index
     ///
     /// This is only implemented by Motion containers. The index corresponds
@@ -4009,8 +4021,12 @@ pub trait ElementBuilder {
         &mut []
     }
 
-    /// Get the element's CSS class list for selector matching
-    fn element_classes(&self) -> &[String] {
+    /// Get the element's CSS class list for selector matching.
+    ///
+    /// Returns interned `Arc<str>` rather than owned `String` so that
+    /// repeated class names (e.g. `"cn-button"` used by hundreds of
+    /// nodes) share a single allocation. See [`blinc_core::intern`].
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
         &[]
     }
 
@@ -4151,7 +4167,7 @@ impl ElementBuilder for std::sync::Arc<dyn ElementBuilder> {
         self.as_ref().element_id()
     }
 
-    fn element_classes(&self) -> &[String] {
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
         self.as_ref().element_classes()
     }
 
@@ -4272,7 +4288,7 @@ impl ElementBuilder for Div {
         &mut self.children
     }
 
-    fn element_classes(&self) -> &[String] {
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
         &self.classes
     }
 

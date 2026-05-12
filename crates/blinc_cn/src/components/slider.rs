@@ -102,8 +102,8 @@ impl StateTransitions for SliderThumbState {
 
 /// BlincComponent for slider state and animations
 /// Generates type-safe hooks that persist across UI rebuilds:
-/// - SliderState::use_thumb_offset(ctx, initial, config) -> SharedAnimatedValue
-/// - SliderState::use_drag_start_x(ctx, 0.0) -> State<f32>
+/// - `SliderState::use_thumb_offset(ctx, initial, config) -> SharedAnimatedValue`
+/// - `SliderState::use_drag_start_x(ctx, 0.0) -> State<f32>`
 #[derive(BlincComponent)]
 #[allow(dead_code)]
 struct SliderState {
@@ -539,7 +539,7 @@ impl Slider {
     }
 
     /// Add a CSS class for selector matching
-    pub fn class(mut self, name: impl Into<String>) -> Self {
+    pub fn class(mut self, name: impl AsRef<str>) -> Self {
         self.inner = self.inner.class(name);
         self
     }
@@ -568,7 +568,7 @@ impl ElementBuilder for Slider {
         self.inner.element_type_id()
     }
 
-    fn element_classes(&self) -> &[String] {
+    fn element_classes(&self) -> &[std::sync::Arc<str>] {
         self.inner.element_classes()
     }
 }

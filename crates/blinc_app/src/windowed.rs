@@ -202,6 +202,11 @@ pub(crate) struct WindowState {
     /// time and the per-frame clear-color alpha. Mirrors
     /// `WindowConfig::transparent`.
     pub transparent: bool,
+    /// Last cursor style we asked the OS to display, so per-frame
+    /// `set_cursor()` calls become a no-op when the cursor hasn't
+    /// changed (the mouse-move handler may run hundreds of times a
+    /// second during a drag — we don't want to syscall every iteration).
+    pub last_cursor: Option<blinc_platform::Cursor>,
 }
 
 #[cfg(all(feature = "windowed", not(target_os = "android")))]
@@ -228,6 +233,7 @@ impl WindowState {
             active_touch_ids: std::collections::HashSet::new(),
             ui_builder: None,
             transparent: false,
+            last_cursor: None,
         }
     }
 }
@@ -1151,28 +1157,6 @@ impl WindowedContext {
         self.reactive.lock().unwrap().get_derived(derived)
     }
 
-    /// Create an effect that runs when its dependencies change
-    ///
-    /// Effects are useful for side effects like logging, network requests,
-    /// or syncing state with external systems.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let count = ctx.use_signal(0);
-    ///
-    /// ctx.use_effect(move |cx| {
-    ///     let value = cx.get(count).unwrap_or(0);
-    ///     println!("Count changed to: {}", value);
-    /// });
-    /// ```
-    pub fn use_effect<F>(&self, run: F) -> blinc_core::reactive::Effect
-    where
-        F: FnMut(&ReactiveGraph) + Send + 'static,
-    {
-        self.reactive.lock().unwrap().create_effect(run)
-    }
-
     /// Batch multiple signal updates into a single reactive update
     ///
     /// This is useful when updating multiple signals at once to avoid
@@ -1842,6 +1826,32 @@ impl WindowedContext {
         }
     }
 
+    /// Drop every accumulated stylesheet and reset `rebuild_count` so a
+    /// subsequent rebuild looks like the very first one.
+    ///
+    /// Called by the hot-reload runner before re-invoking the user's UI
+    /// closure under the freshly-applied subsecond patch. Without this:
+    ///
+    /// - `add_css` cascades, so deleted rules from the pre-patch run
+    ///   would linger in the merged stylesheet.
+    /// - `css_sources` would grow unboundedly across every patch.
+    /// - The common `if ctx.rebuild_count == 0 { ctx.add_css(...) }`
+    ///   guard in app code would skip re-registration entirely, so
+    ///   even live rules wouldn't refresh.
+    ///
+    /// Also drops the global `ACTIVE_STYLESHEET` so widgets reaching
+    /// for CSS overrides during the rebuild don't see a stale Arc.
+    /// Outside hot-reload this would throw away cascaded user state;
+    /// the method is `#[doc(hidden)]` and only invoked from the
+    /// hot-reload trigger.
+    #[doc(hidden)]
+    pub fn reset_for_hot_reload(&mut self) {
+        self.stylesheet = None;
+        self.css_sources.clear();
+        self.rebuild_count = 0;
+        blinc_layout::css_parser::clear_active_stylesheet();
+    }
+
     /// Reparse all stored CSS sources with fresh theme variables.
     ///
     /// Called automatically when the theme color scheme changes to ensure
@@ -2244,6 +2254,20 @@ impl WindowedApp {
 
         let platform = DesktopPlatform::new().map_err(|e| BlincError::Platform(e.to_string()))?;
         let primary_transparent = config.transparent;
+        let primary_max_frame_latency = config.max_frame_latency.clamp(1, 3);
+        // Snapshot the animation FPS cap before `config` moves into the
+        // event loop. `None` keeps every animation frame at native vsync
+        // (the existing behaviour, right for games / video / scrubbing
+        // UIs); `Some(N)` paces animation-only redraws via
+        // `wake_proxy.wake_at(1000/N ms)` so the chain doesn't loop at
+        // full refresh just because a slow CSS keyframe is on screen.
+        let animation_fps_cap = config.animation_fps_cap;
+        // Capture animation_thread_mode pre-move (config gets moved
+        // into `create_event_loop_with_config` below). Drives whether
+        // the AnimationScheduler spawns its bg thread or relies on
+        // the main thread's per-frame `tick()` call (Phase 3) to
+        // advance springs / keyframes / timelines / tick_callbacks.
+        let animation_thread_mode = config.animation_thread_mode;
         let event_loop = platform
             .create_event_loop_with_config(config)
             .map_err(|e| BlincError::Platform(e.to_string()))?;
@@ -2252,6 +2276,68 @@ impl WindowedApp {
         let wake_proxy = event_loop.wake_proxy();
         // Clone for the open_window callback
         let wake_proxy_for_windows = event_loop.wake_proxy();
+
+        // Clone for the redraw-chain pacing path. When `animation_fps_cap`
+        // is set, the chain calls `wake_at` on this proxy instead of
+        // `request_redraw`, so the platform shim's lazy timer thread
+        // delivers the next frame after the configured delay.
+        let wake_proxy_for_pacing = event_loop.wake_proxy();
+
+        // Frame-dirty flag. The OS sends `Event::Frame` at vsync to focused
+        // windows whether or not we asked for a redraw, which means a
+        // statically-rendered focused UI was burning CPU re-rendering an
+        // identical scene every ~16 ms. We now skip the entire frame
+        // handler when this flag is `false` at frame entry. Any mutation
+        // we care about — input event, lifecycle event, scheduler wake
+        // (set by the wake callback below), end-of-frame signal indicating
+        // ongoing work — flips it back to `true`. Initial value is `true`
+        // so the first frame always renders.
+        let frame_dirty = Arc::new(AtomicBool::new(true));
+        let frame_dirty_for_wake = Arc::clone(&frame_dirty);
+
+        // If the `hot-reload` feature is on AND we're a child of
+        // `dx serve --hot-patch`, spawn the websocket client that
+        // sends our ASLR offset to the dev-server and applies
+        // incoming jump-table patches. The wake closure is what lets
+        // the patch thread nudge the event loop out of
+        // `ControlFlow::Wait` after a patch lands — without it the
+        // render tree only refreshes on the next natural redraw
+        // (mouse move, focus change, etc.), which is not what the
+        // user wants from a hot-reload signal.
+        //
+        // The closure also flips `frame_dirty` because Event::Frame
+        // returns early when both `frame_dirty` and `peek_needs_redraw`
+        // are false. Without that flip, `wake_proxy.wake()` reaches
+        // the event loop and `request_redraw()` fires, but the
+        // resulting Event::Frame bails before our rebuild check at
+        // line ~4244 ever runs — the patch lands silently and the
+        // window doesn't update until something else happens to
+        // dirty the frame.
+        //
+        // No-op when the dx env vars aren't set, which is every
+        // normal `cargo run` invocation, so the call is safe to make
+        // unconditionally here.
+        #[cfg(feature = "hot-reload")]
+        {
+            let wp = event_loop.wake_proxy();
+            let frame_dirty_hr = Arc::clone(&frame_dirty);
+            crate::hot_reload::connect(move || {
+                frame_dirty_hr.store(true, Ordering::Release);
+                wp.wake();
+            });
+        }
+
+        // Cross-thread mirror of the renderer's `visible_anim_active`
+        // flag. The end-of-frame chain (main thread) writes the
+        // current frame's value here; the scheduler's wake callback
+        // (bg thread) reads it. When `false`, the scheduler's
+        // periodic ticks for off-screen-only animations don't kick
+        // the main thread — the chain dies until input or scroll
+        // brings the animation back into view. Starts `true` so the
+        // very first scheduler activity wakes the main thread to
+        // render the initial frame.
+        let visible_anim_for_wake = Arc::new(AtomicBool::new(true));
+        let visible_anim_for_wake_cb = Arc::clone(&visible_anim_for_wake);
 
         // Shared dirty flag for element refs
         let ref_dirty_flag: RefDirtyFlag = Arc::new(AtomicBool::new(false));
@@ -2279,9 +2365,40 @@ impl WindowedApp {
         // Shared animation scheduler for spring/keyframe animations
         // Runs on background thread so animations continue even when window loses focus
         let mut scheduler = AnimationScheduler::new();
-        // Set up wake callback so animation thread can wake the event loop
-        scheduler.set_wake_callback(move || wake_proxy.wake());
-        scheduler.start_background();
+        // The wake callback gets installed in either thread mode.
+        // Used by:
+        //   * Bg thread (when `start_background()` is called below) —
+        //     fires on idle→active edge so the main thread wakes up
+        //     and starts rendering.
+        //   * `notify_active()` paths inside the scheduler
+        //     (`add_spring` / `add_keyframe` / etc.) — fires whenever
+        //     an animation gets registered. Necessary in
+        //     `AnimationThreadMode::Main` for off-thread registrations
+        //     (custom timer thread, async task) to trigger a render;
+        //     redundant-but-harmless in `Background` since the bg
+        //     thread also fires it on its idle→active edge.
+        // Marks `frame_dirty` so the resulting Event::Frame actually
+        // renders.
+        let _ = visible_anim_for_wake_cb; // wake gate moved into scheduler edge trigger
+        scheduler.set_wake_callback(move || {
+            frame_dirty_for_wake.store(true, Ordering::Release);
+            wake_proxy.wake();
+        });
+        // Spawn the bg ticking thread only in `Background` mode. In
+        // `Main` (default), the windowed app's Phase 3 calls
+        // `RenderState::tick` which in turn calls
+        // `AnimationScheduler::tick` synchronously — eliminating phase
+        // jitter and removing one thread from the runtime. The
+        // `tick()` method itself is a no-op when a bg thread is
+        // running, so the two paths are mutually exclusive.
+        match animation_thread_mode {
+            blinc_platform::AnimationThreadMode::Background => {
+                scheduler.start_background();
+            }
+            blinc_platform::AnimationThreadMode::Main => {
+                // No bg thread. Main-thread tick handles it.
+            }
+        }
         let animations: SharedAnimationScheduler = Arc::new(Mutex::new(scheduler));
 
         // Set global scheduler handle for StateContext and component access
@@ -2290,24 +2407,15 @@ impl WindowedApp {
             blinc_animation::set_global_scheduler(scheduler_handle);
         }
 
-        // Shared CSS animation/transition store
-        // The scheduler's background thread keeps the redraw loop alive at 120fps
-        // via the tick callback below (acts as keep-alive signal). Actual ticking
-        // happens synchronously on the main thread to avoid phase jitter between
-        // the bg thread's tick timing and the frame's render timing.
+        // Shared CSS animation/transition store. CSS ticking happens
+        // synchronously on the main thread (Phase 3 of the frame loop)
+        // to avoid phase jitter; the bg scheduler thread does not drive
+        // it. Once a CSS animation/transition is live, the main thread
+        // self-perpetuates via `request_redraw()` at the end of the
+        // frame as long as `css_needs_redraw` is true (see Phase 5).
+        // No keep-alive scheduler callback is needed — the bg thread
+        // can stay parked while only CSS work is in flight.
         let css_anim_store = Arc::new(Mutex::new(blinc_layout::CssAnimationStore::new()));
-        {
-            animations
-                .lock()
-                .unwrap()
-                .add_tick_callback(move |_dt_secs| {
-                    // Keep-alive no-op: the callback's existence ensures the scheduler
-                    // considers tick_callbacks as "active", triggering wake_callback()
-                    // at 120fps so the main thread gets continuous frame requests
-                    // while CSS animations are running.
-                    // Actual ticking happens on the main thread to avoid phase jitter.
-                });
-        }
 
         // Shared element registry for query API
         let element_registry: SharedElementRegistry =
@@ -2400,6 +2508,120 @@ impl WindowedApp {
 
         event_loop
             .run(move |event, window| {
+                // Mark the next frame dirty for any non-Frame event. Input,
+                // lifecycle changes, drag/drop, etc. are all "something
+                // happened" signals — the next OS frame should actually
+                // render rather than skip. Frame events are the OS asking
+                // us to render; whether we should is decided below by the
+                // `frame_dirty` swap at the top of `Event::Frame`.
+                //
+                // Exception: bare mouse moves are too frequent to flip
+                // unconditionally (60–120 events/s during drag and hover).
+                // For those we let the input handler decide whether anything
+                // visible changed; if a hover handler / Stateful dispatch
+                // fires, it sets `NEEDS_REDRAW`, which the `Event::Frame`
+                // gate also honours. Skipping the blanket flip here keeps
+                // a static UI from re-rendering at vsync just because the
+                // pointer is in motion.
+                //
+                // We pair the dirty flip with a `request_redraw()` because
+                // under `ControlFlow::Wait` (set by the desktop platform
+                // shim — Linux/Wayland/X11 had no other pacing and burned
+                // 25% CPU just spinning the loop in Poll) `frame_dirty`
+                // alone does nothing; winit only delivers the next
+                // `RedrawRequested → Event::Frame` if someone actually
+                // asks for it. macOS used to coast on Poll's
+                // request_redraw spam, which we removed at the same time.
+                // Per-event trace for debugging idle-CPU / mouse-move
+                // hot paths. Silent in normal builds (`tracing::trace!`
+                // doesn't evaluate args when the target is disabled).
+                // Run with
+                //   RUST_LOG=blinc_app::events=trace
+                // and the output gets one line per event; pipe through
+                //   `grep -oE 'kind=[^ ]+' | sort | uniq -c`
+                // to see counts per event-kind over a sampling window.
+                tracing::trace!(
+                    target: "blinc_app::events",
+                    kind = match &event {
+                        Event::Frame(_) => "frame",
+                        Event::Input(_, InputEvent::Mouse(MouseEvent::Moved { .. })) =>
+                            "input.mouse.moved",
+                        Event::Input(_, InputEvent::Mouse(MouseEvent::ButtonPressed { .. })) =>
+                            "input.mouse.pressed",
+                        Event::Input(_, InputEvent::Mouse(MouseEvent::ButtonReleased { .. })) =>
+                            "input.mouse.released",
+                        Event::Input(_, InputEvent::Mouse(MouseEvent::Entered)) =>
+                            "input.mouse.entered",
+                        Event::Input(_, InputEvent::Mouse(MouseEvent::Left)) =>
+                            "input.mouse.left",
+                        Event::Input(_, InputEvent::Scroll { .. }) => "input.scroll",
+                        Event::Input(_, InputEvent::ScrollEnd) => "input.scroll_end",
+                        Event::Input(_, InputEvent::Keyboard(_)) => "input.keyboard",
+                        Event::Input(_, InputEvent::Touch(_)) => "input.touch",
+                        Event::Input(_, InputEvent::Pinch { .. }) => "input.pinch",
+                        Event::Input(_, InputEvent::Rotation { .. }) => "input.rotation",
+                        Event::Input(_, _) => "input.other",
+                        Event::Window(_, WindowEvent::Resized { .. }) => "window.resized",
+                        Event::Window(_, WindowEvent::Moved { .. }) => "window.moved",
+                        Event::Window(_, WindowEvent::CloseRequested) => "window.close_requested",
+                        Event::Window(_, WindowEvent::Focused(_)) => "window.focused",
+                        Event::Window(_, WindowEvent::ScaleFactorChanged { .. }) =>
+                            "window.scale_factor_changed",
+                        Event::Window(_, WindowEvent::DroppedFileHovered { .. }) =>
+                            "window.dropped_file_hovered",
+                        Event::Window(_, WindowEvent::DroppedFile { .. }) =>
+                            "window.dropped_file",
+                        Event::Window(_, WindowEvent::DroppedFileCancelled) =>
+                            "window.dropped_file_cancelled",
+                        Event::Lifecycle(LifecycleEvent::Resumed) => "lifecycle.resumed",
+                        Event::Lifecycle(LifecycleEvent::Suspended) => "lifecycle.suspended",
+                        Event::Lifecycle(LifecycleEvent::LowMemory) => "lifecycle.low_memory",
+                    },
+                    "blinc event"
+                );
+
+                let is_bare_mouse_move = matches!(
+                    event,
+                    Event::Input(_, InputEvent::Mouse(MouseEvent::Moved { .. }))
+                );
+                if !matches!(event, Event::Frame(_)) && !is_bare_mouse_move {
+                    frame_dirty.store(true, Ordering::Release);
+                    window.request_redraw();
+                }
+
+                // Bare-mouse-move fast path. Linux high-rate mice
+                // (gaming mice on Hyprland in particular) deliver
+                // 1 kHz `CursorMoved` events; running the full input
+                // pipeline (Vec scratch alloc, `Box<dyn FnMut>`
+                // event-callback alloc, hit_test, hover diff, cursor
+                // resolve) once per move puts the process at ~60% of
+                // a CPU on `hello_blinc` even though no element in
+                // the tree could react. The Moved branch already
+                // had an early-return guard with the same predicate,
+                // but the prelude that gets us there allocated and
+                // destructed unconditionally — so the branch ran
+                // 1000 times/sec on a UI that needs zero pointer
+                // work.
+                //
+                // The cached predicate on `RenderTree` is one
+                // relaxed atomic load; recomputed lazily on next
+                // read after a tree mutation invalidates it. For a
+                // static UI with no handlers / no `:hover` / no
+                // `cursor:` styles it stays `false` from the first
+                // call after build until the next rebuild, so this
+                // branch returns ~immediately and the closure exits
+                // without touching `ws.ctx`, `ws.render_tree`, or
+                // any allocator.
+                if is_bare_mouse_move {
+                    let pipeline_needed = ws
+                        .render_tree
+                        .as_ref()
+                        .is_some_and(|tree| tree.mouse_move_pipeline_needed());
+                    if !pipeline_needed {
+                        return ControlFlow::Continue;
+                    }
+                }
+
                 // Check if this event is for a secondary window
                 let event_wid = match &event {
                     Event::Window(wid, _) | Event::Input(wid, _) | Event::Frame(wid) => Some(*wid),
@@ -2550,7 +2772,7 @@ impl WindowedApp {
                                         let ui: Div =
                                             if let Some(ref mut builder) = sws.ui_builder {
                                                 if let Some(ref mut sctx) = sws.ctx {
-                                                    builder(sctx)
+                                                    invoke_window_builder(builder, sctx)
                                                 } else {
                                                     div().w(w).h(h)
                                                 }
@@ -2661,7 +2883,7 @@ impl WindowedApp {
                                         present_mode: wgpu::PresentMode::AutoVsync,
                                         alpha_mode,
                                         view_formats: vec![],
-                                        desired_maximum_frame_latency: 2,
+                                        desired_maximum_frame_latency: primary_max_frame_latency,
                                     };
                                     surf.configure(blinc_app.device(), &config);
 
@@ -2669,6 +2891,27 @@ impl WindowedApp {
                                     crate::text_measurer::init_text_measurer_with_registry(
                                         blinc_app.font_registry(),
                                     );
+
+                                    // Adapt the scheduler's tick rate to the display's
+                                    // refresh rate. Winit returns refresh in millihertz;
+                                    // clamp to a sane range so a 240/360 Hz display
+                                    // doesn't pin a CPU and a missing/zero report
+                                    // doesn't drop us to 0 fps.
+                                    {
+                                        let refresh = window
+                                            .winit_window()
+                                            .current_monitor()
+                                            .and_then(|m| m.refresh_rate_millihertz())
+                                            .map(|mhz| (mhz / 1000).clamp(30, 120))
+                                            .unwrap_or(60);
+                                        if let Ok(mut sched) = animations.lock() {
+                                            sched.set_target_fps(refresh);
+                                            tracing::debug!(
+                                                "Scheduler target_fps adapted to display refresh: {} Hz",
+                                                refresh
+                                            );
+                                        }
+                                    }
 
                                     ws.surface = Some(surf);
                                     ws.surface_config = Some(config);
@@ -3035,6 +3278,56 @@ impl WindowedApp {
                                         let lx = x / scale;
                                         let ly = y / scale;
 
+                                        // Skip the heavy mouse-move pipeline (hit_test_all,
+                                        // hover-set diff, POINTER_ENTER / LEAVE emission,
+                                        // drag-delta tracking) if nothing in the tree could
+                                        // react to it: no node with a registered pointer
+                                        // handler, no CSS rule keyed on `:hover` / `:active`,
+                                        // and no node carries a custom `cursor:` style that
+                                        // would need re-resolving when the pointer crosses
+                                        // an element boundary.
+                                        //
+                                        // `hello_blinc` and similar static views now stay
+                                        // at near-zero CPU even during a continuous drag.
+                                        // Per-move cost was previously: hit_test_all +
+                                        // hover diff + DRAG emission + cursor hit_test +
+                                        // OS `set_cursor` syscall. With nothing listening,
+                                        // all of that is wasted work.
+                                        let needs_pointer_dispatch =
+                                            tree.handler_registry().has_any_pointer_handler()
+                                                || tree.stylesheet().is_some_and(|s| {
+                                                    s.has_pointer_state_rules()
+                                                });
+                                        let needs_cursor_resolve = tree.has_any_cursor_style();
+                                        if !needs_pointer_dispatch && !needs_cursor_resolve {
+                                            // Reset the OS cursor to Default (only if we
+                                            // previously asked for something else — `Default`
+                                            // is the OS's idle state). Caches the last
+                                            // request so the syscall fires at most once
+                                            // when the UI transitions from "had a styled
+                                            // cursor" to "no longer does".
+                                            let want = blinc_platform::Cursor::Default;
+                                            if ws.last_cursor != Some(want) {
+                                                window.set_cursor(want);
+                                                ws.last_cursor = Some(want);
+                                            }
+                                            return ControlFlow::Continue;
+                                        }
+                                        if !needs_pointer_dispatch {
+                                            // Cursor-only path: do the cheap one-shot
+                                            // `hit_test` to resolve `cursor:` styles, but
+                                            // skip the full hover-diff machinery.
+                                            let cursor = tree
+                                                .get_cursor_at(router, lx, ly)
+                                                .unwrap_or(CursorStyle::Default);
+                                            let want = convert_cursor_style(cursor);
+                                            if ws.last_cursor != Some(want) {
+                                                window.set_cursor(want);
+                                                ws.last_cursor = Some(want);
+                                            }
+                                            return ControlFlow::Continue;
+                                        }
+
                                         // Get overlay bounds and layer ID for occlusion-aware hit testing
                                         // This prevents background elements from receiving hover events
                                         // when they are visually occluded by overlay content
@@ -3051,6 +3344,42 @@ impl WindowedApp {
                                             &overlay_bounds,
                                             overlay_layer_id,
                                         );
+
+                                        // Crossing an element boundary changes CSS `:hover`
+                                        // styling and may switch which Stateful is in
+                                        // its `Hover` state — flip dirty so the next
+                                        // Event::Frame paints the new look.
+                                        //
+                                        // We deliberately do NOT include `DRAG` /
+                                        // `DRAG_END` here: the router emits a `DRAG`
+                                        // event for every mouse move while a button is
+                                        // held, regardless of whether any handler is
+                                        // attached. Including them turned a bare
+                                        // mouse-down + drag in `hello_blinc` (no
+                                        // handlers anywhere) into a 60–120 Hz redraw
+                                        // loop pinning ~30 % CPU. Stateful-driven drag
+                                        // (sliders, sortable, splitter panes) is
+                                        // already covered by the post-dispatch
+                                        // peek-needs-redraw check below — the drag
+                                        // handler mutates `State`/`Stateful`, that
+                                        // sets `NEEDS_REDRAW`, and we honour it.
+                                        let hover_changed = pending_events.iter().any(|e| {
+                                            matches!(
+                                                e.event_type,
+                                                blinc_core::events::event_types::POINTER_ENTER
+                                                    | blinc_core::events::event_types::POINTER_LEAVE
+                                            )
+                                        });
+                                        if hover_changed {
+                                            frame_dirty.store(true, Ordering::Release);
+                                            // Under `ControlFlow::Wait` (Linux/Wayland/X11)
+                                            // flipping `frame_dirty` alone doesn't schedule
+                                            // anything — we need to actually ask winit to
+                                            // deliver a `RedrawRequested` event. macOS happens
+                                            // to render anyway because Poll's auto-redraw was
+                                            // there; on Linux this is the only path.
+                                            window.request_redraw();
+                                        }
 
                                         // Get drag delta from router (for DRAG events)
                                         let (drag_dx, drag_dy) = router.drag_delta();
@@ -3078,11 +3407,18 @@ impl WindowedApp {
                                             }
                                         }
 
-                                        // Update cursor based on hovered element
+                                        // Update cursor based on hovered element. Cached
+                                        // against `last_cursor` so a long drag over an
+                                        // element with a stable cursor doesn't syscall
+                                        // every move.
                                         let cursor = tree
                                             .get_cursor_at(router, lx, ly)
                                             .unwrap_or(CursorStyle::Default);
-                                        window.set_cursor(convert_cursor_style(cursor));
+                                        let want = convert_cursor_style(cursor);
+                                        if ws.last_cursor != Some(want) {
+                                            window.set_cursor(want);
+                                            ws.last_cursor = Some(want);
+                                        }
                                     }
                                     MouseEvent::ButtonPressed { button, x, y } => {
                                         let lx = x / scale;
@@ -3164,7 +3500,11 @@ impl WindowedApp {
                                         // This handles the case where mouse leaves window while dragging
                                         router.on_mouse_leave();
                                         // Reset cursor to default when mouse leaves window
-                                        window.set_cursor(blinc_platform::Cursor::Default);
+                                        let want = blinc_platform::Cursor::Default;
+                                        if ws.last_cursor != Some(want) {
+                                            window.set_cursor(want);
+                                            ws.last_cursor = Some(want);
+                                        }
                                         // Events are collected via the callback set above
                                     }
                                     MouseEvent::Entered => {
@@ -3188,11 +3528,16 @@ impl WindowedApp {
                                             event.mouse_y = my;
                                         }
 
-                                        // Update cursor based on hovered element
+                                        // Update cursor based on hovered element. See the
+                                        // `MouseEvent::Moved` branch for the cache rationale.
                                         let cursor = tree
                                             .get_cursor_at(router, mx, my)
                                             .unwrap_or(CursorStyle::Default);
-                                        window.set_cursor(convert_cursor_style(cursor));
+                                        let want = convert_cursor_style(cursor);
+                                        if ws.last_cursor != Some(want) {
+                                            window.set_cursor(want);
+                                            ws.last_cursor = Some(want);
+                                        }
                                     }
                                 },
                                 InputEvent::Keyboard(kb_event) => {
@@ -3710,10 +4055,53 @@ impl WindowedApp {
                                 tree.on_scroll_end();
                                 window.request_redraw();
                             }
+
+                            // After every input dispatch, check whether any
+                            // handler set `NEEDS_REDRAW` (via
+                            // `stateful::request_redraw()` from a `dispatch`
+                            // / state-change path) or queued a subtree
+                            // rebuild. On Linux's `ControlFlow::Wait` the
+                            // event loop doesn't deliver `Event::Frame` on
+                            // its own; we must explicitly request a
+                            // redraw so the queued work actually runs.
+                            // Sliders, sortable lists, splitter panes — any
+                            // Stateful-driven drag — flow through here.
+                            if blinc_layout::peek_needs_redraw()
+                                || blinc_layout::has_pending_subtree_rebuilds()
+                            {
+                                frame_dirty.store(true, Ordering::Release);
+                                window.request_redraw();
+                            }
                         }
                     }
 
                     Event::Frame(_) => {
+                        // Skip the frame entirely if nothing has changed since
+                        // the last render. The OS sends `Event::Frame` at the
+                        // display refresh rate to focused windows whether we
+                        // asked for it or not; without this gate a static
+                        // focused UI burns CPU re-rendering an identical scene
+                        // every vsync interval. `frame_dirty` is flipped back
+                        // to `true` by any input event (in the prelude above,
+                        // bare mouse-moves excluded), by the scheduler wake
+                        // callback (set during init), and by the end-of-frame
+                        // redraw chain when any animation / cursor / transition
+                        // / etc. signal indicates ongoing work.
+                        //
+                        // We also honour the layout-side stateful redraw
+                        // signals here — a hover handler firing
+                        // `stateful::request_redraw()` mid-mouse-move would
+                        // otherwise be dropped now that bare moves don't
+                        // flip `frame_dirty`. Peek-without-clear so the
+                        // start-of-frame `take_needs_redraw()` still fires
+                        // its normal prop-update / subtree-rebuild path.
+                        let dirty = frame_dirty.swap(false, Ordering::AcqRel);
+                        let stateful_dirty = blinc_layout::peek_needs_redraw()
+                            || blinc_layout::has_pending_subtree_rebuilds();
+                        if !dirty && !stateful_dirty {
+                            return ControlFlow::Continue;
+                        }
+
                         if let (
                             Some(ref mut blinc_app),
                             Some(ref surf),
@@ -3909,7 +4297,11 @@ impl WindowedApp {
                                     tracing::trace!("Visual-only prop updates, skipping layout");
                                 }
 
-                                // Request window redraw without rebuild
+                                // Visual-only updates (e.g. hover state flip)
+                                // happened mid-frame — make sure the next
+                                // frame renders rather than getting skipped
+                                // by the start-of-frame dirty gate.
+                                frame_dirty.store(true, Ordering::Release);
                                 window.request_redraw();
                             }
 
@@ -3921,6 +4313,48 @@ impl WindowedApp {
                             // Begin stable motion frame tracking
                             // This clears the "used" set so we can detect which motions are no longer in the tree
                             rs.begin_stable_motion_frame();
+
+                            // Hot-reload: a `subsecond::apply_patch` succeeded since
+                            // the last frame, so the user's UI closure body has been
+                            // swapped underneath us. Force a full tree rebuild so the
+                            // closure (wrapped in `subsecond::call`) gets re-invoked
+                            // — otherwise we'd keep painting the cached pre-patch tree.
+                            //
+                            // Also reset accumulated stylesheet state so `ctx.add_css`
+                            // calls in the patched closure produce a fresh sheet. The
+                            // common `rebuild_count == 0` guard around `add_css` would
+                            // otherwise skip re-registration, and `add_css` itself
+                            // cascades — deleted CSS rules would linger forever.
+                            #[cfg(feature = "hot-reload")]
+                            {
+                                // Drain dx asset invalidations FIRST, so cached
+                                // decoded copies are gone before the rebuild
+                                // re-loads anything. Path-keyed: image cache,
+                                // SVG cache, SVG atlas. Glyph caches and font
+                                // faces aren't path-keyed and would need
+                                // separate plumbing — out of scope for this
+                                // pass.
+                                let asset_paths = crate::hot_reload::take_invalidations();
+                                for path in &asset_paths {
+                                    blinc_app.context().invalidate_asset_path(path);
+                                }
+
+                                if crate::hot_reload::take_rebuild_pending() {
+                                    tracing::info!("hot-reload: forcing tree rebuild");
+                                    ws.needs_rebuild = true;
+                                    // Drop the cached tree so the rebuild path takes the
+                                    // "no existing tree" branch — that one calls
+                                    // `apply_all_stylesheet_styles()` which actually
+                                    // re-runs CSS application against the freshly-parsed
+                                    // sheet. The incremental-update branch only diffs
+                                    // visual props on the existing tree and would skip
+                                    // CSS rule re-application entirely, so an edit to a
+                                    // CSS string would land in the stylesheet but never
+                                    // surface visually.
+                                    ws.render_tree = None;
+                                    windowed_ctx.reset_for_hot_reload();
+                                }
+                            }
 
                             if ws.needs_rebuild || ws.render_tree.is_none() {
                                 // Reset call counters for stable key generation
@@ -3937,7 +4371,7 @@ impl WindowedApp {
                                 // so build_overlay_layer() has correct dimensions
 
                                 // Build UI element tree
-                                let user_ui = ui_builder(windowed_ctx);
+                                let user_ui = invoke_ui_builder(&mut ui_builder, windowed_ctx);
 
                                 // Compose user UI with overlay layer using a regular Div container
                                 // We use position:relative with the overlay absolutely positioned on top.
@@ -4323,14 +4757,62 @@ impl WindowedApp {
                             // The background thread runs at 120fps and sets this flag when
                             // there are active animations (springs, keyframes, timelines)
                             let scheduler = windowed_ctx.animations.lock().unwrap();
-                            let needs_animation_redraw = scheduler.take_needs_redraw();
+                            let needs_animation_redraw_raw = scheduler.take_needs_redraw();
                             drop(scheduler); // Release lock before request_redraw
 
                             // Check if stateful elements have active spring animations
-                            // If so, re-run their callbacks to get updated animation values
-                            if needs_animation_redraw && blinc_layout::has_animating_statefuls() {
+                            // and re-run their callbacks to get updated animation values.
+                            //
+                            // CRUCIAL: drive this off the *raw* scheduler signal, not
+                            // the visibility-gated one below. `check_stateful_animations`
+                            // is what unregisters settled statefuls. If we skip it
+                            // when the gate suppresses rendering, the registry never
+                            // shrinks — which makes `has_animating_statefuls()` return
+                            // a sticky `true`, which then keeps re-asserting the gate
+                            // (because we OR it into `visible_anim`), and we never
+                            // recover. The bookkeeping has to run on every animation
+                            // tick regardless of whether we'll actually paint.
+                            if needs_animation_redraw_raw && blinc_layout::has_animating_statefuls() {
                                 blinc_layout::check_stateful_animations();
                             }
+
+                            // Gate the animation signal on visibility. The scheduler
+                            // ticks unconditionally for any active spring / keyframe /
+                            // timeline — including ones tied to off-screen nodes. The
+                            // paint walker sets `visible_anim_active` when it paints
+                            // a node that drives a per-frame redraw (Canvas, motion
+                            // bindings, active motion state).
+                            //
+                            // Stateful-driven animations (springs that mutate state and
+                            // trigger rebuilds — e.g. cn_demo's spinner / accordion's
+                            // `animated_progress`) bypass the per-node motion-binding
+                            // check, so we additionally OR in the global "any animating
+                            // stateful?" signal — but **filtered to those whose node
+                            // was painted this frame**. The paint walker records every
+                            // node it actually rendered into `painted_node_ids`;
+                            // `has_visible_animating_statefuls` intersects that with
+                            // the registry. Without this intersection a spinner
+                            // scrolled off-screen pinned the redraw chain forever
+                            // (cn_demo regression). Brand-new Statefuls whose node
+                            // hasn't been bound yet are conservatively counted as
+                            // visible by the predicate, so the very first frame still
+                            // renders.
+                            let visible_anim_paint = ws.render_tree
+                                .as_ref()
+                                .map_or(true, |t| t.visible_anim_active());
+                            let visible_anim_stateful = ws.render_tree
+                                .as_ref()
+                                .is_some_and(|t| {
+                                    blinc_layout::has_visible_animating_statefuls(
+                                        &t.painted_node_ids(),
+                                    )
+                                });
+                            let visible_anim = visible_anim_paint || visible_anim_stateful;
+                            // Mirror the flag to the scheduler-side atomic so the
+                            // wake callback (bg thread) skips waking the main
+                            // thread when the only active animations are off-screen.
+                            visible_anim_for_wake.store(visible_anim, Ordering::Release);
+                            let needs_animation_redraw = needs_animation_redraw_raw && visible_anim;
 
                             // Check if text widgets need continuous redraws (cursor blink)
                             let needs_cursor_redraw = blinc_layout::widgets::take_needs_continuous_redraw();
@@ -4342,21 +4824,53 @@ impl WindowedApp {
                                 false
                             };
 
-                            // Check if overlays changed (modal opened/closed, toast appeared, etc.)
+                            // Check if overlays changed (modal opened/closed, toast
+                            // appeared, etc.) or are mid-animation. The presence of a
+                            // *visible* overlay is NOT a redraw signal — a static
+                            // popover should sit quiet between input events. Use
+                            // `has_animating_overlays` (enter/exit motion) instead;
+                            // any overlay-internal redraws (hover css, contained
+                            // motion) flow through their own signals below.
                             let needs_overlay_redraw = {
                                 let mgr = windowed_ctx.overlay_manager.lock().unwrap();
-                                mgr.take_dirty() || mgr.has_visible_overlays()
+                                mgr.take_dirty() || mgr.has_animating_overlays()
                             };
 
-                            // Check if CSS animations/transitions/FLIP need continued redraws
-                            // (includes transitions created during apply_complex_selector_styles)
-                            let css_needs_redraw = css_active
-                                || !ws.render_tree
-                                    .as_ref()
-                                    .map_or(true, |t| t.css_transitions_empty())
-                                || ws.render_tree
-                                    .as_ref()
-                                    .is_some_and(|t| t.has_active_flip_animations());
+                            // Check if CSS animations/transitions/FLIP/visual-animations need
+                            // continued redraws. Both `flip_animations` (older `animate_layout`)
+                            // and `visual_animations` (newer `animate_bounds`, used by the cn
+                            // accordion among others) drive bounds animation but live in
+                            // separate maps. Missing the visual_animations check here was the
+                            // cause of accordion jank: once the scheduler stopped waking the
+                            // main thread on every tick, the only thing keeping the chain
+                            // alive during an accordion expand was *no* signal at all, so the
+                            // animation only progressed when some other event (scroll, hover)
+                            // happened to fire `frame_dirty`.
+                            // Visibility-gated CSS-redraw signal. Same shape as the
+                            // four-way OR above used to be, but every term is now
+                            // intersected with `painted_node_ids`. Off-screen
+                            // `infinite` keyframes (the styling_demo had ~25 of
+                            // them, pinning ~73 % CPU at idle even with the cursor
+                            // parked) no longer keep the chain alive — they
+                            // continue ticking so progress stays in sync, but the
+                            // signal that drives request_redraw stops.
+                            //
+                            // The unfiltered `css_active`/`has_active_*` calls
+                            // are still made above (we want to advance every
+                            // animation regardless) — what changed is the GATE
+                            // that triggers another frame.
+                            let _ = css_active; // keep tick side-effects, drop signal
+                            let css_needs_redraw = ws.render_tree.as_ref().is_some_and(|t| {
+                                let painted = t.painted_node_ids();
+                                let store = t.css_anim_store();
+                                let store_guard = store.lock().unwrap();
+                                let store_visible = store_guard.has_visible_active(&painted);
+                                drop(store_guard);
+                                store_visible
+                                    || t.css_has_visible_transitions(&painted)
+                                    || t.has_active_visible_flip_animations(&painted)
+                                    || t.has_active_visible_visual_animations(&painted)
+                            });
 
                             // Check if pointer query elements need continuous redraws
                             let pointer_query_active = !windowed_ctx.pointer_query.is_empty();
@@ -4364,16 +4878,117 @@ impl WindowedApp {
                             // @flow shaders using time/animation builtins need continuous redraws
                             let flow_needs_redraw = blinc_app.has_active_flows();
 
-                            if needs_animation_redraw || needs_cursor_redraw || needs_motion_redraw || scroll_animating || needs_overlay_redraw || theme_animating || css_needs_redraw || pointer_query_active || flow_needs_redraw {
-                                // Request another frame to render updated animation values
-                                // For cursor blink, also re-request continuous redraw for next frame
+                            // Log which signal(s) kept the redraw chain alive at trace
+                            // level. Run with `RUST_LOG=blinc_app=trace` to see what's
+                            // pinning a stuck-busy frame loop. Writes nothing in normal
+                            // builds — the format args aren't even evaluated when the
+                            // trace target is disabled.
+                            tracing::trace!(
+                                target: "blinc_app::redraw_signals",
+                                animation = needs_animation_redraw,
+                                cursor = needs_cursor_redraw,
+                                motion = needs_motion_redraw,
+                                scroll = scroll_animating,
+                                overlay = needs_overlay_redraw,
+                                theme = theme_animating,
+                                css = css_needs_redraw,
+                                pointer_query = pointer_query_active,
+                                flow = flow_needs_redraw,
+                                "redraw chain"
+                            );
+
+                            let any_redraw_signal = needs_animation_redraw
+                                || needs_cursor_redraw
+                                || needs_motion_redraw
+                                || scroll_animating
+                                || needs_overlay_redraw
+                                || theme_animating
+                                || css_needs_redraw
+                                || pointer_query_active
+                                || flow_needs_redraw;
+                            if any_redraw_signal {
                                 if needs_cursor_redraw {
                                     // Keep requesting redraws as long as a text input is focused
                                     if blinc_layout::widgets::has_focused_text_input() {
                                         blinc_layout::widgets::text_input::request_continuous_redraw_pub();
                                     }
                                 }
-                                window.request_redraw();
+
+                                // Animation-only paths get throttled when the
+                                // app opted into a sub-vsync animation cap.
+                                // "Animation-only" means none of the signals
+                                // tied to direct user interaction or
+                                // physics-driven scroll are active — those
+                                // need vsync responsiveness to feel right.
+                                // `pointer_query_active` also bypasses the
+                                // cap because env() pointer queries already
+                                // depend on cursor coordinates that arrive
+                                // at vsync rate.
+                                let interactive = needs_cursor_redraw
+                                    || scroll_animating
+                                    || needs_overlay_redraw
+                                    || pointer_query_active;
+                                // Per-property smoothness gate (option B).
+                                // Even when only animation signals are firing,
+                                // if any visible animation is touching a
+                                // vsync-class property — transforms, 3D
+                                // rotation, layout sizing, font-size,
+                                // clip-path geometry — capping to 30 fps
+                                // would visibly stair-step. Bounds
+                                // animations (FLIP, animate_bounds) are
+                                // always vsync because they animate
+                                // position/size by definition. Stateful
+                                // animations are opaque; we treat them as
+                                // cap-OK and accept the trade-off — apps
+                                // that drive transforms via Stateful and
+                                // need vsync should leave the cap off.
+                                let needs_vsync_for_animation = ws
+                                    .render_tree
+                                    .as_ref()
+                                    .is_some_and(|t| {
+                                        let painted = t.painted_node_ids();
+                                        let store = t.css_anim_store();
+                                        let store_guard = store.lock().unwrap();
+                                        let store_vsync =
+                                            store_guard.has_visible_vsync_class(&painted);
+                                        drop(store_guard);
+                                        store_vsync
+                                            || t.has_active_visible_flip_animations(&painted)
+                                            || t.has_active_visible_visual_animations(&painted)
+                                    });
+                                let cap_applies = !interactive
+                                    && !needs_vsync_for_animation
+                                    && (needs_animation_redraw
+                                        || needs_motion_redraw
+                                        || theme_animating
+                                        || css_needs_redraw
+                                        || flow_needs_redraw);
+
+                                if let (true, Some(fps)) = (cap_applies, animation_fps_cap) {
+                                    // Defer the next frame instead of
+                                    // requesting it immediately. The platform
+                                    // shim's lazy timer thread sends a Wake
+                                    // event after `delay`, which the shim's
+                                    // `user_event` handler turns into
+                                    // `request_redraw()` for every window.
+                                    // We flip `frame_dirty` ahead of time so
+                                    // the deferred `Event::Frame` actually
+                                    // renders instead of hitting the skip
+                                    // gate at the top of the Frame handler.
+                                    let delay =
+                                        std::time::Duration::from_millis(1000 / fps as u64);
+                                    frame_dirty.store(true, Ordering::Release);
+                                    wake_proxy_for_pacing.wake_at(delay);
+                                } else {
+                                    // The next frame should render — pair the
+                                    // `request_redraw` call with a dirty flip so
+                                    // the start-of-frame skip check doesn't drop
+                                    // it. Without this the redraw chain would
+                                    // request a frame that then immediately
+                                    // returns early.
+                                    frame_dirty.store(true, Ordering::Release);
+                                    window.request_redraw();
+                                }
                             }
                         }
                     }
@@ -4458,4 +5073,49 @@ where
         ..Default::default()
     };
     WindowedApp::run(config, ui_builder)
+}
+
+/// Invoke the user's primary-window UI builder closure, optionally
+/// routing the call through `subsecond::call` so changes to the
+/// closure body can be hot-patched in development. Without the
+/// `hot-reload` feature this is a direct call and gets inlined away.
+///
+/// Subsecond itself is gated on `debug_assertions` upstream, so even
+/// with the `hot-reload` feature on a release build still pays no
+/// runtime cost.
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
+#[inline]
+fn invoke_ui_builder<F, E>(ui_builder: &mut F, ctx: &mut WindowedContext) -> E
+where
+    F: FnMut(&mut WindowedContext) -> E,
+    E: ElementBuilder,
+{
+    #[cfg(feature = "hot-reload")]
+    {
+        // `subsecond::call` takes a `FnOnce() -> O`. The captured
+        // `&mut` borrows live only for this call, so the closure
+        // satisfies `FnOnce` regardless of `F`'s `FnMut` bound.
+        subsecond::call(move || ui_builder(ctx))
+    }
+    #[cfg(not(feature = "hot-reload"))]
+    {
+        ui_builder(ctx)
+    }
+}
+
+/// Secondary-window variant of [`invoke_ui_builder`]. Secondary
+/// windows store their builder as a boxed `WindowBuilder` returning
+/// `Div` directly (rather than the generic `E: ElementBuilder` of
+/// the primary), so they need a separate helper.
+#[cfg(all(feature = "windowed", not(target_os = "android")))]
+#[inline]
+fn invoke_window_builder(builder: &mut WindowBuilder, ctx: &mut WindowedContext) -> Div {
+    #[cfg(feature = "hot-reload")]
+    {
+        subsecond::call(move || builder(ctx))
+    }
+    #[cfg(not(feature = "hot-reload"))]
+    {
+        builder(ctx)
+    }
 }

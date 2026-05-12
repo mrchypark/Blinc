@@ -66,6 +66,11 @@ enum Commands {
         #[arg(short, long, default_value = "3000")]
         port: u16,
 
+        /// How to compile changes — `rust` (default, drives subsecond
+        /// hot-patches) or `dsl` (Zyntax DSL, in plan).
+        #[arg(short = 'm', long, value_enum, default_value_t = DevMode::Rust)]
+        mode: DevMode,
+
         /// Device to run on (for mobile targets)
         #[arg(long)]
         device: Option<String>,
@@ -137,6 +142,25 @@ enum Commands {
         #[command(subcommand)]
         command: AutomationCommands,
     },
+}
+
+/// How `blinc dev` compiles your project on file change.
+///
+/// Defaults to `rust` because the Zyntax DSL toolchain is still in
+/// planning. Once it lands, `dsl` will route through Zyntax's
+/// Runtime2 JIT instead of cargo + subsecond.
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum DevMode {
+    /// Hot-patch a Rust binary crate via the `subsecond` runtime
+    /// (driven by `cargo build` + the dx-CLI websocket protocol
+    /// today; native driver is on the roadmap).
+    #[default]
+    Rust,
+    /// Re-compile a `.blinc` DSL project through Zyntax Grammar2 +
+    /// Runtime2 JIT and push the new bytecode into the running app.
+    /// Currently unimplemented — emits a friendly "not yet ready"
+    /// message and exits.
+    Dsl,
 }
 
 #[derive(Subcommand)]
@@ -245,7 +269,8 @@ fn main() -> Result<()> {
             target,
             port,
             device,
-        } => cmd_dev(&source, &target, port, device.as_deref()),
+            mode,
+        } => cmd_dev(&source, &target, port, device.as_deref(), mode),
 
         Commands::Run { source } => cmd_run(&source),
 
@@ -367,7 +392,13 @@ fn project_config_root(path: &Path) -> Result<&Path> {
         .context("No .blincproj or blinc.toml found for the provided project path")
 }
 
-fn cmd_dev(source: &str, target: &str, port: u16, device: Option<&str>) -> Result<()> {
+fn cmd_dev(
+    source: &str,
+    target: &str,
+    port: u16,
+    device: Option<&str>,
+    mode: DevMode,
+) -> Result<()> {
     let path = PathBuf::from(source);
     let config = BlincConfig::load_from_dir(project_config_root(&path)?)?;
 
@@ -380,13 +411,29 @@ fn cmd_dev(source: &str, target: &str, port: u16, device: Option<&str>) -> Resul
         info!("Running on device: {}", dev);
     }
 
-    // TODO: When Zyntax Grammar2 is ready:
-    // 1. Start file watcher
-    // 2. Compile on change (using JIT)
-    // 3. Push updates to running app
+    match mode {
+        DevMode::Rust => cmd_dev_rust(source, target, port, device),
+        DevMode::Dsl => cmd_dev_dsl(source, target, port, device),
+    }
+}
 
-    warn!("Dev server not yet implemented - waiting for Zyntax Runtime2");
+fn cmd_dev_rust(_source: &str, _target: &str, _port: u16, _device: Option<&str>) -> Result<()> {
+    info!(
+        "Rust hot-reload mode. Native driver is on the roadmap; \
+         install `dioxus-cli` and run `dx serve --hotpatch` to drive \
+         patches over the subsecond protocol meanwhile."
+    );
+    // Existing stub body — file watcher + cargo + subsecond websocket
+    // is the level-2 milestone (issue #30).
+    warn!(
+        "blinc dev --mode rust is not yet implemented — see docs/book/src/advanced/hot-reload.md"
+    );
+    Ok(())
+}
 
+fn cmd_dev_dsl(_source: &str, _target: &str, _port: u16, _device: Option<&str>) -> Result<()> {
+    info!("Blinc DSL hot-reload mode (Zyntax Runtime2 JIT).");
+    warn!("Blinc DSL toolchain is still in plan — Zyntax Grammar2 + Runtime2 JIT not yet ready");
     Ok(())
 }
 

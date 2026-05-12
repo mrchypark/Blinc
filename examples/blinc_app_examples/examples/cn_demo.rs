@@ -2,7 +2,7 @@
 //!
 //! Showcases all available blinc_cn components in a scrollable grid layout.
 //!
-//! Run with: cargo run -p blinc_app_examples --example cn_demo --features windowed
+//! Run with: cargo run -p blinc_app_examples --example cn_demo --features cn
 
 use blinc_animation::SpringConfig;
 use blinc_app::prelude::*;
@@ -17,7 +17,10 @@ use blinc_theme::{ColorToken, ThemeState};
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
     let config = WindowConfig {
@@ -26,6 +29,7 @@ fn main() -> Result<()> {
         height: 900,
         resizable: true,
         fullscreen: false,
+        animation_fps_cap: Some(30),
         ..Default::default()
     };
 
@@ -66,6 +70,7 @@ pub fn build_ui(ctx: &mut WindowedContext) -> impl ElementBuilder {
             scroll()
                 .w_full()
                 .h(ctx.height - 80.0)
+                .viewport_cull(true)
                 .bind(&scroll_ref)
                 .child(
                     div()

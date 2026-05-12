@@ -12,6 +12,42 @@ impl WindowId {
     pub const PRIMARY: WindowId = WindowId(0);
 }
 
+/// Where animation scheduler ticking happens.
+///
+/// Blinc's animation scheduler advances springs, keyframe animations,
+/// timelines, and `tick_callback`s once per frame. This enum picks
+/// which thread does that work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnimationThreadMode {
+    /// Tick scheduler animations synchronously on the main thread,
+    /// in lockstep with rendering. No background thread is spawned.
+    ///
+    /// **Default.** Eliminates phase jitter between animation state
+    /// and rendered output, simplifies cross-thread reasoning, drops
+    /// to fully zero-cost on idle (no thread to park).
+    ///
+    /// Right for: standard UIs, dashboards, content viewers,
+    /// canvas/3D demos where the render closure is the limiting
+    /// factor and animation values are read at paint time.
+    #[default]
+    Main,
+
+    /// Tick scheduler animations on a dedicated background thread at
+    /// the configured target FPS, independent of rendering. The main
+    /// thread reads the latest computed values during render.
+    ///
+    /// Right for: apps with `tick_callback`s that need fixed-rate
+    /// execution regardless of rendering load — game physics fixed
+    /// step, audio sequencer callbacks, telemetry sampling.
+    ///
+    /// Most apps don't need this. CSS animations, motion
+    /// containers, FLIP, theme transitions, and visual / animate_bounds
+    /// are always main-thread regardless of this setting; this only
+    /// controls the `blinc_animation::AnimationScheduler` family
+    /// (springs / keyframes / timelines / tick_callbacks).
+    Background,
+}
+
 /// Window configuration
 #[derive(Clone, Debug)]
 pub struct WindowConfig {
@@ -43,6 +79,71 @@ pub struct WindowConfig {
     pub modal: bool,
     /// Parent window ID for modal relationships (None = top-level)
     pub parent: Option<WindowId>,
+    /// How many frames the GPU is allowed to queue ahead of the
+    /// currently-presented frame. `2` is the wgpu default and gives
+    /// the smoothest pacing under vsync. `1` halves the GPU memory
+    /// dedicated to in-flight command buffers, vertex/uniform buffers,
+    /// and bind groups — useful for memory-constrained or low-end
+    /// devices, at the cost of slightly higher input latency and a
+    /// greater chance of dropped frames under load. Clamped to `1..=3`.
+    pub max_frame_latency: u32,
+    /// Frame-rate cap applied to the redraw chain when the *only*
+    /// reason a frame is being scheduled is animation progress
+    /// (no input, no scroll, no drag, no Stateful state change).
+    ///
+    /// `None` (the default) disables the cap — animation frames are
+    /// scheduled immediately, so visible animations run at the
+    /// display's native vsync rate (typically 60–120 Hz). This is
+    /// the right setting for games, video players, scrubbing UIs,
+    /// and anything where frame-perfect motion is non-negotiable.
+    ///
+    /// `Some(N)` caps animation-only redraws to roughly `N` fps via
+    /// a deferred wake. Halves wake-ups at `N = 30` for animations
+    /// that don't visibly stair-step at sub-vsync rates — color
+    /// cycles, opacity fades, blur pulses, gradient morphs.
+    ///
+    /// User-input frames (typing, scrolling, dragging) are NEVER
+    /// throttled — they always ship at native vsync. The cap only
+    /// applies when the chain would otherwise re-arm purely because
+    /// of an active animation signal.
+    ///
+    /// **Per-property smoothness override (automatic).** Even when
+    /// the cap would otherwise apply, the chain bypasses to native
+    /// vsync if any visible animation is touching a property
+    /// classified as `needs_vsync_for_smoothness` — transforms
+    /// (translate / scale / rotate / skew), 3D rotation, layout
+    /// sizing (width / height / padding / margin / gap / inset),
+    /// font-size, or clip-path geometry. FLIP and `animate_bounds`
+    /// also always run vsync because they animate position/size by
+    /// definition. So setting `Some(30)` on a screen mixing slow
+    /// fades with a rotate-y keyframe gets you 30 fps for the fade
+    /// and 60+ fps for the rotation, frame-by-frame.
+    ///
+    /// Stateful animations are opaque to this classification — they
+    /// dispatch through user callbacks and the framework can't see
+    /// which property they ultimately move — so they fall on the
+    /// cap-OK side. Apps with Stateful-driven transforms that need
+    /// vsync should leave the cap off.
+    pub animation_fps_cap: Option<u32>,
+    /// Where the animation scheduler ticks (springs, keyframes,
+    /// timelines, tick_callbacks).
+    ///
+    /// Defaults to [`AnimationThreadMode::Main`] — animations advance
+    /// synchronously inside Phase 3 of each rendered frame, in
+    /// lockstep with paint. Eliminates phase jitter and removes one
+    /// thread from the runtime; cost on idle is zero.
+    ///
+    /// Set to [`AnimationThreadMode::Background`] only if your app
+    /// registers `tick_callback`s that need to fire at the
+    /// configured target FPS regardless of rendering — e.g. a fixed
+    /// step game-physics tick, an audio sequencer, telemetry
+    /// sampling.
+    ///
+    /// CSS animations, motion containers, FLIP, theme transitions,
+    /// visual / `animate_bounds` are always ticked on the main
+    /// thread regardless of this setting; this only controls the
+    /// `blinc_animation::AnimationScheduler` family.
+    pub animation_thread_mode: AnimationThreadMode,
 }
 
 impl Default for WindowConfig {
@@ -62,6 +163,9 @@ impl Default for WindowConfig {
             center: false,
             modal: false,
             parent: None,
+            max_frame_latency: 2,
+            animation_fps_cap: None,
+            animation_thread_mode: AnimationThreadMode::default(),
         }
     }
 }
@@ -151,6 +255,35 @@ impl WindowConfig {
     /// Set the parent window for modal relationships
     pub fn parent(mut self, parent_id: WindowId) -> Self {
         self.parent = Some(parent_id);
+        self
+    }
+
+    /// Cap how many frames the GPU may queue ahead. `2` is the smooth
+    /// default; `1` halves in-flight GPU memory at the cost of latency
+    /// and occasional frame drops. Clamped to `1..=3`.
+    pub fn max_frame_latency(mut self, frames: u32) -> Self {
+        self.max_frame_latency = frames.clamp(1, 3);
+        self
+    }
+
+    /// Cap the animation-only redraw rate. See
+    /// [`WindowConfig::animation_fps_cap`] for the full semantics —
+    /// in short, `Some(30)` halves wake-ups while a CSS keyframe or
+    /// transition is the only thing driving the chain, `None` (the
+    /// default) keeps animation frames at native vsync. Input,
+    /// scroll, and drag frames are never throttled.
+    pub fn animation_fps_cap(mut self, fps: Option<u32>) -> Self {
+        self.animation_fps_cap = fps.map(|f| f.max(1));
+        self
+    }
+
+    /// Pick where the animation scheduler ticks. See
+    /// [`AnimationThreadMode`] for the full trade-off — the short
+    /// version is `Main` (default) is right for almost everything;
+    /// `Background` only matters if you have `tick_callback`s that
+    /// need fixed-rate execution regardless of rendering load.
+    pub fn animation_thread_mode(mut self, mode: AnimationThreadMode) -> Self {
+        self.animation_thread_mode = mode;
         self
     }
 }

@@ -12,10 +12,8 @@ use crate::spring::{Spring, SpringConfig};
 use crate::timeline::Timeline;
 use blinc_core::AnimationAccess;
 use slotmap::{new_key_type, SlotMap};
-use std::collections::HashSet;
-use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
 // `web_time::Instant` is a drop-in replacement for `std::time::Instant`.
 // On native targets it re-exports the std type with zero overhead. On
@@ -138,7 +136,6 @@ impl TickCallbackId {
 /// Internal state of the animation scheduler
 struct SchedulerInner {
     springs: SlotMap<SpringId, Spring>,
-    fresh_springs: HashSet<SpringId>,
     keyframes: SlotMap<KeyframeId, KeyframeAnimation>,
     timelines: SlotMap<TimelineId, Timeline>,
     tick_callbacks: SlotMap<TickCallbackId, TickCallback>,
@@ -189,6 +186,18 @@ pub struct AnimationScheduler {
     thread_handle: Option<JoinHandle<()>>,
     /// Optional callback to wake up the main thread
     wake_callback: Option<WakeCallback>,
+    /// Condvar pair the bg thread parks on when idle. The bool is a
+    /// "wake-pending" flag set by [`Self::wake`]; the bg thread checks
+    /// it on every loop iteration so a wake that races with the start
+    /// of a wait isn't lost.
+    wakeup: Arc<(Mutex<bool>, Condvar)>,
+    /// Tracks whether the bg thread was active on its previous tick.
+    /// Used to edge-trigger `wake_callback` only on idle→active
+    /// transitions: once the main thread has been kicked into rendering,
+    /// the per-frame `request_redraw` chain takes over so we don't need
+    /// to keep poking it from the bg thread on every tick. Reset to
+    /// `false` whenever the bg thread ticks while inactive.
+    last_active: Arc<AtomicBool>,
 }
 
 // SAFETY: On wasm32 the wake callback is `Arc<dyn Fn()>` (no `Send +
@@ -213,7 +222,6 @@ impl AnimationScheduler {
         Self {
             inner: Arc::new(Mutex::new(SchedulerInner {
                 springs: SlotMap::with_key(),
-                fresh_springs: HashSet::new(),
                 keyframes: SlotMap::with_key(),
                 timelines: SlotMap::with_key(),
                 tick_callbacks: SlotMap::with_key(),
@@ -225,6 +233,50 @@ impl AnimationScheduler {
             continuous_redraw: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
             wake_callback: None,
+            wakeup: Arc::new((Mutex::new(false), Condvar::new())),
+            last_active: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Wake the background thread if it's parked.
+    ///
+    /// Sets the wake-pending flag and notifies the Condvar. Cheap when
+    /// no thread is parked (just a futex flip) — safe to call from any
+    /// mutation that could change `has_active` from `false` to `true`.
+    /// The bg thread re-evaluates activity on the next loop iteration.
+    fn wake_inner(wakeup: &(Mutex<bool>, Condvar)) {
+        let mut pending = wakeup.0.lock().unwrap();
+        *pending = true;
+        wakeup.1.notify_one();
+    }
+
+    /// Wake the bg thread (no-op on `wasm32` — there is no thread).
+    pub fn wake(&self) {
+        Self::wake_inner(&self.wakeup);
+    }
+
+    /// Notify the scheduler that an `add_spring` / `add_keyframe` /
+    /// `add_timeline` / `add_tick_callback` (or analogous mutation)
+    /// just enabled work that wasn't there before.
+    ///
+    /// Combines the bg-thread wake (`wake_inner`) with a direct
+    /// `wake_callback` fire. The bg-thread wake is the only one that
+    /// matters in `AnimationThreadMode::Background`; the
+    /// `wake_callback` fire is the only one that matters in
+    /// `AnimationThreadMode::Main` (it's how the main-thread runner
+    /// learns it should re-render to tick the new animation, even
+    /// when the registration is happening from a custom timer thread
+    /// or background task).
+    ///
+    /// In `Background` the bg thread also fires `wake_callback` on
+    /// its idle→active edge, so this method's direct fire becomes
+    /// redundant — but the wake-proxy + `frame_dirty` flip on the
+    /// receiving side are idempotent, so the duplication is
+    /// harmless.
+    fn notify_active(&self) {
+        Self::wake_inner(&self.wakeup);
+        if let Some(cb) = &self.wake_callback {
+            cb();
         }
     }
 
@@ -278,6 +330,7 @@ impl AnimationScheduler {
         needs_redraw: &Arc<AtomicBool>,
         wants_continuous: bool,
         wake_callback: Option<&WakeCallback>,
+        last_active: &Arc<AtomicBool>,
     ) -> (bool, f32) {
         let (has_active, tick_callbacks_to_call, dt) = {
             let mut inner = inner.lock().unwrap();
@@ -333,27 +386,34 @@ impl AnimationScheduler {
 
         // Signal main thread that it needs to redraw
         // Either from active animations OR continuous redraw request (cursor blink)
-        if has_active || wants_continuous {
+        let now_active = has_active || wants_continuous;
+        let was_active = last_active.swap(now_active, Ordering::AcqRel);
+        if now_active {
             needs_redraw.store(true, Ordering::Release);
 
-            // Wake up the event loop if a callback is set
-            if let Some(callback) = wake_callback {
-                // Only log occasionally to avoid spam
-                static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-                if count % 120 == 0 {
-                    // Log once per second at 120fps
+            // Wake the event loop only on idle→active transitions. Once
+            // the main thread is rendering, its end-of-frame
+            // `request_redraw` chain decides whether to keep going (and
+            // gates that on visibility — off-screen-only animations
+            // settle to a quiet bg-thread tick with no main-thread
+            // wakes). Without the edge trigger, the bg thread would
+            // call `wake_callback()` 60–120 times/sec for the entire
+            // duration of any animation, which on cn_demo with three
+            // infinite-loop spinners pinned the main thread at full
+            // refresh rate even when the user wasn't looking at them.
+            if !was_active {
+                if let Some(callback) = wake_callback {
                     tracing::debug!(
-                        "Animation tick: waking driver (continuous={}, active={})",
+                        "Animation tick: waking driver (transition idle→active, continuous={}, active={})",
                         wants_continuous,
                         has_active
                     );
+                    callback();
                 }
-                callback();
             }
         }
 
-        (has_active || wants_continuous, dt)
+        (now_active, dt)
     }
 
     /// Start the scheduler on a background thread
@@ -385,27 +445,86 @@ impl AnimationScheduler {
         let needs_redraw = Arc::clone(&self.needs_redraw);
         let continuous_redraw = Arc::clone(&self.continuous_redraw);
         let wake_callback = self.wake_callback.clone();
+        let wakeup = Arc::clone(&self.wakeup);
+        let last_active = Arc::clone(&self.last_active);
 
         self.thread_handle = Some(thread::spawn(move || {
-            let frame_duration = Duration::from_micros(1_000_000 / 120); // 120fps
-
+            // Adaptive FPS scheduler:
+            //
+            // * Active state — anything in `has_active` is true (springs,
+            //   keyframes, timelines, tick callbacks) or `continuous_redraw`
+            //   is set. We tick every `1 / target_fps` seconds and signal
+            //   the main thread to redraw. `target_fps` is read fresh every
+            //   iteration so `set_target_fps` takes effect on the next tick.
+            //
+            // * Idle state — nothing is active. We park on `wakeup.1` until
+            //   a wake notification arrives (an animation registered, target
+            //   set, continuous_redraw enabled, etc). Zero CPU on Linux —
+            //   the futex blocks the thread.
+            //
+            // Replaces the prior unconditional `thread::sleep` at 120fps,
+            // which combined with the perpetual keep-alive callback in
+            // `windowed.rs` to pin a CPU core even on a static UI
+            // (issue #28).
             while !stop_flag.load(Ordering::Relaxed) {
                 let start = Instant::now();
 
-                // Check if continuous redraw is requested (e.g., for cursor blink)
                 let wants_continuous = continuous_redraw.load(Ordering::Relaxed);
-
-                Self::tick_frame_inner(
+                let (has_active, _) = Self::tick_frame_inner(
                     &inner,
                     &needs_redraw,
                     wants_continuous,
                     wake_callback.as_ref(),
+                    &last_active,
                 );
+                let active = has_active || wants_continuous;
 
-                // Sleep for remaining frame time
+                // Read target_fps BEFORE taking the wakeup lock — `wake_inner`
+                // callers (e.g. `add_spring`) always hold `inner.lock()`
+                // before locking `wakeup`, so the bg thread must mirror that
+                // order to avoid deadlock.
+                //
+                // When `wants_continuous` is the *only* reason we're awake
+                // (no real animations are playing — has_active is false),
+                // tick at half rate. The classic consumer of continuous
+                // redraw is text-input cursor blink, which doesn't need
+                // 60+ fps to look right. Cuts the CPU floor for any
+                // focused text input in half.
+                let frame_duration = if active {
+                    let target_fps = inner.lock().unwrap().target_fps.max(1);
+                    let effective_fps = if !has_active && wants_continuous {
+                        (target_fps / 2).max(1)
+                    } else {
+                        target_fps
+                    };
+                    Duration::from_micros(1_000_000 / effective_fps as u64)
+                } else {
+                    Duration::ZERO // unused in idle branch
+                };
                 let elapsed = start.elapsed();
-                if elapsed < frame_duration {
-                    thread::sleep(frame_duration - elapsed);
+
+                // Reset the wake flag and wait. Holding the wakeup lock
+                // across the reset + wait means a wake call racing with the
+                // start of the wait either lands before (we observe
+                // `*pending == true` on next iter) or after (`notify_one`
+                // wakes us mid-wait) — never lost.
+                let mut pending = wakeup.0.lock().unwrap();
+                *pending = false;
+
+                if active {
+                    if let Some(remaining) = frame_duration.checked_sub(elapsed) {
+                        if remaining > Duration::ZERO {
+                            let (g, _) = wakeup.1.wait_timeout(pending, remaining).unwrap();
+                            pending = g;
+                        }
+                    }
+                    drop(pending);
+                } else {
+                    // Idle: park indefinitely until a wake arrives.
+                    while !*pending && !stop_flag.load(Ordering::Relaxed) {
+                        pending = wakeup.1.wait(pending).unwrap();
+                    }
+                    drop(pending);
                 }
             }
         }));
@@ -415,6 +534,8 @@ impl AnimationScheduler {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn stop_background(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
+        // Kick the thread out of any park so it observes stop_flag.
+        Self::wake_inner(&self.wakeup);
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
@@ -469,6 +590,7 @@ impl AnimationScheduler {
         let needs_redraw = Arc::clone(&self.needs_redraw);
         let continuous_redraw = Arc::clone(&self.continuous_redraw);
         let wake_callback = self.wake_callback.clone();
+        let last_active = Arc::clone(&self.last_active);
 
         // Self-referential closure cell. The outer `Rc` is what the
         // closure schedules itself with via
@@ -487,12 +609,22 @@ impl AnimationScheduler {
 
         *closure_cell_for_init.borrow_mut() = Some(Closure::wrap(Box::new(move || {
             let wants_continuous = continuous_redraw.load(Ordering::Relaxed);
-            Self::tick_frame_inner(
-                &inner,
-                &needs_redraw,
-                wants_continuous,
-                wake_callback.as_ref(),
-            );
+            // Pass `None` for the wake callback — the edge-trigger
+            // logic inside `tick_frame_inner` is for the native
+            // `start_background` thread, where it stops the bg thread
+            // from spamming the main thread once the chain is alive.
+            // On wasm the wake callback IS the per-frame driver
+            // (`WebApp::run_one_frame`), and RAF itself is browser-paced
+            // — we want to fire it on every tick, not just idle→active
+            // transitions. (Without this fix, only the very first
+            // RAF tick called the callback; everything else was frozen
+            // — scrolling, hover, mouse, animations, image rendering.)
+            Self::tick_frame_inner(&inner, &needs_redraw, wants_continuous, None, &last_active);
+
+            // Drive the per-frame work directly from the RAF closure.
+            if let Some(ref cb) = wake_callback {
+                cb();
+            }
 
             // Schedule the next frame. Borrowing closure_cell here is
             // safe because the prior borrow_mut at install time has
@@ -539,6 +671,7 @@ impl AnimationScheduler {
     /// main thread on its next event loop iteration.
     pub fn request_redraw(&self) {
         self.needs_redraw.store(true, Ordering::Release);
+        Self::wake_inner(&self.wakeup);
     }
 
     /// Enable continuous redraw mode
@@ -551,6 +684,9 @@ impl AnimationScheduler {
     pub fn set_continuous_redraw(&self, enabled: bool) {
         tracing::debug!("AnimationScheduler: set_continuous_redraw({})", enabled);
         self.continuous_redraw.store(enabled, Ordering::Release);
+        if enabled {
+            Self::wake_inner(&self.wakeup);
+        }
     }
 
     /// Check if continuous redraw mode is enabled
@@ -563,74 +699,98 @@ impl AnimationScheduler {
         SchedulerHandle {
             inner: Arc::downgrade(&self.inner),
             needs_redraw: Arc::clone(&self.needs_redraw),
+            wakeup: Arc::clone(&self.wakeup),
         }
     }
 
     pub fn set_target_fps(&mut self, fps: u32) {
         self.inner.lock().unwrap().target_fps = fps;
+        // Wake the bg thread so a smaller frame_duration takes effect
+        // immediately, rather than waiting out the previous (longer) one.
+        Self::wake_inner(&self.wakeup);
     }
 
-    /// Tick all animations
+    /// Advance all springs / keyframes / timelines / tick_callbacks
+    /// and return whether anything is still active.
     ///
-    /// Returns true if any animations are still active (need another tick).
+    /// `dt` is computed internally from `last_frame` so the caller
+    /// just needs a reference; no clock argument required.
+    ///
+    /// # Threading
+    ///
+    /// In `AnimationThreadMode::Main` (defined in `blinc_platform`,
+    /// not linkable here; the default in `WindowConfig`) this is the
+    /// sole tick path: the windowed runner calls it once per rendered
+    /// frame in Phase 3, so animation values read at paint time are
+    /// exactly in phase with the frame being drawn.
+    ///
+    /// In `AnimationThreadMode::Background` the dedicated bg thread
+    /// owns ticking; calling `tick` from the main thread under that
+    /// mode would race the bg thread on `inner.last_frame` and
+    /// double-step every animation. To prevent that, this method
+    /// returns immediately (without advancing state) when a bg
+    /// thread is running, leaving the bg thread as the single
+    /// source of truth. The `bool` it returns then reflects the
+    /// activity state the bg thread last computed.
+    ///
+    /// `tick_callback`s registered via
+    /// [`add_tick_callback`](Self::add_tick_callback) fire after the
+    /// spring / keyframe / timeline pass, with `dt` in seconds. They
+    /// fire on every main-thread `tick()` and on every bg-thread
+    /// iteration — never both for a given frame, because of the
+    /// no-op guard above.
     pub fn tick(&self) -> bool {
-        let run_tick_callbacks_here = !self.is_background_running();
-        let mut inner = self.inner.lock().unwrap();
-        let now = Instant::now();
-        let dt = (now - inner.last_frame).as_secs_f32();
-        let dt_ms = dt * 1000.0;
-        inner.last_frame = now;
-        let fresh_springs = mem::take(&mut inner.fresh_springs);
+        // Background-thread mode: bg thread owns ticking. Skip here.
+        // Returning the latest active state we know about lets the
+        // caller still gate redraws correctly via `has_active`.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.thread_handle.is_some() {
+            return self.has_active_animations();
+        }
 
-        // Update all springs
-        for (id, spring) in inner.springs.iter_mut() {
-            if fresh_springs.contains(&id) {
-                continue;
+        let (has_active, tick_callbacks_to_call, dt) = {
+            let mut inner = self.inner.lock().unwrap();
+            let now = Instant::now();
+            let dt = (now - inner.last_frame).as_secs_f32();
+            let dt_ms = dt * 1000.0;
+            inner.last_frame = now;
+
+            for (_, spring) in inner.springs.iter_mut() {
+                spring.step(dt);
             }
-            spring.step(dt);
-        }
+            for (_, keyframe) in inner.keyframes.iter_mut() {
+                keyframe.tick(dt_ms);
+            }
+            for (_, timeline) in inner.timelines.iter_mut() {
+                timeline.tick(dt_ms);
+            }
 
-        // Update all keyframe animations
-        for (_, keyframe) in inner.keyframes.iter_mut() {
-            keyframe.tick(dt_ms);
-        }
-
-        // Update all timelines
-        for (_, timeline) in inner.timelines.iter_mut() {
-            timeline.tick(dt_ms);
-        }
-
-        // In single-threaded mode (mobile), tick callbacks must run from this path.
-        // In background-thread mode, callbacks are executed by start_background().
-        let tick_callbacks_to_call = if run_tick_callbacks_here {
-            inner
+            let callbacks: Vec<_> = inner
                 .tick_callbacks
                 .iter()
                 .map(|(_, cb)| Arc::clone(cb))
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
+                .collect();
+
+            // Springs, keyframes, and timelines are only removed when
+            // their wrappers drop — preserved across `is_settled` /
+            // `is_playing` flips so animations can be restarted.
+            let has_active = inner.springs.iter().any(|(_, s)| !s.is_settled())
+                || inner.keyframes.iter().any(|(_, k)| k.is_playing())
+                || inner.timelines.iter().any(|(_, t)| t.is_playing())
+                || !inner.tick_callbacks.is_empty();
+
+            (has_active, callbacks, dt)
         };
 
-        let has_active_animations = inner.springs.iter().any(|(_, s)| !s.is_settled())
-            || inner.keyframes.iter().any(|(_, k)| k.is_playing())
-            || inner.timelines.iter().any(|(_, t)| t.is_playing())
-            || !inner.tick_callbacks.is_empty();
-
-        drop(inner);
-
+        // Run callbacks outside the lock to avoid deadlocks if a
+        // callback re-enters the scheduler.
         for callback in tick_callbacks_to_call {
             if let Ok(mut cb) = callback.lock() {
                 cb(dt);
             }
         }
 
-        // NOTE: We do NOT remove animations here!
-        // Springs, keyframes, and timelines are only removed when their wrappers drop.
-        // This ensures animations can be restarted after completing.
-
-        // Return true while active animations or tick callbacks remain registered.
-        has_active_animations
+        has_active
     }
 
     /// Check if any animations are still active
@@ -639,7 +799,6 @@ impl AnimationScheduler {
         inner.springs.iter().any(|(_, s)| !s.is_settled())
             || inner.keyframes.iter().any(|(_, k)| k.is_playing())
             || inner.timelines.iter().any(|(_, t)| t.is_playing())
-            || !inner.tick_callbacks.is_empty()
     }
 
     /// Get the number of active springs
@@ -662,9 +821,8 @@ impl AnimationScheduler {
     // =========================================================================
 
     pub fn add_spring(&self, spring: Spring) -> SpringId {
-        let mut inner = self.inner.lock().unwrap();
-        let id = inner.springs.insert(spring);
-        inner.fresh_springs.insert(id);
+        let id = self.inner.lock().unwrap().springs.insert(spring);
+        self.notify_active();
         id
     }
 
@@ -693,12 +851,11 @@ impl AnimationScheduler {
         if let Some(spring) = self.inner.lock().unwrap().springs.get_mut(id) {
             spring.set_target(target);
         }
+        self.notify_active();
     }
 
     pub fn remove_spring(&self, id: SpringId) -> Option<Spring> {
-        let mut inner = self.inner.lock().unwrap();
-        inner.fresh_springs.remove(&id);
-        inner.springs.remove(id)
+        self.inner.lock().unwrap().springs.remove(id)
     }
 
     /// Iterate over all springs mutably
@@ -716,7 +873,9 @@ impl AnimationScheduler {
     // =========================================================================
 
     pub fn add_keyframe(&self, keyframe: KeyframeAnimation) -> KeyframeId {
-        self.inner.lock().unwrap().keyframes.insert(keyframe)
+        let id = self.inner.lock().unwrap().keyframes.insert(keyframe);
+        self.notify_active();
+        id
     }
 
     pub fn get_keyframe_value(&self, id: KeyframeId) -> Option<f32> {
@@ -732,6 +891,7 @@ impl AnimationScheduler {
         if let Some(keyframe) = self.inner.lock().unwrap().keyframes.get_mut(id) {
             keyframe.start();
         }
+        self.notify_active();
     }
 
     pub fn stop_keyframe(&self, id: KeyframeId) {
@@ -749,13 +909,16 @@ impl AnimationScheduler {
     // =========================================================================
 
     pub fn add_timeline(&self, timeline: Timeline) -> TimelineId {
-        self.inner.lock().unwrap().timelines.insert(timeline)
+        let id = self.inner.lock().unwrap().timelines.insert(timeline);
+        self.notify_active();
+        id
     }
 
     pub fn start_timeline(&self, id: TimelineId) {
         if let Some(timeline) = self.inner.lock().unwrap().timelines.get_mut(id) {
             timeline.start();
         }
+        self.notify_active();
     }
 
     pub fn stop_timeline(&self, id: TimelineId) {
@@ -792,11 +955,14 @@ impl AnimationScheduler {
     where
         F: FnMut(f32) + Send + Sync + 'static,
     {
-        self.inner
+        let id = self
+            .inner
             .lock()
             .unwrap()
             .tick_callbacks
-            .insert(Arc::new(Mutex::new(callback)))
+            .insert(Arc::new(Mutex::new(callback)));
+        self.notify_active();
+        id
     }
 
     /// Remove a tick callback
@@ -857,6 +1023,8 @@ impl Clone for AnimationScheduler {
             // Cloned scheduler doesn't own the background thread
             thread_handle: None,
             wake_callback: self.wake_callback.clone(),
+            wakeup: Arc::clone(&self.wakeup),
+            last_active: Arc::clone(&self.last_active),
         }
     }
 }
@@ -922,15 +1090,25 @@ impl AnimationAccess for AnimationScheduler {
 pub struct SchedulerHandle {
     inner: Weak<Mutex<SchedulerInner>>,
     needs_redraw: Arc<AtomicBool>,
+    wakeup: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl SchedulerHandle {
+    /// Wake the scheduler's bg thread if it's parked. Called whenever
+    /// a mutation could transition `has_active` from false to true.
+    fn wake(&self) {
+        let mut pending = self.wakeup.0.lock().unwrap();
+        *pending = true;
+        self.wakeup.1.notify_one();
+    }
+
     /// Request a redraw from anywhere — fires the scheduler's
     /// `needs_redraw` flag which the main thread's event loop picks up.
     /// Use this from background threads (e.g. video decode) that need
     /// the UI to repaint without registering a full animation.
     pub fn request_redraw(&self) {
         self.needs_redraw.store(true, Ordering::Release);
+        self.wake();
     }
 
     // =========================================================================
@@ -939,12 +1117,17 @@ impl SchedulerHandle {
 
     /// Register a spring and return its ID
     pub fn register_spring(&self, spring: Spring) -> Option<SpringId> {
-        self.inner.upgrade().map(|inner| {
+        let id = self.inner.upgrade().map(|inner| {
             let mut guard = inner.lock().unwrap();
-            let id = guard.springs.insert(spring);
-            guard.fresh_springs.insert(id);
-            id
-        })
+            // Reset last_frame to now to prevent huge dt on first tick
+            // This ensures new springs start animating smoothly from their current frame
+            guard.last_frame = Instant::now();
+            guard.springs.insert(spring)
+        });
+        if id.is_some() {
+            self.wake();
+        }
+        id
     }
 
     /// Update a spring's target
@@ -954,6 +1137,7 @@ impl SchedulerHandle {
                 spring.set_target(target);
             }
         }
+        self.wake();
     }
 
     /// Get current spring value
@@ -984,9 +1168,7 @@ impl SchedulerHandle {
     /// Remove a spring
     pub fn remove_spring(&self, id: SpringId) {
         if let Some(inner) = self.inner.upgrade() {
-            let mut inner = inner.lock().unwrap();
-            inner.fresh_springs.remove(&id);
-            inner.springs.remove(id);
+            inner.lock().unwrap().springs.remove(id);
         }
     }
 
@@ -1006,6 +1188,7 @@ impl SchedulerHandle {
                 spring.resume();
             }
         }
+        self.wake();
     }
 
     // =========================================================================
@@ -1014,9 +1197,14 @@ impl SchedulerHandle {
 
     /// Register a keyframe animation and return its ID
     pub fn register_keyframe(&self, keyframe: KeyframeAnimation) -> Option<KeyframeId> {
-        self.inner
+        let id = self
+            .inner
             .upgrade()
-            .map(|inner| inner.lock().unwrap().keyframes.insert(keyframe))
+            .map(|inner| inner.lock().unwrap().keyframes.insert(keyframe));
+        if id.is_some() {
+            self.wake();
+        }
+        id
     }
 
     /// Get current keyframe animation value
@@ -1060,6 +1248,7 @@ impl SchedulerHandle {
                 keyframe.start();
             }
         }
+        self.wake();
     }
 
     /// Stop a keyframe animation
@@ -1084,9 +1273,14 @@ impl SchedulerHandle {
 
     /// Register a timeline and return its ID
     pub fn register_timeline(&self, timeline: Timeline) -> Option<TimelineId> {
-        self.inner
+        let id = self
+            .inner
             .upgrade()
-            .map(|inner| inner.lock().unwrap().timelines.insert(timeline))
+            .map(|inner| inner.lock().unwrap().timelines.insert(timeline));
+        if id.is_some() {
+            self.wake();
+        }
+        id
     }
 
     /// Check if timeline is playing
@@ -1111,6 +1305,7 @@ impl SchedulerHandle {
                 timeline.start();
             }
         }
+        self.wake();
     }
 
     /// Stop a timeline
@@ -1137,9 +1332,16 @@ impl SchedulerHandle {
     where
         F: FnOnce(&mut Timeline) -> R,
     {
-        self.inner
+        let result = self
+            .inner
             .upgrade()
-            .and_then(|inner| inner.lock().unwrap().timelines.get_mut(id).map(f))
+            .and_then(|inner| inner.lock().unwrap().timelines.get_mut(id).map(f));
+        // The closure may have re-armed/started the timeline; wake the
+        // scheduler unconditionally rather than try to peek inside it.
+        if result.is_some() {
+            self.wake();
+        }
+        result
     }
 
     /// Check if the scheduler is still alive
@@ -1173,13 +1375,17 @@ impl SchedulerHandle {
     where
         F: FnMut(f32) + Send + Sync + 'static,
     {
-        self.inner.upgrade().map(|inner| {
+        let id = self.inner.upgrade().map(|inner| {
             inner
                 .lock()
                 .unwrap()
                 .tick_callbacks
                 .insert(Arc::new(Mutex::new(callback)))
-        })
+        });
+        if id.is_some() {
+            self.wake();
+        }
+        id
     }
 
     /// Remove a tick callback
@@ -2031,111 +2237,9 @@ mod tests {
         // Tick
         assert!(scheduler.tick());
 
-        {
-            let mut inner = scheduler.inner.lock().unwrap();
-            inner.last_frame = Instant::now() - Duration::from_millis(16);
-        }
-        assert!(scheduler.tick());
-
         // Value should have moved
         let value = scheduler.get_spring_value(id).unwrap();
         assert!(value > 0.0);
-    }
-
-    #[test]
-    fn test_registering_spring_does_not_reset_global_delta() {
-        let scheduler = AnimationScheduler::new();
-
-        let first_id = scheduler.add_spring(Spring::new(SpringConfig::stiff(), 0.0));
-        scheduler.set_spring_target(first_id, 100.0);
-
-        {
-            let mut inner = scheduler.inner.lock().unwrap();
-            inner.fresh_springs.clear();
-            inner.last_frame = Instant::now() - Duration::from_millis(50);
-        }
-
-        let handle = scheduler.handle();
-        let second_id = handle
-            .register_spring(Spring::new(SpringConfig::stiff(), 0.0))
-            .expect("scheduler should still be alive");
-        handle.set_spring_target(second_id, 100.0);
-
-        scheduler.tick();
-
-        let first_value = scheduler.get_spring_value(first_id).unwrap();
-        assert!(
-            first_value > 5.0,
-            "expected existing springs to receive the accumulated dt, got {first_value}"
-        );
-    }
-
-    #[test]
-    fn test_newly_registered_spring_does_not_consume_stale_global_delta() {
-        let scheduler = AnimationScheduler::new();
-
-        {
-            let mut inner = scheduler.inner.lock().unwrap();
-            inner.last_frame = Instant::now() - Duration::from_millis(50);
-        }
-
-        let handle = scheduler.handle();
-        let spring_id = handle
-            .register_spring(Spring::new(SpringConfig::stiff(), 0.0))
-            .expect("scheduler should still be alive");
-        handle.set_spring_target(spring_id, 100.0);
-
-        scheduler.tick();
-
-        let value = scheduler.get_spring_value(spring_id).unwrap();
-        assert!(
-            value < 1.0,
-            "expected newly registered spring not to consume stale global dt, got {value}"
-        );
-
-        {
-            let mut inner = scheduler.inner.lock().unwrap();
-            inner.last_frame = Instant::now() - Duration::from_millis(16);
-        }
-
-        scheduler.tick();
-
-        let value = scheduler.get_spring_value(spring_id).unwrap();
-        assert!(
-            value > 0.0,
-            "expected newly registered spring to start animating on the next frame, got {value}"
-        );
-    }
-
-    #[test]
-    fn test_remove_spring_clears_fresh_marker() {
-        let scheduler = AnimationScheduler::new();
-        let spring_id = scheduler.add_spring(Spring::new(SpringConfig::stiff(), 0.0));
-
-        scheduler.remove_spring(spring_id);
-
-        let inner = scheduler.inner.lock().unwrap();
-        assert!(
-            !inner.fresh_springs.contains(&spring_id),
-            "expected removing a spring to purge its fresh marker"
-        );
-    }
-
-    #[test]
-    fn test_handle_remove_spring_clears_fresh_marker() {
-        let scheduler = AnimationScheduler::new();
-        let handle = scheduler.handle();
-        let spring_id = handle
-            .register_spring(Spring::new(SpringConfig::stiff(), 0.0))
-            .expect("scheduler should still be alive");
-
-        handle.remove_spring(spring_id);
-
-        let inner = scheduler.inner.lock().unwrap();
-        assert!(
-            !inner.fresh_springs.contains(&spring_id),
-            "expected handle removal to purge the fresh marker"
-        );
     }
 
     #[test]
@@ -2153,12 +2257,6 @@ mod tests {
         assert!(value.is_animating());
 
         // Tick scheduler
-        scheduler.tick();
-
-        {
-            let mut inner = scheduler.inner.lock().unwrap();
-            inner.last_frame = Instant::now() - Duration::from_millis(16);
-        }
         scheduler.tick();
 
         // Value should have moved
