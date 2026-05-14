@@ -1765,6 +1765,32 @@ mod tests {
     }
 
     #[test]
+    fn pinch_chain_dispatches_to_ancestor_handler_when_leaf_has_none() {
+        let scales = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let scales_for_handler = std::sync::Arc::clone(&scales);
+
+        let ui = div()
+            .w(400.0)
+            .h(300.0)
+            .on_pinch(move |ctx| {
+                scales_for_handler.lock().unwrap().push(ctx.pinch_scale);
+            })
+            .child(div().w(100.0).h(100.0));
+
+        let mut tree = RenderTree::from_element(&ui);
+        tree.compute_layout(400.0, 300.0);
+
+        let router = EventRouter::new();
+        let hit = router
+            .hit_test(&tree, 50.0, 50.0)
+            .expect("child should be hit");
+
+        tree.dispatch_pinch_chain(&hit, 50.0, 50.0, 1.25);
+
+        assert_eq!(*scales.lock().unwrap(), vec![1.25]);
+    }
+
+    #[test]
     fn test_hover_enter_leave() {
         let ui = div().w(400.0).h(300.0).child(div().w(100.0).h(100.0));
 

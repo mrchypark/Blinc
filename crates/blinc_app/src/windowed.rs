@@ -3992,6 +3992,21 @@ impl WindowedApp {
                                     if event.event_type == blinc_core::events::event_types::SCROLL {
                                         continue;
                                     }
+                                    if event.event_type == blinc_core::events::event_types::PINCH
+                                        && event.node_id == LayoutNodeId::default()
+                                    {
+                                        if let Some(hit) =
+                                            router.hit_test(tree, event.mouse_x, event.mouse_y)
+                                        {
+                                            tree.dispatch_pinch_chain(
+                                                &hit,
+                                                event.mouse_x,
+                                                event.mouse_y,
+                                                event.pinch_scale,
+                                            );
+                                        }
+                                        continue;
+                                    }
                                     // Gesture events (PINCH/ROTATE) need hit testing since
                                     // they were collected without a node target
                                     if (event.event_type == blinc_core::events::event_types::PINCH
