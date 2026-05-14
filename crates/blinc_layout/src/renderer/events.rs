@@ -103,6 +103,52 @@ impl RenderTree {
         drag_delta_y: f32,
         pinch_scale: f32,
     ) {
+        self.dispatch_event_full_with_modifiers(
+            node_id,
+            event_type,
+            mouse_x,
+            mouse_y,
+            local_x,
+            local_y,
+            bounds_x,
+            bounds_y,
+            bounds_width,
+            bounds_height,
+            drag_delta_x,
+            drag_delta_y,
+            pinch_scale,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+
+    /// Dispatch an event with all context data including drag delta and modifiers.
+    ///
+    /// Pointer handlers such as chart brush interactions need the keyboard
+    /// modifier state captured at the source input event.
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_event_full_with_modifiers(
+        &mut self,
+        node_id: LayoutNodeId,
+        event_type: blinc_core::events::EventType,
+        mouse_x: f32,
+        mouse_y: f32,
+        local_x: f32,
+        local_y: f32,
+        bounds_x: f32,
+        bounds_y: f32,
+        bounds_width: f32,
+        bounds_height: f32,
+        drag_delta_x: f32,
+        drag_delta_y: f32,
+        pinch_scale: f32,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+    ) {
         let has_handler = self.handler_registry.has_handler(node_id, event_type);
         tracing::debug!(
             "dispatch_event_full: node={:?}, event_type={}, has_handler={}, drag_delta=({:.1}, {:.1})",
@@ -118,7 +164,8 @@ impl RenderTree {
             .with_local_pos(local_x, local_y)
             .with_bounds_pos(bounds_x, bounds_y)
             .with_bounds(bounds_width, bounds_height)
-            .with_drag_delta(drag_delta_x, drag_delta_y);
+            .with_drag_delta(drag_delta_x, drag_delta_y)
+            .with_modifiers(shift, ctrl, alt, meta);
 
         if event_type == blinc_core::events::event_types::PINCH {
             ctx = ctx.with_pinch(pinch_scale, mouse_x, mouse_y);

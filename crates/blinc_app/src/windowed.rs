@@ -3383,12 +3383,17 @@ impl WindowedApp {
 
                                         // Get drag delta from router (for DRAG events)
                                         let (drag_dx, drag_dy) = router.drag_delta();
+                                        let (shift, ctrl, alt, meta) = router.modifiers();
 
                                         // Populate bounds for each event from the router's hit test results
                                         // This is needed for POINTER_ENTER/POINTER_LEAVE/POINTER_MOVE events
                                         for event in pending_events.iter_mut() {
                                             event.mouse_x = lx;
                                             event.mouse_y = ly;
+                                            event.shift = shift;
+                                            event.ctrl = ctrl;
+                                            event.alt = alt;
+                                            event.meta = meta;
                                             // Populate drag delta for DRAG events
                                             if event.event_type == blinc_core::events::event_types::DRAG
                                                 || event.event_type == blinc_core::events::event_types::DRAG_END
@@ -3424,6 +3429,7 @@ impl WindowedApp {
                                         let lx = x / scale;
                                         let ly = y / scale;
                                         let btn = convert_mouse_button(button);
+                                        let (shift, ctrl, alt, meta) = router.modifiers();
                                         windowed_ctx.pointer_query.set_pressure(1.0);
 
                                         // Check for backdrop clicks (dismisses overlays)
@@ -3462,6 +3468,10 @@ impl WindowedApp {
                                             for event in pending_events.iter_mut() {
                                                 event.mouse_x = lx;
                                                 event.mouse_y = ly;
+                                                event.shift = shift;
+                                                event.ctrl = ctrl;
+                                                event.alt = alt;
+                                                event.meta = meta;
                                                 event.local_x = local_x;
                                                 event.local_y = local_y;
                                                 event.bounds_x = bounds_x;
@@ -3475,6 +3485,7 @@ impl WindowedApp {
                                         let lx = x / scale;
                                         let ly = y / scale;
                                         let btn = convert_mouse_button(button);
+                                        let (shift, ctrl, alt, meta) = router.modifiers();
                                         windowed_ctx.pointer_query.set_pressure(0.0);
 
                                         // Route through main tree (includes overlay content)
@@ -3487,6 +3498,10 @@ impl WindowedApp {
                                         for event in pending_events.iter_mut() {
                                             event.mouse_x = lx;
                                             event.mouse_y = ly;
+                                            event.shift = shift;
+                                            event.ctrl = ctrl;
+                                            event.alt = alt;
+                                            event.meta = meta;
                                             event.local_x = local_x;
                                             event.local_y = local_y;
                                             event.bounds_x = bounds_x;
@@ -3509,6 +3524,7 @@ impl WindowedApp {
                                     }
                                     MouseEvent::Entered => {
                                         let (mx, my) = router.mouse_position();
+                                        let (shift, ctrl, alt, meta) = router.modifiers();
 
                                         // Use occlusion-aware hit testing when mouse enters window
                                         let overlay_bounds = windowed_ctx.overlay_manager.get_visible_overlay_bounds();
@@ -3526,6 +3542,10 @@ impl WindowedApp {
                                         for event in pending_events.iter_mut() {
                                             event.mouse_x = mx;
                                             event.mouse_y = my;
+                                            event.shift = shift;
+                                            event.ctrl = ctrl;
+                                            event.alt = alt;
+                                            event.meta = meta;
                                         }
 
                                         // Update cursor based on hovered element. See the
@@ -3667,7 +3687,13 @@ impl WindowedApp {
                                             }
 
                                             // Dispatch KEY_DOWN for all keys
-                                            router.on_key_down(key_code);
+                                            router.on_key_down_with_modifiers(
+                                                key_code,
+                                                mods.shift,
+                                                mods.ctrl,
+                                                mods.alt,
+                                                mods.meta,
+                                            );
 
                                             // For character-producing keys, dispatch TEXT_INPUT
                                             // We use broadcast dispatch so any focused text input can receive it
@@ -3702,7 +3728,13 @@ impl WindowedApp {
                                             }
                                         }
                                         KeyState::Released => {
-                                            router.on_key_up(key_code);
+                                            router.on_key_up_with_modifiers(
+                                                key_code,
+                                                mods.shift,
+                                                mods.ctrl,
+                                                mods.alt,
+                                                mods.meta,
+                                            );
 
                                             // Also broadcast KEY_UP through the
                                             // `keyboard_events` path. Without this the
@@ -3993,7 +4025,7 @@ impl WindowedApp {
                                         ));
                                     let local_x = event.mouse_x - bounds_x;
                                     let local_y = event.mouse_y - bounds_y;
-                                    tree.dispatch_event_full(
+                                    tree.dispatch_event_full_with_modifiers(
                                         event.node_id,
                                         event.event_type,
                                         event.mouse_x,
@@ -4007,6 +4039,10 @@ impl WindowedApp {
                                         event.drag_delta_x,
                                         event.drag_delta_y,
                                         event.pinch_scale,
+                                        event.shift,
+                                        event.ctrl,
+                                        event.alt,
+                                        event.meta,
                                     );
                                 }
                             }

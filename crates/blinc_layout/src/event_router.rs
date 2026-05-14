@@ -239,6 +239,16 @@ impl EventRouter {
         (self.drag_delta_x, self.drag_delta_y)
     }
 
+    /// Last known keyboard modifier state.
+    pub fn modifiers(&self) -> (bool, bool, bool, bool) {
+        (
+            self.modifiers.shift,
+            self.modifiers.ctrl,
+            self.modifiers.alt,
+            self.modifiers.meta,
+        )
+    }
+
     /// Check if a drag operation is currently in progress
     pub fn is_dragging(&self) -> bool {
         self.is_dragging
