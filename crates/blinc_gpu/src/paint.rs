@@ -3541,7 +3541,7 @@ impl<'a> GpuPaintContext<'a> {
             // Multi-stop gradient: append 3 per-vertex colours right
             // after the triangle positions. The shader reads them at
             // `aux_data[aux_offset + 2..+5]` when
-            // `type_info.w == 1u` and does barycentric interpolation
+            // `corner_radius.w > 0.5` and does barycentric interpolation
             // via `mesh_bary`, bypassing the fill_type switch so the
             // authored ramp is reproduced smoothly across the
             // triangle.
@@ -3561,10 +3561,11 @@ impl<'a> GpuPaintContext<'a> {
 
             // Silhouette flags per edge. `corner_radius` is otherwise
             // unused for mesh primitives (no rounded corners on a
-            // raw triangle), so repurpose its three spare slots:
+            // raw triangle), so repurpose its spare slots:
             //   [0] = edge v0→v1 (bary.z == 0)
             //   [1] = edge v1→v2 (bary.x == 0)
             //   [2] = edge v2→v0 (bary.y == 0)
+            //   [3] = per-vertex color flag for multi-stop gradients
             let s01 = is_silhouette(i0, i1);
             let s12 = is_silhouette(i1, i2);
             let s20 = is_silhouette(i2, i0);
@@ -3577,14 +3578,14 @@ impl<'a> GpuPaintContext<'a> {
                 color2: color2_arr,
                 gradient_params: grad_params,
                 border: [0.0, 0.0, aux_offset as f32, 0.0],
-                corner_radius: [s01, s12, s20, 0.0],
+                corner_radius: [s01, s12, s20, mesh_flag as f32],
                 clip_bounds,
                 clip_radius,
                 type_info: [
                     PrimitiveType::Mesh as u32,
                     fill_type,
                     clip_type_u,
-                    mesh_flag,
+                    self.z_layer,
                 ],
                 ..GpuPrimitive::default()
             };

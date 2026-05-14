@@ -870,13 +870,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Determine fill color
     var fill_color: vec4<f32>;
-    // PRIM_MESH with `type_info.w == 1u` carries per-vertex colours
+    // PRIM_MESH with `corner_radius.w == 1` carries per-vertex colours
     // after the triangle positions in aux_data. The VB variant can't
     // use a `mesh_bary` varying (vertex stage doesn't reach
     // aux_data) — compute barycentric weights from the per-fragment
     // triangle position. See `sdf_core.wgsl` for the design
     // rationale.
-    if prim.type_info.x == 9u && prim.type_info.w == 1u {
+    if prim.type_info.x == 9u && prim.corner_radius.w > 0.5 {
         let aux_off = u32(prim.border.z);
         let pack0 = aux_data[aux_off];
         let pack1 = aux_data[aux_off + 1u];

@@ -5000,6 +5000,18 @@ impl GpuRenderer {
         );
     }
 
+    /// Upload the batch-wide auxiliary buffer used by SDF primitives.
+    ///
+    /// Some app render paths split a [`PrimitiveBatch`] into z-layer or
+    /// foreground primitive slices and then call `render_primitives_overlay`
+    /// with only `&[GpuPrimitive]`. Mesh primitives created from path
+    /// tessellation store their triangle vertices in `batch.aux_data`, so
+    /// those sliced overlay passes still need the original batch aux buffer
+    /// bound before drawing.
+    pub fn prepare_aux_data(&mut self, batch: &PrimitiveBatch) {
+        self.update_aux_data_buffer(batch);
+    }
+
     /// Upload auxiliary data to the DT fallback texture (Tier 3 / WebGL2).
     ///
     /// The texture has width=1024 and variable height. If the data exceeds
@@ -9961,7 +9973,7 @@ impl GpuRenderer {
         // copy of `aux_data` for this pass: clone the original, then
         // subtract the offset from the position vec4s of every mesh
         // primitive in the layer range. The optional per-vertex colour
-        // entries that follow (when `type_info[3] == 1`) stay unchanged.
+        // entries that follow (when `corner_radius.w > 0.5`) stay unchanged.
         let mut tight_aux_data: Vec<[f32; 4]> = batch.aux_data.clone();
         let mut needs_aux_upload = false;
         for op in &offset_primitives {

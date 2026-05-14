@@ -970,14 +970,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Determine fill color
     var fill_color: vec4<f32>;
-    // PRIM_MESH with `type_info.w == 1u` carries per-vertex colours
+    // PRIM_MESH with `corner_radius.w == 1` carries per-vertex colours
     // packed into `aux_data[offset+2..+5]` right after the triangle
     // positions. Barycentric interpolation reproduces authored
     // multi-stop gradients across the triangle without needing a
     // gradient atlas — fidelity tracks tessellation density. Honour
     // this before the fill_type switch so the 2-stop `mix` path
     // stays the precise per-fragment default.
-    if prim.type_info.x == 9u && prim.type_info.w == 1u {
+    if prim.type_info.x == 9u && prim.corner_radius.w > 0.5 {
         let aux_off = u32(prim.border.z);
         let c0 = aux_data[aux_off + 2u];
         let c1 = aux_data[aux_off + 3u];

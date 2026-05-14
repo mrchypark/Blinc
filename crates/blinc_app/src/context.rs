@@ -4414,6 +4414,7 @@ impl RenderContext {
             }
             self.renderer.set_glyph_atlas(atlas, color_atlas);
         }
+        self.renderer.prepare_aux_data(&batch);
 
         let has_glass = batch.glass_count() > 0;
         let has_layer_effects_in_batch = batch.has_layer_effects();
@@ -4607,6 +4608,7 @@ impl RenderContext {
                 let mut z0_batch = PrimitiveBatch::new();
                 z0_batch.primitives = z0_primitives;
                 z0_batch.paths = batch.paths.clone();
+                z0_batch.aux_data = batch.aux_data.clone();
                 self.renderer.render_with_clear(
                     target,
                     &z0_batch,
@@ -5224,6 +5226,7 @@ impl RenderContext {
             }
             self.renderer.set_glyph_atlas(atlas, color_atlas);
         }
+        self.renderer.prepare_aux_data(&batch);
 
         // For overlay rendering, we DON'T have glass effects (overlays are simple)
         // Render primitives without clearing (LoadOp::Load)
