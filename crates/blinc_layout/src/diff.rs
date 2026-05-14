@@ -687,6 +687,13 @@ fn hash_element(element: &dyn ElementBuilder, hasher: &mut impl Hasher) {
         hash_f32(image_info.opacity, hasher);
         hash_f32(image_info.border_radius, hasher);
     }
+
+    if let Some(render_fn) = element.canvas_render_info() {
+        1u8.hash(hasher);
+        std::ptr::hash(std::rc::Rc::as_ptr(&render_fn), hasher);
+    } else {
+        0u8.hash(hasher);
+    }
 }
 
 /// Hash an ElementBuilder including its entire subtree.
@@ -741,6 +748,13 @@ fn hash_element_structural(element: &dyn ElementBuilder, hasher: &mut impl Hashe
 
     if let Some(image_info) = element.image_render_info() {
         image_info.source.hash(hasher);
+    }
+
+    if let Some(render_fn) = element.canvas_render_info() {
+        1u8.hash(hasher);
+        std::ptr::hash(std::rc::Rc::as_ptr(&render_fn), hasher);
+    } else {
+        0u8.hash(hasher);
     }
 
     // Children (recursive)
@@ -1333,6 +1347,7 @@ pub fn render_props_eq(a: &RenderProps, b: &RenderProps) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canvas::canvas;
     use crate::div::div;
 
     #[test]
@@ -1357,6 +1372,20 @@ mod tests {
         assert_ne!(
             hash1, hash2,
             "Different properties should produce different hashes"
+        );
+    }
+
+    #[test]
+    fn test_canvas_render_callback_affects_element_hash() {
+        let canvas1 = canvas(|_, _| {});
+        let canvas2 = canvas(|_, _| {});
+
+        let hash1 = DivHash::compute_element_tree(&canvas1);
+        let hash2 = DivHash::compute_element_tree(&canvas2);
+
+        assert_ne!(
+            hash1, hash2,
+            "Different canvas render callbacks should force canvas reconciliation"
         );
     }
 

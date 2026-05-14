@@ -209,6 +209,7 @@ impl RenderTree {
             // Preserve motion from old props (set by parent)
             new_props.motion = render_node.props.motion.clone();
             render_node.props = new_props;
+            render_node.element_type = Self::determine_element_type(element);
         } else {
             // Render node doesn't exist - create it
             tracing::debug!(
@@ -291,6 +292,7 @@ impl RenderTree {
             new_props.node_id = Some(node_id);
             new_props.motion = render_node.props.motion.clone();
             render_node.props = new_props;
+            render_node.element_type = Self::determine_element_type_boxed(element);
         } else {
             // Render node doesn't exist - this can happen if the tree structure changed
             // but rebuild_children_in_place wasn't called for this subtree.
